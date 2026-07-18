@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Katashiro - OpenAB Companion",
+  "version": "1.0.0",
+  "description": "A sleek Chrome Extension companion for OpenAB over WebSockets.",
+  "permissions": [
+    "sidePanel",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Katashiro"
+  },
+  "icons": {
+    "128": "icon.png"
+  }
+}

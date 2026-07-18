@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Katashiro - OpenAB Companion</title>
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-area">
+          <img src="icon.png" alt="Katashiro Logo" class="brand-logo">
+          <div class="status-indicator online"></div>
+        </div>
+        <div class="brand-info">
+          <h1>Katashiro</h1>
+          <span class="subtitle" id="active-agent-label">OpenAB Companion</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="settings-btn" title="設定">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Main Views -->
+    <main class="app-main">
+      <!-- Connection Setup View (if not connected) -->
+      <section id="setup-view" class="view">
+        <div class="setup-card">
+          <p class="setup-desc">請輸入 WebSocket 伺服器網址以連線至 OpenAB 代理端點：</p>
+          <div class="input-group">
+            <label for="ws-url-input">WebSocket URL</label>
+            <input type="text" id="ws-url-input" placeholder="ws://localhost:8080/acp" value="ws://localhost:8080/acp">
+          </div>
+          <button id="connect-btn" class="primary-btn">建立連線</button>
+        </div>
+      </section>
+
+      <!-- Chatroom View (active when connected) -->
+      <section id="chat-view" class="view active">
+        <div class="chat-container">
+          <!-- Messages list -->
+          <div id="messages-list" class="messages-list">
+            <!-- System Welcome -->
+            <div class="message system">
+              <div class="system-text">歡迎使用 Katashiro！已準備好接收 OpenAB 的 WebSocket 訊息流。</div>
+            </div>
+          </div>
+
+          <!-- Input bar -->
+          <div class="chat-input-area">
+            <textarea id="message-input" placeholder="輸入訊息..." rows="1"></textarea>
+            <button id="send-btn" class="send-btn" disabled>
+              <svg viewBox="0 0 24 24" width="20" height="20">
+                <path fill="currentColor" d="M2,21L23,12L2,3V10L17,12L2,14V21Z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Settings Panel (Modal-like Overlay) -->
+      <section id="settings-view" class="view">
+        <div class="settings-card">
+          <h2>Agent 設定</h2>
+
+          <!-- Existing agents -->
+          <div class="input-group">
+            <label>已設定的 Agent</label>
+            <div id="agent-list" class="agent-list"><!-- rendered by sidepanel.js --></div>
+          </div>
+
+          <!-- Add a new agent -->
+          <div class="input-group">
+            <label>新增 Agent</label>
+            <input type="text" id="new-agent-name" class="agent-input" placeholder="名稱（例如 OpenAB）">
+            <input type="text" id="new-agent-url" class="agent-input" placeholder="ws://localhost:8080/acp">
+            <button id="add-agent-btn" class="secondary-btn">＋ 新增</button>
+          </div>
+
+          <div class="button-row">
+            <button id="cancel-settings-btn" class="secondary-btn">關閉</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>
