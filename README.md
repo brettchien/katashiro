@@ -39,7 +39,7 @@ Under this system:
 1. Open Google Chrome and navigate to `chrome://extensions/`.
 2. Toggle the **Developer mode** switch in the top-right corner.
 3. Click the **Load unpacked** button in the top-left corner.
-4. Select the project folder: `openab-chrome-extension`.
+4. Select the project folder: `katashiro`.
 
 ### 2. Launch the Side Panel
 - Click the **Katashiro** icon in the extensions toolbar (or pin it and click the toolbar icon) to slide open the Side Panel on the right side of the screen.
@@ -48,3 +48,8 @@ Under this system:
 - Click the **Settings (⚙️)** icon in the top header.
 - Enter your OpenAB WebSocket endpoint URL (e.g., `ws://localhost:8080/acp`).
 - Click **Save and Reconnect** to establish a real-time connection.
+
+## 📚 Documentation
+
+- [ROADMAP](ROADMAP.md) — planned browser-access capabilities (read page → change page → change site) and their safety gates.
+- [CONTRIBUTING](CONTRIBUTING.md) — local development setup and the Conventional Commits convention this repo follows.
