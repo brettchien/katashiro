@@ -400,8 +400,37 @@ function sendError(id, code, message) {
   }
 }
 
+// The browser tools we serve (advertised via tools/list; DOM-semantic, model-agnostic).
+const BROWSER_TOOLS = [
+  {
+    name: "browser.click",
+    description: "Click the element matching a CSS selector in the active browser tab.",
+    inputSchema: { type: "object", properties: { selector: { type: "string", description: "CSS selector" } }, required: ["selector"] }
+  },
+  {
+    name: "browser.read_dom",
+    description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
+    inputSchema: { type: "object", properties: { selector: { type: "string", description: "optional CSS selector to scope the snapshot" } } }
+  },
+  {
+    name: "browser.navigate",
+    description: "Navigate the active browser tab to a URL.",
+    inputSchema: { type: "object", properties: { url: { type: "string", description: "absolute URL" } }, required: ["url"] }
+  },
+  {
+    name: "browser.type",
+    description: "Type text into the element matching a CSS selector in the active tab.",
+    inputSchema: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] }
+  },
+  {
+    name: "browser.screenshot",
+    description: "Capture a screenshot of the active browser tab.",
+    inputSchema: { type: "object", properties: {} }
+  }
+];
+
 // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
-function handleServerRequest(msg) {
+async function handleServerRequest(msg) {
   switch (msg.method) {
     case "mcp/connect": {
       // The gateway opens the tunnel to our declared server; we name the connection.
@@ -410,8 +439,14 @@ function handleServerRequest(msg) {
       return;
     }
     case "mcp/message": {
-      // Inner MCP (initialize / tools/list / tools/call) — implemented in T6.2/T6.3.
-      sendError(msg.id, -32601, "mcp/message not yet implemented");
+      // Inner MCP is flattened into params (method/params); the outer ACP id correlates.
+      const inner = msg.params || {};
+      try {
+        const result = await handleMcpMessage(inner.method, inner.params || {});
+        if (result !== undefined) sendResult(msg.id, result);
+      } catch (e) {
+        sendError(msg.id, e.code || -32603, e.message || String(e));
+      }
       return;
     }
     case "mcp/disconnect": {
@@ -422,6 +457,36 @@ function handleServerRequest(msg) {
     default:
       sendError(msg.id, -32601, `method not found: ${msg.method}`);
   }
+}
+
+// The MCP server surface we expose over the tunnel (we are the MCP server, the agent is the
+// client). Returns the inner MCP result; `undefined` for notifications (no reply).
+async function handleMcpMessage(method, params) {
+  switch (method) {
+    case "initialize":
+      return {
+        protocolVersion: "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "katashiro-browser", version: "1.0.0" }
+      };
+    case "notifications/initialized":
+      return undefined; // notification — no response
+    case "tools/list":
+      return { tools: BROWSER_TOOLS };
+    case "tools/call":
+      return { content: await callBrowserTool(params.name, params.arguments || {}) };
+    default: {
+      const err = new Error(`method not found: ${method}`);
+      err.code = -32601;
+      throw err;
+    }
+  }
+}
+
+// Execute a browser tool in the active tab. Real chrome.scripting/tabs bodies land in T6.3;
+// returns MCP content blocks.
+async function callBrowserTool(name, args) {
+  return [{ type: "text", text: `browser tool ${name} not yet implemented (T6.3)` }];
 }
 
 // initialize → (resume existing | new) session
