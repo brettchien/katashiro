@@ -457,11 +457,16 @@ function startStream() {
   msgDiv.querySelector(".sender-name").textContent = name;
   messagesList.appendChild(msgDiv);
   streamBubble = msgDiv.querySelector(".bubble");
+  // Show a "thinking" indicator while Falcon ponders, until the first chunk arrives.
+  streamBubble.classList.add("typing");
+  streamBubble.innerHTML =
+    '<span class="typing-dots"><span></span><span></span><span></span></span>';
   scrollToBottom();
 }
 
 function appendToStream(chunk) {
   if (!streamBubble) startStream();
+  if (streamText === "") streamBubble.classList.remove("typing"); // first chunk: drop the dots
   streamText += chunk;
   streamBubble.textContent = streamText; // textContent: no HTML injection from agent output
   scrollToBottom();
