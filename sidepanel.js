@@ -5,12 +5,22 @@ let reconnectTimer = null;
 let myUserId = "me";
 let myUserName = "You";
 
-// Agents: [{ name, url }]; one is active at a time.
-const DEFAULT_AGENT = { name: "OpenAB", url: "ws://localhost:8080/acp" };
+// Agents: [{ name, url, token }]; one is active at a time. `token` is the ACP
+// transport key (OPENAB_ACP_AUTH_KEY): required for a non-loopback endpoint, optional
+// on localhost. It is appended as `?token=` at connect time, not stored in the URL.
+const DEFAULT_AGENT = { name: "OpenAB", url: "ws://localhost:8080/acp", token: "" };
 let agents = [];
 let activeIndex = 0;
 let acpSessionByUrl = {};       // url -> last ACP sessionId (per-agent resume)
 function activeAgent() { return agents[activeIndex] || DEFAULT_AGENT; }
+
+// Carry the transport token via the WebSocket subprotocol list (browsers cannot set an
+// Authorization header on a WS handshake). The server extracts the token from the
+// `openab.bearer.<token>` entry and echoes the real `acp.v1` subprotocol. This keeps the
+// token OUT of the URL — the de facto browser-WS bearer pattern.
+function acpProtocols(token) {
+  return token ? [`openab.bearer.${token}`, "acp.v1"] : ["acp.v1"];
+}
 
 // ACP (Agent Client Protocol) state (for the active connection)
 const ACP_PROTOCOL_VERSION = 1;
@@ -39,6 +49,7 @@ const settingsView = document.getElementById("settings-view");
 const agentListEl = document.getElementById("agent-list");
 const newAgentName = document.getElementById("new-agent-name");
 const newAgentUrl = document.getElementById("new-agent-url");
+const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 
@@ -81,7 +92,7 @@ function connectActive() {
   promptQueue = []; // switching agents starts a fresh queue
   turnActive = false;
   updateActiveAgentUI();
-  connectWebSocket(a.url);
+  connectWebSocket(a.url, a.token);
 }
 
 // View switcher
@@ -110,11 +121,13 @@ cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
 addAgentBtn.addEventListener("click", () => {
   const name = newAgentName.value.trim();
   const url = newAgentUrl.value.trim();
+  const token = (newAgentToken?.value || "").trim();
   if (!name || !url) return;
-  agents.push({ name, url });
+  agents.push({ name, url, token });
   persistAgents();
   newAgentName.value = "";
   newAgentUrl.value = "";
+  if (newAgentToken) newAgentToken.value = "";
   renderAgentList();
 });
 
@@ -158,8 +171,19 @@ function renderAgentList() {
       url.value = a.url;
       persistAgents();
     });
+    // Transport token (OPENAB_ACP_AUTH_KEY) — masked; appended as ?token= at connect.
+    const tok = document.createElement("input");
+    tok.className = "agent-token-input";
+    tok.type = "password";
+    tok.placeholder = "token（非 loopback 必填）";
+    tok.value = a.token || "";
+    tok.addEventListener("change", () => {
+      a.token = tok.value.trim();
+      persistAgents();
+    });
     meta.appendChild(nm);
     meta.appendChild(url);
+    meta.appendChild(tok);
 
     const actions = document.createElement("div");
     actions.className = "agent-actions";
@@ -275,7 +299,7 @@ function flushQueue() {
 }
 
 // Connect to the ACP WebSocket endpoint and run the handshake
-function connectWebSocket(url) {
+function connectWebSocket(url, token) {
   if (ws) {
     ws.onclose = null; // prevent the stale socket's handler from triggering a reconnect
     ws.close();
@@ -286,7 +310,7 @@ function connectWebSocket(url) {
   acpReady = false;
 
   try {
-    ws = new WebSocket(url);
+    ws = new WebSocket(url, acpProtocols(token));
 
     ws.onopen = () => {
       console.log("WebSocket connected to " + url);
@@ -313,7 +337,7 @@ function connectWebSocket(url) {
       // Auto reconnect — the next handshake resumes acpSessionId if we have one.
       reconnectTimer = setTimeout(() => {
         console.log("Attempting to reconnect...");
-        connectWebSocket(url);
+        connectWebSocket(url, token);
       }, reconnectInterval);
     };
 
