@@ -33,7 +33,6 @@ let acpReady = false;          // true once initialize + session are established
 let nextReqId = 1;             // JSON-RPC 2.0 request id counter
 const pendingReqs = new Map(); // id -> { resolve, reject }
 let browserMcpId = null;       // T6: our `type:acp` MCP server id, declared in session/new
-let mcpConnectionId = null;    // T6: the connectionId established by the gateway's mcp/connect
 let streamBubble = null;       // DOM .bubble element the agent turn is streaming into
 let streamText = "";           // accumulated agent turn text
 
@@ -340,7 +339,7 @@ function connectWebSocket(url, token) {
       acpReady = false;
       // Stale tunnel: a fresh handshake re-declares our type:acp server and the gateway
       // re-opens the tunnel (new mcp/connect). Drop the old connectionId.
-      mcpConnectionId = null;
+      mcpState.mcpConnectionId = null;
       rejectAllPending("connection closed");
       // Auto reconnect — the next handshake resumes acpSessionId if we have one.
       reconnectTimer = setTimeout(() => {
@@ -391,180 +390,24 @@ function browserMcpServers() {
   return [{ type: "acp", id: browserMcpId, name: "browser" }];
 }
 
-// Reply to a server-initiated request (JSON-RPC 2.0).
-function sendResult(id, result) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
-  }
+// The browser MCP server (tools + protocol dispatch) lives in browser-mcp.js so the same
+// logic is unit-tested under node. Here we just wire the real environment into it:
+// `chrome`/`crypto` and a `send` that writes JSON-RPC frames to the active socket.
+// `mcpState.mcpConnectionId` is the tunnel connection id, reset on reconnect (ws.onclose).
+const mcpState = { mcpConnectionId: null };
+function mcpDeps() {
+  return {
+    chrome,
+    crypto,
+    send: (obj) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+    }
+  };
 }
-function sendError(id, code, message) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
-  }
-}
-
-// The browser tools we serve (advertised via tools/list; DOM-semantic, model-agnostic).
-const BROWSER_TOOLS = [
-  {
-    name: "browser.click",
-    description: "Click the element matching a CSS selector in the active browser tab.",
-    inputSchema: { type: "object", properties: { selector: { type: "string", description: "CSS selector" } }, required: ["selector"] }
-  },
-  {
-    name: "browser.read_dom",
-    description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
-    inputSchema: { type: "object", properties: { selector: { type: "string", description: "optional CSS selector to scope the snapshot" } } }
-  },
-  {
-    name: "browser.navigate",
-    description: "Navigate the active browser tab to a URL.",
-    inputSchema: { type: "object", properties: { url: { type: "string", description: "absolute URL" } }, required: ["url"] }
-  },
-  {
-    name: "browser.type",
-    description: "Type text into the element matching a CSS selector in the active tab.",
-    inputSchema: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] }
-  },
-  {
-    name: "browser.screenshot",
-    description: "Capture a screenshot of the active browser tab.",
-    inputSchema: { type: "object", properties: {} }
-  }
-];
 
 // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
-async function handleServerRequest(msg) {
-  switch (msg.method) {
-    case "mcp/connect": {
-      // The gateway opens the tunnel to our declared server; we name the connection.
-      mcpConnectionId = crypto.randomUUID();
-      sendResult(msg.id, { connectionId: mcpConnectionId });
-      return;
-    }
-    case "mcp/message": {
-      // Inner MCP is flattened into params (method/params); the outer ACP id correlates.
-      const inner = msg.params || {};
-      try {
-        const result = await handleMcpMessage(inner.method, inner.params || {});
-        if (result !== undefined) sendResult(msg.id, result);
-      } catch (e) {
-        sendError(msg.id, e.code || -32603, e.message || String(e));
-      }
-      return;
-    }
-    case "mcp/disconnect": {
-      mcpConnectionId = null;
-      sendResult(msg.id, {});
-      return;
-    }
-    default:
-      sendError(msg.id, -32601, `method not found: ${msg.method}`);
-  }
-}
-
-// The MCP server surface we expose over the tunnel (we are the MCP server, the agent is the
-// client). Returns the inner MCP result; `undefined` for notifications (no reply).
-async function handleMcpMessage(method, params) {
-  switch (method) {
-    case "initialize":
-      return {
-        protocolVersion: "2025-06-18",
-        capabilities: { tools: {} },
-        serverInfo: { name: "katashiro-browser", version: "1.0.0" }
-      };
-    case "notifications/initialized":
-      return undefined; // notification — no response
-    case "tools/list":
-      return { tools: BROWSER_TOOLS };
-    case "tools/call":
-      // Tool-execution failures (no active tab, restricted page like chrome://, missing host
-      // permission, injected-script error) become MCP isError results — not protocol errors —
-      // so the agent sees the failure and can adapt.
-      try {
-        return await callBrowserTool(params.name, params.arguments || {});
-      } catch (e) {
-        return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
-      }
-    default: {
-      const err = new Error(`method not found: ${method}`);
-      err.code = -32601;
-      throw err;
-    }
-  }
-}
-
-// The currently active tab (the shikigami acts here).
-async function activeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab) throw new Error("no active browser tab");
-  return tab;
-}
-
-const okText = (t) => ({ content: [{ type: "text", text: t }] });
-const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
-
-// Execute a browser tool in the active tab via chrome.scripting/tabs. Returns an MCP
-// CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
-async function callBrowserTool(name, args) {
-  const tab = await activeTab();
-  switch (name) {
-    case "browser.click": {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (sel) => {
-          const el = document.querySelector(sel);
-          if (!el) return { ok: false, error: "no element for selector: " + sel };
-          el.click();
-          return { ok: true };
-        },
-        args: [args.selector]
-      });
-      return result.ok ? okText(`clicked ${args.selector}`) : errText(result.error);
-    }
-    case "browser.read_dom": {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (sel) => {
-          const el = sel ? document.querySelector(sel) : document.body;
-          if (!el) return { ok: false, error: "no element for selector: " + sel };
-          return { ok: true, html: el.outerHTML.slice(0, 100000) };
-        },
-        args: [args.selector || null]
-      });
-      return result.ok ? okText(result.html) : errText(result.error);
-    }
-    case "browser.navigate": {
-      await chrome.tabs.update(tab.id, { url: args.url });
-      return okText(`navigating to ${args.url}`);
-    }
-    case "browser.type": {
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (sel, text) => {
-          const el = document.querySelector(sel);
-          if (!el) return { ok: false, error: "no element for selector: " + sel };
-          el.focus();
-          if ("value" in el) el.value = text;
-          else el.textContent = text;
-          el.dispatchEvent(new Event("input", { bubbles: true }));
-          el.dispatchEvent(new Event("change", { bubbles: true }));
-          return { ok: true };
-        },
-        args: [args.selector, args.text]
-      });
-      return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
-    }
-    case "browser.screenshot": {
-      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-      const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-      return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
-    }
-    default: {
-      const err = new Error(`unknown tool: ${name}`);
-      err.code = -32602;
-      throw err;
-    }
-  }
+function handleServerRequest(msg) {
+  return BrowserMcp.handleServerRequest(msg, mcpDeps(), mcpState);
 }
 
 // initialize → (resume existing | new) session
