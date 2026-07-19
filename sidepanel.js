@@ -474,7 +474,7 @@ async function handleMcpMessage(method, params) {
     case "tools/list":
       return { tools: BROWSER_TOOLS };
     case "tools/call":
-      return { content: await callBrowserTool(params.name, params.arguments || {}) };
+      return await callBrowserTool(params.name, params.arguments || {});
     default: {
       const err = new Error(`method not found: ${method}`);
       err.code = -32601;
@@ -483,10 +483,78 @@ async function handleMcpMessage(method, params) {
   }
 }
 
-// Execute a browser tool in the active tab. Real chrome.scripting/tabs bodies land in T6.3;
-// returns MCP content blocks.
+// The currently active tab (the shikigami acts here).
+async function activeTab() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab) throw new Error("no active browser tab");
+  return tab;
+}
+
+const okText = (t) => ({ content: [{ type: "text", text: t }] });
+const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
+
+// Execute a browser tool in the active tab via chrome.scripting/tabs. Returns an MCP
+// CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
 async function callBrowserTool(name, args) {
-  return [{ type: "text", text: `browser tool ${name} not yet implemented (T6.3)` }];
+  const tab = await activeTab();
+  switch (name) {
+    case "browser.click": {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return { ok: false, error: "no element for selector: " + sel };
+          el.click();
+          return { ok: true };
+        },
+        args: [args.selector]
+      });
+      return result.ok ? okText(`clicked ${args.selector}`) : errText(result.error);
+    }
+    case "browser.read_dom": {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel) => {
+          const el = sel ? document.querySelector(sel) : document.body;
+          if (!el) return { ok: false, error: "no element for selector: " + sel };
+          return { ok: true, html: el.outerHTML.slice(0, 100000) };
+        },
+        args: [args.selector || null]
+      });
+      return result.ok ? okText(result.html) : errText(result.error);
+    }
+    case "browser.navigate": {
+      await chrome.tabs.update(tab.id, { url: args.url });
+      return okText(`navigating to ${args.url}`);
+    }
+    case "browser.type": {
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: (sel, text) => {
+          const el = document.querySelector(sel);
+          if (!el) return { ok: false, error: "no element for selector: " + sel };
+          el.focus();
+          if ("value" in el) el.value = text;
+          else el.textContent = text;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ok: true };
+        },
+        args: [args.selector, args.text]
+      });
+      return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
+    }
+    case "browser.screenshot": {
+      const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+      const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
+      return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
+    }
+    default: {
+      const err = new Error(`unknown tool: ${name}`);
+      err.code = -32602;
+      throw err;
+    }
+  }
 }
 
 // initialize → (resume existing | new) session
