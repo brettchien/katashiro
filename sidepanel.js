@@ -338,6 +338,9 @@ function connectWebSocket(url, token) {
       console.log("WebSocket disconnected");
       updateStatus(false);
       acpReady = false;
+      // Stale tunnel: a fresh handshake re-declares our type:acp server and the gateway
+      // re-opens the tunnel (new mcp/connect). Drop the old connectionId.
+      mcpConnectionId = null;
       rejectAllPending("connection closed");
       // Auto reconnect — the next handshake resumes acpSessionId if we have one.
       reconnectTimer = setTimeout(() => {
@@ -474,7 +477,14 @@ async function handleMcpMessage(method, params) {
     case "tools/list":
       return { tools: BROWSER_TOOLS };
     case "tools/call":
-      return await callBrowserTool(params.name, params.arguments || {});
+      // Tool-execution failures (no active tab, restricted page like chrome://, missing host
+      // permission, injected-script error) become MCP isError results — not protocol errors —
+      // so the agent sees the failure and can adapt.
+      try {
+        return await callBrowserTool(params.name, params.arguments || {});
+      } catch (e) {
+        return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
+      }
     default: {
       const err = new Error(`method not found: ${method}`);
       err.code = -32601;
