@@ -50,6 +50,7 @@ const settingsBtn = document.getElementById("settings-btn");
 const connectBtn = document.getElementById("connect-btn");
 const wsUrlInput = document.getElementById("ws-url-input");
 const activeAgentLabel = document.getElementById("active-agent-label");
+const browserStatusEl = document.getElementById("browser-status");
 
 const setupView = document.getElementById("setup-view");
 const chatView = document.getElementById("chat-view");
@@ -343,6 +344,7 @@ function connectWebSocket(url, token) {
       // Stale tunnel: a fresh handshake re-declares our type:acp server and the gateway
       // re-opens the tunnel (new mcp/connect). Drop the old connectionId.
       mcpState.mcpConnectionId = null;
+      setBrowserAttached(false); // tunnel is gone with the socket
       rejectAllPending("connection closed");
       // Auto reconnect — the next handshake resumes acpSessionId if we have one.
       reconnectTimer = setTimeout(() => {
@@ -418,8 +420,30 @@ function mcpDeps() {
     crypto,
     send: (obj) => {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-    }
+    },
+    onStatus: setBrowserAttached
   };
+}
+
+// Reflect the browser MCP tunnel state in the UI so the user can tell whether the agent can
+// currently reach this browser (the gateway opens the tunnel via mcp/connect once our
+// type:acp server is registered; it closes on mcp/disconnect or when the socket drops).
+let browserAttached = false;
+function setBrowserAttached(attached) {
+  if (attached === browserAttached) return; // only announce real transitions
+  browserAttached = attached;
+  if (browserStatusEl) {
+    browserStatusEl.classList.toggle("attached", attached);
+    browserStatusEl.textContent = attached ? "🔗 瀏覽器已連結" : "🔌 瀏覽器未連結";
+    browserStatusEl.title = attached
+      ? "式神之手已就緒 — agent 可截圖 / 讀取 / 操作此分頁"
+      : "瀏覽器工具尚未掛上這個 session";
+  }
+  appendSystemMessage(
+    attached
+      ? "🔗 瀏覽器已連結 — 式神可操作目前分頁（截圖 / 讀 DOM / 點擊 / 輸入 / 導航）。"
+      : "🔌 瀏覽器連結中斷 — 瀏覽器工具暫時無法使用。"
+  );
 }
 
 // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).

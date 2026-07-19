@@ -156,7 +156,9 @@
   }
 
   // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
-  // `deps` = { chrome, crypto, send }; `send(obj)` writes a JSON-RPC frame to the socket.
+  // `deps` = { chrome, crypto, send, onStatus? }; `send(obj)` writes a JSON-RPC frame to the
+  // socket; optional `onStatus(attached: bool)` fires when the browser tunnel opens/closes so
+  // the UI can surface whether the agent can currently reach this browser.
   // `state` carries the connection id (caller owns it, e.g. to reset on reconnect).
   async function handleServerRequest(msg, deps, state) {
     const send = deps.send;
@@ -165,6 +167,7 @@
         // The gateway opens the tunnel to our declared server; we name the connection.
         state.mcpConnectionId = deps.crypto.randomUUID();
         send({ jsonrpc: "2.0", id: msg.id, result: { connectionId: state.mcpConnectionId } });
+        if (deps.onStatus) deps.onStatus(true);
         return;
       }
       case "mcp/message": {
@@ -182,6 +185,7 @@
       case "mcp/disconnect": {
         state.mcpConnectionId = null;
         send({ jsonrpc: "2.0", id: msg.id, result: {} });
+        if (deps.onStatus) deps.onStatus(false);
         return;
       }
       default:

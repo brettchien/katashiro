@@ -112,6 +112,31 @@ body {
   letter-spacing: 1px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Browser MCP tunnel status pill — detached (muted) vs attached (success glow). */
+.browser-status {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  transition: var(--transition-smooth);
+}
+
+.browser-status.attached {
+  color: var(--accent-success);
+  background: var(--accent-success-glow);
+  border-color: var(--accent-success);
+}
+
 .header-actions button {
   background: transparent;
   border: none;

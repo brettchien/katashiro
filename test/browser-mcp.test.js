@@ -51,7 +51,13 @@ function mockSend() {
 function deps(opts = {}) {
   const { chrome, calls } = mockChrome(opts);
   const { send, sent } = mockSend();
-  return { deps: { chrome, crypto: mockCrypto(opts.uuid), send }, calls, sent };
+  const statuses = []; // records onStatus(attached) transitions
+  return {
+    deps: { chrome, crypto: mockCrypto(opts.uuid), send, onStatus: (a) => statuses.push(a) },
+    calls,
+    sent,
+    statuses
+  };
 }
 
 // --- MCP surface: handleMcpMessage ------------------------------------------
@@ -179,12 +185,13 @@ test("tools/call for an unknown tool returns an isError result", async () => {
 
 // --- tunnel control: handleServerRequest ------------------------------------
 
-test("mcp/connect names the connection and stores it in state", async () => {
-  const { deps: d, sent } = deps({ uuid: "conn-xyz" });
+test("mcp/connect names the connection, stores it, and fires onStatus(true)", async () => {
+  const { deps: d, sent, statuses } = deps({ uuid: "conn-xyz" });
   const state = { mcpConnectionId: null };
   await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: {} }, d, state);
   assert.deepEqual(sent, [{ jsonrpc: "2.0", id: 1, result: { connectionId: "conn-xyz" } }]);
   assert.equal(state.mcpConnectionId, "conn-xyz");
+  assert.deepEqual(statuses, [true]); // UI told the browser is now attached
 });
 
 test("mcp/message initialize replies on the outer ACP id", async () => {
@@ -229,12 +236,13 @@ test("mcp/message tools/call read_dom: full tunnel round-trip", async () => {
   assert.equal(sent[0].result.content[0].text, "<h1>ok</h1>");
 });
 
-test("mcp/disconnect clears the connection state and acks", async () => {
-  const { deps: d, sent } = deps();
+test("mcp/disconnect clears the connection state, acks, and fires onStatus(false)", async () => {
+  const { deps: d, sent, statuses } = deps();
   const state = { mcpConnectionId: "still-here" };
   await BrowserMcp.handleServerRequest({ id: 2, method: "mcp/disconnect", params: {} }, d, state);
   assert.deepEqual(sent, [{ jsonrpc: "2.0", id: 2, result: {} }]);
   assert.equal(state.mcpConnectionId, null);
+  assert.deepEqual(statuses, [false]); // UI told the browser detached
 });
 
 test("unknown server-initiated method returns JSON-RPC -32601", async () => {
