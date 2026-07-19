@@ -19,7 +19,10 @@ function activeAgent() { return agents[activeIndex] || DEFAULT_AGENT; }
 // `openab.bearer.<token>` entry and echoes the real `acp.v1` subprotocol. This keeps the
 // token OUT of the URL — the de facto browser-WS bearer pattern.
 function acpProtocols(token) {
-  return token ? [`openab.bearer.${token}`, "acp.v1"] : ["acp.v1"];
+  // Trim defensively: a pasted token often carries a trailing newline/space, which
+  // makes the subprotocol string invalid and silently breaks the WebSocket handshake.
+  const t = (token || "").trim();
+  return t ? [`openab.bearer.${t}`, "acp.v1"] : ["acp.v1"];
 }
 
 // ACP (Agent Client Protocol) state (for the active connection)
@@ -175,7 +178,7 @@ function renderAgentList() {
     const tok = document.createElement("input");
     tok.className = "agent-token-input";
     tok.type = "password";
-    tok.placeholder = "token（非 loopback 必填）";
+    tok.placeholder = "Token（伺服器需驗證時填）";
     tok.value = a.token || "";
     tok.addEventListener("change", () => {
       a.token = tok.value.trim();
