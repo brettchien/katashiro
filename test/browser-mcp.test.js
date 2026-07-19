@@ -147,8 +147,8 @@ test("browser.type injects a script with selector + text args", async () => {
   assert.deepEqual(calls.executeScript[0].args, ["#q", "hello"]);
 });
 
-test("browser.screenshot captures the tab and returns base64 image content", async () => {
-  const { deps: d, calls } = deps({ dataUrl: "data:image/png;base64,QUJD" });
+test("browser.screenshot captures the tab as JPEG and returns base64 image content", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
     { name: "browser.screenshot", arguments: {} },
@@ -156,8 +156,9 @@ test("browser.screenshot captures the tab and returns base64 image content", asy
   );
   assert.equal(calls.captureVisibleTab.length, 1);
   assert.equal(calls.captureVisibleTab[0].windowId, 7);
+  assert.equal(calls.captureVisibleTab[0].o.format, "jpeg"); // JPEG to stay under the frame cap
   assert.equal(res.content[0].type, "image");
-  assert.equal(res.content[0].mimeType, "image/png");
+  assert.equal(res.content[0].mimeType, "image/jpeg");
   assert.equal(res.content[0].data, "QUJD"); // data: prefix stripped
 });
 

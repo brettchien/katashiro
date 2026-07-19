@@ -112,9 +112,12 @@
         return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
       }
       case "browser.screenshot": {
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
-        const base64 = dataUrl.replace(/^data:image\/png;base64,/, "");
-        return { content: [{ type: "image", data: base64, mimeType: "image/png" }] };
+        // JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the ACP tunnel's
+        // per-frame size cap, dropping the WebSocket ("connection closed before response").
+        // JPEG q70 keeps a typical screen well under ~500KB while staying readable for the agent.
+        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+        const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
+        return { content: [{ type: "image", data: base64, mimeType: "image/jpeg" }] };
       }
       default: {
         const err = new Error(`unknown tool: ${name}`);
