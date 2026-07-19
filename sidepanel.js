@@ -35,6 +35,11 @@ const pendingReqs = new Map(); // id -> { resolve, reject }
 let browserMcpId = null;       // T6: our `type:acp` MCP server id, declared in session/new
 let streamBubble = null;       // DOM .bubble element the agent turn is streaming into
 let streamText = "";           // accumulated agent turn text
+// Queue of pending user turns, sent one at a time (avoids -32001 "Session busy" and survives
+// reconnects — queued turns flush once the session is ready again). Declared here (not lower)
+// so connectActive(), called from the storage-load callback, never hits a TDZ reference.
+let promptQueue = [];
+let turnActive = false;
 
 // DOM Elements
 const messagesList = document.getElementById("messages-list");
@@ -95,6 +100,7 @@ function connectActive() {
   acpSessionId = acpSessionByUrl[a.url] || null; // resume this agent's own session
   promptQueue = []; // switching agents starts a fresh queue
   turnActive = false;
+  finalizeStream(); // drop any half-streamed bubble left over from the previous agent
   updateActiveAgentUI();
   connectWebSocket(a.url, a.token);
 }
@@ -246,11 +252,6 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
-// Queue of pending user turns, sent one at a time (avoids -32001 "Session busy"
-// and survives reconnects — queued turns flush once the session is ready again).
-let promptQueue = [];
-let turnActive = false;
-
 // Enqueue a user turn; the queue drives the actual session/prompt sends.
 function sendMessage() {
   const text = messageInput.value.trim();
@@ -279,10 +280,12 @@ function flushQueue() {
   turnActive = true;
   startStream(); // open an empty agent bubble to stream the reply into
 
+  // An agent turn can stream for a long time before it resolves (stopReason). Give it a
+  // generous ceiling so a genuinely-long turn isn't cut off, while still bounding a hang.
   acpRequest("session/prompt", {
     sessionId: acpSessionId,
     prompt: [{ type: "text", text }]
-  })
+  }, ACP_PROMPT_TIMEOUT_MS)
     .then((res) => {
       turnActive = false;
       finalizeStream(res && res.stopReason);
@@ -361,15 +364,29 @@ function connectWebSocket(url, token) {
 
 // --- ACP protocol layer -----------------------------------------------------
 
-// Send a JSON-RPC request and resolve when its response arrives.
-function acpRequest(method, params) {
+// Default request timeout. Guards against a peer that goes silent WITHOUT closing the socket
+// (onclose rejects pending reqs, but a half-open/hung connection never fires it) — without a
+// timeout the promise never settles and `turnActive` stays stuck forever, wedging the queue.
+const ACP_REQUEST_TIMEOUT_MS = 60000;
+const ACP_PROMPT_TIMEOUT_MS = 600000; // 10 min — agent turns stream long before resolving
+
+// Send a JSON-RPC request and resolve when its response arrives. `timeoutMs` bounds the wait;
+// agent turns (session/prompt) legitimately run long, so callers pass a larger bound there.
+function acpRequest(method, params, timeoutMs = ACP_REQUEST_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject("socket not open");
       return;
     }
     const id = nextReqId++;
-    pendingReqs.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (pendingReqs.delete(id)) reject(`request timed out: ${method}`);
+    }, timeoutMs);
+    // Clear the timer whichever way the request settles so it can't fire late.
+    pendingReqs.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); },
+      reject: (e) => { clearTimeout(timer); reject(e); }
+    });
     ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
   });
 }
@@ -507,8 +524,9 @@ function startStream() {
 }
 
 function appendToStream(chunk) {
+  if (!chunk) return; // ignore empty chunks — keep the thinking dots until real text arrives
   if (!streamBubble) startStream();
-  if (streamText === "") streamBubble.classList.remove("typing"); // first chunk: drop the dots
+  if (streamText === "") streamBubble.classList.remove("typing"); // first real chunk: drop the dots
   streamText += chunk;
   streamBubble.textContent = streamText; // textContent: no HTML injection from agent output
   scrollToBottom();
@@ -540,36 +558,57 @@ function formatTime(timestamp) {
   return `${hours}:${minutes} (TPE)`;
 }
 
+// Build the message row with createElement + textContent only. NEVER innerHTML here:
+// `senderName`/`text` can carry remote-controlled content (agent output, or a handshake
+// error string echoed from a malicious/MITM ACP server), so interpolating them into HTML
+// is a remote-XSS sink that could run arbitrary JS in the extension page and exfiltrate the
+// chrome.storage tokens. textContent renders the same characters inertly.
 function appendMessage({ senderId, senderName, text, timestamp }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
 
-  let avatarHTML = "";
-  let senderNameHTML = "";
-
   if (!isMe) {
-    avatarHTML = `<div class="avatar">${senderName ? senderName[0] : "?"}</div>`;
-    senderNameHTML = `<div class="sender-name">${senderName}</div>`;
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = senderName ? senderName[0] : "?";
+    msgDiv.appendChild(avatar);
   }
 
-  msgDiv.innerHTML = `
-    ${avatarHTML}
-    <div class="message-content">
-      ${senderNameHTML}
-      <div class="bubble">${text}</div>
-      <div class="timestamp">${formatTime(timestamp)}</div>
-    </div>
-  `;
+  const content = document.createElement("div");
+  content.className = "message-content";
 
+  if (!isMe) {
+    const nameEl = document.createElement("div");
+    nameEl.className = "sender-name";
+    nameEl.textContent = senderName || "";
+    content.appendChild(nameEl);
+  }
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  content.appendChild(bubble);
+
+  const ts = document.createElement("div");
+  ts.className = "timestamp";
+  ts.textContent = formatTime(timestamp);
+  content.appendChild(ts);
+
+  msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
   scrollToBottom();
 }
 
+// System notices carry handshake error strings (remote-reachable) — same XSS sink, same
+// fix: textContent, never innerHTML.
 function appendSystemMessage(text) {
   const msgDiv = document.createElement("div");
   msgDiv.className = "message system";
-  msgDiv.innerHTML = `<div class="system-text">${text}</div>`;
+  const inner = document.createElement("div");
+  inner.className = "system-text";
+  inner.textContent = text;
+  msgDiv.appendChild(inner);
   messagesList.appendChild(msgDiv);
   scrollToBottom();
 }
