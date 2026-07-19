@@ -411,26 +411,15 @@ body {
   box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
 }
 
-/* Thin, subtle scrollbar that only appears when the input overflows max-height —
-   matches the message list and doesn't clash with the pill's rounded corners. */
+/* Hide the input scrollbar entirely (it clashes with the rounded pill and showed even
+   when empty). Scrolling still works via wheel/keys once content exceeds max-height. */
 .chat-input-area textarea {
   overflow-y: auto;
-  scrollbar-width: thin;                      /* Firefox */
-  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+  scrollbar-width: none;                       /* Firefox */
+  -ms-overflow-style: none;                    /* old Edge */
 }
 .chat-input-area textarea::-webkit-scrollbar {
-  width: 6px;
-}
-.chat-input-area textarea::-webkit-scrollbar-track {
-  background: transparent;
-  margin: 8px 0;                              /* keep the thumb clear of the rounded ends */
-}
-.chat-input-area textarea::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
-  border-radius: 3px;
-}
-.chat-input-area textarea::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.28);
+  display: none;                               /* Chrome / Safari */
 }
 
 .send-btn {
