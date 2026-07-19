@@ -13,10 +13,14 @@ Under this system:
   * The spiritual intelligence and agent logic that is "summoned" and "injected" into the vessel over the WebSocket connection.
 * **Writing the Code = Drawing Talismans**
   * Writing configuration files (`manifest.json`) and styling components acts as the ritual of drawing magical talismans to establish a connection path between the summoner and the spirit.
+* **Browser Tools = The Shikigami's Hands (施術)**
+  * Through **MCP-over-ACP**, the summoned agent no longer merely *speaks* through the vessel — it *acts*. The extension serves DOM-semantic tools (`click`, `read_dom`, `navigate`, `type`, `screenshot`) so the shikigami can reach through the katashiro and operate the living page. Perception and action, not just a voice.
 
 ---
 
 ## 🌟 Key Features
+
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls DOM-semantic browser tools (`click` / `read_dom` / `navigate` / `type` / `screenshot`) that execute in the active tab via `chrome.scripting`. See [ROADMAP](ROADMAP.md).
 
 - **Unified Chat Space**: Optimized specifically for a single multi-party chatroom, bypassing cluttered sidebar lists to fit perfectly in a narrow Side Panel.
 - **LINE-style Chat Bubbles**: Self-sent messages align to the right (green), while received agent messages align to the left (dark slate blue) with custom avatars, sender names, and timestamp markers.
