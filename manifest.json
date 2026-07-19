@@ -5,7 +5,13 @@
   "description": "A sleek Chrome Extension companion for OpenAB over WebSockets.",
   "permissions": [
     "sidePanel",
-    "storage"
+    "storage",
+    "scripting",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"

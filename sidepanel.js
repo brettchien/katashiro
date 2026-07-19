@@ -32,6 +32,8 @@ let acpSessionId = null;       // active agent's persisted ACP sessionId (resume
 let acpReady = false;          // true once initialize + session are established
 let nextReqId = 1;             // JSON-RPC 2.0 request id counter
 const pendingReqs = new Map(); // id -> { resolve, reject }
+let browserMcpId = null;       // T6: our `type:acp` MCP server id, declared in session/new
+let mcpConnectionId = null;    // T6: the connectionId established by the gateway's mcp/connect
 let streamBubble = null;       // DOM .bubble element the agent turn is streaming into
 let streamText = "";           // accumulated agent turn text
 
@@ -375,6 +377,53 @@ function rejectAllPending(reason) {
   pendingReqs.clear();
 }
 
+// --- MCP-over-ACP tunnel: katashiro is the browser MCP server (T6) ---------------
+// See docs/mcp-over-acp-tunnel-contract.md in the openab repo. We declare a `type:acp`
+// MCP server in session/new; the gateway then opens a tunnel to us (server-initiated
+// mcp/connect) and drives MCP over mcp/message. We execute browser tools in the active tab.
+
+// Declared in session/new / session/resume so the gateway opens a tunnel to us.
+function browserMcpServers() {
+  if (!browserMcpId) browserMcpId = crypto.randomUUID();
+  return [{ type: "acp", id: browserMcpId, name: "browser" }];
+}
+
+// Reply to a server-initiated request (JSON-RPC 2.0).
+function sendResult(id, result) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id, result }));
+  }
+}
+function sendError(id, code, message) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id, error: { code, message } }));
+  }
+}
+
+// Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
+function handleServerRequest(msg) {
+  switch (msg.method) {
+    case "mcp/connect": {
+      // The gateway opens the tunnel to our declared server; we name the connection.
+      mcpConnectionId = crypto.randomUUID();
+      sendResult(msg.id, { connectionId: mcpConnectionId });
+      return;
+    }
+    case "mcp/message": {
+      // Inner MCP (initialize / tools/list / tools/call) — implemented in T6.2/T6.3.
+      sendError(msg.id, -32601, "mcp/message not yet implemented");
+      return;
+    }
+    case "mcp/disconnect": {
+      mcpConnectionId = null;
+      sendResult(msg.id, {});
+      return;
+    }
+    default:
+      sendError(msg.id, -32601, `method not found: ${msg.method}`);
+  }
+}
+
 // initialize → (resume existing | new) session
 function acpHandshake() {
   acpRequest("initialize", {
@@ -386,14 +435,14 @@ function acpHandshake() {
         return acpRequest("session/resume", {
           sessionId: acpSessionId,
           cwd: ACP_CWD,
-          mcpServers: []
+          mcpServers: browserMcpServers()
         }).then(() => {
           acpReady = true;
           appendSystemMessage(`已續接 ${activeAgent().name} 的 ACP session。`);
           flushQueue();
         });
       }
-      return acpRequest("session/new", { cwd: ACP_CWD, mcpServers: [] })
+      return acpRequest("session/new", { cwd: ACP_CWD, mcpServers: browserMcpServers() })
         .then((res) => {
           acpSessionId = res && res.sessionId;
           acpSessionByUrl[activeAgent().url] = acpSessionId; // per-agent resume
@@ -425,6 +474,13 @@ function handleAcpMessage(msg) {
       if (msg.error) p.reject(msg.error.message || JSON.stringify(msg.error));
       else p.resolve(msg.result);
     }
+    return;
+  }
+
+  // Server-initiated request (has BOTH id and method): the gateway driving our browser MCP
+  // server over the tunnel (mcp/connect, mcp/message, mcp/disconnect). Route + respond.
+  if (msg.id !== undefined && msg.method) {
+    handleServerRequest(msg);
     return;
   }
 
