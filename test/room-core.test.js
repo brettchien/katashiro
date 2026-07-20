@@ -57,3 +57,28 @@ test("parseMentions returns [] for no mentions / empty / null", () => {
   assert.deepEqual(RoomCore.parseMentions(""), []);
   assert.deepEqual(RoomCore.parseMentions(null), []);
 });
+
+// --- resolveTargets (fan-out relay, broadcast baseline) ---------------------
+const MEMBERS = [
+  { id: "a", name: "Falcon" },
+  { id: "b", name: "Kirin" },
+  { id: "c", name: "k04" },
+];
+
+test("resolveTargets: a user message reaches every agent", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user"), ["a", "b", "c"]);
+});
+
+test("resolveTargets: an agent relay reaches every agent except the origin", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a"), ["b", "c"]);
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "b"), ["a", "c"]);
+});
+
+test("resolveTargets: single-agent room, agent origin gets no targets", () => {
+  assert.deepEqual(RoomCore.resolveTargets([{ id: "a", name: "Solo" }], "a"), []);
+});
+
+test("resolveTargets: empty / non-array members yields []", () => {
+  assert.deepEqual(RoomCore.resolveTargets([], "user"), []);
+  assert.deepEqual(RoomCore.resolveTargets(null, "user"), []);
+});

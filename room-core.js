@@ -53,5 +53,17 @@
     return out;
   }
 
-  return { escapeAttr, wrapRelay, parseMentions };
+  // Decide which room member ids should RECEIVE a given message (fan-out relay).
+  //   members : [{ id, name }] — the current roster.
+  //   originId: the speaker's id. The human's id (or null) never matches a member, so a user
+  //             message reaches EVERY agent; an agent's relayed reply reaches every agent
+  //             EXCEPT itself — a message is never echoed back to its origin.
+  //   opts    : reserved for @mention routing (#3) and @mention/ambient mode (#4); unused here.
+  // Baseline = broadcast: all members except the origin.
+  function resolveTargets(members, originId, opts = {}) {
+    if (!Array.isArray(members)) return [];
+    return members.filter((m) => m && m.id !== originId).map((m) => m.id);
+  }
+
+  return { escapeAttr, wrapRelay, parseMentions, resolveTargets };
 });
