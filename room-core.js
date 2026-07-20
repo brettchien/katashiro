@@ -53,17 +53,42 @@
     return out;
   }
 
-  // Decide which room member ids should RECEIVE a given message (fan-out relay).
-  //   members : [{ id, name }] — the current roster.
-  //   originId: the speaker's id. The human's id (or null) never matches a member, so a user
-  //             message reaches EVERY agent; an agent's relayed reply reaches every agent
-  //             EXCEPT itself — a message is never echoed back to its origin.
-  //   opts    : reserved for @mention routing (#3) and @mention/ambient mode (#4); unused here.
-  // Baseline = broadcast: all members except the origin.
-  function resolveTargets(members, originId, opts = {}) {
-    if (!Array.isArray(members)) return [];
-    return members.filter((m) => m && m.id !== originId).map((m) => m.id);
+  // Resolve @mention names to member ids (the name→conn registry lookup). Case-insensitive;
+  // an unknown name simply yields no id. members: [{ id, name }], names: raw mention strings.
+  function resolveNames(members, names) {
+    if (!Array.isArray(members) || !Array.isArray(names)) return [];
+    const wanted = new Set(names.map((n) => String(n).toLowerCase()));
+    return members
+      .filter((m) => m && wanted.has(String(m.name).toLowerCase()))
+      .map((m) => m.id);
   }
 
-  return { escapeAttr, wrapRelay, parseMentions, resolveTargets };
+  // Decide which room member ids should RECEIVE a given message (fan-out relay + routing).
+  //   members : [{ id, name }] — the current roster.
+  //   originId: the speaker's id. The human's id (or null) never matches a member, so a user
+  //             message can reach every agent; an agent's relayed reply never echoes to itself.
+  //   opts.mode   : "mention" (default) | "ambient".
+  //   opts.text   : message text (mentions parsed from it) — or opts.mentions: pre-parsed names.
+  //
+  // "mention" mode (matches Brett's "@Falcon → only Falcon"): if the message @-addresses one or
+  // more members IN THE ROOM, route ONLY to them (minus origin); if there are no mentions — or an
+  // @name that isn't in the room — fall through to broadcast so a bare message isn't lost.
+  // "ambient" mode: always broadcast (all except origin); each agent self-decides whether to reply.
+  function resolveTargets(members, originId, opts = {}) {
+    if (!Array.isArray(members)) return [];
+    const others = members.filter((m) => m && m.id !== originId);
+    const mode = opts.mode || "mention";
+    if (mode === "mention") {
+      const names = Array.isArray(opts.mentions) ? opts.mentions : parseMentions(opts.text);
+      if (names.length) {
+        const wanted = new Set(resolveNames(others, names));
+        const targeted = others.filter((m) => wanted.has(m.id));
+        if (targeted.length) return targeted.map((m) => m.id); // addressed member(s) only
+        // else: @name(s) matched no member in the room → fall through to broadcast.
+      }
+    }
+    return others.map((m) => m.id); // broadcast (no/unknown mention, or ambient mode)
+  }
+
+  return { escapeAttr, wrapRelay, parseMentions, resolveNames, resolveTargets };
 });

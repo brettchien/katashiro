@@ -82,3 +82,45 @@ test("resolveTargets: empty / non-array members yields []", () => {
   assert.deepEqual(RoomCore.resolveTargets([], "user"), []);
   assert.deepEqual(RoomCore.resolveTargets(null, "user"), []);
 });
+
+// --- resolveNames (name->conn registry) -------------------------------------
+test("resolveNames maps mention names to ids, case-insensitively", () => {
+  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["Falcon"]), ["a"]);
+  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["kirin", "K04"]), ["b", "c"]);
+  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["Nobody"]), []);
+  assert.deepEqual(RoomCore.resolveNames(null, ["x"]), []);
+});
+
+// --- resolveTargets: @mention mode ------------------------------------------
+test("mention mode: @Falcon routes only to Falcon", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "hihi @Falcon" }), ["a"]);
+});
+
+test("mention mode: multiple @ route to just those, case-insensitive", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@Kirin and @k04 pls" }), ["b", "c"]);
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@falcon" }), ["a"]);
+});
+
+test("mention mode: no @ broadcasts (bare message not lost)", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "just talking" }), ["a", "b", "c"]);
+});
+
+test("mention mode: @name not in room falls through to broadcast", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@Ghost hi" }), ["a", "b", "c"]);
+});
+
+test("mention mode: origin is never a target even if @-addressed", () => {
+  // agent 'a' (Falcon) relays a message that @Falcon — origin excluded, no other Falcon → broadcast
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { text: "@Falcon note" }), ["b", "c"]);
+  // agent 'a' @Kirin → only Kirin
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { text: "@Kirin thoughts?" }), ["b"]);
+});
+
+test("mention mode: pre-parsed opts.mentions is honored", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { mentions: ["Kirin"] }), ["b"]);
+});
+
+test("ambient mode: mentions ignored, always broadcast (minus origin)", () => {
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { mode: "ambient", text: "@Falcon" }), ["a", "b", "c"]);
+  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { mode: "ambient", text: "@Falcon" }), ["b", "c"]);
+});
