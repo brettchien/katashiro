@@ -69,6 +69,18 @@
         <div class="settings-card">
           <h2>Agent 設定</h2>
 
+          <!-- Room routing config -->
+          <div class="input-group">
+            <label>房間模式</label>
+            <div id="mode-toggle" class="mode-toggle">
+              <button id="mode-mention" class="mode-btn" data-mode="mention">＠ 指名</button>
+              <button id="mode-ambient" class="mode-btn" data-mode="ambient">Ambient 全體</button>
+            </div>
+            <span class="mode-hint" id="mode-hint"></span>
+            <label for="loopguard-cap">連續接話上限（loop guard）</label>
+            <input type="number" id="loopguard-cap" class="agent-input" min="1" step="1" value="6">
+          </div>
+
           <!-- Existing agents -->
           <div class="input-group">
             <label>已設定的 Agent</label>
@@ -93,6 +105,7 @@
   </div>
 
   <script src="browser-mcp.js"></script>
+  <script src="room-core.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

@@ -732,6 +732,31 @@ body {
   border-color: var(--accent-success);
   background: var(--accent-success-glow);
 }
+
+/* Room routing config (mode toggle + loop-guard cap) */
+.mode-toggle { display: flex; gap: 6px; margin-bottom: 6px; }
+.mode-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+.mode-btn.on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+.mode-hint {
+  display: block;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin: 2px 0 8px;
+}
 .agent-input {
   width: 100%;
   margin-bottom: 8px;

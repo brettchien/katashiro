@@ -19,6 +19,16 @@ let acpSessionByUrl = {};       // url -> last ACP sessionId (per-agent resume)
 // One live Conn per agent, kept index-parallel to `agents`.
 const room = [];
 
+// Room routing config (mode + loop-guard cap). RoomCore owns the pure logic; we persist it.
+let roomConfig = RoomCore.defaultRoomConfig();
+let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
+function roomMembers() {
+  return room.map((c) => ({ id: c.id, name: c.name }));
+}
+function connById(id) {
+  return room.find((c) => c.id === id) || null;
+}
+
 // ACP constants
 const ACP_PROTOCOL_VERSION = 1;
 const ACP_CWD = "/home/agent";
@@ -43,6 +53,7 @@ function acpProtocols(token) {
 class Conn {
   constructor(agent) {
     this.agent = agent;                                 // { name, url, token, browserAccess }
+    this.id = agent.url;                                // stable routing identity (unique per agent)
     this.enabled = true;                                // user intent: should this conn be up?
     this.ws = null;
     this.acpSessionId = acpSessionByUrl[agent.url] || null;
@@ -288,7 +299,9 @@ class Conn {
     }, ACP_PROMPT_TIMEOUT_MS)
       .then((res) => {
         this.turnActive = false;
+        const replyText = this.stream ? this.stream.text : "";
         this.finalizeStream(res && res.stopReason);
+        relayAgentReply(this, replyText); // fan this agent's reply out to the room
         this.flushQueue();
       })
       .catch((err) => {
@@ -389,9 +402,14 @@ const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 
+const modeMentionBtn = document.getElementById("mode-mention");
+const modeAmbientBtn = document.getElementById("mode-ambient");
+const modeHintEl = document.getElementById("mode-hint");
+const loopGuardCapInput = document.getElementById("loopguard-cap");
+
 // --- Startup -----------------------------------------------------------------
 chrome.storage.local.get(
-  ["agents", "activeIndex", "acpSessionByUrl", "wsUrl", "acpSessionId"],
+  ["agents", "activeIndex", "acpSessionByUrl", "wsUrl", "acpSessionId", "roomConfig"],
   (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
@@ -404,6 +422,8 @@ chrome.storage.local.get(
     if (r.acpSessionId && r.wsUrl && !(r.wsUrl in acpSessionByUrl)) {
       acpSessionByUrl[r.wsUrl] = r.acpSessionId;         // migrate legacy session
     }
+    roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
+    loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
     persist();
 
     switchView("chat");
@@ -414,7 +434,7 @@ chrome.storage.local.get(
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, acpSessionByUrl });
+  chrome.storage.local.set({ agents, acpSessionByUrl, roomConfig });
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
@@ -481,11 +501,44 @@ function switchView(viewName) {
 
 // --- UI event listeners ------------------------------------------------------
 settingsBtn.addEventListener("click", () => {
+  renderRoomConfig();
   renderAgentList();
   switchView("settings");
 });
 
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
+
+// Room routing config controls (static elements — wire once).
+if (modeMentionBtn) modeMentionBtn.addEventListener("click", () => setRoomMode("mention"));
+if (modeAmbientBtn) modeAmbientBtn.addEventListener("click", () => setRoomMode("ambient"));
+if (loopGuardCapInput) {
+  loopGuardCapInput.addEventListener("change", () => {
+    roomConfig.loopGuardCap = RoomCore.normalizeCap(loopGuardCapInput.value);
+    loopGuardCapInput.value = String(roomConfig.loopGuardCap);
+    loopGuard.setCap(roomConfig.loopGuardCap);
+    persist();
+  });
+}
+
+// Reflect the room routing config (mode + cap) in the settings UI.
+function renderRoomConfig() {
+  const mode = roomConfig.mode;
+  if (modeMentionBtn) modeMentionBtn.classList.toggle("on", mode === "mention");
+  if (modeAmbientBtn) modeAmbientBtn.classList.toggle("on", mode === "ambient");
+  if (modeHintEl) {
+    modeHintEl.textContent =
+      mode === "mention"
+        ? "＠ 指名才觸發該 agent；沒 ＠ 則廣播全體。"
+        : "全體都收到每則訊息、各自決定是否回應（靠 loop guard 收斂）。";
+  }
+  if (loopGuardCapInput) loopGuardCapInput.value = String(roomConfig.loopGuardCap);
+}
+
+function setRoomMode(mode) {
+  roomConfig.mode = RoomCore.normalizeMode(mode);
+  persist();
+  renderRoomConfig();
+}
 
 addAgentBtn.addEventListener("click", () => {
   const name = newAgentName.value.trim();
@@ -667,23 +720,49 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
-// Phase 1: broadcast the user turn to EVERY agent; each replies independently.
+// Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
+// cascade — a human message always breaks any agent↔agent loop. User text goes verbatim (the
+// gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
 function sendMessage() {
   const text = messageInput.value.trim();
   if (!text) return;
 
-  appendMessage({
-    senderId: myUserId,
-    senderName: myUserName,
-    text,
-    timestamp: Date.now(),
-  });
+  appendMessage({ senderId: myUserId, senderName: myUserName, text, timestamp: Date.now() });
 
-  room.forEach((c) => c.enqueue(text));
+  loopGuard.onHuman();
+  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
+  targets.forEach((id) => {
+    const c = connById(id);
+    if (c) c.enqueue(text);
+  });
 
   messageInput.value = "";
   messageInput.style.height = "auto";
   sendBtn.disabled = true;
+}
+
+// Relay an agent's finalized reply into the room so OTHER agents can see + respond to it — the
+// "talk to each other like a Discord thread" mechanic. Wrapped with attribution, routed per
+// mode, and bounded by the loop guard (surfaces a system line once when the cascade is paused).
+function relayAgentReply(originConn, text) {
+  if (!text || !text.trim()) return;
+  const guard = loopGuard.onAgentRelay();
+  if (!guard.allowed) {
+    if (guard.tripped) {
+      appendSystemMessage(`⏸️ 已暫停 agent 互相接話（連續 ${guard.cap} 次）— 你說句話就繼續。`);
+    }
+    return;
+  }
+  const targets = RoomCore.resolveTargets(roomMembers(), originConn.id, {
+    mode: roomConfig.mode,
+    text,
+  });
+  if (!targets.length) return;
+  const wrapped = RoomCore.wrapRelay(originConn.name, text);
+  targets.forEach((id) => {
+    const c = connById(id);
+    if (c) c.enqueue(wrapped);
+  });
 }
 
 // --- Rendering helpers -------------------------------------------------------
