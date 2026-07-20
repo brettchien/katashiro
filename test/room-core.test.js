@@ -124,3 +124,27 @@ test("ambient mode: mentions ignored, always broadcast (minus origin)", () => {
   assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { mode: "ambient", text: "@Falcon" }), ["a", "b", "c"]);
   assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { mode: "ambient", text: "@Falcon" }), ["b", "c"]);
 });
+
+// --- room config (mode) -----------------------------------------------------
+test("MODES lists the two routing modes", () => {
+  assert.deepEqual(RoomCore.MODES, ["mention", "ambient"]);
+});
+
+test("normalizeMode defaults unknown/empty to mention, passes valid through", () => {
+  assert.equal(RoomCore.normalizeMode("mention"), "mention");
+  assert.equal(RoomCore.normalizeMode("ambient"), "ambient");
+  assert.equal(RoomCore.normalizeMode("bogus"), "mention");
+  assert.equal(RoomCore.normalizeMode(undefined), "mention");
+  assert.equal(RoomCore.normalizeMode(null), "mention");
+});
+
+test("defaultRoomConfig is mention mode", () => {
+  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention" });
+});
+
+test("normalizeRoomConfig repairs junk and honors a valid mode", () => {
+  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention" });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention" });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "ambient" }), { mode: "ambient" });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope" }), { mode: "mention" });
+});

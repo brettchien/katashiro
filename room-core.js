@@ -90,5 +90,37 @@
     return others.map((m) => m.id); // broadcast (no/unknown mention, or ambient mode)
   }
 
-  return { escapeAttr, wrapRelay, parseMentions, resolveNames, resolveTargets };
+  // --- Room configuration (mode) ---------------------------------------------
+  // The room's routing mode. "mention" (default): @-address to target, else broadcast — the
+  // loop-safe default. "ambient": everything broadcasts, each agent self-decides whether to
+  // chime in. The actual routing lives in resolveTargets(); this is the config layer the
+  // settings UI persists.
+  const MODES = ["mention", "ambient"];
+
+  function normalizeMode(mode) {
+    return MODES.includes(mode) ? mode : "mention";
+  }
+
+  function defaultRoomConfig() {
+    return { mode: "mention" };
+  }
+
+  // Validate/repair a stored room config into a known-good shape (forward-compatible: later
+  // fields, e.g. the loop-guard cap, extend this).
+  function normalizeRoomConfig(cfg) {
+    const c = cfg && typeof cfg === "object" ? cfg : {};
+    return { mode: normalizeMode(c.mode) };
+  }
+
+  return {
+    escapeAttr,
+    wrapRelay,
+    parseMentions,
+    resolveNames,
+    resolveTargets,
+    MODES,
+    normalizeMode,
+    defaultRoomConfig,
+    normalizeRoomConfig,
+  };
 });
