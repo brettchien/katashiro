@@ -96,20 +96,63 @@
   // chime in. The actual routing lives in resolveTargets(); this is the config layer the
   // settings UI persists.
   const MODES = ["mention", "ambient"];
+  const DEFAULT_LOOP_GUARD_CAP = 6;
 
   function normalizeMode(mode) {
     return MODES.includes(mode) ? mode : "mention";
   }
 
+  // Loop-guard cap: max consecutive agent→agent relays before the cascade is paused. Coerce to
+  // a positive integer; anything junk/non-positive falls back to the default.
+  function normalizeCap(cap) {
+    const n = Number(cap);
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_LOOP_GUARD_CAP;
+  }
+
   function defaultRoomConfig() {
-    return { mode: "mention" };
+    return { mode: "mention", loopGuardCap: DEFAULT_LOOP_GUARD_CAP };
   }
 
   // Validate/repair a stored room config into a known-good shape (forward-compatible: later
-  // fields, e.g. the loop-guard cap, extend this).
+  // fields extend this).
   function normalizeRoomConfig(cfg) {
     const c = cfg && typeof cfg === "object" ? cfg : {};
-    return { mode: normalizeMode(c.mode) };
+    return { mode: normalizeMode(c.mode), loopGuardCap: normalizeCap(c.loopGuardCap) };
+  }
+
+  // --- Loop guard ------------------------------------------------------------
+  // Bounds agent↔agent cascades (esp. ambient mode). Count consecutive AGENT relays; a human
+  // message resets it. Once `cap` relays have gone through, further relays are suppressed until
+  // a human speaks again. `tripped` is reported true only on the FIRST blocked attempt so the
+  // caller surfaces the "paused cross-talk" system line exactly once.
+  function createLoopGuard(cap) {
+    let limit = normalizeCap(cap);
+    let count = 0;
+    let tripped = false;
+    return {
+      // Register an agent-relay attempt. Returns { allowed, tripped, count, cap }.
+      onAgentRelay() {
+        if (count >= limit) {
+          const firstTrip = !tripped;
+          tripped = true;
+          return { allowed: false, tripped: firstTrip, count, cap: limit };
+        }
+        count += 1;
+        return { allowed: true, tripped: false, count, cap: limit };
+      },
+      // A human message breaks the cascade — reset.
+      onHuman() {
+        count = 0;
+        tripped = false;
+      },
+      // Re-cap live (e.g. the user changes the setting).
+      setCap(nextCap) {
+        limit = normalizeCap(nextCap);
+      },
+      state() {
+        return { count, cap: limit, tripped };
+      },
+    };
   }
 
   return {
@@ -120,7 +163,10 @@
     resolveTargets,
     MODES,
     normalizeMode,
+    normalizeCap,
+    DEFAULT_LOOP_GUARD_CAP,
     defaultRoomConfig,
     normalizeRoomConfig,
+    createLoopGuard,
   };
 });
