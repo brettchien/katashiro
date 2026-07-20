@@ -24,6 +24,15 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  scrollbar-width: none;        /* Firefox — hide scrollbar, keep scroll */
+  -ms-overflow-style: none;     /* legacy Edge */
+}
+
+/* Hide the (ugly) native scrollbar everywhere; scrolling still works via wheel/trackpad. */
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 body {
@@ -135,6 +144,111 @@ body {
   color: var(--accent-success);
   background: var(--accent-success-glow);
   border-color: var(--accent-success);
+}
+
+/* --- Roster: one chip per agent (multi-agent room) --- */
+.roster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(18, 24, 36, 0.5);
+}
+
+.roster-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 9px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  transition: var(--transition-smooth);
+}
+
+.roster-chip.online {
+  color: var(--text-primary);
+  border-color: var(--accent-success);
+}
+
+.roster-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.roster-chip.online .roster-dot {
+  background-color: var(--accent-success);
+  box-shadow: 0 0 6px var(--accent-success-glow);
+}
+
+.roster-chip.connecting .roster-dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+}
+
+.roster-name {
+  white-space: nowrap;
+}
+
+.roster-browser {
+  font-size: 10px;
+  line-height: 1;
+}
+
+/* --- Per-row connection status in the settings agent list --- */
+.agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+}
+
+.agent-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.agent-status.online {
+  color: var(--accent-success);
+}
+
+.agent-status.online .agent-status-dot {
+  background-color: var(--accent-success);
+  box-shadow: 0 0 6px var(--accent-success-glow);
+}
+
+.agent-status.connecting {
+  color: #f59e0b;
+}
+
+.agent-status.connecting .agent-status-dot {
+  background-color: #f59e0b;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.4);
+}
+
+.agent-status.error { color: #ef4444; }
+.agent-status.error .agent-status-dot {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
+
+/* Roster chip error (auth/unreachable) */
+.roster-chip.error { color: #ef4444; border-color: #ef4444; }
+.roster-chip.error .roster-dot {
+  background-color: #ef4444;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
 }
 
 .header-actions button {
@@ -590,6 +704,34 @@ body {
   transition: var(--transition-smooth);
 }
 .agent-delete:hover { color: #ef4444; border-color: #ef4444; }
+
+/* Per-agent connect/disconnect + browser-access toggles (allow wrap in narrow panel) */
+.agent-actions { flex-wrap: wrap; justify-content: flex-end; }
+
+.agent-conn-toggle,
+.agent-browser-toggle {
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: var(--transition-smooth);
+}
+
+.agent-conn-toggle.on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.agent-browser-toggle.on {
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+  background: var(--accent-success-glow);
+}
 .agent-input {
   width: 100%;
   margin-bottom: 8px;

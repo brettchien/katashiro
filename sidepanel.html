@@ -21,7 +21,6 @@
         </div>
       </div>
       <div class="header-actions">
-        <span id="browser-status" class="browser-status" title="瀏覽器工具尚未掛上這個 session">🔌 瀏覽器未連結</span>
         <button id="settings-btn" title="設定">⚙️</button>
       </div>
     </header>
@@ -43,6 +42,8 @@
       <!-- Chatroom View (active when connected) -->
       <section id="chat-view" class="view active">
         <div class="chat-container">
+          <!-- Roster: one chip per agent (online + browser status) -->
+          <div id="roster" class="roster"><!-- rendered by sidepanel.js --></div>
           <!-- Messages list -->
           <div id="messages-list" class="messages-list">
             <!-- System Welcome -->

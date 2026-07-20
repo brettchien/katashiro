@@ -1,47 +1,373 @@
-// State variables
-let ws = null;
-let reconnectInterval = 5000;
-let reconnectTimer = null;
+// Katashiro side panel — multi-agent room (Phase 1: N simultaneous connections).
+//
+// Each configured agent gets its OWN live WebSocket + ACP session, held in a `Conn`
+// instance. All room members are connected at once; a user message is BROADCAST to
+// every connected agent, and each agent streams its own reply (attributed) into the
+// shared scrollback. There is NO agent-to-agent relay yet (that is Phase 2).
+
+// --- Room-level state --------------------------------------------------------
 let myUserId = "me";
 let myUserName = "You";
 
-// Agents: [{ name, url, token }]; one is active at a time. `token` is the ACP
-// transport key (OPENAB_ACP_AUTH_KEY): required for a non-loopback endpoint, optional
-// on localhost. It is appended as `?token=` at connect time, not stored in the URL.
+// Agents: [{ name, url, token }]. `token` is the ACP transport key (OPENAB_ACP_AUTH_KEY):
+// required for a non-loopback endpoint, optional on localhost. Carried via the WS
+// subprotocol (`openab.bearer.<token>`), never in the URL.
 const DEFAULT_AGENT = { name: "OpenAB", url: "ws://localhost:8080/acp", token: "" };
 let agents = [];
-let activeIndex = 0;
 let acpSessionByUrl = {};       // url -> last ACP sessionId (per-agent resume)
-function activeAgent() { return agents[activeIndex] || DEFAULT_AGENT; }
+
+// One live Conn per agent, kept index-parallel to `agents`.
+const room = [];
+
+// ACP constants
+const ACP_PROTOCOL_VERSION = 1;
+const ACP_CWD = "/home/agent";
+// Default request timeout — guards a peer that goes silent WITHOUT closing the socket
+// (onclose rejects pending reqs, but a half-open connection never fires it), which would
+// otherwise wedge that conn's queue with turnActive stuck true.
+const ACP_REQUEST_TIMEOUT_MS = 60000;
+const ACP_PROMPT_TIMEOUT_MS = 600000; // 10 min — agent turns stream long before resolving
+const RECONNECT_INTERVAL_MS = 5000;
 
 // Carry the transport token via the WebSocket subprotocol list (browsers cannot set an
 // Authorization header on a WS handshake). The server extracts the token from the
-// `openab.bearer.<token>` entry and echoes the real `acp.v1` subprotocol. This keeps the
-// token OUT of the URL — the de facto browser-WS bearer pattern.
+// `openab.bearer.<token>` entry and echoes the real `acp.v1` subprotocol.
 function acpProtocols(token) {
-  // Trim defensively: a pasted token often carries a trailing newline/space, which
-  // makes the subprotocol string invalid and silently breaks the WebSocket handshake.
+  // Trim defensively: a pasted token often carries a trailing newline/space, which makes
+  // the subprotocol string invalid and silently breaks the handshake.
   const t = (token || "").trim();
   return t ? [`openab.bearer.${t}`, "acp.v1"] : ["acp.v1"];
 }
 
-// ACP (Agent Client Protocol) state (for the active connection)
-const ACP_PROTOCOL_VERSION = 1;
-const ACP_CWD = "/home/agent";
-let acpSessionId = null;       // active agent's persisted ACP sessionId (resume)
-let acpReady = false;          // true once initialize + session are established
-let nextReqId = 1;             // JSON-RPC 2.0 request id counter
-const pendingReqs = new Map(); // id -> { resolve, reject }
-let browserMcpId = null;       // T6: our `type:acp` MCP server id, declared in session/new
-let streamBubble = null;       // DOM .bubble element the agent turn is streaming into
-let streamText = "";           // accumulated agent turn text
-// Queue of pending user turns, sent one at a time (avoids -32001 "Session busy" and survives
-// reconnects — queued turns flush once the session is ready again). Declared here (not lower)
-// so connectActive(), called from the storage-load callback, never hits a TDZ reference.
-let promptQueue = [];
-let turnActive = false;
+// --- Conn: one agent's connection + session + turn state ---------------------
+class Conn {
+  constructor(agent) {
+    this.agent = agent;                                 // { name, url, token, browserAccess }
+    this.enabled = true;                                // user intent: should this conn be up?
+    this.ws = null;
+    this.acpSessionId = acpSessionByUrl[agent.url] || null;
+    this.acpReady = false;
+    this.online = false;
+    this.nextReqId = 1;
+    this.pendingReqs = new Map();                        // id -> { resolve, reject }
+    this.promptQueue = [];
+    this.turnActive = false;
+    this.browserMcpId = null;                            // our type:acp MCP server id
+    this.mcpState = { mcpConnectionId: null };           // tunnel connection id (per conn)
+    this.browserAttached = false;
+    this.reconnectTimer = null;
+    this.stream = null;                                  // { bubble, text } while streaming
+    this.lastFailure = null;                             // null | "auth" | "unreachable"
+    this.openedThisAttempt = false;                      // did the current attempt reach onopen?
+  }
 
-// DOM Elements
+  get name() { return this.agent.name || "Agent"; }
+
+  // Declared in session/new / session/resume so the gateway opens a browser tunnel to us.
+  // Per-conn id so N tunnels to the same active tab coexist. (Phase 3 will gate this on
+  // agent.browserAccess; Phase 1 always declares it.)
+  browserMcpServers() {
+    if (this.agent.browserAccess === false) return [];   // per-agent browser access control (off)
+    if (!this.browserMcpId) this.browserMcpId = crypto.randomUUID();
+    return [{ type: "acp", id: this.browserMcpId, name: "browser" }];
+  }
+
+  mcpDeps() {
+    return {
+      chrome,
+      crypto,
+      send: (obj) => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+      },
+      onStatus: (attached) => this.setBrowserAttached(attached),
+    };
+  }
+
+  setBrowserAttached(attached) {
+    if (attached === this.browserAttached) return;       // only real transitions
+    this.browserAttached = attached;
+    updateRoster();
+  }
+
+  // Send a JSON-RPC request on THIS conn's socket; resolve when its response arrives.
+  acpRequest(method, params, timeoutMs = ACP_REQUEST_TIMEOUT_MS) {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject("socket not open");
+        return;
+      }
+      const id = this.nextReqId++;
+      const timer = setTimeout(() => {
+        if (this.pendingReqs.delete(id)) reject(`request timed out: ${method}`);
+      }, timeoutMs);
+      this.pendingReqs.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+      });
+      this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+    });
+  }
+
+  rejectAllPending(reason) {
+    for (const { reject } of this.pendingReqs.values()) reject(reason);
+    this.pendingReqs.clear();
+  }
+
+  // Open (or reopen) this conn's socket and run the handshake.
+  connect() {
+    this.enabled = true;
+    if (this.ws) {
+      this.ws.onclose = null;                            // stale socket must not trigger reconnect
+      this.ws.close();
+    }
+    clearTimeout(this.reconnectTimer);
+    this.online = false;
+    this.acpReady = false;
+    this.openedThisAttempt = false;
+    updateRoster();
+
+    try {
+      this.ws = new WebSocket(this.agent.url, acpProtocols(this.agent.token));
+
+      this.ws.onopen = () => {
+        this.online = true;
+        this.openedThisAttempt = true;                   // upgrade succeeded ⇒ token accepted
+        this.lastFailure = null;
+        updateRoster();
+        this.handshake();
+      };
+
+      this.ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); }
+        catch (err) { console.error(`ACP[${this.name}]: non-JSON frame:`, err); return; }
+        this.handleAcpMessage(msg);
+      };
+
+      this.ws.onclose = () => {
+        this.online = false;
+        this.acpReady = false;
+        this.mcpState.mcpConnectionId = null;            // tunnel is gone with the socket
+        this.setBrowserAttached(false);
+        this.rejectAllPending("connection closed");
+        // Never reached onopen this attempt ⇒ the WS upgrade was rejected (bad/missing token)
+        // or the server is unreachable. Probe to tell which, and surface it in the UI.
+        if (!this.openedThisAttempt && this.enabled) this.probe();
+        updateRoster();
+        // Auto reconnect (only if the user still wants this conn up) — the next handshake
+        // resumes acpSessionId if we have one.
+        if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_INTERVAL_MS);
+      };
+
+      this.ws.onerror = (error) => {
+        console.error(`WebSocket[${this.name}] error:`, error);
+        this.online = false;
+        updateRoster();
+      };
+    } catch (e) {
+      console.error(`Error creating WebSocket[${this.name}]:`, e);
+    }
+  }
+
+  // Tear down permanently (no reconnect) — used on delete / retarget.
+  disconnect() {
+    this.enabled = false;
+    clearTimeout(this.reconnectTimer);
+    if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.close();
+      this.ws = null;
+    }
+    this.online = false;
+    this.acpReady = false;
+    this.finalizeStream();
+  }
+
+  // The WS handshake failed without ever opening. Probe the endpoint over plain HTTP (the
+  // browser hides the WS upgrade's 401, but host_permissions lets us fetch it): if the server
+  // responds at all it's reachable ⇒ the WS was rejected, almost always a bad/missing token;
+  // if the fetch throws, the server is unreachable (down / wrong address).
+  probe() {
+    const httpUrl = this.agent.url.replace(/^ws/i, "http"); // ws→http, wss→https
+    fetch(httpUrl, { method: "GET" })
+      .then(() => { this.lastFailure = "auth"; })
+      .catch(() => { this.lastFailure = "unreachable"; })
+      .finally(() => updateRoster());
+  }
+
+  handshake() {
+    this.acpRequest("initialize", {
+      protocolVersion: ACP_PROTOCOL_VERSION,
+      clientCapabilities: {},
+    })
+      .then(() => {
+        if (this.acpSessionId) {
+          return this.acpRequest("session/resume", {
+            sessionId: this.acpSessionId,
+            cwd: ACP_CWD,
+            mcpServers: this.browserMcpServers(),
+          }).then(() => {
+            this.acpReady = true;
+            updateRoster();
+            appendSystemMessage(`已續接 ${this.name} 的 ACP session。`);
+            this.flushQueue();
+          });
+        }
+        return this.acpRequest("session/new", {
+          cwd: ACP_CWD,
+          mcpServers: this.browserMcpServers(),
+        }).then((res) => {
+          this.acpSessionId = res && res.sessionId;
+          acpSessionByUrl[this.agent.url] = this.acpSessionId; // per-agent resume
+          persist();
+          this.acpReady = true;
+          updateRoster();
+          appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
+          this.flushQueue();
+        });
+      })
+      .catch((err) => {
+        // A resume can fail if the session id is unknown → fall back to a fresh one.
+        if (this.acpSessionId) {
+          this.acpSessionId = null;
+          delete acpSessionByUrl[this.agent.url];
+          persist();
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.handshake();
+        } else {
+          appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
+        }
+      });
+  }
+
+  // Route an incoming JSON-RPC message for this conn.
+  handleAcpMessage(msg) {
+    // Response to one of our requests.
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const p = this.pendingReqs.get(msg.id);
+      if (p) {
+        this.pendingReqs.delete(msg.id);
+        if (msg.error) p.reject(msg.error.message || JSON.stringify(msg.error));
+        else p.resolve(msg.result);
+      }
+      return;
+    }
+
+    // Server-initiated request (id + method): the gateway driving THIS conn's browser MCP
+    // tunnel (mcp/connect, mcp/message, mcp/disconnect). Route + respond on this socket.
+    if (msg.id !== undefined && msg.method) {
+      BrowserMcp.handleServerRequest(msg, this.mcpDeps(), this.mcpState);
+      return;
+    }
+
+    // Streaming agent reply.
+    if (msg.method === "session/update" && msg.params && msg.params.update) {
+      const u = msg.params.update;
+      if (u.sessionUpdate === "agent_message_chunk" && u.content) {
+        this.appendToStream(u.content.text || "");
+      }
+    }
+  }
+
+  enqueue(text) {
+    this.promptQueue.push(text);
+    this.flushQueue();
+  }
+
+  // Send the next queued turn if THIS conn is idle and ready.
+  flushQueue() {
+    if (this.turnActive || this.promptQueue.length === 0) return;
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady && this.acpSessionId)) return;
+
+    const text = this.promptQueue.shift();
+    this.turnActive = true;
+    this.startStream();
+
+    this.acpRequest("session/prompt", {
+      sessionId: this.acpSessionId,
+      prompt: [{ type: "text", text }],
+    }, ACP_PROMPT_TIMEOUT_MS)
+      .then((res) => {
+        this.turnActive = false;
+        this.finalizeStream(res && res.stopReason);
+        this.flushQueue();
+      })
+      .catch((err) => {
+        this.turnActive = false;
+        if (/closed|not open/i.test(String(err))) {
+          this.promptQueue.unshift(text);                // retry after resume
+          this.finalizeStream();
+        } else {
+          this.appendToStream("\n[錯誤] " + err);
+          this.finalizeStream("error");
+        }
+        this.flushQueue();
+      });
+  }
+
+  // --- Streaming bubble (per conn — agents stream concurrently) --------------
+  startStream() {
+    this.stream = { bubble: null, text: "" };
+    const msgDiv = document.createElement("div");
+    msgDiv.className = "message received";
+    const time = formatTime(Date.now());
+    // Fixed template (no user data interpolated); name/avatar set via textContent below.
+    msgDiv.innerHTML = `
+      <div class="avatar"></div>
+      <div class="message-content">
+        <div class="sender-name"></div>
+        <div class="bubble"></div>
+        <div class="timestamp">${time}</div>
+      </div>
+    `;
+    msgDiv.querySelector(".avatar").textContent = this.name.charAt(0).toUpperCase();
+    msgDiv.querySelector(".sender-name").textContent = this.name;
+    messagesList.appendChild(msgDiv);
+    const bubble = msgDiv.querySelector(".bubble");
+    bubble.classList.add("typing");
+    bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+    this.stream.bubble = bubble;
+    scrollToBottom();
+  }
+
+  appendToStream(chunk) {
+    if (!chunk) return;                                  // keep dots until real text arrives
+    if (!this.stream || !this.stream.bubble) this.startStream();
+    if (this.stream.text === "") this.stream.bubble.classList.remove("typing");
+    this.stream.text += chunk;
+    this.stream.bubble.textContent = this.stream.text;   // textContent: no HTML injection
+    scrollToBottom();
+  }
+
+  finalizeStream(_stopReason) {
+    // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
+    if (this.stream && this.stream.bubble && this.stream.text === "") {
+      const row = this.stream.bubble.closest(".message");
+      if (row) row.remove();
+    }
+    this.stream = null;
+  }
+}
+
+// --- Room lifecycle ----------------------------------------------------------
+function buildRoom() {
+  room.forEach((c) => c.disconnect());
+  room.length = 0;
+  agents.forEach((a) => room.push(new Conn(a)));
+}
+
+function connectAll() {
+  room.forEach((c) => c.connect());
+}
+
+// Replace a single conn in place (retarget on url/token change).
+function reconnectConn(i) {
+  if (i < 0 || i >= room.length) return;
+  if (room[i]) room[i].disconnect();
+  room[i] = new Conn(agents[i]);
+  room[i].connect();
+}
+
+// --- DOM refs ----------------------------------------------------------------
 const messagesList = document.getElementById("messages-list");
 const messageInput = document.getElementById("message-input");
 const sendBtn = document.getElementById("send-btn");
@@ -49,8 +375,8 @@ const statusIndicator = document.querySelector(".status-indicator");
 const settingsBtn = document.getElementById("settings-btn");
 const connectBtn = document.getElementById("connect-btn");
 const wsUrlInput = document.getElementById("ws-url-input");
+const rosterEl = document.getElementById("roster");
 const activeAgentLabel = document.getElementById("active-agent-label");
-const browserStatusEl = document.getElementById("browser-status");
 
 const setupView = document.getElementById("setup-view");
 const chatView = document.getElementById("chat-view");
@@ -63,13 +389,12 @@ const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 
-// Load stored agents on init (with migration from the old single-url config)
+// --- Startup -----------------------------------------------------------------
 chrome.storage.local.get(
   ["agents", "activeIndex", "acpSessionByUrl", "wsUrl", "acpSessionId"],
   (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
-      activeIndex = Math.min(r.activeIndex || 0, agents.length - 1);
     } else if (r.wsUrl) {
       agents = [{ name: "OpenAB", url: r.wsUrl }];
     } else {
@@ -77,51 +402,84 @@ chrome.storage.local.get(
     }
     acpSessionByUrl = r.acpSessionByUrl || {};
     if (r.acpSessionId && r.wsUrl && !(r.wsUrl in acpSessionByUrl)) {
-      acpSessionByUrl[r.wsUrl] = r.acpSessionId; // migrate legacy session
+      acpSessionByUrl[r.wsUrl] = r.acpSessionId;         // migrate legacy session
     }
-    persistAgents();
-    updateActiveAgentUI();
+    persist();
 
     switchView("chat");
-    connectActive();
+    buildRoom();
+    connectAll();
+    updateRoster();
   }
 );
 
-function persistAgents() {
-  chrome.storage.local.set({ agents, activeIndex, acpSessionByUrl });
+function persist() {
+  chrome.storage.local.set({ agents, acpSessionByUrl });
 }
 
-function updateActiveAgentUI() {
-  if (activeAgentLabel) activeAgentLabel.textContent = activeAgent().name;
+// --- Roster (per-agent online + browser status) ------------------------------
+// Single source of truth for a conn's display state (roster chips + settings rows).
+function connState(c) {
+  if (!c) return { cls: "offline", label: "離線" };
+  if (c.acpReady) return { cls: "online", label: "已連線" };
+  if (c.lastFailure === "auth") return { cls: "error", label: "認證失敗（token 錯誤／被拒）" };
+  if (c.lastFailure === "unreachable") return { cls: "error", label: "連不到（伺服器未啟動／網址錯誤）" };
+  if (!c.enabled) return { cls: "offline", label: "已停用" };
+  if (c.online) return { cls: "connecting", label: "握手中…" };
+  return { cls: "connecting", label: "連線中…" };
 }
 
-// Connect to the currently active agent
-function connectActive() {
-  const a = activeAgent();
-  acpSessionId = acpSessionByUrl[a.url] || null; // resume this agent's own session
-  promptQueue = []; // switching agents starts a fresh queue
-  turnActive = false;
-  finalizeStream(); // drop any half-streamed bubble left over from the previous agent
-  updateActiveAgentUI();
-  connectWebSocket(a.url, a.token);
+function updateRoster() {
+  const onlineCount = room.filter((c) => c.acpReady).length;
+  if (statusIndicator) {
+    statusIndicator.className = "status-indicator " + (onlineCount > 0 ? "online" : "offline");
+  }
+  if (activeAgentLabel) {
+    activeAgentLabel.textContent = `${onlineCount}/${room.length} agents 上線`;
+  }
+  if (!rosterEl) return;
+  rosterEl.innerHTML = "";
+  room.forEach((c) => {
+    const st = connState(c);
+    const chip = document.createElement("div");
+    chip.className = "roster-chip " + st.cls;
+
+    const dot = document.createElement("span");
+    dot.className = "roster-dot";
+    chip.appendChild(dot);
+
+    const nm = document.createElement("span");
+    nm.className = "roster-name";
+    nm.textContent = c.name;                             // textContent: agent name is user config
+    chip.appendChild(nm);
+
+    if (c.browserAttached) {
+      const br = document.createElement("span");
+      br.className = "roster-browser";
+      br.textContent = "🔗";
+      br.title = "瀏覽器已連結 — 此 agent 可操作目前分頁";
+      chip.appendChild(br);
+    }
+
+    chip.title = st.label;
+    rosterEl.appendChild(chip);
+  });
+
+  // Keep the settings list's per-row status live too, when it's open.
+  if (settingsView && settingsView.classList.contains("active")) updateAgentListStatus();
 }
 
-// View switcher
+// --- View switcher -----------------------------------------------------------
 function switchView(viewName) {
   setupView.classList.remove("active");
   chatView.classList.remove("active");
   settingsView.classList.remove("active");
-
-  if (viewName === "setup") {
-    setupView.classList.add("active");
-  } else if (viewName === "chat") {
-    chatView.classList.add("active");
-  } else if (viewName === "settings") {
-    settingsView.classList.add("active");
-  }
+  if (viewName === "setup") setupView.classList.add("active");
+  else if (viewName === "chat") chatView.classList.add("active");
+  else if (viewName === "settings") settingsView.classList.add("active");
 }
 
-// UI Event Listeners
+// --- UI event listeners ------------------------------------------------------
 settingsBtn.addEventListener("click", () => {
   renderAgentList();
   switchView("settings");
@@ -135,11 +493,15 @@ addAgentBtn.addEventListener("click", () => {
   const token = (newAgentToken?.value || "").trim();
   if (!name || !url) return;
   agents.push({ name, url, token });
-  persistAgents();
+  persist();
+  const c = new Conn(agents[agents.length - 1]);
+  room.push(c);
+  c.connect();
   newAgentName.value = "";
   newAgentUrl.value = "";
   if (newAgentToken) newAgentToken.value = "";
   renderAgentList();
+  updateRoster();
 });
 
 if (connectBtn) {
@@ -147,99 +509,151 @@ if (connectBtn) {
     const url = wsUrlInput.value.trim();
     if (!url) return;
     agents = [{ name: "OpenAB", url }];
-    activeIndex = 0;
-    persistAgents();
+    persist();
     switchView("chat");
-    connectActive();
+    buildRoom();
+    connectAll();
+    updateRoster();
   });
 }
 
-// Render the agent list in the settings view
+// Render the agent list in settings. Editing url/token retargets that conn live.
 function renderAgentList() {
   if (!agentListEl) return;
   agentListEl.innerHTML = "";
   agents.forEach((a, i) => {
     const row = document.createElement("div");
-    row.className = "agent-row" + (i === activeIndex ? " active" : "");
+    const c = room[i];
+    row.className = "agent-row" + (c && c.acpReady ? " active" : "");
 
     const meta = document.createElement("div");
     meta.className = "agent-meta";
-    // Editable name + url — rename/retarget any agent (incl. the first) in place.
+
     const nm = document.createElement("input");
     nm.className = "agent-name-input";
     nm.value = a.name;
     nm.addEventListener("change", () => {
       a.name = nm.value.trim() || a.name;
       nm.value = a.name;
-      persistAgents();
-      if (i === activeIndex) updateActiveAgentUI();
+      persist();
+      updateRoster();
     });
+
     const url = document.createElement("input");
     url.className = "agent-url-input";
     url.value = a.url;
     url.addEventListener("change", () => {
-      a.url = url.value.trim() || a.url;
-      url.value = a.url;
-      persistAgents();
+      const next = url.value.trim() || a.url;
+      url.value = next;
+      if (next !== a.url) { a.url = next; persist(); reconnectConn(i); updateRoster(); }
     });
-    // Transport token (OPENAB_ACP_AUTH_KEY) — masked; appended as ?token= at connect.
+
     const tok = document.createElement("input");
     tok.className = "agent-token-input";
     tok.type = "password";
     tok.placeholder = "Token（伺服器需驗證時填）";
     tok.value = a.token || "";
     tok.addEventListener("change", () => {
-      a.token = tok.value.trim();
-      persistAgents();
+      const next = tok.value.trim();
+      if (next !== (a.token || "")) { a.token = next; persist(); reconnectConn(i); updateRoster(); }
     });
+
+    // Per-row connection status (dot + text), updated live via updateAgentListStatus().
+    const statusPill = document.createElement("div");
+    statusPill.className = "agent-status";
+    statusPill.dataset.idx = i;
+    const sdot = document.createElement("span");
+    sdot.className = "agent-status-dot";
+    const stxt = document.createElement("span");
+    stxt.className = "agent-status-text";
+    statusPill.appendChild(sdot);
+    statusPill.appendChild(stxt);
+
+    meta.appendChild(statusPill);
     meta.appendChild(nm);
     meta.appendChild(url);
     meta.appendChild(tok);
 
     const actions = document.createElement("div");
     actions.className = "agent-actions";
-    const sel = document.createElement("button");
-    sel.className = "agent-select";
-    sel.textContent = i === activeIndex ? "使用中" : "連線";
-    sel.disabled = i === activeIndex;
-    sel.addEventListener("click", () => selectAgent(i));
+
+    // Connect / disconnect toggle (reflects user intent, not transient network state).
+    const connToggle = document.createElement("button");
+    const isEnabled = !!(c && c.enabled);
+    connToggle.className = "agent-conn-toggle" + (isEnabled ? " on" : "");
+    connToggle.textContent = isEnabled ? "斷線" : "連線";
+    connToggle.title = isEnabled ? "中斷此 agent 連線" : "連線此 agent";
+    connToggle.addEventListener("click", () => {
+      if (c && c.enabled) c.disconnect();
+      else if (c) c.connect();
+      renderAgentList();
+      updateRoster();
+    });
+
+    // Per-agent browser access control (on ⇒ declares the browser MCP tunnel for this agent).
+    const brOn = a.browserAccess !== false;              // default on (backward compatible)
+    const brToggle = document.createElement("button");
+    brToggle.className = "agent-browser-toggle" + (brOn ? " on" : "");
+    brToggle.textContent = brOn ? "🔗 開" : "🔗 關";
+    brToggle.title = brOn
+      ? "此 agent 可操作瀏覽器（點擊關閉存取）"
+      : "此 agent 無瀏覽器存取（點擊開啟）";
+    brToggle.addEventListener("click", () => {
+      a.browserAccess = !brOn;
+      persist();
+      if (c && c.enabled) reconnectConn(i);              // re-handshake with/without browser server
+      renderAgentList();
+      updateRoster();
+    });
+
     const del = document.createElement("button");
     del.className = "agent-delete";
     del.title = "刪除";
     del.textContent = "✕";
     del.addEventListener("click", () => deleteAgent(i));
-    actions.appendChild(sel);
+
+    actions.appendChild(connToggle);
+    actions.appendChild(brToggle);
     actions.appendChild(del);
 
     row.appendChild(meta);
     row.appendChild(actions);
     agentListEl.appendChild(row);
   });
+  updateAgentListStatus();
 }
 
-function selectAgent(i) {
-  if (i < 0 || i >= agents.length) return;
-  activeIndex = i;
-  persistAgents();
-  switchView("chat");
-  connectActive();
+// Update just the per-row status dots/text (no input rebuild, so typing isn't disrupted).
+function updateAgentListStatus() {
+  if (!agentListEl) return;
+  agentListEl.querySelectorAll(".agent-status").forEach((pill) => {
+    const st = connState(room[+pill.dataset.idx]);
+    pill.classList.remove("online", "connecting", "offline", "error");
+    pill.classList.add(st.cls);
+    const txt = pill.querySelector(".agent-status-text");
+    if (txt) txt.textContent = st.label;
+  });
 }
 
 function deleteAgent(i) {
+  if (i < 0 || i >= agents.length) return;
+  if (room[i]) room[i].disconnect();
+  room.splice(i, 1);
   agents.splice(i, 1);
-  if (agents.length === 0) agents = [{ ...DEFAULT_AGENT }];
-  if (activeIndex >= agents.length) activeIndex = agents.length - 1;
-  persistAgents();
-  updateActiveAgentUI();
+  if (agents.length === 0) {
+    agents = [{ ...DEFAULT_AGENT }];
+    buildRoom();
+    connectAll();
+  }
+  persist();
   renderAgentList();
+  updateRoster();
 }
 
-// Message Input handling
+// --- Message input -----------------------------------------------------------
 messageInput.addEventListener("input", () => {
   const text = messageInput.value.trim();
   sendBtn.disabled = text.length === 0;
-  
-  // Auto-grow height
   messageInput.style.height = "auto";
   messageInput.style.height = (messageInput.scrollHeight - 2) + "px";
 });
@@ -253,7 +667,7 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
-// Enqueue a user turn; the queue drives the actual session/prompt sends.
+// Phase 1: broadcast the user turn to EVERY agent; each replies independently.
 function sendMessage() {
   const text = messageInput.value.trim();
   if (!text) return;
@@ -261,332 +675,29 @@ function sendMessage() {
   appendMessage({
     senderId: myUserId,
     senderName: myUserName,
-    text: text,
-    timestamp: Date.now()
+    text,
+    timestamp: Date.now(),
   });
 
-  promptQueue.push(text);
+  room.forEach((c) => c.enqueue(text));
+
   messageInput.value = "";
   messageInput.style.height = "auto";
   sendBtn.disabled = true;
-  flushQueue();
 }
 
-// Send the next queued turn if the session is idle and ready.
-function flushQueue() {
-  if (turnActive || promptQueue.length === 0) return;
-  if (!(ws && ws.readyState === WebSocket.OPEN && acpReady && acpSessionId)) return;
-
-  const text = promptQueue.shift();
-  turnActive = true;
-  startStream(); // open an empty agent bubble to stream the reply into
-
-  // An agent turn can stream for a long time before it resolves (stopReason). Give it a
-  // generous ceiling so a genuinely-long turn isn't cut off, while still bounding a hang.
-  acpRequest("session/prompt", {
-    sessionId: acpSessionId,
-    prompt: [{ type: "text", text }]
-  }, ACP_PROMPT_TIMEOUT_MS)
-    .then((res) => {
-      turnActive = false;
-      finalizeStream(res && res.stopReason);
-      flushQueue();
-    })
-    .catch((err) => {
-      turnActive = false;
-      if (/closed|not open/i.test(String(err))) {
-        // Connection dropped mid-turn — retry this turn after resume.
-        promptQueue.unshift(text);
-        finalizeStream(); // drop the empty bubble; resume will re-run it
-      } else {
-        appendToStream("\n[錯誤] " + err);
-        finalizeStream("error");
-      }
-      flushQueue();
-    });
-}
-
-// Connect to the ACP WebSocket endpoint and run the handshake
-function connectWebSocket(url, token) {
-  if (ws) {
-    ws.onclose = null; // prevent the stale socket's handler from triggering a reconnect
-    ws.close();
-  }
-
-  clearTimeout(reconnectTimer);
-  updateStatus(false);
-  acpReady = false;
-
-  try {
-    ws = new WebSocket(url, acpProtocols(token));
-
-    ws.onopen = () => {
-      console.log("WebSocket connected to " + url);
-      updateStatus(true);
-      acpHandshake();
-    };
-
-    ws.onmessage = (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch (err) {
-        console.error("ACP: non-JSON frame:", err);
-        return;
-      }
-      handleAcpMessage(msg);
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket disconnected");
-      updateStatus(false);
-      acpReady = false;
-      // Stale tunnel: a fresh handshake re-declares our type:acp server and the gateway
-      // re-opens the tunnel (new mcp/connect). Drop the old connectionId.
-      mcpState.mcpConnectionId = null;
-      setBrowserAttached(false); // tunnel is gone with the socket
-      rejectAllPending("connection closed");
-      // Auto reconnect — the next handshake resumes acpSessionId if we have one.
-      reconnectTimer = setTimeout(() => {
-        console.log("Attempting to reconnect...");
-        connectWebSocket(url, token);
-      }, reconnectInterval);
-    };
-
-    ws.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      updateStatus(false);
-    };
-
-  } catch (e) {
-    console.error("Error creating WebSocket:", e);
-    updateStatus(false);
-  }
-}
-
-// --- ACP protocol layer -----------------------------------------------------
-
-// Default request timeout. Guards against a peer that goes silent WITHOUT closing the socket
-// (onclose rejects pending reqs, but a half-open/hung connection never fires it) — without a
-// timeout the promise never settles and `turnActive` stays stuck forever, wedging the queue.
-const ACP_REQUEST_TIMEOUT_MS = 60000;
-const ACP_PROMPT_TIMEOUT_MS = 600000; // 10 min — agent turns stream long before resolving
-
-// Send a JSON-RPC request and resolve when its response arrives. `timeoutMs` bounds the wait;
-// agent turns (session/prompt) legitimately run long, so callers pass a larger bound there.
-function acpRequest(method, params, timeoutMs = ACP_REQUEST_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      reject("socket not open");
-      return;
-    }
-    const id = nextReqId++;
-    const timer = setTimeout(() => {
-      if (pendingReqs.delete(id)) reject(`request timed out: ${method}`);
-    }, timeoutMs);
-    // Clear the timer whichever way the request settles so it can't fire late.
-    pendingReqs.set(id, {
-      resolve: (v) => { clearTimeout(timer); resolve(v); },
-      reject: (e) => { clearTimeout(timer); reject(e); }
-    });
-    ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-  });
-}
-
-function rejectAllPending(reason) {
-  for (const { reject } of pendingReqs.values()) reject(reason);
-  pendingReqs.clear();
-}
-
-// --- MCP-over-ACP tunnel: katashiro is the browser MCP server (T6) ---------------
-// See docs/mcp-over-acp-tunnel-contract.md in the openab repo. We declare a `type:acp`
-// MCP server in session/new; the gateway then opens a tunnel to us (server-initiated
-// mcp/connect) and drives MCP over mcp/message. We execute browser tools in the active tab.
-
-// Declared in session/new / session/resume so the gateway opens a tunnel to us.
-function browserMcpServers() {
-  if (!browserMcpId) browserMcpId = crypto.randomUUID();
-  return [{ type: "acp", id: browserMcpId, name: "browser" }];
-}
-
-// The browser MCP server (tools + protocol dispatch) lives in browser-mcp.js so the same
-// logic is unit-tested under node. Here we just wire the real environment into it:
-// `chrome`/`crypto` and a `send` that writes JSON-RPC frames to the active socket.
-// `mcpState.mcpConnectionId` is the tunnel connection id, reset on reconnect (ws.onclose).
-const mcpState = { mcpConnectionId: null };
-function mcpDeps() {
-  return {
-    chrome,
-    crypto,
-    send: (obj) => {
-      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
-    },
-    onStatus: setBrowserAttached
-  };
-}
-
-// Reflect the browser MCP tunnel state in the UI so the user can tell whether the agent can
-// currently reach this browser (the gateway opens the tunnel via mcp/connect once our
-// type:acp server is registered; it closes on mcp/disconnect or when the socket drops).
-let browserAttached = false;
-function setBrowserAttached(attached) {
-  if (attached === browserAttached) return; // only announce real transitions
-  browserAttached = attached;
-  if (browserStatusEl) {
-    browserStatusEl.classList.toggle("attached", attached);
-    browserStatusEl.textContent = attached ? "🔗 瀏覽器已連結" : "🔌 瀏覽器未連結";
-    browserStatusEl.title = attached
-      ? "式神之手已就緒 — agent 可截圖 / 讀取 / 操作此分頁"
-      : "瀏覽器工具尚未掛上這個 session";
-  }
-  appendSystemMessage(
-    attached
-      ? "🔗 瀏覽器已連結 — 式神可操作目前分頁（截圖 / 讀 DOM / 點擊 / 輸入 / 導航）。"
-      : "🔌 瀏覽器連結中斷 — 瀏覽器工具暫時無法使用。"
-  );
-}
-
-// Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
-function handleServerRequest(msg) {
-  return BrowserMcp.handleServerRequest(msg, mcpDeps(), mcpState);
-}
-
-// initialize → (resume existing | new) session
-function acpHandshake() {
-  acpRequest("initialize", {
-    protocolVersion: ACP_PROTOCOL_VERSION,
-    clientCapabilities: {}
-  })
-    .then(() => {
-      if (acpSessionId) {
-        return acpRequest("session/resume", {
-          sessionId: acpSessionId,
-          cwd: ACP_CWD,
-          mcpServers: browserMcpServers()
-        }).then(() => {
-          acpReady = true;
-          appendSystemMessage(`已續接 ${activeAgent().name} 的 ACP session。`);
-          flushQueue();
-        });
-      }
-      return acpRequest("session/new", { cwd: ACP_CWD, mcpServers: browserMcpServers() })
-        .then((res) => {
-          acpSessionId = res && res.sessionId;
-          acpSessionByUrl[activeAgent().url] = acpSessionId; // per-agent resume
-          persistAgents();
-          acpReady = true;
-          appendSystemMessage(`已連線至 ${activeAgent().name} (ACP)。`);
-          flushQueue();
-        });
-    })
-    .catch((err) => {
-      // A resume can fail if the session id is unknown → fall back to a fresh one.
-      if (acpSessionId) {
-        acpSessionId = null;
-        delete acpSessionByUrl[activeAgent().url];
-        persistAgents();
-        if (ws && ws.readyState === WebSocket.OPEN) acpHandshake();
-      } else {
-        appendSystemMessage("ACP 握手失敗：" + err);
-      }
-    });
-}
-
-// Route an incoming JSON-RPC message: response to a request, or a notification.
-function handleAcpMessage(msg) {
-  if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
-    const p = pendingReqs.get(msg.id);
-    if (p) {
-      pendingReqs.delete(msg.id);
-      if (msg.error) p.reject(msg.error.message || JSON.stringify(msg.error));
-      else p.resolve(msg.result);
-    }
-    return;
-  }
-
-  // Server-initiated request (has BOTH id and method): the gateway driving our browser MCP
-  // server over the tunnel (mcp/connect, mcp/message, mcp/disconnect). Route + respond.
-  if (msg.id !== undefined && msg.method) {
-    handleServerRequest(msg);
-    return;
-  }
-
-  if (msg.method === "session/update" && msg.params && msg.params.update) {
-    const u = msg.params.update;
-    if (u.sessionUpdate === "agent_message_chunk" && u.content) {
-      appendToStream(u.content.text || "");
-    }
-  }
-}
-
-// --- Streaming agent bubble --------------------------------------------------
-
-function startStream() {
-  streamText = "";
-  const name = activeAgent().name || "Agent";
-  const msgDiv = document.createElement("div");
-  msgDiv.className = "message received";
-  const time = formatTime(Date.now());
-  msgDiv.innerHTML = `
-    <div class="avatar"></div>
-    <div class="message-content">
-      <div class="sender-name"></div>
-      <div class="bubble"></div>
-      <div class="timestamp">${time}</div>
-    </div>
-  `;
-  // set name/avatar via textContent (agent name comes from user config)
-  msgDiv.querySelector(".avatar").textContent = name.charAt(0).toUpperCase();
-  msgDiv.querySelector(".sender-name").textContent = name;
-  messagesList.appendChild(msgDiv);
-  streamBubble = msgDiv.querySelector(".bubble");
-  // Show a "thinking" indicator while Falcon ponders, until the first chunk arrives.
-  streamBubble.classList.add("typing");
-  streamBubble.innerHTML =
-    '<span class="typing-dots"><span></span><span></span><span></span></span>';
-  scrollToBottom();
-}
-
-function appendToStream(chunk) {
-  if (!chunk) return; // ignore empty chunks — keep the thinking dots until real text arrives
-  if (!streamBubble) startStream();
-  if (streamText === "") streamBubble.classList.remove("typing"); // first real chunk: drop the dots
-  streamText += chunk;
-  streamBubble.textContent = streamText; // textContent: no HTML injection from agent output
-  scrollToBottom();
-}
-
-function finalizeStream(_stopReason) {
-  // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
-  if (streamBubble && streamText === "") {
-    const row = streamBubble.closest(".message");
-    if (row) row.remove();
-  }
-  streamBubble = null;
-  streamText = "";
-}
-
-// Helpers
-function updateStatus(isOnline) {
-  if (isOnline) {
-    statusIndicator.className = "status-indicator online";
-  } else {
-    statusIndicator.className = "status-indicator offline";
-  }
-}
-
+// --- Rendering helpers -------------------------------------------------------
 function formatTime(timestamp) {
   const date = new Date(timestamp);
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${hours}:${minutes} (TPE)`;
 }
 
-// Build the message row with createElement + textContent only. NEVER innerHTML here:
-// `senderName`/`text` can carry remote-controlled content (agent output, or a handshake
-// error string echoed from a malicious/MITM ACP server), so interpolating them into HTML
-// is a remote-XSS sink that could run arbitrary JS in the extension page and exfiltrate the
-// chrome.storage tokens. textContent renders the same characters inertly.
+// Build message rows with createElement + textContent ONLY. NEVER innerHTML with
+// senderName/text: they can carry remote-controlled content (agent output, or a handshake
+// error echoed from a malicious/MITM server) — an innerHTML sink there is remote-XSS that
+// could run arbitrary JS in the extension page and exfiltrate chrome.storage tokens.
 function appendMessage({ senderId, senderName, text, timestamp }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
