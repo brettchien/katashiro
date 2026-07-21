@@ -14,7 +14,6 @@ let myUserName = "You";
 // subprotocol (`openab.bearer.<token>`), never in the URL.
 const DEFAULT_AGENT = { name: "OpenAB", url: "ws://localhost:8080/acp", token: "" };
 let agents = [];
-let acpSessionByUrl = {};       // url -> last ACP sessionId (per-agent resume)
 
 // One live Conn per agent, kept index-parallel to `agents`.
 const room = [];
@@ -56,7 +55,12 @@ class Conn {
     this.id = agent.url;                                // stable routing identity (unique per agent)
     this.enabled = true;                                // user intent: should this conn be up?
     this.ws = null;
-    this.acpSessionId = acpSessionByUrl[agent.url] || null;
+    // Per-window isolation: each side panel (one per Chrome window) gets its OWN openab session
+    // via session/new — do NOT seed from the chrome.storage-shared acpSessionByUrl, or two windows
+    // on the same agent would resume the SAME session → one channel → one browser tunnel → mixed.
+    // Resume across a WS reconnect still works (this field survives in memory on the Conn); resume
+    // across a full reload is intentionally dropped for isolation.
+    this.acpSessionId = null;
     this.acpReady = false;
     this.online = false;
     this.nextReqId = 1;
@@ -228,9 +232,7 @@ class Conn {
           cwd: ACP_CWD,
           mcpServers: this.browserMcpServers(),
         }).then((res) => {
-          this.acpSessionId = res && res.sessionId;
-          acpSessionByUrl[this.agent.url] = this.acpSessionId; // per-agent resume
-          persist();
+          this.acpSessionId = res && res.sessionId; // in-memory only (per-window; see constructor)
           this.acpReady = true;
           updateRoster();
           appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
@@ -240,9 +242,7 @@ class Conn {
       .catch((err) => {
         // A resume can fail if the session id is unknown → fall back to a fresh one.
         if (this.acpSessionId) {
-          this.acpSessionId = null;
-          delete acpSessionByUrl[this.agent.url];
-          persist();
+          this.acpSessionId = null; // stale in-memory session → fall back to a fresh session/new
           if (this.ws && this.ws.readyState === WebSocket.OPEN) this.handshake();
         } else {
           appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
@@ -408,19 +408,13 @@ const modeHintEl = document.getElementById("mode-hint");
 const loopGuardCapInput = document.getElementById("loopguard-cap");
 
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(
-  ["agents", "activeIndex", "acpSessionByUrl", "wsUrl", "acpSessionId", "roomConfig"],
-  (r) => {
+chrome.storage.local.get(["agents", "wsUrl", "roomConfig"], (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
       agents = [{ name: "OpenAB", url: r.wsUrl }];
     } else {
       agents = [{ ...DEFAULT_AGENT }];
-    }
-    acpSessionByUrl = r.acpSessionByUrl || {};
-    if (r.acpSessionId && r.wsUrl && !(r.wsUrl in acpSessionByUrl)) {
-      acpSessionByUrl[r.wsUrl] = r.acpSessionId;         // migrate legacy session
     }
     roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
     loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
@@ -434,7 +428,7 @@ chrome.storage.local.get(
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, acpSessionByUrl, roomConfig });
+  chrome.storage.local.set({ agents, roomConfig });
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
