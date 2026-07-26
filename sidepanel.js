@@ -84,7 +84,7 @@ class Conn {
   browserMcpServers() {
     if (this.agent.browserAccess === false) return [];   // per-agent browser access control (off)
     if (!this.browserMcpId) this.browserMcpId = crypto.randomUUID();
-    return [{ type: "acp", id: this.browserMcpId, name: "browser" }];
+    return [{ type: "acp", id: this.browserMcpId, name: "katashiro" }];
   }
 
   mcpDeps() {

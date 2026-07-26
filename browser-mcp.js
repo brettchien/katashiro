@@ -22,27 +22,27 @@
   // The browser tools we serve (advertised via tools/list; DOM-semantic, model-agnostic).
   const BROWSER_TOOLS = [
     {
-      name: "browser.click",
+      name: "katashiro.click",
       description: "Click the element matching a CSS selector in the active browser tab.",
       inputSchema: { type: "object", properties: { selector: { type: "string", description: "CSS selector" } }, required: ["selector"] }
     },
     {
-      name: "browser.read_dom",
+      name: "katashiro.read_dom",
       description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
       inputSchema: { type: "object", properties: { selector: { type: "string", description: "optional CSS selector to scope the snapshot" } } }
     },
     {
-      name: "browser.navigate",
+      name: "katashiro.navigate",
       description: "Navigate the active browser tab to a URL.",
       inputSchema: { type: "object", properties: { url: { type: "string", description: "absolute URL" } }, required: ["url"] }
     },
     {
-      name: "browser.type",
+      name: "katashiro.type",
       description: "Type text into the element matching a CSS selector in the active tab.",
       inputSchema: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] }
     },
     {
-      name: "browser.screenshot",
+      name: "katashiro.screenshot",
       description: "Capture a screenshot of the active browser tab.",
       inputSchema: { type: "object", properties: {} }
     }
@@ -65,7 +65,7 @@
     const chrome = deps.chrome;
     const tab = await activeTab(chrome);
     switch (name) {
-      case "browser.click": {
+      case "katashiro.click": {
         const [{ result }] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (sel) => {
@@ -78,7 +78,7 @@
         });
         return result.ok ? okText(`clicked ${args.selector}`) : errText(result.error);
       }
-      case "browser.read_dom": {
+      case "katashiro.read_dom": {
         const [{ result }] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (sel) => {
@@ -90,11 +90,11 @@
         });
         return result.ok ? okText(result.html) : errText(result.error);
       }
-      case "browser.navigate": {
+      case "katashiro.navigate": {
         await chrome.tabs.update(tab.id, { url: args.url });
         return okText(`navigating to ${args.url}`);
       }
-      case "browser.type": {
+      case "katashiro.type": {
         const [{ result }] = await chrome.scripting.executeScript({
           target: { tabId: tab.id },
           func: (sel, text) => {
@@ -111,7 +111,7 @@
         });
         return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
       }
-      case "browser.screenshot": {
+      case "katashiro.screenshot": {
         // JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the ACP tunnel's
         // per-frame size cap, dropping the WebSocket ("connection closed before response").
         // JPEG q70 keeps a typical screen well under ~500KB while staying readable for the agent.

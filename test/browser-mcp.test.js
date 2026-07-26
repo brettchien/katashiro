@@ -81,11 +81,11 @@ test("tools/list returns the 5 DOM-semantic browser tools", async () => {
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
   assert.deepEqual(names, [
-    "browser.click",
-    "browser.read_dom",
-    "browser.navigate",
-    "browser.type",
-    "browser.screenshot"
+    "katashiro.click",
+    "katashiro.read_dom",
+    "katashiro.navigate",
+    "katashiro.type",
+    "katashiro.screenshot"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -101,11 +101,11 @@ test("unknown MCP method throws -32601", async () => {
 
 // --- tools/call → chrome.* --------------------------------------------------
 
-test("browser.read_dom injects a script and returns the DOM as text", async () => {
+test("katashiro.read_dom injects a script and returns the DOM as text", async () => {
   const { deps: d, calls } = deps({ scriptResult: { ok: true, html: "<body>hi</body>" } });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.read_dom", arguments: { selector: "#main" } },
+    { name: "katashiro.read_dom", arguments: { selector: "#main" } },
     d
   );
   assert.equal(calls.executeScript.length, 1);
@@ -115,43 +115,43 @@ test("browser.read_dom injects a script and returns the DOM as text", async () =
   assert.equal(res.content[0].text, "<body>hi</body>");
 });
 
-test("browser.click on a missing element yields an isError result", async () => {
+test("katashiro.click on a missing element yields an isError result", async () => {
   const { deps: d } = deps({ scriptResult: { ok: false, error: "no element for selector: #gone" } });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.click", arguments: { selector: "#gone" } },
+    { name: "katashiro.click", arguments: { selector: "#gone" } },
     d
   );
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /no element/);
 });
 
-test("browser.navigate drives chrome.tabs.update", async () => {
+test("katashiro.navigate drives chrome.tabs.update", async () => {
   const { deps: d, calls } = deps();
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.navigate", arguments: { url: "https://example.com" } },
+    { name: "katashiro.navigate", arguments: { url: "https://example.com" } },
     d
   );
   assert.deepEqual(calls.tabsUpdate, [{ tabId: 42, upd: { url: "https://example.com" } }]);
   assert.match(res.content[0].text, /example\.com/);
 });
 
-test("browser.type injects a script with selector + text args", async () => {
+test("katashiro.type injects a script with selector + text args", async () => {
   const { deps: d, calls } = deps();
   await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.type", arguments: { selector: "#q", text: "hello" } },
+    { name: "katashiro.type", arguments: { selector: "#q", text: "hello" } },
     d
   );
   assert.deepEqual(calls.executeScript[0].args, ["#q", "hello"]);
 });
 
-test("browser.screenshot captures the tab as JPEG and returns base64 image content", async () => {
+test("katashiro.screenshot captures the tab as JPEG and returns base64 image content", async () => {
   const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.screenshot", arguments: {} },
+    { name: "katashiro.screenshot", arguments: {} },
     d
   );
   assert.equal(calls.captureVisibleTab.length, 1);
@@ -166,7 +166,7 @@ test("tools/call with no active tab returns an isError result (not a throw)", as
   const { deps: d } = deps({ noTab: true });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.read_dom", arguments: {} },
+    { name: "katashiro.read_dom", arguments: {} },
     d
   );
   assert.equal(res.isError, true);
@@ -226,7 +226,7 @@ test("mcp/message tools/call read_dom: full tunnel round-trip", async () => {
     {
       id: 11,
       method: "mcp/message",
-      params: { method: "tools/call", params: { name: "browser.read_dom", arguments: {} } }
+      params: { method: "tools/call", params: { name: "katashiro.read_dom", arguments: {} } }
     },
     d,
     state

@@ -26,15 +26,15 @@ katashiro in Chrome replaces the mock with a real browser so the agent operates 
 4. Open any web page in the active tab, and **keep the Katashiro side panel open** — it hosts
    the MCP server and executes the tools in the active tab.
 5. In the chat, ask the agent to use a browser tool, e.g.:
-   - "Read this page with `browser.read_dom` and summarize it."
+   - "Read this page with `katashiro.read_dom` and summarize it."
    - "Click the first link on this page." / "Navigate to example.com."
 6. The agent discovers the tools (`tools/list`), calls one (`tools/call`) → it executes in your
    active tab → the result flows back to the agent.
 
 ## Tools served
 
-`browser.click(selector)` · `browser.read_dom(selector?)` · `browser.navigate(url)` ·
-`browser.type(selector, text)` · `browser.screenshot` — executed via `chrome.scripting` in the
+`katashiro.click(selector)` · `katashiro.read_dom(selector?)` · `katashiro.navigate(url)` ·
+`katashiro.type(selector, text)` · `katashiro.screenshot` — executed via `chrome.scripting` in the
 active tab. A failure (no active tab, restricted page like `chrome://`, missing element,
 missing host permission) returns an MCP `isError` result the agent can see and adapt to.
 
