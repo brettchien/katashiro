@@ -39,7 +39,11 @@ function mockChrome(opts = {}) {
   return { chrome, calls };
 }
 
-const mockCrypto = (uuid = "conn-abc") => ({ randomUUID: () => uuid });
+// A fixed uuid, or an array to hand out one per call (multi-server needs distinct handles).
+const mockCrypto = (uuid = "conn-abc") => {
+  const queue = Array.isArray(uuid) ? [...uuid] : null;
+  return { randomUUID: () => (queue ? queue.shift() : uuid) };
+};
 
 // Collects frames written by the module's `send`.
 function mockSend() {
@@ -309,4 +313,139 @@ test("unknown server-initiated method returns JSON-RPC -32601", async () => {
   const state = { mcpConnectionId: null };
   await BrowserMcp.handleServerRequest({ id: 3, method: "mcp/bogus", params: {} }, d, state);
   assert.equal(sent[0].error.code, -32601);
+});
+
+// --- multi-server: two client-declared servers in one session ---------------
+//
+// The gateway `mcp/connect`s once per declared `type:acp` server and addresses each by the
+// `connectionId` we hand back. This is the client end of OpenAB's multi-server fan-out: two
+// instances, two registries, one socket.
+
+// A second client-side MCP server that has nothing to do with the browser.
+const notesTools = {
+  "notes.list": {
+    description: "List the user's notes.",
+    inputSchema: { type: "object", properties: {} },
+    async call() {
+      return { content: [{ type: "text", text: "note-1" }] };
+    }
+  }
+};
+
+// Declare both servers and open a tunnel to each; returns their connection ids.
+async function twoServers(opts = {}) {
+  const bag = deps({ ...opts, uuid: ["conn-k", "conn-n"] });
+  const katashiro = BrowserMcp.createServer({
+    id: "srv-k",
+    name: "katashiro",
+    serverName: "katashiro-browser"
+  });
+  const notes = BrowserMcp.createServer({ id: "srv-n", name: "notes", tools: notesTools });
+  const state = { servers: [katashiro, notes], connections: {} };
+
+  await BrowserMcp.handleServerRequest(
+    { id: 1, method: "mcp/connect", params: { acpId: "srv-k" } },
+    bag.deps,
+    state
+  );
+  await BrowserMcp.handleServerRequest(
+    { id: 2, method: "mcp/connect", params: { acpId: "srv-n" } },
+    bag.deps,
+    state
+  );
+  return { ...bag, state, katashiro, notes };
+}
+
+// Drive one inner MCP request over a given connection and return the reply frame.
+async function overTunnel(bag, id, connectionId, method, params) {
+  const before = bag.sent.length;
+  await BrowserMcp.handleServerRequest(
+    { id, method: "mcp/message", params: { connectionId, method, params } },
+    bag.deps,
+    bag.state
+  );
+  return bag.sent[before];
+}
+
+test("declaration() is the session/new entry for the instance", () => {
+  const s = BrowserMcp.createServer({ id: "srv-x", name: "notes", tools: notesTools });
+  assert.deepEqual(s.declaration(), { type: "acp", id: "srv-x", name: "notes" });
+});
+
+test("each declared server gets its own connection handle", async () => {
+  const { sent, state } = await twoServers();
+  assert.equal(sent[0].result.connectionId, "conn-k");
+  assert.equal(sent[1].result.connectionId, "conn-n");
+  assert.equal(state.connections["conn-k"].name, "katashiro");
+  assert.equal(state.connections["conn-n"].name, "notes");
+});
+
+test("tools/list is answered per connection, not globally", async () => {
+  const bag = await twoServers();
+  const k = await overTunnel(bag, 3, "conn-k", "tools/list", {});
+  const n = await overTunnel(bag, 4, "conn-n", "tools/list", {});
+  assert.deepEqual(k.result.tools.map((t) => t.name), Object.keys(BrowserMcp.TOOLS));
+  assert.deepEqual(n.result.tools.map((t) => t.name), ["notes.list"]);
+});
+
+test("initialize reports the addressed server's own identity", async () => {
+  const bag = await twoServers();
+  const k = await overTunnel(bag, 3, "conn-k", "initialize", {});
+  const n = await overTunnel(bag, 4, "conn-n", "initialize", {});
+  assert.equal(k.result.serverInfo.name, "katashiro-browser");
+  assert.equal(n.result.serverInfo.name, "notes");
+});
+
+test("tools/call reaches the addressed server's registry", async () => {
+  const bag = await twoServers({ scriptResult: { ok: true, html: "<p>page</p>" } });
+  const n = await overTunnel(bag, 3, "conn-n", "tools/call", { name: "notes.list", arguments: {} });
+  assert.equal(n.result.content[0].text, "note-1");
+
+  const k = await overTunnel(bag, 4, "conn-k", "tools/call", {
+    name: "katashiro.read_dom",
+    arguments: {}
+  });
+  assert.equal(k.result.content[0].text, "<p>page</p>");
+});
+
+test("a server cannot be reached through another server's connection", async () => {
+  const bag = await twoServers();
+  const res = await overTunnel(bag, 3, "conn-k", "tools/call", {
+    name: "notes.list",
+    arguments: {}
+  });
+  assert.equal(res.result.isError, true);
+  assert.match(res.result.content[0].text, /unknown tool/);
+});
+
+test("onStatus fires once on the first tunnel, not per server", async () => {
+  const { statuses } = await twoServers();
+  assert.deepEqual(statuses, [true]);
+});
+
+test("one server disconnecting leaves the other callable and still attached", async () => {
+  const bag = await twoServers();
+  await BrowserMcp.handleServerRequest(
+    { id: 5, method: "mcp/disconnect", params: { connectionId: "conn-n" } },
+    bag.deps,
+    bag.state
+  );
+  assert.deepEqual(bag.statuses, [true], "the browser is still reachable — no detach event");
+  assert.equal(bag.state.connections["conn-n"], undefined);
+
+  const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
+  assert.equal(k.result.tools.length, 5, "the surviving server still answers");
+});
+
+test("onStatus(false) only when the LAST tunnel closes", async () => {
+  const bag = await twoServers();
+  for (const [i, id] of ["conn-n", "conn-k"].entries()) {
+    await BrowserMcp.handleServerRequest(
+      { id: 10 + i, method: "mcp/disconnect", params: { connectionId: id } },
+      bag.deps,
+      bag.state
+    );
+  }
+  assert.deepEqual(bag.statuses, [true, false]);
+  assert.equal(bag.state.mcpConnectionId, null);
 });

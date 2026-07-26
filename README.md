@@ -68,6 +68,12 @@ the outer ACP `id` is what correlates the reply. The wire format is specified in
 [`docs/mcp-over-acp-tunnel-contract.md`](https://github.com/openabdev/openab/blob/main/docs/mcp-over-acp-tunnel-contract.md)
 in the OpenAB repo.
 
+You can declare **more than one**. `createServer({ id, name, tools })` builds an instance with
+its own name and registry, and the module routes by the `connectionId` handed back at
+`mcp/connect` — so a second client-side MCP server sits alongside `katashiro` on the same
+socket, each answering only its own `tools/list` and `tools/call`. That is the client end of
+OpenAB's multi-server fan-out.
+
 Two conventions worth copying:
 
 - **One registry, not two lists.** `TOOLS` in `browser-mcp.js` holds each tool's schema *and*

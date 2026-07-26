@@ -67,8 +67,10 @@ class Conn {
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
     this.promptQueue = [];
     this.turnActive = false;
-    this.browserMcpId = null;                            // our type:acp MCP server id
-    this.mcpState = { mcpConnectionId: null };           // tunnel connection id (per conn)
+    this.mcpServer = null;                               // our type:acp MCP server instance
+    // Router state: declared instances + connectionId → instance. A second client-side MCP
+    // server would just be another entry in `servers`; the gateway tunnels to each separately.
+    this.mcpState = { servers: [], connections: {}, mcpConnectionId: null };
     this.browserAttached = false;
     this.reconnectTimer = null;
     this.stream = null;                                  // { bubble, text } while streaming
@@ -83,8 +85,15 @@ class Conn {
   // agent.browserAccess; Phase 1 always declares it.)
   browserMcpServers() {
     if (this.agent.browserAccess === false) return [];   // per-agent browser access control (off)
-    if (!this.browserMcpId) this.browserMcpId = crypto.randomUUID();
-    return [{ type: "acp", id: this.browserMcpId, name: "katashiro" }];
+    if (!this.mcpServer) {
+      this.mcpServer = BrowserMcp.createServer({
+        id: crypto.randomUUID(),
+        name: "katashiro",
+        serverName: "katashiro-browser"
+      });
+      this.mcpState.servers = [this.mcpServer];
+    }
+    return this.mcpState.servers.map((s) => s.declaration());
   }
 
   mcpDeps() {
@@ -162,7 +171,8 @@ class Conn {
       this.ws.onclose = () => {
         this.online = false;
         this.acpReady = false;
-        this.mcpState.mcpConnectionId = null;            // tunnel is gone with the socket
+        this.mcpState.connections = {};                  // every tunnel dies with the socket
+        this.mcpState.mcpConnectionId = null;
         this.setBrowserAttached(false);
         this.rejectAllPending("connection closed");
         // Never reached onopen this attempt ⇒ the WS upgrade was rejected (bad/missing token)

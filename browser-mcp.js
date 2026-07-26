@@ -183,15 +183,17 @@
     return tab;
   }
 
-  // Execute a browser tool in the active tab via chrome.scripting/tabs. Returns an MCP
+  // Execute a tool in the active tab via chrome.scripting/tabs. Returns an MCP
   // CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
   // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
-  async function callBrowserTool(name, args, deps) {
+  // `tools` is the serving instance's registry — defaults to the browser one.
+  async function callBrowserTool(name, args, deps, tools) {
+    const registry = tools || TOOLS;
     const chrome = deps.chrome;
     // Tab first, then dispatch: every tool needs it, and resolving it up front keeps the
     // "no active browser tab" diagnosis ahead of any per-tool failure.
     const tab = await activeTab(chrome);
-    const tool = TOOLS[name];
+    const tool = registry[name];
     if (!tool) {
       const err = new Error(`unknown tool: ${name}`);
       err.code = -32602;
@@ -200,57 +202,139 @@
     return tool.call(args, { chrome, tab });
   }
 
-  // The MCP server surface we expose over the tunnel (we are the MCP server, the agent is the
-  // client). Returns the inner MCP result; `undefined` for notifications (no reply).
-  async function handleMcpMessage(method, params, deps) {
-    switch (method) {
-      case "initialize":
-        return {
-          protocolVersion: "2025-06-18",
-          capabilities: { tools: {} },
-          serverInfo: { name: "katashiro-browser", version: "1.0.0" }
-        };
-      case "notifications/initialized":
-        return undefined; // notification — no response
-      case "tools/list":
-        return { tools: BROWSER_TOOLS };
-      case "tools/call":
-        // Tool-execution failures (no active tab, restricted page like chrome://, missing host
-        // permission, injected-script error) become MCP isError results — not protocol errors —
-        // so the agent sees the failure and can adapt.
-        try {
-          return await callBrowserTool(params.name, params.arguments || {}, deps);
-        } catch (e) {
-          return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
+  /**
+   * One client-side MCP server instance.
+   *
+   * The module is instantiable so a second client-side server can sit alongside `katashiro`
+   * in the same ACP session: the gateway `mcp/connect`s once per declared server and then
+   * addresses each by its own `connectionId`, so each needs its own name and registry.
+   *
+   * @param {object}  opts
+   * @param {string}  opts.id          the declared `id` — minted per connection by the caller
+   * @param {string}  opts.name        the declared `name` — stable, and what the operator allowlists
+   * @param {Record<string, ToolDef>} [opts.tools]  this instance's registry (default: the browser tools)
+   * @param {string}  [opts.serverName]  MCP `serverInfo.name` (default: the declared name)
+   * @param {string}  [opts.version]     MCP `serverInfo.version`
+   */
+  function createServer(opts) {
+    const tools = opts.tools || TOOLS;
+    const serverName = opts.serverName || opts.name;
+    const version = opts.version || "1.0.0";
+    // Derived once per instance, same rule as the module-level BROWSER_TOOLS.
+    const listing = Object.freeze(
+      Object.entries(tools).map(([name, t]) =>
+        Object.freeze({ name, description: t.description, inputSchema: t.inputSchema })
+      )
+    );
+
+    return {
+      id: opts.id,
+      name: opts.name,
+      tools,
+
+      /** The `session/new` entry that declares this server to the gateway. */
+      declaration() {
+        return { type: "acp", id: this.id, name: this.name };
+      },
+
+      // The MCP server surface this instance exposes over the tunnel (we are the MCP server,
+      // the agent is the client). Returns the inner MCP result; `undefined` for notifications.
+      async handleMcpMessage(method, params, deps) {
+        switch (method) {
+          case "initialize":
+            return {
+              protocolVersion: "2025-06-18",
+              capabilities: { tools: {} },
+              serverInfo: { name: serverName, version }
+            };
+          case "notifications/initialized":
+            return undefined; // notification — no response
+          case "tools/list":
+            return { tools: listing };
+          case "tools/call":
+            // Tool-execution failures (no active tab, restricted page like chrome://, missing
+            // host permission, injected-script error) become MCP isError results — not protocol
+            // errors — so the agent sees the failure and can adapt.
+            try {
+              return await callBrowserTool(params.name, params.arguments || {}, deps, tools);
+            } catch (e) {
+              return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
+            }
+          default: {
+            const err = new Error(`method not found: ${method}`);
+            err.code = -32601;
+            throw err;
+          }
         }
-      default: {
-        const err = new Error(`method not found: ${method}`);
-        err.code = -32601;
-        throw err;
       }
-    }
+    };
+  }
+
+  // The browser server every katashiro side panel serves. `id` is assigned by the caller when
+  // it declares us (see sidepanel.js); until then routing falls back to this instance, which
+  // is what makes the single-server case need no wiring at all.
+  const defaultServer = createServer({
+    id: null,
+    name: "katashiro",
+    serverName: "katashiro-browser"
+  });
+
+  // Module-level convenience for the single-server case: serve as the default instance.
+  async function handleMcpMessage(method, params, deps) {
+    return defaultServer.handleMcpMessage(method, params, deps);
+  }
+
+  // Which instance a frame belongs to. The gateway addresses a declared server by `acpId` on
+  // `mcp/connect` only; every later frame carries the `connectionId` we handed back, so the
+  // connect step is where the mapping is established.
+  //
+  // Both lookups fall back to `defaultServer`: a side panel that declares only the browser
+  // server needs no `state.servers` wiring at all, and a frame for a connection we do not
+  // recognise is still better served than dropped.
+  function serverForAcpId(state, acpId) {
+    const declared = state.servers || [];
+    return declared.find((s) => s.id === acpId) || declared[0] || defaultServer;
+  }
+
+  function serverForConnection(state, connectionId) {
+    return (state.connections && state.connections[connectionId]) || defaultServer;
   }
 
   // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
   // `deps` = { chrome, crypto, send, onStatus? }; `send(obj)` writes a JSON-RPC frame to the
-  // socket; optional `onStatus(attached: bool)` fires when the browser tunnel opens/closes so
-  // the UI can surface whether the agent can currently reach this browser.
-  // `state` carries the connection id (caller owns it, e.g. to reset on reconnect).
+  // socket; optional `onStatus(attached: bool)` fires on the first tunnel opening and the last
+  // one closing, so the UI can surface whether the agent can currently reach this browser.
+  // `state` is owned by the caller (e.g. to reset on reconnect) and carries:
+  //   `servers`        — optional declared instances; absent means "just the browser server"
+  //   `connections`    — connectionId → instance, built here
+  //   `mcpConnectionId`— the most recent connection, kept for the single-server UI path
   async function handleServerRequest(msg, deps, state) {
     const send = deps.send;
+    if (!state.connections) state.connections = {};
+    const openCount = () => Object.keys(state.connections).length;
+
     switch (msg.method) {
       case "mcp/connect": {
-        // The gateway opens the tunnel to our declared server; we name the connection.
-        state.mcpConnectionId = deps.crypto.randomUUID();
-        send({ jsonrpc: "2.0", id: msg.id, result: { connectionId: state.mcpConnectionId } });
-        if (deps.onStatus) deps.onStatus(true);
+        // The gateway opens one tunnel per declared server, naming it by the `acpId` we
+        // declared; we mint the connection handle it will address us by from here on.
+        const server = serverForAcpId(state, msg.params && msg.params.acpId);
+        const connectionId = deps.crypto.randomUUID();
+        const wasIdle = openCount() === 0;
+        state.connections[connectionId] = server;
+        state.mcpConnectionId = connectionId;
+        send({ jsonrpc: "2.0", id: msg.id, result: { connectionId } });
+        // Only the transition into "attached" is a UI event; a second server opening its own
+        // tunnel does not re-announce a browser the user already knows is reachable.
+        if (wasIdle && deps.onStatus) deps.onStatus(true);
         return;
       }
       case "mcp/message": {
         // Inner MCP is flattened into params (method/params); the outer ACP id correlates.
+        // `connectionId` selects which of our servers is being addressed.
         const inner = msg.params || {};
+        const server = serverForConnection(state, inner.connectionId);
         try {
-          const result = await handleMcpMessage(inner.method, inner.params || {}, deps);
+          const result = await server.handleMcpMessage(inner.method, inner.params || {}, deps);
           // A notification (undefined result) gets no response frame.
           if (result !== undefined) send({ jsonrpc: "2.0", id: msg.id, result });
         } catch (e) {
@@ -259,9 +343,16 @@
         return;
       }
       case "mcp/disconnect": {
-        state.mcpConnectionId = null;
+        const connectionId = msg.params && msg.params.connectionId;
+        if (connectionId && state.connections[connectionId]) delete state.connections[connectionId];
+        else state.connections = {}; // no id given (or unknown): the whole tunnel set is gone
+        if (state.mcpConnectionId === connectionId || openCount() === 0) {
+          state.mcpConnectionId = null;
+        }
         send({ jsonrpc: "2.0", id: msg.id, result: {} });
-        if (deps.onStatus) deps.onStatus(false);
+        // Detached only once the LAST tunnel closes — one agent hanging up does not mean the
+        // browser stopped being reachable for the others.
+        if (openCount() === 0 && deps.onStatus) deps.onStatus(false);
         return;
       }
       default:
@@ -269,5 +360,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, callBrowserTool, handleMcpMessage, handleServerRequest };
+  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest };
 });
