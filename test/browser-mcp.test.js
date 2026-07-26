@@ -60,6 +60,33 @@ function deps(opts = {}) {
   };
 }
 
+// --- registry ---------------------------------------------------------------
+
+test("the advertised tool set IS the implemented tool set (no drift)", () => {
+  const advertised = BrowserMcp.BROWSER_TOOLS.map((t) => t.name).sort();
+  const implemented = Object.keys(BrowserMcp.TOOLS).sort();
+  assert.deepEqual(advertised, implemented);
+});
+
+test("every registry entry carries a description, an object schema, and a callable", () => {
+  for (const [name, def] of Object.entries(BrowserMcp.TOOLS)) {
+    assert.ok(def.description, `${name} needs a description`);
+    assert.equal(def.inputSchema.type, "object", `${name} needs an object inputSchema`);
+    assert.equal(typeof def.call, "function", `${name} needs a call() implementation`);
+  }
+});
+
+test("a required-arg schema only names properties the schema declares", () => {
+  for (const [name, def] of Object.entries(BrowserMcp.TOOLS)) {
+    for (const req of def.inputSchema.required || []) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(def.inputSchema.properties || {}, req),
+        `${name} requires "${req}" but never declares it`
+      );
+    }
+  }
+});
+
 // --- MCP surface: handleMcpMessage ------------------------------------------
 
 test("initialize advertises tools capability + serverInfo", async () => {
@@ -177,7 +204,7 @@ test("tools/call for an unknown tool returns an isError result", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
-    { name: "browser.teleport", arguments: {} },
+    { name: "katashiro.teleport", arguments: {} },
     d
   );
   assert.equal(res.isError, true);

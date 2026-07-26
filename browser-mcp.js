@@ -5,6 +5,12 @@
 // MCP over `mcp/message` (inner method/params flattened in, outer ACP id correlates).
 // See docs/mcp-over-acp-tunnel-contract.md in the openab repo.
 //
+// This module is also the reference example of "an MCP server served over reverse
+// MCP-over-ACP" — see the README section of the same name. A client that wants to serve
+// its own tools this way needs exactly three things: declare `{type:"acp", id, name}` in
+// `session/new`, answer `tools/list`, and answer `tools/call`. Everything below is those
+// three things plus the browser-specific tool bodies.
+//
 // This module holds the pure protocol + tool logic with ALL environment deps injected
 // (`chrome`, `crypto`, and a `send` callback) so it runs unchanged in the extension
 // (real chrome/crypto/ws) and under node --test (mocked). No DOM / WebSocket / global
@@ -19,55 +25,55 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  // The browser tools we serve (advertised via tools/list; DOM-semantic, model-agnostic).
-  const BROWSER_TOOLS = [
-    {
-      name: "katashiro.click",
-      description: "Click the element matching a CSS selector in the active browser tab.",
-      inputSchema: { type: "object", properties: { selector: { type: "string", description: "CSS selector" } }, required: ["selector"] }
-    },
-    {
-      name: "katashiro.read_dom",
-      description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
-      inputSchema: { type: "object", properties: { selector: { type: "string", description: "optional CSS selector to scope the snapshot" } } }
-    },
-    {
-      name: "katashiro.navigate",
-      description: "Navigate the active browser tab to a URL.",
-      inputSchema: { type: "object", properties: { url: { type: "string", description: "absolute URL" } }, required: ["url"] }
-    },
-    {
-      name: "katashiro.type",
-      description: "Type text into the element matching a CSS selector in the active tab.",
-      inputSchema: { type: "object", properties: { selector: { type: "string" }, text: { type: "string" } }, required: ["selector", "text"] }
-    },
-    {
-      name: "katashiro.screenshot",
-      description: "Capture a screenshot of the active browser tab.",
-      inputSchema: { type: "object", properties: {} }
-    }
-  ];
+  /**
+   * An MCP `CallToolResult`. `isError` marks a *tool* failure — the agent sees it and can
+   * adapt; protocol failures are thrown instead.
+   * @typedef {{ content: Array<object>, isError?: boolean }} CallToolResult
+   */
+
+  /**
+   * What a tool body gets to work with. The active tab is resolved once, before dispatch,
+   * so no tool has to re-query it.
+   * @typedef {object} ToolContext
+   * @property {object} chrome  injected chrome API (real in the extension, mocked in tests)
+   * @property {object} tab     the active tab (`{ id, windowId, ... }`)
+   */
+
+  /**
+   * One entry of the tool registry.
+   * @typedef {object} ToolDef
+   * @property {string} description  human-readable, shown to the agent
+   * @property {object} inputSchema  JSON Schema for the `arguments` object
+   * @property {(args: object, ctx: ToolContext) => Promise<CallToolResult>} call
+   */
 
   const okText = (t) => ({ content: [{ type: "text", text: t }] });
   const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
 
-  // The currently active tab (the shikigami acts here).
-  async function activeTab(chrome) {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (!tab) throw new Error("no active browser tab");
-    return tab;
-  }
-
-  // Execute a browser tool in the active tab via chrome.scripting/tabs. Returns an MCP
-  // CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
-  // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
-  async function callBrowserTool(name, args, deps) {
-    const chrome = deps.chrome;
-    const tab = await activeTab(chrome);
-    switch (name) {
-      case "katashiro.click": {
-        const [{ result }] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+  /**
+   * The single source of truth for the tools we serve: schema and implementation live in
+   * the same entry, so `tools/list` and `tools/call` cannot drift apart — no advertising a
+   * tool nobody implements, no implementing one nobody can discover. Adding an entry here
+   * is the whole of adding a tool.
+   *
+   * DOM-semantic and model-agnostic: the names describe page actions, not any particular
+   * agent's vocabulary. Prefixed `katashiro.` so they never collide with a co-installed
+   * Playwright MCP's `browser_*` tools.
+   *
+   * @type {Record<string, ToolDef>}
+   */
+  const TOOLS = {
+    "katashiro.click": {
+      description: "Click the element matching a CSS selector in the active browser tab.",
+      inputSchema: {
+        type: "object",
+        properties: { selector: { type: "string", description: "CSS selector" } },
+        required: ["selector"]
+      },
+      /** @param {{ selector: string }} args */
+      async call(args, ctx) {
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
           func: (sel) => {
             const el = document.querySelector(sel);
             if (!el) return { ok: false, error: "no element for selector: " + sel };
@@ -78,9 +84,20 @@
         });
         return result.ok ? okText(`clicked ${args.selector}`) : errText(result.error);
       }
-      case "katashiro.read_dom": {
-        const [{ result }] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+    },
+
+    "katashiro.read_dom": {
+      description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "optional CSS selector to scope the snapshot" }
+        }
+      },
+      /** @param {{ selector?: string }} args */
+      async call(args, ctx) {
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
           func: (sel) => {
             const el = sel ? document.querySelector(sel) : document.body;
             if (!el) return { ok: false, error: "no element for selector: " + sel };
@@ -90,13 +107,33 @@
         });
         return result.ok ? okText(result.html) : errText(result.error);
       }
-      case "katashiro.navigate": {
-        await chrome.tabs.update(tab.id, { url: args.url });
+    },
+
+    "katashiro.navigate": {
+      description: "Navigate the active browser tab to a URL.",
+      inputSchema: {
+        type: "object",
+        properties: { url: { type: "string", description: "absolute URL" } },
+        required: ["url"]
+      },
+      /** @param {{ url: string }} args */
+      async call(args, ctx) {
+        await ctx.chrome.tabs.update(ctx.tab.id, { url: args.url });
         return okText(`navigating to ${args.url}`);
       }
-      case "katashiro.type": {
-        const [{ result }] = await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+    },
+
+    "katashiro.type": {
+      description: "Type text into the element matching a CSS selector in the active tab.",
+      inputSchema: {
+        type: "object",
+        properties: { selector: { type: "string" }, text: { type: "string" } },
+        required: ["selector", "text"]
+      },
+      /** @param {{ selector: string, text: string }} args */
+      async call(args, ctx) {
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
           func: (sel, text) => {
             const el = document.querySelector(sel);
             if (!el) return { ok: false, error: "no element for selector: " + sel };
@@ -111,20 +148,56 @@
         });
         return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
       }
-      case "katashiro.screenshot": {
+    },
+
+    "katashiro.screenshot": {
+      description: "Capture a screenshot of the active browser tab.",
+      inputSchema: { type: "object", properties: {} },
+      /** @param {object} _args (none) */
+      async call(_args, ctx) {
         // JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the ACP tunnel's
         // per-frame size cap, dropping the WebSocket ("connection closed before response").
         // JPEG q70 keeps a typical screen well under ~500KB while staying readable for the agent.
-        const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 70 });
+        const dataUrl = await ctx.chrome.tabs.captureVisibleTab(ctx.tab.windowId, {
+          format: "jpeg",
+          quality: 70
+        });
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
         return { content: [{ type: "image", data: base64, mimeType: "image/jpeg" }] };
       }
-      default: {
-        const err = new Error(`unknown tool: ${name}`);
-        err.code = -32602;
-        throw err;
-      }
     }
+  };
+
+  // The wire form of the registry — exactly what `tools/list` returns. Derived from TOOLS,
+  // never hand-maintained, so the advertised set is the implemented set by construction.
+  const BROWSER_TOOLS = Object.freeze(
+    Object.entries(TOOLS).map(([name, t]) =>
+      Object.freeze({ name, description: t.description, inputSchema: t.inputSchema })
+    )
+  );
+
+  // The currently active tab (the shikigami acts here).
+  async function activeTab(chrome) {
+    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!tab) throw new Error("no active browser tab");
+    return tab;
+  }
+
+  // Execute a browser tool in the active tab via chrome.scripting/tabs. Returns an MCP
+  // CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
+  // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
+  async function callBrowserTool(name, args, deps) {
+    const chrome = deps.chrome;
+    // Tab first, then dispatch: every tool needs it, and resolving it up front keeps the
+    // "no active browser tab" diagnosis ahead of any per-tool failure.
+    const tab = await activeTab(chrome);
+    const tool = TOOLS[name];
+    if (!tool) {
+      const err = new Error(`unknown tool: ${name}`);
+      err.code = -32602;
+      throw err;
+    }
+    return tool.call(args, { chrome, tab });
   }
 
   // The MCP server surface we expose over the tunnel (we are the MCP server, the agent is the
@@ -196,5 +269,5 @@
     }
   }
 
-  return { BROWSER_TOOLS, callBrowserTool, handleMcpMessage, handleServerRequest };
+  return { TOOLS, BROWSER_TOOLS, callBrowserTool, handleMcpMessage, handleServerRequest };
 });
