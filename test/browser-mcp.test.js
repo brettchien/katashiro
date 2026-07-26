@@ -246,6 +246,37 @@ test("mcp/message notifications/initialized sends NO response frame", async () =
   assert.equal(sent.length, 0);
 });
 
+// This is the frame OpenAB's discovery cache actually sends (one `tools/list` per declared
+// server, result cached and reused across reconnects — ADR §6.3). It arrives with NO inner
+// `params` key at all, because the gateway sends `None`; serving it is the whole of the
+// katashiro side of pull-based discovery.
+test("mcp/message tools/list: discovery round-trip with no inner params", async () => {
+  const { deps: d, sent } = deps();
+  const state = { mcpConnectionId: "c" };
+  await BrowserMcp.handleServerRequest(
+    { id: 12, method: "mcp/message", params: { method: "tools/list" } },
+    d,
+    state
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, 12, "the reply correlates on the OUTER acp id");
+
+  // The shape the gateway deserializes into its own Tool type: drop any of these three
+  // fields and discovery silently caches nothing.
+  const tools = sent[0].result.tools;
+  assert.equal(tools.length, 5);
+  for (const t of tools) {
+    assert.equal(typeof t.name, "string");
+    assert.equal(typeof t.description, "string");
+    assert.equal(t.inputSchema.type, "object");
+  }
+  assert.deepEqual(
+    tools.map((t) => t.name),
+    Object.keys(BrowserMcp.TOOLS),
+    "what we publish over the tunnel is the registry itself"
+  );
+});
+
 test("mcp/message tools/call read_dom: full tunnel round-trip", async () => {
   const { deps: d, sent, calls } = deps({ scriptResult: { ok: true, html: "<h1>ok</h1>" } });
   const state = { mcpConnectionId: "c" };
