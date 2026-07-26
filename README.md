@@ -72,7 +72,9 @@ You can declare **more than one**. `createServer({ id, name, tools })` builds an
 its own name and registry, and the module routes by the `connectionId` handed back at
 `mcp/connect` — so a second client-side MCP server sits alongside `katashiro` on the same
 socket, each answering only its own `tools/list` and `tools/call`. That is the client end of
-OpenAB's multi-server fan-out.
+OpenAB's multi-server fan-out. A `connectionId` you never minted is refused rather than served
+by whichever server seems likeliest — guessing there would hand one server's tools to a caller
+that was never granted a tunnel to it.
 
 Two conventions worth copying:
 

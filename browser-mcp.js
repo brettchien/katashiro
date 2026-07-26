@@ -288,16 +288,17 @@
   // `mcp/connect` only; every later frame carries the `connectionId` we handed back, so the
   // connect step is where the mapping is established.
   //
-  // Both lookups fall back to `defaultServer`: a side panel that declares only the browser
-  // server needs no `state.servers` wiring at all, and a frame for a connection we do not
-  // recognise is still better served than dropped.
+  // `acpId` may fall back: a side panel declaring only the browser server needs no
+  // `state.servers` wiring at all. `connectionId` may NOT — a handle we never minted names no
+  // server, and quietly serving it the browser tools would hand browser control to a caller
+  // that was never granted a tunnel. Unknown connections are refused, not guessed at.
   function serverForAcpId(state, acpId) {
     const declared = state.servers || [];
     return declared.find((s) => s.id === acpId) || declared[0] || defaultServer;
   }
 
   function serverForConnection(state, connectionId) {
-    return (state.connections && state.connections[connectionId]) || defaultServer;
+    return state.connections ? state.connections[connectionId] : undefined;
   }
 
   // Handle a server-initiated request from the gateway (tunnel control + MCP-over-ACP).
@@ -333,6 +334,14 @@
         // `connectionId` selects which of our servers is being addressed.
         const inner = msg.params || {};
         const server = serverForConnection(state, inner.connectionId);
+        if (!server) {
+          send({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: { code: -32602, message: `unknown connection: ${inner.connectionId}` }
+          });
+          return;
+        }
         try {
           const result = await server.handleMcpMessage(inner.method, inner.params || {}, deps);
           // A notification (undefined result) gets no response frame.
@@ -344,8 +353,14 @@
       }
       case "mcp/disconnect": {
         const connectionId = msg.params && msg.params.connectionId;
-        if (connectionId && state.connections[connectionId]) delete state.connections[connectionId];
-        else state.connections = {}; // no id given (or unknown): the whole tunnel set is gone
+        if (connectionId && !state.connections[connectionId]) {
+          // A handle we never minted. Ack it, but touch nothing: closing "some connection we
+          // don't know about" must never take this session's live tunnels down with it.
+          send({ jsonrpc: "2.0", id: msg.id, result: {} });
+          return;
+        }
+        if (connectionId) delete state.connections[connectionId];
+        else state.connections = {}; // no id given: the whole tunnel set is gone
         if (state.mcpConnectionId === connectionId || openCount() === 0) {
           state.mcpConnectionId = null;
         }

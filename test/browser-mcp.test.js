@@ -226,28 +226,38 @@ test("mcp/connect names the connection, stores it, and fires onStatus(true)", as
   assert.deepEqual(statuses, [true]); // UI told the browser is now attached
 });
 
+// Open a tunnel the way the gateway does, and hand back the connection id every later frame
+// has to carry. Messaging an un-established connection is not a shape the gateway can produce.
+async function connect(bag) {
+  const state = { connections: {} };
+  await BrowserMcp.handleServerRequest({ id: 0, method: "mcp/connect", params: {} }, bag.deps, state);
+  const connectionId = bag.sent[bag.sent.length - 1].result.connectionId;
+  bag.sent.length = 0; // drop the connect frame; each test asserts on its own
+  return { state, connectionId };
+}
+
 test("mcp/message initialize replies on the outer ACP id", async () => {
-  const { deps: d, sent } = deps();
-  const state = { mcpConnectionId: "c" };
+  const bag = deps();
+  const { state, connectionId } = await connect(bag);
   await BrowserMcp.handleServerRequest(
-    { id: 9, method: "mcp/message", params: { method: "initialize", params: {} } },
-    d,
+    { id: 9, method: "mcp/message", params: { connectionId, method: "initialize", params: {} } },
+    bag.deps,
     state
   );
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].id, 9);
-  assert.equal(sent[0].result.serverInfo.name, "katashiro-browser");
+  assert.equal(bag.sent.length, 1);
+  assert.equal(bag.sent[0].id, 9);
+  assert.equal(bag.sent[0].result.serverInfo.name, "katashiro-browser");
 });
 
 test("mcp/message notifications/initialized sends NO response frame", async () => {
-  const { deps: d, sent } = deps();
-  const state = { mcpConnectionId: "c" };
+  const bag = deps();
+  const { state, connectionId } = await connect(bag);
   await BrowserMcp.handleServerRequest(
-    { id: 10, method: "mcp/message", params: { method: "notifications/initialized" } },
-    d,
+    { id: 10, method: "mcp/message", params: { connectionId, method: "notifications/initialized" } },
+    bag.deps,
     state
   );
-  assert.equal(sent.length, 0);
+  assert.equal(bag.sent.length, 0);
 });
 
 // This is the frame OpenAB's discovery cache actually sends (one `tools/list` per declared
@@ -255,19 +265,19 @@ test("mcp/message notifications/initialized sends NO response frame", async () =
 // `params` key at all, because the gateway sends `None`; serving it is the whole of the
 // katashiro side of pull-based discovery.
 test("mcp/message tools/list: discovery round-trip with no inner params", async () => {
-  const { deps: d, sent } = deps();
-  const state = { mcpConnectionId: "c" };
+  const bag = deps();
+  const { state, connectionId } = await connect(bag);
   await BrowserMcp.handleServerRequest(
-    { id: 12, method: "mcp/message", params: { method: "tools/list" } },
-    d,
+    { id: 12, method: "mcp/message", params: { connectionId, method: "tools/list" } },
+    bag.deps,
     state
   );
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].id, 12, "the reply correlates on the OUTER acp id");
+  assert.equal(bag.sent.length, 1);
+  assert.equal(bag.sent[0].id, 12, "the reply correlates on the OUTER acp id");
 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
-  const tools = sent[0].result.tools;
+  const tools = bag.sent[0].result.tools;
   assert.equal(tools.length, 5);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
@@ -282,21 +292,54 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
 });
 
 test("mcp/message tools/call read_dom: full tunnel round-trip", async () => {
-  const { deps: d, sent, calls } = deps({ scriptResult: { ok: true, html: "<h1>ok</h1>" } });
-  const state = { mcpConnectionId: "c" };
+  const bag = deps({ scriptResult: { ok: true, html: "<h1>ok</h1>" } });
+  const { state, connectionId } = await connect(bag);
   await BrowserMcp.handleServerRequest(
     {
       id: 11,
       method: "mcp/message",
-      params: { method: "tools/call", params: { name: "katashiro.read_dom", arguments: {} } }
+      params: {
+        connectionId,
+        method: "tools/call",
+        params: { name: "katashiro.read_dom", arguments: {} }
+      }
     },
-    d,
+    bag.deps,
     state
   );
-  assert.equal(calls.executeScript.length, 1);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].id, 11);
-  assert.equal(sent[0].result.content[0].text, "<h1>ok</h1>");
+  assert.equal(bag.calls.executeScript.length, 1);
+  assert.equal(bag.sent.length, 1);
+  assert.equal(bag.sent[0].id, 11);
+  assert.equal(bag.sent[0].result.content[0].text, "<h1>ok</h1>");
+});
+
+// --- unknown connections are refused, never guessed at ----------------------
+
+test("mcp/message on a connection we never minted is refused, not served", async () => {
+  const bag = deps();
+  const { state } = await connect(bag);
+  await BrowserMcp.handleServerRequest(
+    { id: 20, method: "mcp/message", params: { connectionId: "not-ours", method: "tools/list" } },
+    bag.deps,
+    state
+  );
+  assert.equal(bag.sent.length, 1);
+  assert.equal(bag.sent[0].error.code, -32602);
+  assert.match(bag.sent[0].error.message, /unknown connection/);
+  assert.equal(bag.sent[0].result, undefined, "an unknown handle must not receive a tool list");
+});
+
+test("mcp/disconnect on an unknown connection does not take the live ones down", async () => {
+  const bag = await twoServers();
+  bag.statuses.length = 0;
+  await BrowserMcp.handleServerRequest(
+    { id: 21, method: "mcp/disconnect", params: { connectionId: "not-ours" } },
+    bag.deps,
+    bag.state
+  );
+  assert.deepEqual(bag.sent[bag.sent.length - 1], { jsonrpc: "2.0", id: 21, result: {} }, "still acked");
+  assert.deepEqual(Object.keys(bag.state.connections).sort(), ["conn-k", "conn-n"]);
+  assert.deepEqual(bag.statuses, [], "no detach event for a handle that was never ours");
 });
 
 test("mcp/disconnect clears the connection state, acks, and fires onStatus(false)", async () => {
