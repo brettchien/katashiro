@@ -18,7 +18,7 @@ Every capability below is a variation on those two directions.
 > **Status (2026-07): the reverse-RPC mechanism is delivered.** The agent→extension
 > "act" direction (Phase 2 "Route B" below) is now realized via **MCP-over-ACP**: openab
 > tunnels MCP over the `/acp` socket, and the extension serves DOM-semantic **browser tools**
-> (`click` / `read_dom` / `navigate` / `type` / `screenshot`) as an MCP server that the agent
+> (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) as an MCP server that the agent
 > discovers (`tools/list`) and calls (`tools/call`). See the tunnel contract in the openab
 > repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes the brittle Route A
 > (fenced-JSON) idea. Safety gates (act-mode, origin allowlist, per-write confirm, audit log)

@@ -14,13 +14,13 @@ Under this system:
 * **Writing the Code = Drawing Talismans**
   * Writing configuration files (`manifest.json`) and styling components acts as the ritual of drawing magical talismans to establish a connection path between the summoner and the spirit.
 * **Browser Tools = The Shikigami's Hands (施術)**
-  * Through **MCP-over-ACP**, the summoned agent no longer merely *speaks* through the vessel — it *acts*. The extension serves DOM-semantic tools (`click`, `read_dom`, `navigate`, `type`, `screenshot`) so the shikigami can reach through the katashiro and operate the living page. Perception and action, not just a voice.
+  * Through **MCP-over-ACP**, the summoned agent no longer merely *speaks* through the vessel — it *acts*. The extension serves DOM-semantic tools (`katashiro.click`, `katashiro.read_dom`, `katashiro.navigate`, `katashiro.type`, `katashiro.screenshot`) so the shikigami can reach through the katashiro and operate the living page. Perception and action, not just a voice.
 
 ---
 
 ## 🌟 Key Features
 
-- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls DOM-semantic browser tools (`click` / `read_dom` / `navigate` / `type` / `screenshot`) that execute in the active tab via `chrome.scripting`. See [ROADMAP](ROADMAP.md).
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls DOM-semantic browser tools (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) that execute in the active tab via `chrome.scripting`. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
 
 - **Unified Chat Space**: Optimized specifically for a single multi-party chatroom, bypassing cluttered sidebar lists to fit perfectly in a narrow Side Panel.
 - **LINE-style Chat Bubbles**: Self-sent messages align to the right (green), while received agent messages align to the left (dark slate blue) with custom avatars, sender names, and timestamp markers.
@@ -85,6 +85,25 @@ Two conventions worth copying:
   co-installed Playwright MCP's `browser_*` tools and the model could not tell the two surfaces
   apart. The operator allowlist is keyed on the declared name, and OpenAB admits tools as
   `fetched ∩ allowed`, so the prefix is load-bearing, not cosmetic.
+
+### The tools we serve
+
+Every tool acts on the **active tab** (`tabs.query({ active: true, lastFocusedWindow: true })`);
+DOM work runs injected in the page via `chrome.scripting.executeScript`. A tool that fails —
+selector matched nothing, no active tab — comes back as an MCP result with `isError: true`, not
+a protocol error, so the agent can read the reason and adapt.
+
+| Tool | Params | Returns |
+| --- | --- | --- |
+| `katashiro.read_dom` | `selector?` (CSS) | `outerHTML` of the match, capped at 100k chars. No selector ⇒ `document.body`. |
+| `katashiro.click` | `selector` | Text ack; `isError` if the selector matches nothing. |
+| `katashiro.type` | `selector`, `text` | Focuses the element, sets `value` (or `textContent`), fires `input` + `change`. |
+| `katashiro.navigate` | `url` (absolute) | Text ack — issued via `chrome.tabs.update`, does not wait for load. |
+| `katashiro.screenshot` | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
+
+Writes are **not gated yet** — there is no act-mode switch, origin allowlist, per-action
+confirmation, or audit log. Anything you are logged into, an agent with this tunnel can click
+and type into. Those gates are Phase 3 in the [ROADMAP](ROADMAP.md).
 
 ## 🚀 How to Load and Test
 
