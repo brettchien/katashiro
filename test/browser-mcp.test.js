@@ -52,12 +52,21 @@ function mockSend() {
 }
 
 // Build the deps bag the module expects, plus expose the recorders.
+// `actMode` defaults to ON here so the tool-mechanics tests below exercise the tool bodies
+// rather than the consent gate; the gate itself is covered by its own tests, which pass
+// `actMode: false` explicitly. (The extension's default is the opposite — off.)
 function deps(opts = {}) {
   const { chrome, calls } = mockChrome(opts);
   const { send, sent } = mockSend();
   const statuses = []; // records onStatus(attached) transitions
   return {
-    deps: { chrome, crypto: mockCrypto(opts.uuid), send, onStatus: (a) => statuses.push(a) },
+    deps: {
+      chrome,
+      crypto: mockCrypto(opts.uuid),
+      send,
+      onStatus: (a) => statuses.push(a),
+      actMode: opts.actMode !== false
+    },
     calls,
     sent,
     statuses
@@ -213,6 +222,85 @@ test("tools/call for an unknown tool returns an isError result", async () => {
   );
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /unknown tool/);
+});
+
+// --- act mode: the write consent gate ---------------------------------------
+
+// Which tools mutate the page is a registry fact, so assert it there rather than restating
+// the list in every gate test below.
+const WRITE_TOOLS = Object.entries(BrowserMcp.TOOLS)
+  .filter(([, t]) => t.write)
+  .map(([name]) => name);
+
+test("exactly the page-mutating tools are marked write", () => {
+  assert.deepEqual(WRITE_TOOLS.sort(), [
+    "katashiro.click",
+    "katashiro.navigate",
+    "katashiro.type"
+  ]);
+});
+
+test("act mode off refuses every write tool with a usable explanation", async () => {
+  for (const name of WRITE_TOOLS) {
+    const { deps: d, calls } = deps({ actMode: false });
+    const res = await BrowserMcp.handleMcpMessage(
+      "tools/call",
+      { name, arguments: { selector: "#x", text: "t", url: "https://example.com" } },
+      d
+    );
+    assert.equal(res.isError, true, `${name} should be refused`);
+    assert.match(res.content[0].text, /act mode is off/);
+    // Refused means not executed — no script injected, no navigation issued.
+    assert.equal(calls.executeScript.length, 0, `${name} must not touch the page`);
+    assert.equal(calls.tabsUpdate.length, 0, `${name} must not navigate`);
+  }
+});
+
+test("act mode off still allows the read tools", async () => {
+  const { deps: d } = deps({ actMode: false, scriptResult: { ok: true, html: "<p>hi</p>" } });
+  const dom = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.read_dom", arguments: {} },
+    d
+  );
+  assert.equal(dom.isError, undefined);
+  assert.equal(dom.content[0].text, "<p>hi</p>");
+
+  const shot = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.screenshot" }, d);
+  assert.equal(shot.isError, undefined);
+  assert.equal(shot.content[0].type, "image");
+});
+
+test("act mode on lets a write through", async () => {
+  const { deps: d, calls } = deps({ actMode: true });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.click", arguments: { selector: "#go" } },
+    d
+  );
+  assert.equal(res.isError, undefined);
+  assert.equal(calls.executeScript.length, 1);
+});
+
+test("a refused write says it was refused, not that there was no tab", async () => {
+  // Consent is checked before the environment: with act mode off AND no tab, the user-facing
+  // reason must be the gate, or the operator chases a phantom browser problem.
+  const { deps: d } = deps({ actMode: false, noTab: true });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.click", arguments: { selector: "#go" } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /act mode is off/);
+  assert.doesNotMatch(res.content[0].text, /no active browser tab/);
+});
+
+test("write tools stay advertised while act mode is off (discovery is cached)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
+  const names = res.tools.map((t) => t.name);
+  for (const name of WRITE_TOOLS) assert.ok(names.includes(name), `${name} should still list`);
 });
 
 // --- tunnel control: handleServerRequest ------------------------------------

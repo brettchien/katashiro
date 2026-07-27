@@ -44,11 +44,20 @@
    * @typedef {object} ToolDef
    * @property {string} description  human-readable, shown to the agent
    * @property {object} inputSchema  JSON Schema for the `arguments` object
+   * @property {boolean} [write]     mutates the page — refused unless act mode is on
    * @property {(args: object, ctx: ToolContext) => Promise<CallToolResult>} call
    */
 
   const okText = (t) => ({ content: [{ type: "text", text: t }] });
   const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
+
+  // Written for the agent to act on: it says what was refused, that only the human can lift
+  // it, and where — so the model asks instead of retrying the same call.
+  const ACT_MODE_OFF =
+    "act mode is off — katashiro is read-only right now, so page writes (click / type / " +
+    "navigate) are refused. Reading (read_dom, screenshot) still works. Only the user can " +
+    "change this, in the katashiro side panel under Settings → 瀏覽器寫入. Ask them to turn " +
+    "it on rather than retrying.";
 
   /**
    * The single source of truth for the tools we serve: schema and implementation live in
@@ -60,11 +69,18 @@
    * agent's vocabulary. Prefixed `katashiro.` so they never collide with a co-installed
    * Playwright MCP's `browser_*` tools.
    *
+   * `write: true` marks a tool that changes the page. Those are refused unless the user has
+   * turned act mode on (`deps.actMode`) — the extension inherits the user's logged-in session,
+   * so an ungated click or type carries their full authority on whatever site is open. The
+   * flag lives in the registry for the same reason the schema does: one entry per tool, so a
+   * write cannot be added without declaring itself one.
+   *
    * @type {Record<string, ToolDef>}
    */
   const TOOLS = {
     "katashiro.click": {
       description: "Click the element matching a CSS selector in the active browser tab.",
+      write: true,
       inputSchema: {
         type: "object",
         properties: { selector: { type: "string", description: "CSS selector" } },
@@ -111,6 +127,7 @@
 
     "katashiro.navigate": {
       description: "Navigate the active browser tab to a URL.",
+      write: true,
       inputSchema: {
         type: "object",
         properties: { url: { type: "string", description: "absolute URL" } },
@@ -125,6 +142,7 @@
 
     "katashiro.type": {
       description: "Type text into the element matching a CSS selector in the active tab.",
+      write: true,
       inputSchema: {
         type: "object",
         properties: { selector: { type: "string" }, text: { type: "string" } },
@@ -186,19 +204,23 @@
   // Execute a tool in the active tab via chrome.scripting/tabs. Returns an MCP
   // CallToolResult ({ content, isError? }). DOM actions run injected in the page context.
   // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
-  // `tools` is the serving instance's registry — defaults to the browser one.
+  // `deps.actMode` is the user's write consent, read fresh per call so a toggle takes effect
+  // immediately. `tools` is the serving instance's registry — defaults to the browser one.
   async function callBrowserTool(name, args, deps, tools) {
     const registry = tools || TOOLS;
     const chrome = deps.chrome;
-    // Tab first, then dispatch: every tool needs it, and resolving it up front keeps the
-    // "no active browser tab" diagnosis ahead of any per-tool failure.
-    const tab = await activeTab(chrome);
     const tool = registry[name];
     if (!tool) {
       const err = new Error(`unknown tool: ${name}`);
       err.code = -32602;
       throw err;
     }
+    // Consent before environment: a refused write should say it was refused, not report
+    // whatever tab trouble it would have hit had it been allowed to run.
+    if (tool.write && !deps.actMode) return errText(ACT_MODE_OFF);
+    // Then the tab — every surviving tool needs it, and resolving it up front keeps the
+    // "no active browser tab" diagnosis ahead of any per-tool failure.
+    const tab = await activeTab(chrome);
     return tool.call(args, { chrome, tab });
   }
 
@@ -250,6 +272,10 @@
           case "notifications/initialized":
             return undefined; // notification — no response
           case "tools/list":
+            // The write tools stay listed even with act mode off. OpenAB fetches discovery
+            // once per connection and caches it, so hiding them would freeze whatever the
+            // toggle happened to be at connect time and leave the agent unable to learn the
+            // capability exists. Refusing at call time is the honest place to enforce it.
             return { tools: listing };
           case "tools/call":
             // Tool-execution failures (no active tab, restricted page like chrome://, missing

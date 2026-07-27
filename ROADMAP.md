@@ -21,8 +21,9 @@ Every capability below is a variation on those two directions.
 > (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) as an MCP server that the agent
 > discovers (`tools/list`) and calls (`tools/call`). See the tunnel contract in the openab
 > repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes the brittle Route A
-> (fenced-JSON) idea. Safety gates (act-mode, origin allowlist, per-write confirm, audit log)
-> from Phase 3 still apply before high-blast-radius writes ship.
+> (fenced-JSON) idea. Of the Phase 3 safety gates, **act mode is now in place** (writes off by
+> default); origin allowlist, per-write confirm, and audit log still stand between this and
+> high-blast-radius writes.
 
 ---
 
@@ -100,7 +101,8 @@ Two mechanisms:
 
 ### Hard gates — none of this ships without all of them
 
-1. **Read-only by default**; writes require explicit **act mode**.
+1. ✅ **Read-only by default**; writes require explicit **act mode**. *(Shipped: `write: true`
+   in the tool registry, gated in `callBrowserTool` on `deps.actMode`, toggled in Settings.)*
 2. **Origin allowlist** — only whitelisted domains can be written to / called.
 3. **Per-write confirmation showing the raw request** (method + URL + body), not
    just the agent's natural-language intent.

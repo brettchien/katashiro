@@ -81,6 +81,16 @@
             <input type="number" id="loopguard-cap" class="agent-input" min="1" step="1" value="6">
           </div>
 
+          <!-- Browser write consent (act mode) -->
+          <div class="input-group">
+            <label>瀏覽器寫入</label>
+            <div id="act-mode-toggle" class="mode-toggle">
+              <button id="act-read" class="mode-btn" data-act="read">👁 唯讀</button>
+              <button id="act-write" class="mode-btn" data-act="write">✋ 可操作</button>
+            </div>
+            <span class="mode-hint" id="act-mode-hint"></span>
+          </div>
+
           <!-- Existing agents -->
           <div class="input-group">
             <label>已設定的 Agent</label>

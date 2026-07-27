@@ -93,17 +93,33 @@ DOM work runs injected in the page via `chrome.scripting.executeScript`. A tool 
 selector matched nothing, no active tab — comes back as an MCP result with `isError: true`, not
 a protocol error, so the agent can read the reason and adapt.
 
-| Tool | Params | Returns |
-| --- | --- | --- |
-| `katashiro.read_dom` | `selector?` (CSS) | `outerHTML` of the match, capped at 100k chars. No selector ⇒ `document.body`. |
-| `katashiro.click` | `selector` | Text ack; `isError` if the selector matches nothing. |
-| `katashiro.type` | `selector`, `text` | Focuses the element, sets `value` (or `textContent`), fires `input` + `change`. |
-| `katashiro.navigate` | `url` (absolute) | Text ack — issued via `chrome.tabs.update`, does not wait for load. |
-| `katashiro.screenshot` | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
+| Tool | | Params | Returns |
+| --- | --- | --- | --- |
+| `katashiro.read_dom` | read | `selector?` (CSS) | `outerHTML` of the match, capped at 100k chars. No selector ⇒ `document.body`. |
+| `katashiro.screenshot` | read | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
+| `katashiro.click` | **write** | `selector` | Text ack; `isError` if the selector matches nothing. |
+| `katashiro.type` | **write** | `selector`, `text` | Focuses the element, sets `value` (or `textContent`), fires `input` + `change`. |
+| `katashiro.navigate` | **write** | `url` (absolute) | Text ack — issued via `chrome.tabs.update`, does not wait for load. |
 
-Writes are **not gated yet** — there is no act-mode switch, origin allowlist, per-action
-confirmation, or audit log. Anything you are logged into, an agent with this tunnel can click
-and type into. Those gates are Phase 3 in the [ROADMAP](ROADMAP.md).
+### Act mode — writes are off by default
+
+The extension operates the page as **you**, with whatever you are logged into. So the write
+tools are refused unless you turn act mode on (Settings → 瀏覽器寫入 → ✋ 可操作); reads work
+either way. A refused call comes back as an `isError` result explaining that only the user can
+lift the gate, so the agent asks instead of retrying.
+
+The flag is `write: true` in the `TOOLS` registry and the check sits in `callBrowserTool` — one
+place, and a new tool has to declare which kind it is. Consent is checked *before* the active
+tab is resolved, so a refusal reads as a refusal rather than as a browser problem. The gate is
+consulted per call, so toggling it takes effect on the next tool call with no reconnect.
+
+Write tools stay listed in `tools/list` even while act mode is off: OpenAB caches discovery per
+connection, so hiding them would freeze whatever the toggle happened to be at connect time and
+leave the agent unable to learn the capability exists at all.
+
+This is the first of the Phase 3 gates. **Origin allowlist, per-action confirmation, and an
+audit log are still missing** — with act mode on, an agent can click and type on any site you
+have open. See the [ROADMAP](ROADMAP.md).
 
 ## 🚀 How to Load and Test
 

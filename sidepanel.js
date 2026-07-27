@@ -21,6 +21,13 @@ const room = [];
 // Room routing config (mode + loop-guard cap). RoomCore owns the pure logic; we persist it.
 let roomConfig = RoomCore.defaultRoomConfig();
 let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
+
+// Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
+// and click/type/navigate are refused. Kept separate from roomConfig — that one is about who
+// hears whom, this one is a consent boundary on the browser. Default off, and deliberately not
+// per-agent: it answers "may this browser be written to at all", which the tab, not the agent,
+// is the subject of.
+let actMode = false;
 function roomMembers() {
   return room.map((c) => ({ id: c.id, name: c.name }));
 }
@@ -104,6 +111,9 @@ class Conn {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
       },
       onStatus: (attached) => this.setBrowserAttached(attached),
+      // Read at dispatch time, not captured at connect time, so flipping the toggle applies to
+      // the very next tool call — no reconnect, no stale consent.
+      actMode,
     };
   }
 
@@ -417,8 +427,12 @@ const modeAmbientBtn = document.getElementById("mode-ambient");
 const modeHintEl = document.getElementById("mode-hint");
 const loopGuardCapInput = document.getElementById("loopguard-cap");
 
+const actReadBtn = document.getElementById("act-read");
+const actWriteBtn = document.getElementById("act-write");
+const actModeHintEl = document.getElementById("act-mode-hint");
+
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig"], (r) => {
+chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -428,6 +442,9 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig"], (r) => {
     }
     roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
     loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
+    // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
+    // is the one you fall back into.
+    actMode = r.actMode === true;
     persist();
 
     switchView("chat");
@@ -438,7 +455,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig"], (r) => {
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, roomConfig });
+  chrome.storage.local.set({ agents, roomConfig, actMode });
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
@@ -506,6 +523,7 @@ function switchView(viewName) {
 // --- UI event listeners ------------------------------------------------------
 settingsBtn.addEventListener("click", () => {
   renderRoomConfig();
+  renderActMode();
   renderAgentList();
   switchView("settings");
 });
@@ -542,6 +560,27 @@ function setRoomMode(mode) {
   roomConfig.mode = RoomCore.normalizeMode(mode);
   persist();
   renderRoomConfig();
+}
+
+// Act mode controls. No reconnect on change: the tunnel stays up and the gate is consulted per
+// tool call, so turning writes off takes hold on the next call rather than the next handshake.
+if (actReadBtn) actReadBtn.addEventListener("click", () => setActMode(false));
+if (actWriteBtn) actWriteBtn.addEventListener("click", () => setActMode(true));
+
+function renderActMode() {
+  if (actReadBtn) actReadBtn.classList.toggle("on", !actMode);
+  if (actWriteBtn) actWriteBtn.classList.toggle("on", actMode);
+  if (actModeHintEl) {
+    actModeHintEl.textContent = actMode
+      ? "Agent 可以 click／輸入／導向頁面 —— 用的是你已登入的身分，任何你能做的操作它都能做。"
+      : "Agent 只能讀取頁面（read_dom／screenshot），寫入類工具一律拒絕。";
+  }
+}
+
+function setActMode(on) {
+  actMode = on === true;
+  persist();
+  renderActMode();
 }
 
 addAgentBtn.addEventListener("click", () => {
