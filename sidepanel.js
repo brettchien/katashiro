@@ -96,7 +96,10 @@ class Conn {
       this.mcpServer = BrowserMcp.createServer({
         id: crypto.randomUUID(),
         name: "katashiro",
-        serverName: "katashiro-browser"
+        serverName: "katashiro-browser",
+        // Report the extension's own version to the agent rather than a second number that
+        // would drift — "which katashiro is this?" should have one answer.
+        version: chrome.runtime.getManifest().version
       });
       this.mcpState.servers = [this.mcpServer];
     }

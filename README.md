@@ -22,6 +22,8 @@ Under this system:
 
 - **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls DOM-semantic browser tools (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) that execute in the active tab via `chrome.scripting`. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
 
+- **Multi-Agent Room**: several agents share one chatroom, each on its own ACP connection. `@mention` mode (the default) routes a message only to the agents named in it and broadcasts when none are; ambient mode gives everyone everything. Agent replies are relayed to the other agents wrapped as `<message from="...">`, so they can answer each other — bounded by a **loop guard** that pauses a runaway agent-to-agent cascade and resets the moment a human speaks. Per-agent connect/disconnect and browser-access toggles, and one openab session per Chrome window.
+
 - **Unified Chat Space**: Optimized specifically for a single multi-party chatroom, bypassing cluttered sidebar lists to fit perfectly in a narrow Side Panel.
 - **LINE-style Chat Bubbles**: Self-sent messages align to the right (green), while received agent messages align to the left (dark slate blue) with custom avatars, sender names, and timestamp markers.
 - **Connection Persistence**: Leverages the Chrome Side Panel API to host the WebSocket connection, allowing it to persist even as the user navigates across browser tabs.

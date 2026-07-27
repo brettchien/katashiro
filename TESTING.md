@@ -33,10 +33,14 @@ katashiro in Chrome replaces the mock with a real browser so the agent operates 
 
 ## Tools served
 
-`katashiro.click(selector)` · `katashiro.read_dom(selector?)` · `katashiro.navigate(url)` ·
-`katashiro.type(selector, text)` · `katashiro.screenshot` — executed via `chrome.scripting` in the
-active tab. A failure (no active tab, restricted page like `chrome://`, missing element,
-missing host permission) returns an MCP `isError` result the agent can see and adapt to.
+The surface — params, returns, and which tools count as writes — is tabulated in
+[README → The tools we serve](README.md#the-tools-we-serve). Kept in one place so the two
+documents cannot drift.
+
+Two things to expect while testing: a failure (no active tab, restricted page like `chrome://`,
+missing element, missing host permission) returns an MCP `isError` result the agent can see and
+adapt to; and **`click` / `type` / `navigate` are refused until you turn act mode on**
+(Settings → 瀏覽器寫入 → ✋ 可操作), so enable it before testing the write tools.
 
 ## Notes
 
