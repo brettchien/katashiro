@@ -79,10 +79,10 @@ documents how each family addresses elements, so the decision rests on precedent
 | **browser-use** | indexed interactive elements + optional vision | numeric index per element | `[browser-use]` |
 
 All four replaced screenshots/raw-DOM with a **structured text snapshot carrying stable element
-handles**. Blog measurements put a text snapshot roughly an order of magnitude cheaper than the
-alternatives — a vision screenshot commonly runs ~10k–50k tokens and a raw-DOM dump a few thousand,
-while a lean snapshot is much smaller (exact figures are page-dependent and blog-sourced, not an
-authoritative benchmark) `[PW-MCP]` `[token-cost]`. It is also parsed instantly rather than via vision
+handles**. Playwright's own comparison puts a text snapshot roughly **~10–15×** cheaper than a
+screenshot; blog measurements report higher ratios on extreme pages (a vision screenshot can run
+~10k–50k tokens, a raw-DOM dump a few thousand, a lean snapshot far smaller — page-dependent and
+blog-sourced, not an authoritative benchmark) `[PW-MCP]` `[token-cost]`. It is also parsed instantly rather than via vision
 inference, and deterministic (immune to CSS/viewport drift). Consolidating multi-step flows into fewer,
 higher-level tools is also Anthropic's own tool-design guidance `[Anthropic-Tools]`.
 
@@ -181,6 +181,9 @@ stable `ref` on each interactive element (format after Playwright MCP `[PW-MCP]`
 - link "Forgot password?" [ref=e8]
 ```
 
+Top-level-frame refs are bare (`e5`); a ref from a child frame carries its frame prefix (`f1:e5`),
+per the frame handling below.
+
 Rules:
 
 - **Label each node by (role, accessible name)** following Testing Library's priority ladder (name →
@@ -189,8 +192,8 @@ Rules:
 - **Interactability filter — do not rely on a11y role alone.** A `<div onclick>` or a custom widget
   with no role and no accessible name is *invisible* in an a11y-only tree, so the agent could neither
   see nor click it (the most common a11y-primary failure mode, shared with Playwright MCP). The walker
-  therefore also includes elements that are interactive by heuristic — `tabindex >= 0`,
-  `cursor: pointer`, form controls, `contenteditable` — even when their role is generic. (Content
+  therefore also includes elements that are interactive by heuristic — `tabindex >= 0`, form controls,
+  `contenteditable`, and `cursor: pointer` as a weaker signal — even when their role is generic. (Content
   scripts cannot read event listeners — `getEventListeners` is DevTools-only — so this is a heuristic,
   not exhaustive; genuinely opaque widgets remain a `screenshot` case.)
 - **Open shadow DOM is walked (P0):** the walker recurses into `element.shadowRoot` for
@@ -234,7 +237,8 @@ or `load`/`DOMContentLoaded`, bounded by a short timeout — before serializing.
 
 ### 3.4 `wait_for` and actionability (a feasible P0 subset)
 
-`wait_for {selector? | text? | ref?, state?, timeout}` plus internal auto-wait folded into
+`wait_for {selector? | text? | ref?, state?, timeout}` (the `ref?` form is accepted only as a
+short-lived "still attached?" hint — see the note below) plus internal auto-wait folded into
 `click`/`type`/`navigate`, so the agent never polls with screenshots to check readiness. `wait_for`
 retries-until-condition, never sleep-N (the Cypress anti-pattern `[Cypress-Retry]`).
 
