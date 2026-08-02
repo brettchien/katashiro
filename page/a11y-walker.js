@@ -1,0 +1,122 @@
+// page/a11y-walker.js — injected into the active tab's ISOLATED world via chrome.scripting.
+//
+// Builds an accessibility-tree snapshot with stable, snapshot-scoped element refs, and resolves a ref
+// back to a live Element for click/type. Implements ADR docs/adr/a11y-snapshot-and-element-refs.md
+// (§3.1 snapshot, §3.2 stale-ref assertion). Uses window.__katashiroA11y (vendored dom-accessibility-api)
+// for name+role. The registry lives on the isolated-world window, so it survives across the separate
+// executeScript calls for snapshot and click/type (until the frame reloads).
+//
+// Single-frame for now; frame merge (fN:eM) is a later step — `prefix` is the hook.
+(() => {
+  const A11Y = window.__katashiroA11y;
+  if (!A11Y) return; // vendored lib must be injected first
+
+  // Persistent per-frame registry. byRef resolves ref->Element; byEl re-issues a stable ref to the same
+  // Element within one snapshot; snapshotId is the generation an action must match.
+  const REG = (window.__katashiroReg ||= {
+    snapshotId: 0,
+    prefix: "",
+    byRef: new Map(),   // refId -> Element (cleared each snapshot; strong ref, guarded by isConnected)
+    byEl: new WeakMap() // Element -> refId (auto-drops detached nodes)
+  });
+
+  const INTERACTIVE_ROLES = new Set([
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "listbox",
+    "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "switch", "slider", "spinbutton", "option"
+  ]);
+  const INTERACTIVE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY", "OPTION"]);
+
+  function isInteractive(el, role) {
+    if (role && INTERACTIVE_ROLES.has(role)) return true;
+    if (INTERACTIVE_TAGS.has(el.tagName)) return true;
+    if (el.isContentEditable) return true;
+    const ti = el.getAttribute("tabindex");
+    if (ti !== null && Number(ti) >= 0) return true;
+    // Weak signal only — cursor:pointer is noisy, so it is last (ADR §3.1).
+    try { if (getComputedStyle(el).cursor === "pointer") return true; } catch { /* detached */ }
+    return false;
+  }
+
+  function isVisible(el) {
+    if (!el.isConnected) return false;
+    if (typeof el.checkVisibility === "function") {
+      return el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true });
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function stateOf(el, role) {
+    const s = [];
+    if (el.hasAttribute("required") || el.getAttribute("aria-required") === "true") s.push("required");
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") s.push("disabled");
+    const checked = el.getAttribute("aria-checked") ?? (("checked" in el) ? String(!!el.checked) : null);
+    if ((role === "checkbox" || role === "radio" || role === "switch") && checked && checked !== "false") s.push("checked");
+    const exp = el.getAttribute("aria-expanded");
+    if (exp === "true" || exp === "false") s.push(`expanded=${exp}`);
+    return s.length ? ` {${s.join(", ")}}` : "";
+  }
+
+  function issueRef(el) {
+    let ref = REG.byEl.get(el);
+    if (!ref) {
+      ref = REG.prefix + "e" + (++REG._counter || (REG._counter = 1));
+      REG.byEl.set(el, ref);
+    }
+    REG.byRef.set(ref, el);
+    return ref;
+  }
+
+  // Depth-first walk, descending into open shadow roots. Emits lines for a11y-meaningful or
+  // heuristically-interactive elements; pure wrappers are skipped but still traversed.
+  function walk(node, depth, out) {
+    const kids = [];
+    if (node.shadowRoot) kids.push(...node.shadowRoot.children);       // open shadow only; closed is null
+    if (node.children) kids.push(...node.children);
+    for (const el of kids) {
+      if (A11Y.isInaccessible(el)) continue;
+      const role = A11Y.getRole(el);
+      const name = A11Y.computeAccessibleName(el);
+      const interactive = isInteractive(el, role);
+      const meaningful = !!(role || name) || interactive;
+      let childDepth = depth;
+      if (meaningful && isVisible(el)) {
+        const label = name ? ` "${name.replace(/\s+/g, " ").trim()}"` : "";
+        const ref = interactive ? ` [ref=${issueRef(el)}]` : "";
+        const level = el.getAttribute("aria-level") || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : "");
+        const lvl = level ? ` [level=${level}]` : "";
+        out.push(`${"  ".repeat(depth)}- ${role || el.tagName.toLowerCase()}${label}${lvl}${ref}${stateOf(el, role)}`);
+        childDepth = depth + 1;
+      }
+      walk(el, childDepth, out);
+    }
+  }
+
+  // Public: build a fresh snapshot. Clears prior refs (snapshot-scoped) and bumps the generation.
+  window.__katashiroSnapshot = function () {
+    REG.snapshotId++;
+    REG.byRef.clear();
+    REG._counter = 0;
+    const out = [];
+    walk(document.body || document.documentElement, 0, out);
+    return {
+      ok: true,
+      snapshotId: REG.snapshotId,
+      url: location.href,
+      title: document.title,
+      tree: out.join("\n") || "(no interactive or labeled elements found)"
+    };
+  };
+
+  // Public: resolve a ref to a live Element, asserting it is current and attached (ADR §3.2).
+  // Returns { ok, el } or { ok:false, stale:true, error } so callers raise StaleRefError.
+  window.__katashiroResolve = function (ref, expectSnapshotId) {
+    if (expectSnapshotId != null && expectSnapshotId !== REG.snapshotId) {
+      return { ok: false, stale: true, error: `stale ref ${ref}: snapshot ${expectSnapshotId} superseded by ${REG.snapshotId}; call snapshot again` };
+    }
+    const el = REG.byRef.get(ref);
+    if (!el) return { ok: false, stale: true, error: `unknown ref ${ref}; call snapshot again` };
+    if (!el.isConnected) return { ok: false, stale: true, error: `stale ref ${ref}: element detached; call snapshot again` };
+    return { ok: true, el };
+  };
+})();

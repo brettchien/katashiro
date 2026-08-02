@@ -116,7 +116,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 5 DOM-semantic browser tools", async () => {
+test("tools/list returns the 6 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -125,7 +125,8 @@ test("tools/list returns the 5 DOM-semantic browser tools", async () => {
     "katashiro.read_dom",
     "katashiro.navigate",
     "katashiro.type",
-    "katashiro.screenshot"
+    "katashiro.screenshot",
+    "katashiro.snapshot"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -366,7 +367,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 5);
+  assert.equal(tools.length, 6);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -565,7 +566,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 5, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 6, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -579,4 +580,31 @@ test("onStatus(false) only when the LAST tunnel closes", async () => {
   }
   assert.deepEqual(bag.statuses, [true, false]);
   assert.equal(bag.state.mcpConnectionId, null);
+});
+
+// --- snapshot (a11y-tree perception) ----------------------------------------
+
+test("snapshot injects the vendored a11y engine + walker, then returns the tree with a header", async () => {
+  const { chrome, calls } = mockChrome({
+    scriptResult: {
+      ok: true, snapshotId: 3, url: "https://example.test/", title: "Example",
+      tree: '- button "Go" [ref=e1]'
+    }
+  });
+  // Read-only: reachable even with act mode OFF (no write gate).
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: false });
+  assert.equal(res.isError, undefined, "snapshot is not gated by act mode");
+  assert.match(res.content[0].text, /snapshot 3 — Example/);
+  assert.match(res.content[0].text, /\[ref=e1\]/);
+  // It injected the vendored lib + walker as files, then ran a func to build the snapshot.
+  const filesInj = calls.executeScript.find((c) => c.files);
+  assert.deepEqual(filesInj.files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.ok(calls.executeScript.some((c) => typeof c.func === "function"), "runs the snapshot func");
+});
+
+test("snapshot surfaces a walker failure as an MCP error", async () => {
+  const { chrome } = mockChrome({ scriptResult: { ok: false, error: "no body" } });
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: true });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /no body/);
 });

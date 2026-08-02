@@ -183,6 +183,34 @@
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
         return { content: [{ type: "image", data: base64, mimeType: "image/jpeg" }] };
       }
+    },
+
+    "katashiro.snapshot": {
+      description:
+        "PRIMARY way to see the page: an accessibility-tree snapshot of the active tab as compact " +
+        "text, with a stable `ref` on each interactive element. Prefer this over screenshot for " +
+        "reading and for finding what to act on — it is far cheaper and gives refs. Returns a " +
+        "snapshotId; pass a ref (and the snapshotId) to click/type. Screenshot only when a text " +
+        "snapshot cannot answer (visual layout, images/canvas).",
+      inputSchema: { type: "object", properties: {} },
+      /** @param {object} _args (none) */
+      async call(_args, ctx) {
+        // Inject the vendored a11y engine + the walker into the tab's isolated world. Idempotent:
+        // the walker keeps any existing per-frame registry (`||=`) and re-defines its globals, so
+        // re-injecting every call is safe and self-heals after a page reload.
+        await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
+          files: ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]
+        });
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
+          func: () => window.__katashiroSnapshot()
+        });
+        if (!result || !result.ok) return errText((result && result.error) || "snapshot failed");
+        // Header lets the agent correlate refs with the snapshot they belong to (stale detection).
+        const header = `# snapshot ${result.snapshotId} — ${result.title}\n# ${result.url}\n`;
+        return okText(header + result.tree);
+      }
     }
   };
 
