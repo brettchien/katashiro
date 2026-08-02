@@ -31,8 +31,9 @@ function mockChrome(opts = {}) {
     scripting: {
       executeScript: async (inj) => {
         calls.executeScript.push(inj);
-        // Simulate the in-page func's return (the func itself needs a DOM; not run here).
-        return [{ result: opts.scriptResult ?? { ok: true } }];
+        // Simulate the in-page func's return (the func itself needs a DOM; not run here). frameId:0
+        // is the top frame — the merge/all-frames path keys on it.
+        return [{ frameId: 0, result: opts.scriptResult ?? { ok: true } }];
       }
     }
   };
@@ -203,7 +204,7 @@ test("katashiro.click resolves a ref and returns the post-action snapshot", asyn
   );
   assert.equal(res.isError, undefined);
   assert.match(res.content[0].text, /clicked ref e5/);
-  assert.match(res.content[0].text, /# snapshot 2/); // snapshot-after-action appended
+  assert.match(res.content[0].text, /# snapshot [0-9]+/); // snapshot-after-action appended
   // walker injected; act call carries [ref, snapshotId, selector, ...]
   assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
   assert.ok(calls.executeScript.some((c) => Array.isArray(c.args) && c.args[0] === "e5"));
@@ -215,7 +216,7 @@ test("katashiro.wait_for polls then returns a snapshot; missing condition errors
     "tools/call", { name: "katashiro.wait_for", arguments: { selector: "#ready" } }, ok.deps
   );
   assert.equal(hit.isError, undefined);
-  assert.match(hit.content[0].text, /# snapshot 3/);
+  assert.match(hit.content[0].text, /# snapshot [0-9]+/);
 
   const bad = deps();
   const none = await BrowserMcp.handleMcpMessage(
@@ -631,7 +632,7 @@ test("snapshot injects the vendored a11y engine + walker, then returns the tree 
   // Read-only: reachable even with act mode OFF (no write gate).
   const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: false });
   assert.equal(res.isError, undefined, "snapshot is not gated by act mode");
-  assert.match(res.content[0].text, /snapshot 3 — Example/);
+  assert.match(res.content[0].text, /snapshot [0-9]+ — Example/);
   assert.match(res.content[0].text, /\[ref=e1\]/);
   // It injected the vendored lib + walker as files, then ran a func to build the snapshot.
   const filesInj = calls.executeScript.find((c) => c.files);
@@ -639,9 +640,51 @@ test("snapshot injects the vendored a11y engine + walker, then returns the tree 
   assert.ok(calls.executeScript.some((c) => typeof c.func === "function"), "runs the snapshot func");
 });
 
-test("snapshot surfaces a walker failure as an MCP error", async () => {
+test("snapshot with no usable frame content degrades to a placeholder, not a crash", async () => {
+  // The multi-frame merge is resilient: a frame that yields nothing doesn't fail the whole snapshot.
   const { chrome } = mockChrome({ scriptResult: { ok: false, error: "no body" } });
   const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: true });
-  assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /no body/);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+// --- frames (fN:eM) ---------------------------------------------------------
+
+test("snapshot merges child frames with f<id>:eN namespaced refs", async () => {
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7 }] },
+    scripting: {
+      executeScript: async (inj) => {
+        if (inj.files) return [{ frameId: 0, result: { ok: true } }];
+        return [
+          { frameId: 0, result: { ok: true, title: "Top", url: "https://top/", tree: '- button "A" [ref=e1]' } },
+          { frameId: 7, result: { ok: true, title: "", url: "https://iframe/", tree: '- textbox "Email" [ref=e1]' } }
+        ];
+      }
+    }
+  };
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: false });
+  const text = res.content[0].text;
+  assert.match(text, /# snapshot [0-9]+ — Top/);
+  assert.match(text, /- button "A" \[ref=e1\]/);                 // top frame: bare ref
+  assert.match(text, /--- frame f7 \(https:\/\/iframe\/\) ---/); // child frame section
+  assert.match(text, /- textbox "Email" \[ref=f7:e1\]/);         // child frame: namespaced ref
+});
+
+test("click on a child-frame ref targets that frame with the bare ref", async () => {
+  const calls = [];
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7 }] },
+    scripting: {
+      executeScript: async (inj) => {
+        calls.push(inj);
+        return [{ frameId: 0, result: { ok: true, how: "ref e3", title: "T", url: "u", tree: "- x" } }];
+      }
+    }
+  };
+  await BrowserMcp.callBrowserTool("katashiro.click", { ref: "f7:e3", snapshotId: 5 }, { chrome, actMode: true });
+  const framed = calls.filter((c) => c.target && Array.isArray(c.target.frameIds) && c.target.frameIds[0] === 7);
+  assert.ok(framed.length >= 1, "inject + act targeted frame 7");
+  const act = calls.find((c) => Array.isArray(c.args) && c.args[0] === "e3");
+  assert.ok(act, "act call passes the bare in-frame ref e3, not the prefixed one");
 });

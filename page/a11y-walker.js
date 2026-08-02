@@ -109,8 +109,10 @@
   }
 
   // Public: build a fresh snapshot. Clears prior refs (snapshot-scoped) and bumps the generation.
-  window.__katashiroSnapshot = function () {
-    REG.snapshotId++;
+  // forceId: the caller (the tool) assigns one generation across ALL frames of a page, so a
+  // multi-frame snapshot shares one snapshotId. Without it, each frame would count independently.
+  window.__katashiroSnapshot = function (forceId) {
+    REG.snapshotId = (forceId != null) ? forceId : REG.snapshotId + 1;
     REG.byRef.clear();
     REG._counter = 0;
     const out = [];
@@ -132,7 +134,7 @@
   // Settle then snapshot: after an action that may navigate or re-render, wait for DOM mutations to
   // quiet (or a hard cap) before serializing, so the agent gets the resulting page, not a transitional
   // tree (ADR §3.3). Async — chrome.scripting awaits the returned promise.
-  window.__katashiroSnapshotAfter = async function () {
+  window.__katashiroSnapshotAfter = async function (forceId) {
     await new Promise((resolve) => {
       let hard = setTimeout(fin, 1500);   // hard cap
       let quiet = setTimeout(fin, 200);   // mutations quiet for 200ms
@@ -140,7 +142,7 @@
       try { mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true }); } catch { /* no doc */ }
       function fin() { clearTimeout(hard); clearTimeout(quiet); mo.disconnect(); resolve(); }
     });
-    return window.__katashiroSnapshot();
+    return window.__katashiroSnapshot(forceId);
   };
 
   // Public: resolve a ref to a live Element, asserting it is current and attached (ADR §3.2).

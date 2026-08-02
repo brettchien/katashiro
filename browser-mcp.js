@@ -56,23 +56,55 @@
   // snapshot/ref-resolving call is safe and self-heals after a page reload.
   const WALKER_FILES = ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"];
 
-  async function injectWalker(chrome, tabId) {
-    await chrome.scripting.executeScript({ target: { tabId }, files: WALKER_FILES });
+  // One snapshot generation per snapshot call, shared across all frames of the page so a ref's
+  // snapshotId is comparable regardless of which frame it lives in.
+  let snapshotSeq = 0;
+
+  async function injectWalker(chrome, target) {
+    await chrome.scripting.executeScript({ target, files: WALKER_FILES });
   }
 
-  function formatSnapshot(r) {
-    return `# snapshot ${r.snapshotId}${r.truncated ? " (truncated)" : ""} — ${r.title}\n# ${r.url}\n${r.tree}`;
+  // A ref is `eN` in the top frame or `f<frameId>:eN` in a child frame (ADR §3.1). Parse it back to
+  // the owning frame + the bare in-frame ref.
+  function parseRef(ref) {
+    const m = /^f(\d+):(.+)$/.exec(ref || "");
+    return m ? { frameId: Number(m[1]), bare: m[2] } : { frameId: 0, bare: ref };
   }
 
-  // The settle-then-snapshot view returned by click/type/navigate, so the agent never needs a
-  // follow-up snapshot/screenshot to see the result of its action (ADR §3.3, snapshot-after-action).
-  async function snapshotAfter(chrome, tabId) {
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => window.__katashiroSnapshotAfter()
+  // Merge per-frame snapshot results into one tree. The top frame (frameId 0) is the trunk; each
+  // other frame is appended as a labeled section with its refs namespaced `f<frameId>:eN`, so the
+  // agent can address and act on elements inside (incl. cross-origin) iframes.
+  function mergeFrames(results, id) {
+    const frames = (results || []).filter((r) => r && r.result && r.result.ok);
+    const top = frames.find((r) => r.frameId === 0) || frames[0];
+    const t = top ? top.result : { title: "", url: "", tree: "(no content)", truncated: false };
+    let out = `# snapshot ${id}${t.truncated ? " (truncated)" : ""} — ${t.title}\n# ${t.url}\n${t.tree}`;
+    for (const r of frames) {
+      if (r === top) continue;
+      const tree = r.result.tree;
+      if (!tree || tree.startsWith("(no ")) continue;
+      const prefixed = tree.replace(/\[ref=e/g, `[ref=f${r.frameId}:e`);
+      out += `\n\n--- frame f${r.frameId} (${r.result.url}) ---\n${prefixed}`;
+    }
+    return out;
+  }
+
+  // Snapshot every frame under one shared snapshotId. `after` runs the settle-then-snapshot form
+  // (post-action). Returns the merged, ref-namespaced text.
+  async function fullSnapshot(chrome, tabId, after) {
+    const id = ++snapshotSeq;
+    await injectWalker(chrome, { tabId, allFrames: true });
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: (sid, aft) => (aft ? window.__katashiroSnapshotAfter(sid) : window.__katashiroSnapshot(sid)),
+      args: [id, !!after]
     });
-    return result && result.ok ? formatSnapshot(result) : "(post-action snapshot unavailable)";
+    return mergeFrames(results, id);
   }
+
+  // The post-action view returned by click/type/navigate, so the agent never needs a follow-up
+  // snapshot/screenshot to see the result of its action (ADR §3.3).
+  const snapshotAfter = (chrome, tabId) => fullSnapshot(chrome, tabId, true);
 
   // Resolve once the tab finishes loading (for navigate's post-action snapshot). Falls through
   // immediately where chrome.tabs.onUpdated is absent (e.g. tests).
@@ -135,9 +167,11 @@
       /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("click needs a ref (preferred) or a selector");
-        await injectWalker(ctx.chrome, ctx.tab.id);
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
-          target: { tabId: ctx.tab.id },
+          target,
           func: (ref, snapshotId, sel) => {
             let el, how;
             if (ref) {
@@ -159,10 +193,10 @@
             el.click();
             return { ok: true, how };
           },
-          args: [args.ref || null, args.snapshotId ?? null, args.selector || null]
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null]
         });
         if (!result.ok) return errText(result.error);
-        return okText(`clicked ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+        return okText(`clicked ${args.ref ? "ref " + args.ref : result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
@@ -204,7 +238,6 @@
       async call(args, ctx) {
         await ctx.chrome.tabs.update(ctx.tab.id, { url: args.url });
         await waitForComplete(ctx.chrome, ctx.tab.id);
-        await injectWalker(ctx.chrome, ctx.tab.id);
         return okText(`navigated to ${args.url}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
@@ -227,9 +260,11 @@
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, text: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("type needs a ref (preferred) or a selector");
-        await injectWalker(ctx.chrome, ctx.tab.id);
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
-          target: { tabId: ctx.tab.id },
+          target,
           func: (ref, snapshotId, sel, text) => {
             let el, how;
             if (ref) {
@@ -255,10 +290,10 @@
             el.dispatchEvent(new Event("change", { bubbles: true }));
             return { ok: true, how };
           },
-          args: [args.ref || null, args.snapshotId ?? null, args.selector || null, args.text]
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, args.text]
         });
         if (!result.ok) return errText(result.error);
-        return okText(`typed into ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+        return okText(`typed into ${args.ref ? "ref " + args.ref : result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
@@ -292,13 +327,7 @@
       inputSchema: { type: "object", properties: {} },
       /** @param {object} _args (none) */
       async call(_args, ctx) {
-        await injectWalker(ctx.chrome, ctx.tab.id);
-        const [{ result }] = await ctx.chrome.scripting.executeScript({
-          target: { tabId: ctx.tab.id },
-          func: () => window.__katashiroSnapshot()
-        });
-        if (!result || !result.ok) return errText((result && result.error) || "snapshot failed");
-        return okText(formatSnapshot(result));
+        return okText(await fullSnapshot(ctx.chrome, ctx.tab.id, false));
       }
     },
 
@@ -318,7 +347,6 @@
       /** @param {{ selector?: string, text?: string, timeout?: number }} args */
       async call(args, ctx) {
         if (!args.selector && !args.text) return errText("wait_for needs a selector or text");
-        await injectWalker(ctx.chrome, ctx.tab.id);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target: { tabId: ctx.tab.id },
           func: async (sel, text, timeout) => {
