@@ -26,15 +26,21 @@
   ]);
   const INTERACTIVE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY", "OPTION"]);
 
-  function isInteractive(el, role) {
+  // "Strong" = a deterministic, semantic control (tag / role / contenteditable / tabindex). Always
+  // gets a ref, even nested — a real <input> inside a clickable card must stay reachable.
+  function strongInteractive(el, role) {
     if (role && INTERACTIVE_ROLES.has(role)) return true;
     if (INTERACTIVE_TAGS.has(el.tagName)) return true;
     if (el.isContentEditable) return true;
     const ti = el.getAttribute("tabindex");
-    if (ti !== null && Number(ti) >= 0) return true;
-    // Weak signal only — cursor:pointer is noisy, so it is last (ADR §3.1).
-    try { if (getComputedStyle(el).cursor === "pointer") return true; } catch { /* detached */ }
-    return false;
+    return ti !== null && Number(ti) >= 0;
+  }
+
+  // "Weak" = cursor:pointer only. It inherits to children, so decorative spans/icons inside a
+  // clickable element also report pointer. We honor it only when NOT already inside a ref'd
+  // interactive element, to avoid redundant nested refs (ADR §3.1; confirmed noisy in live test).
+  function weakInteractive(el) {
+    try { return getComputedStyle(el).cursor === "pointer"; } catch { return false; }
   }
 
   function isVisible(el) {
@@ -69,7 +75,7 @@
 
   // Depth-first walk, descending into open shadow roots. Emits lines for a11y-meaningful or
   // heuristically-interactive elements; pure wrappers are skipped but still traversed.
-  function walk(node, depth, out) {
+  function walk(node, depth, out, inInteractive) {
     const kids = [];
     if (node.shadowRoot) kids.push(...node.shadowRoot.children);       // open shadow only; closed is null
     if (node.children) kids.push(...node.children);
@@ -77,9 +83,12 @@
       if (A11Y.isInaccessible(el)) continue;
       const role = A11Y.getRole(el);
       const name = A11Y.computeAccessibleName(el);
-      const interactive = isInteractive(el, role);
+      // Strong controls always ref; weak (cursor:pointer) elements ref only with no ref'd ancestor,
+      // so decorative descendants of a button/link no longer get redundant refs.
+      const interactive = strongInteractive(el, role) || (!inInteractive && weakInteractive(el));
       const meaningful = !!(role || name) || interactive;
       let childDepth = depth;
+      let childInside = inInteractive;
       if (meaningful && isVisible(el)) {
         const label = name ? ` "${name.replace(/\s+/g, " ").trim()}"` : "";
         const ref = interactive ? ` [ref=${issueRef(el)}]` : "";
@@ -87,8 +96,9 @@
         const lvl = level ? ` [level=${level}]` : "";
         out.push(`${"  ".repeat(depth)}- ${role || el.tagName.toLowerCase()}${label}${lvl}${ref}${stateOf(el, role)}`);
         childDepth = depth + 1;
+        if (interactive) childInside = true;
       }
-      walk(el, childDepth, out);
+      walk(el, childDepth, out, childInside);
     }
   }
 
@@ -98,7 +108,7 @@
     REG.byRef.clear();
     REG._counter = 0;
     const out = [];
-    walk(document.body || document.documentElement, 0, out);
+    walk(document.body || document.documentElement, 0, out, false);
     return {
       ok: true,
       snapshotId: REG.snapshotId,
