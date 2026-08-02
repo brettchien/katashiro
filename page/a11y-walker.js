@@ -26,6 +26,11 @@
   ]);
   const INTERACTIVE_TAGS = new Set(["A", "BUTTON", "INPUT", "SELECT", "TEXTAREA", "SUMMARY", "OPTION"]);
 
+  // Node budget: a huge page (e.g. an e-commerce home) has hundreds of interactive elements; an
+  // unbounded tree floods the agent's context (ADR §Negative "walker cost / node budget"). Cap the
+  // emitted lines and flag truncation so the agent scopes/scrolls instead of drowning.
+  const MAX_LINES = 1000;
+
   // "Strong" = a deterministic, semantic control (tag / role / contenteditable / tabindex). Always
   // gets a ref, even nested — a real <input> inside a clickable card must stay reachable.
   function strongInteractive(el, role) {
@@ -76,6 +81,7 @@
   // Depth-first walk, descending into open shadow roots. Emits lines for a11y-meaningful or
   // heuristically-interactive elements; pure wrappers are skipped but still traversed.
   function walk(node, depth, out, inInteractive) {
+    if (out.length >= MAX_LINES) return; // node budget reached — stop emitting
     const kids = [];
     if (node.shadowRoot) kids.push(...node.shadowRoot.children);       // open shadow only; closed is null
     if (node.children) kids.push(...node.children);
@@ -109,13 +115,32 @@
     REG._counter = 0;
     const out = [];
     walk(document.body || document.documentElement, 0, out, false);
+    const truncated = out.length >= MAX_LINES;
+    if (truncated) {
+      out.push(`- … truncated at ${MAX_LINES} nodes; scope with a selector, scroll, or act on what's shown`);
+    }
     return {
       ok: true,
       snapshotId: REG.snapshotId,
       url: location.href,
       title: document.title,
+      truncated,
       tree: out.join("\n") || "(no interactive or labeled elements found)"
     };
+  };
+
+  // Settle then snapshot: after an action that may navigate or re-render, wait for DOM mutations to
+  // quiet (or a hard cap) before serializing, so the agent gets the resulting page, not a transitional
+  // tree (ADR §3.3). Async — chrome.scripting awaits the returned promise.
+  window.__katashiroSnapshotAfter = async function () {
+    await new Promise((resolve) => {
+      let hard = setTimeout(fin, 1500);   // hard cap
+      let quiet = setTimeout(fin, 200);   // mutations quiet for 200ms
+      const mo = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(fin, 200); });
+      try { mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true }); } catch { /* no doc */ }
+      function fin() { clearTimeout(hard); clearTimeout(quiet); mo.disconnect(); resolve(); }
+    });
+    return window.__katashiroSnapshot();
   };
 
   // Public: resolve a ref to a live Element, asserting it is current and attached (ADR §3.2).

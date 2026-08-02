@@ -51,6 +51,46 @@
   const okText = (t) => ({ content: [{ type: "text", text: t }] });
   const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
 
+  // The vendored a11y engine + the walker, injected into the tab's isolated world. Idempotent: the
+  // walker keeps any existing per-frame registry and re-defines its globals, so injecting on every
+  // snapshot/ref-resolving call is safe and self-heals after a page reload.
+  const WALKER_FILES = ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"];
+
+  async function injectWalker(chrome, tabId) {
+    await chrome.scripting.executeScript({ target: { tabId }, files: WALKER_FILES });
+  }
+
+  function formatSnapshot(r) {
+    return `# snapshot ${r.snapshotId}${r.truncated ? " (truncated)" : ""} — ${r.title}\n# ${r.url}\n${r.tree}`;
+  }
+
+  // The settle-then-snapshot view returned by click/type/navigate, so the agent never needs a
+  // follow-up snapshot/screenshot to see the result of its action (ADR §3.3, snapshot-after-action).
+  async function snapshotAfter(chrome, tabId) {
+    const [{ result }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => window.__katashiroSnapshotAfter()
+    });
+    return result && result.ok ? formatSnapshot(result) : "(post-action snapshot unavailable)";
+  }
+
+  // Resolve once the tab finishes loading (for navigate's post-action snapshot). Falls through
+  // immediately where chrome.tabs.onUpdated is absent (e.g. tests).
+  function waitForComplete(chrome, tabId, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        try { chrome.tabs.onUpdated.removeListener(onUpd); } catch { /* absent */ }
+        resolve();
+      };
+      const onUpd = (id, info) => { if (id === tabId && info.status === "complete") finish(); };
+      try { chrome.tabs.onUpdated.addListener(onUpd); } catch { return finish(); }
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
   // Written for the agent to act on: it says what was refused, that only the human can lift
   // it, and where — so the model asks instead of retrying the same call.
   const ACT_MODE_OFF =
@@ -79,31 +119,58 @@
    */
   const TOOLS = {
     "katashiro.click": {
-      description: "Click the element matching a CSS selector in the active browser tab.",
+      description:
+        "Click an element in the active tab. Prefer `ref` from the most recent snapshot (pass its " +
+        "`snapshotId` too); `selector` is a fallback. Returns the updated snapshot — do not " +
+        "screenshot afterward.",
       write: true,
       inputSchema: {
         type: "object",
-        properties: { selector: { type: "string", description: "CSS selector" } },
-        required: ["selector"]
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" }
+        }
       },
-      /** @param {{ selector: string }} args */
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
+        if (!args.ref && !args.selector) return errText("click needs a ref (preferred) or a selector");
+        await injectWalker(ctx.chrome, ctx.tab.id);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target: { tabId: ctx.tab.id },
-          func: (sel) => {
-            const el = document.querySelector(sel);
-            if (!el) return { ok: false, error: "no element for selector: " + sel };
+          func: (ref, snapshotId, sel) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
+            // Actionability subset (P0): visible + enabled (ADR §3.4).
+            const vis = typeof el.checkVisibility === "function"
+              ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+              : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+            if (!vis) return { ok: false, error: how + " is not visible" };
+            if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
+            el.scrollIntoView({ block: "center" });
             el.click();
-            return { ok: true };
+            return { ok: true, how };
           },
-          args: [args.selector]
+          args: [args.ref || null, args.snapshotId ?? null, args.selector || null]
         });
-        return result.ok ? okText(`clicked ${args.selector}`) : errText(result.error);
+        if (!result.ok) return errText(result.error);
+        return okText(`clicked ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
     "katashiro.read_dom": {
-      description: "Read a snapshot of the active tab's DOM (optionally scoped to a selector).",
+      description:
+        "Return the raw HTML of an element (default: whole body) in the active tab. For perceiving " +
+        "the page or finding what to act on, use `snapshot` instead — far cheaper and it gives refs. " +
+        "Use read_dom only when you need the literal markup of a specific element.",
       inputSchema: {
         type: "object",
         properties: {
@@ -136,40 +203,70 @@
       /** @param {{ url: string }} args */
       async call(args, ctx) {
         await ctx.chrome.tabs.update(ctx.tab.id, { url: args.url });
-        return okText(`navigating to ${args.url}`);
+        await waitForComplete(ctx.chrome, ctx.tab.id);
+        await injectWalker(ctx.chrome, ctx.tab.id);
+        return okText(`navigated to ${args.url}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
     "katashiro.type": {
-      description: "Type text into the element matching a CSS selector in the active tab.",
+      description:
+        "Type text into an element in the active tab. Prefer `ref` from the most recent snapshot; " +
+        "`selector` is a fallback. Returns the updated snapshot.",
       write: true,
       inputSchema: {
         type: "object",
-        properties: { selector: { type: "string" }, text: { type: "string" } },
-        required: ["selector", "text"]
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" },
+          text: { type: "string" }
+        },
+        required: ["text"]
       },
-      /** @param {{ selector: string, text: string }} args */
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string, text: string }} args */
       async call(args, ctx) {
+        if (!args.ref && !args.selector) return errText("type needs a ref (preferred) or a selector");
+        await injectWalker(ctx.chrome, ctx.tab.id);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target: { tabId: ctx.tab.id },
-          func: (sel, text) => {
-            const el = document.querySelector(sel);
-            if (!el) return { ok: false, error: "no element for selector: " + sel };
+          func: (ref, snapshotId, sel, text) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
             el.focus();
-            if ("value" in el) el.value = text;
+            // React 18+ controlled inputs ignore a plain `el.value = …`; drive the native prototype
+            // setter so React's onChange sees it (ADR §3.2). contenteditable / others fall back.
+            const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+                        : el instanceof HTMLInputElement ? HTMLInputElement.prototype : null;
+            const desc = proto && Object.getOwnPropertyDescriptor(proto, "value");
+            if (desc && desc.set) desc.set.call(el, text);
+            else if (el.isContentEditable) el.textContent = text;
+            else if ("value" in el) el.value = text;
             else el.textContent = text;
             el.dispatchEvent(new Event("input", { bubbles: true }));
             el.dispatchEvent(new Event("change", { bubbles: true }));
-            return { ok: true };
+            return { ok: true, how };
           },
-          args: [args.selector, args.text]
+          args: [args.ref || null, args.snapshotId ?? null, args.selector || null, args.text]
         });
-        return result.ok ? okText(`typed into ${args.selector}`) : errText(result.error);
+        if (!result.ok) return errText(result.error);
+        return okText(`typed into ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
     "katashiro.screenshot": {
-      description: "Capture a screenshot of the active browser tab.",
+      description:
+        "Capture a screenshot (image) of the active tab. EXPENSIVE and slow to reason over — use " +
+        "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
+        "read text or to confirm an action succeeded (action tools already return the new snapshot).",
       inputSchema: { type: "object", properties: {} },
       /** @param {object} _args (none) */
       async call(_args, ctx) {
@@ -195,21 +292,49 @@
       inputSchema: { type: "object", properties: {} },
       /** @param {object} _args (none) */
       async call(_args, ctx) {
-        // Inject the vendored a11y engine + the walker into the tab's isolated world. Idempotent:
-        // the walker keeps any existing per-frame registry (`||=`) and re-defines its globals, so
-        // re-injecting every call is safe and self-heals after a page reload.
-        await ctx.chrome.scripting.executeScript({
-          target: { tabId: ctx.tab.id },
-          files: ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]
-        });
+        await injectWalker(ctx.chrome, ctx.tab.id);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target: { tabId: ctx.tab.id },
           func: () => window.__katashiroSnapshot()
         });
         if (!result || !result.ok) return errText((result && result.error) || "snapshot failed");
-        // Header lets the agent correlate refs with the snapshot they belong to (stale detection).
-        const header = `# snapshot ${result.snapshotId} — ${result.title}\n# ${result.url}\n`;
-        return okText(header + result.tree);
+        return okText(formatSnapshot(result));
+      }
+    },
+
+    "katashiro.wait_for": {
+      description:
+        "Wait until a condition holds in the active tab, then return the fresh snapshot. Give one of " +
+        "`selector` (element present) or `text` (text appears). Never sleeps a fixed time. Use after " +
+        "an action that loads content before acting on it.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "wait until this CSS selector matches" },
+          text: { type: "string", description: "wait until this text appears on the page" },
+          timeout: { type: "number", description: "ms, default 5000" }
+        }
+      },
+      /** @param {{ selector?: string, text?: string, timeout?: number }} args */
+      async call(args, ctx) {
+        if (!args.selector && !args.text) return errText("wait_for needs a selector or text");
+        await injectWalker(ctx.chrome, ctx.tab.id);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
+          func: async (sel, text, timeout) => {
+            const deadline = Date.now() + (timeout || 5000);
+            const hit = () => (sel ? !!document.querySelector(sel)
+                                   : (document.body && document.body.innerText.includes(text)));
+            while (Date.now() < deadline) {
+              if (hit()) return { ok: true };
+              await new Promise((r) => setTimeout(r, 100)); // poll in-page, not a fixed sleep
+            }
+            return { ok: false, error: "timed out waiting for " + (sel ? "selector " + sel : "text " + JSON.stringify(text)) };
+          },
+          args: [args.selector || null, args.text || null, args.timeout ?? null]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(await snapshotAfter(ctx.chrome, ctx.tab.id));
       }
     }
   };

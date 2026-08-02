@@ -116,7 +116,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 6 DOM-semantic browser tools", async () => {
+test("tools/list returns the 7 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -126,7 +126,8 @@ test("tools/list returns the 6 DOM-semantic browser tools", async () => {
     "katashiro.navigate",
     "katashiro.type",
     "katashiro.screenshot",
-    "katashiro.snapshot"
+    "katashiro.snapshot",
+    "katashiro.wait_for"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -178,14 +179,50 @@ test("katashiro.navigate drives chrome.tabs.update", async () => {
   assert.match(res.content[0].text, /example\.com/);
 });
 
-test("katashiro.type injects a script with selector + text args", async () => {
-  const { deps: d, calls } = deps();
+test("katashiro.type injects the walker, then types via selector fallback", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #q" } });
   await BrowserMcp.handleMcpMessage(
     "tools/call",
     { name: "katashiro.type", arguments: { selector: "#q", text: "hello" } },
     d
   );
-  assert.deepEqual(calls.executeScript[0].args, ["#q", "hello"]);
+  // first call injects the vendored lib + walker; the act call carries [ref, snapshotId, selector, text]
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args.includes("hello"));
+  assert.deepEqual(act.args, [null, null, "#q", "hello"]);
+});
+
+test("katashiro.click resolves a ref and returns the post-action snapshot", async () => {
+  const { deps: d, calls } = deps({
+    scriptResult: { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: "- button [ref=e5]" }
+  });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } },
+    d
+  );
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /clicked ref e5/);
+  assert.match(res.content[0].text, /# snapshot 2/); // snapshot-after-action appended
+  // walker injected; act call carries [ref, snapshotId, selector, ...]
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.ok(calls.executeScript.some((c) => Array.isArray(c.args) && c.args[0] === "e5"));
+});
+
+test("katashiro.wait_for polls then returns a snapshot; missing condition errors", async () => {
+  const ok = deps({ scriptResult: { ok: true, snapshotId: 3, title: "T", url: "u", tree: "- x" } });
+  const hit = await BrowserMcp.handleMcpMessage(
+    "tools/call", { name: "katashiro.wait_for", arguments: { selector: "#ready" } }, ok.deps
+  );
+  assert.equal(hit.isError, undefined);
+  assert.match(hit.content[0].text, /# snapshot 3/);
+
+  const bad = deps();
+  const none = await BrowserMcp.handleMcpMessage(
+    "tools/call", { name: "katashiro.wait_for", arguments: {} }, bad.deps
+  );
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /needs a selector or text/);
 });
 
 test("katashiro.screenshot captures the tab as JPEG and returns base64 image content", async () => {
@@ -280,7 +317,7 @@ test("act mode on lets a write through", async () => {
     d
   );
   assert.equal(res.isError, undefined);
-  assert.equal(calls.executeScript.length, 1);
+  assert.ok(calls.executeScript.length >= 1, "the write executed (inject + act + post-snapshot)");
 });
 
 test("a refused write says it was refused, not that there was no tab", async () => {
@@ -367,7 +404,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 6);
+  assert.equal(tools.length, 7);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -566,7 +603,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 6, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 7, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
