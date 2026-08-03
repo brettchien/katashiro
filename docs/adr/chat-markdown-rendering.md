@@ -172,7 +172,11 @@ to the ACP (today directly; if the socket moved to the service worker, via `pane
 injected XSS could read the token from `chrome.storage` and **smuggle it out as prompt content over
 that legitimate channel**. Against a malicious ACP the real controls are the **trust boundary** (the
 ACP is the user's own openab broker), **`wss`/TLS + the transport-auth key** (vs MITM), and **DOMPurify**
-(so ACP content never becomes script) — not the CSP. Narrowing panel egress to `'self'` still
+(so ACP content never becomes script) — not the CSP. A *capability* nuance (Orca): markdown adds the
+`innerHTML` sink, i.e. a **new XSS foothold** absent in the `textContent` era; the trust boundary is
+unchanged, but that foothold makes **keeping DOMPurify patched (§3.1) load-bearing against a malicious
+broker too**, not only third parties — it is what stops the foothold from becoming token theft.
+Narrowing panel egress to `'self'` still
 meaningfully closes the *third-party* path, but that requires moving the ACP socket out of the panel
 into the service worker — a **larger refactor tracked as its own ADR** (ACP connection ownership). This
 markdown ADR sets `connect-src` as tight as today's panel-owned socket allows and does not over-claim.

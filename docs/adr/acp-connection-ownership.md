@@ -53,5 +53,7 @@ all future rich-render surfaces: whiteboard, tool-call traces, etc.).
 
 ## 5. Decision
 **TBD.** Placeholder opened from the markdown security review so §3.7 doesn't silently over-claim. To
-be filled when this is prioritized (it does not block the markdown work — the malicious-ACP case is a
-pre-existing trust boundary, not introduced by markdown rendering).
+be filled when this is prioritized (it does not block the markdown work — the malicious-ACP *trust
+boundary* is pre-existing. Markdown does add the `innerHTML` XSS *foothold*, so keeping DOMPurify
+patched is what stops a malicious broker from exploiting it; the connection topology this ADR covers
+doesn't gate the markdown work).
