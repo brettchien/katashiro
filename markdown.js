@@ -17,10 +17,12 @@
   // output is DOMPurify-sanitized once afterward (§2 convention). Unknown/omitted languages fall
   // back to escaped plain code. Always returns a full <pre><code> so markdown-it does not re-wrap.
   function highlightFence(str, lang) {
-    if (lang && hljs && hljs.getLanguage(lang)) {
+    const name = (lang || "").toLowerCase().trim(); // normalize: "JS " / "Python" → registered id
+    if (name && hljs && hljs.getLanguage(name)) {
       try {
-        const out = hljs.highlight(str, { language: lang, ignoreIllegals: true }).value;
-        return '<pre class="hljs"><code class="language-' + lang + '">' + out + "</code></pre>\n";
+        const out = hljs.highlight(str, { language: name, ignoreIllegals: true }).value;
+        // escape the (already-validated) name too, so a future language id can never inject markup
+        return '<pre class="hljs"><code class="language-' + md.utils.escapeHtml(name) + '">' + out + "</code></pre>\n";
       } catch (_) { /* fall through to plain */ }
     }
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>\n";
@@ -45,19 +47,23 @@
     ADD_ATTR: ["target"],
   };
 
-  // The only path remote text may take to reach innerHTML. A lint/grep rule bans any other
-  // `innerHTML =` of remote text (streaming stays textContent; system notices stay textContent).
-  // Link + media hardening (§3.5), registered once. Runs per element after DOMPurify sanitizes its
+  // Link + media hardening (§3.5), registered ONCE (idempotency guard — re-eval / re-require must
+  // not stack the hook and run it N times). Runs per element after DOMPurify sanitizes its
   // attributes — defense in depth behind markdown-it's validateLink and DOMPurify's own URI filter:
   //  - anchors: drop any href whose scheme isn't http(s)/mailto; on the survivors force
   //    target="_blank" + rel="noopener noreferrer" (needs ADD_ATTR:['target'], §3.2) so an opened
   //    link can't reach back via window.opener.
   //  - media (`src`): drop any scheme that isn't http(s)/data: (data: images are allowed by the
-  //    §3.7 CSP img-src; remote-image beaconing is separately blocked there).
+  //    §3.7 CSP img-src; remote-image beaconing is separately blocked there). `srcset` carries its
+  //    own URL list the `src` check doesn't cover; markdown never emits it, so strip it outright.
   const ANCHOR_SCHEMES = /^(https?:|mailto:)/i;
   const MEDIA_SCHEMES = /^(https?:|data:)/i;
-  if (global.DOMPurify && global.DOMPurify.addHook) {
+  if (global.DOMPurify && global.DOMPurify.addHook && !global.__katashiroMarkdownHooked) {
+    global.__katashiroMarkdownHooked = true;
     global.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      if (node.getAttribute && node.hasAttribute && node.hasAttribute("srcset")) {
+        node.removeAttribute("srcset");
+      }
       if (node.nodeName === "A") {
         const href = (node.getAttribute("href") || "").trim();
         if (href && !ANCHOR_SCHEMES.test(href)) {
@@ -71,6 +77,9 @@
       }
     });
   }
+
+  // The only path remote text may take to reach innerHTML. A lint/grep rule bans any other
+  // `innerHTML =` of remote text (streaming stays textContent; system notices stay textContent).
 
   function renderMarkdown(text) {
     const html = md.render(text == null ? "" : String(text));
@@ -90,13 +99,21 @@
       btn.textContent = "copy";
       btn.addEventListener("click", () => {
         const code = pre.querySelector("code");
+        let text;
+        if (code) {
+          text = code.textContent;
+        } else {
+          // no <code> — copy the <pre> text but exclude this button's own "copy" label
+          const clone = pre.cloneNode(true);
+          const b = clone.querySelector(".copy-btn");
+          if (b) b.remove();
+          text = clone.textContent;
+        }
         const flash = (label) => {
           btn.textContent = label;
           global.setTimeout(() => (btn.textContent = "copy"), 1200);
         };
-        global.navigator.clipboard
-          .writeText(code ? code.textContent : pre.textContent)
-          .then(() => flash("copied"), () => flash("failed"));
+        global.navigator.clipboard.writeText(text).then(() => flash("copied"), () => flash("failed"));
       });
       pre.appendChild(btn);
     });

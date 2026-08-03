@@ -44,6 +44,12 @@ test("fenced code is highlighted via the hljs hook, unknown langs fall back to p
   assert.doesNotMatch(unknown, /hljs-/);
 });
 
+test("fence language is normalized (case/whitespace) before lookup", () => {
+  const up = md.render("```JavaScript\nconst x = 1;\n```");
+  assert.match(up, /class="language-javascript"/); // normalized to the registered lowercase id
+  assert.match(up, /<span class="hljs-keyword">const<\/span>/);
+});
+
 test("DP_CONFIG is pinned to the no-relax security defaults (ADR §3.2)", () => {
   assert.deepEqual(DP_CONFIG.USE_PROFILES, { html: true }); // HTML only — no svg/mathMl profile
   assert.equal(DP_CONFIG.SANITIZE_DOM, true);               // blocks DOM-clobbering

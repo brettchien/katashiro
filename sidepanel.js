@@ -343,24 +343,33 @@ class Conn {
   // --- Streaming bubble (per conn — agents stream concurrently) --------------
   startStream() {
     this.stream = { bubble: null, text: "" };
+    // Built entirely with createElement (no innerHTML) so the whole row is off the XSS-review
+    // surface; name/avatar/time are set via textContent.
     const msgDiv = document.createElement("div");
     msgDiv.className = "message received";
-    const time = formatTime(Date.now());
-    // Fixed template (no user data interpolated); name/avatar set via textContent below.
-    msgDiv.innerHTML = `
-      <div class="avatar"></div>
-      <div class="message-content">
-        <div class="sender-name"></div>
-        <div class="bubble"></div>
-        <div class="timestamp">${time}</div>
-      </div>
-    `;
-    msgDiv.querySelector(".avatar").textContent = this.name.charAt(0).toUpperCase();
-    msgDiv.querySelector(".sender-name").textContent = this.name;
+
+    const avatar = document.createElement("div");
+    avatar.className = "avatar";
+    avatar.textContent = this.name.charAt(0).toUpperCase();
+
+    const contentEl = document.createElement("div");
+    contentEl.className = "message-content";
+    const nameEl = document.createElement("div");
+    nameEl.className = "sender-name";
+    nameEl.textContent = this.name;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble typing";
+    const dots = document.createElement("span");
+    dots.className = "typing-dots";
+    dots.append(document.createElement("span"), document.createElement("span"), document.createElement("span"));
+    bubble.appendChild(dots);
+    const ts = document.createElement("div");
+    ts.className = "timestamp";
+    ts.textContent = formatTime(Date.now());
+    contentEl.append(nameEl, bubble, ts);
+
+    msgDiv.append(avatar, contentEl);
     messagesList.appendChild(msgDiv);
-    const bubble = msgDiv.querySelector(".bubble");
-    bubble.classList.add("typing");
-    bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
     this.stream.bubble = bubble;
     scrollToBottom();
   }
@@ -375,20 +384,20 @@ class Conn {
   }
 
   finalizeStream(_stopReason) {
-    if (this.stream && this.stream.bubble) {
-      if (this.stream.text === "") {
-        // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
-        const row = this.stream.bubble.closest(".message");
-        if (row) row.remove();
-      } else {
-        // Render the accumulated markdown once, now that the turn is complete (ADR §3.3):
-        // streaming stayed plain textContent; markdown is parsed+sanitized only here. A stream
-        // that stops/errors still reaches finalize, so the message renders (not left as raw md).
-        renderMarkdownInto(this.stream.bubble, this.stream.text);
-        scrollToBottom();
-      }
+    const s = this.stream;
+    this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
+    if (!s || !s.bubble) return;
+    if (s.text === "") {
+      // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
+      const row = s.bubble.closest(".message");
+      if (row) row.remove();
+      return;
     }
-    this.stream = null;
+    // Render the accumulated markdown once, now that the turn is complete (ADR §3.3): streaming
+    // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
+    // still reaches finalize, so the message renders (not left as raw md).
+    renderMarkdownInto(s.bubble, s.text);
+    scrollToBottom();
   }
 }
 
@@ -780,9 +789,14 @@ sendBtn.addEventListener("click", sendMessage);
 messagesList.addEventListener("click", (e) => {
   const a = e.target.closest && e.target.closest("a[href]");
   if (!a || !messagesList.contains(a)) return;
-  e.preventDefault();
   const url = (a.getAttribute("href") || "").trim();
-  if (/^(https?:|mailto:)/i.test(url)) chrome.tabs.create({ url });
+  // http(s) opens in a real tab (side-panel navigation is broken UX); re-validate the scheme at
+  // click time. mailto: falls through to the browser's default handler (the mail client) — routing
+  // it through chrome.tabs.create would open a blank tab.
+  if (/^https?:/i.test(url)) {
+    e.preventDefault();
+    chrome.tabs.create({ url });
+  }
 });
 
 // Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
