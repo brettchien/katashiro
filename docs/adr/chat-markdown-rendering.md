@@ -12,6 +12,12 @@
 > + `markdown-it({html:false})` + single `renderMarkdown` sink (§3.2); link **and media** scheme
 > hardening + click→`chrome.tabs.create` (§3.5); DOMPurify/markdown-it treated as security
 > dependencies (§3.1). No factual conflicts among reviewers; all approved the direction.
+>
+> **Rev. 3 (2026-08-03):** round-2 — evaluated Orca's O1 and scoped §3.7 honestly (the egress lock
+> defends against *third-party* exfil, **not** a malicious ACP endpoint itself — that's the trust
+> boundary + `wss`/TLS + DOMPurify; and even `connect-src 'self'` wouldn't close the `panel→SW→ACP`
+> relay). Moving the socket to the SW is deferred to a separate **[ACP connection ownership ADR](./acp-connection-ownership.md)**.
+> `default-src 'none'` base; Neutral wording fixed; stop/error SHOULD finalize.
 
 ---
 
@@ -110,7 +116,10 @@ defense is most easily broken (Falcon/Orca):
 ### 3.3 Streaming stays plain; render at finalize
 During streaming, keep the current `textContent` append (`appendToStream`). Markdown is rendered **once
 at `finalizeStream`**, not per chunk — re-parsing markdown on every token flickers on half-open fences
-and is O(n²). (A debounced during-stream render is a later, optional polish.)
+and is O(n²). (A debounced during-stream render is a later, optional polish; if added, **every frame
+still sanitizes** — never skip it for speed.) A stream that stops or errors **SHOULD still call
+`finalizeStream`** so the message renders; a message that never finalizes stays as (roughly readable)
+raw markdown.
 
 ### 3.4 Syntax highlighting + copy-code (core)
 - `highlight.js` runs in markdown-it's `highlight` fence hook; unknown/omitted languages fall back to
@@ -121,7 +130,8 @@ and is O(n²). (A debounced during-stream render is a later, optional polish.)
 ### 3.5 Link + media hardening
 A DOMPurify `afterSanitizeAttributes` hook forces `target="_blank"` + `rel="noopener noreferrer"` on
 anchors (needs `ADD_ATTR:['target']`, §3.2) and drops non-`http(s)`/`mailto` schemes. The **same scheme
-check covers `<img>`/media `src`**, so a remote/`data:` image can't beacon around the anchor rule.
+check covers `<img>`/media `src`** at sanitize time, so an image `src` can't carry a non-`http(s)`
+scheme past the anchor rule (remote-image *beaconing* is separately blocked by the §3.7 `img-src`).
 Because navigating inside a side panel is broken UX, a delegated click handler on the message container
 opens anchors via `chrome.tabs.create({url})` — **re-validating the scheme (`http(s):`/`mailto:` only)
 at click time**, never trusting the post-sanitize `href` blindly.
@@ -143,15 +153,29 @@ holds **even if the sanitizer is bypassed** (a 0-day or a future config slip). `
 ```
 "content_security_policy": {
   "extension_pages":
-    "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';
-     img-src 'self' data:; style-src 'self'; connect-src 'self' <the ACP endpoint origin(s)>"
+    "default-src 'none'; script-src 'self'; connect-src 'self' <the ACP endpoint origin(s)>;
+     img-src 'self' data:; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
 }
 ```
-`connect-src` (fetch/WS egress) + `img-src` (no remote `<img>` beacon) + `form-action 'none'` +
+`default-src 'none'` is the base (so `frame-src`/`font-src`/`media-src`/`worker-src` don't sit open),
+then `connect-src` (fetch/WS egress) + `img-src` (no remote `<img>` beacon) + `form-action 'none'` +
 `base-uri 'none'` mean an injected `<img>` / `fetch` / form-post **cannot ship the `chrome.storage`
 tokens off-box** — the sanitizer and the CSP would both have to fail. This is the biggest gap in a
-sanitizer-only design (Orca S1). `connect-src` must list exactly the WS/HTTP origins the side panel
-legitimately talks to (the ACP endpoints), nothing wildcard.
+sanitizer-only design (Orca S1). `connect-src` lists exactly the origins the side panel legitimately
+talks to (the ACP endpoints), nothing wildcard.
+
+**Scope of this backstop (Orca O1, evaluated).** The egress lock is strong against a **third-party**
+attacker (XSS from a page the agent read, or a MITM redirecting to `attacker.com`). It is **not** a
+defense against a **compromised/MITM ACP endpoint itself**: that origin is on the trusted channel.
+Crucially, even narrowing panel `connect-src` to `'self'` would not close it — the panel relays prompts
+to the ACP (today directly; if the socket moved to the service worker, via `panel → SW → ACP`), so
+injected XSS could read the token from `chrome.storage` and **smuggle it out as prompt content over
+that legitimate channel**. Against a malicious ACP the real controls are the **trust boundary** (the
+ACP is the user's own openab broker), **`wss`/TLS + the transport-auth key** (vs MITM), and **DOMPurify**
+(so ACP content never becomes script) — not the CSP. Narrowing panel egress to `'self'` still
+meaningfully closes the *third-party* path, but that requires moving the ACP socket out of the panel
+into the service worker — a **larger refactor tracked as its own ADR** (ACP connection ownership). This
+markdown ADR sets `connect-src` as tight as today's panel-owned socket allows and does not over-claim.
 
 ---
 
@@ -173,7 +197,9 @@ legitimately talks to (the ACP endpoints), nothing wildcard.
   that never finalizes leaves that message as (roughly readable) raw markdown.
 
 ### Neutral
-- markdown-it/DOMPurify/highlight.js are all eval-free → **no CSP change** needed (unlike mermaid).
+- markdown-it/DOMPurify/highlight.js are all eval-free → **no CSP *relaxation*** needed (unlike
+  mermaid). This ADR does *tighten* the CSP — it **adds** an egress lock (§3.7); that's orthogonal to
+  the eval question.
 
 ---
 
