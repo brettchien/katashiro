@@ -210,6 +210,16 @@ test("katashiro.click resolves a ref and returns the post-action snapshot", asyn
   assert.ok(calls.executeScript.some((c) => Array.isArray(c.args) && c.args[0] === "e5"));
 });
 
+test("a ref without its snapshotId is refused (the stale guard cannot be skipped)", async () => {
+  for (const name of ["katashiro.click", "katashiro.type"]) {
+    const { deps: d } = deps();
+    const args = name === "katashiro.type" ? { ref: "e5", text: "x" } : { ref: "e5" };
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name, arguments: args }, d);
+    assert.equal(res.isError, true, `${name} must refuse a ref with no snapshotId`);
+    assert.match(res.content[0].text, /snapshotId/);
+  }
+});
+
 test("katashiro.wait_for polls then returns a snapshot; missing condition errors", async () => {
   const ok = deps({ scriptResult: { ok: true, snapshotId: 3, title: "T", url: "u", tree: "- x" } });
   const hit = await BrowserMcp.handleMcpMessage(

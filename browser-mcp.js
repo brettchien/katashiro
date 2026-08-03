@@ -57,8 +57,10 @@
   const WALKER_FILES = ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"];
 
   // One snapshot generation per snapshot call, shared across all frames of the page so a ref's
-  // snapshotId is comparable regardless of which frame it lives in.
-  let snapshotSeq = 0;
+  // snapshotId is comparable regardless of which frame it lives in. Seeded from the clock so a
+  // service-worker restart (which resets module state) cannot re-issue an earlier generation number
+  // and let a stale ref alias a fresh snapshot (Orca F2b).
+  let snapshotSeq = Date.now();
 
   async function injectWalker(chrome, target) {
     await chrome.scripting.executeScript({ target, files: WALKER_FILES });
@@ -103,8 +105,18 @@
   }
 
   // The post-action view returned by click/type/navigate, so the agent never needs a follow-up
-  // snapshot/screenshot to see the result of its action (ADR §3.3).
-  const snapshotAfter = (chrome, tabId) => fullSnapshot(chrome, tabId, true);
+  // snapshot/screenshot (ADR §3.3). If the action triggered a navigation, the in-page snapshot can
+  // throw (frame torn down mid-flight); catch it, wait for load, and snapshot the new page
+  // (Mira/Falcon nav-during-click race).
+  async function snapshotAfter(chrome, tabId) {
+    try {
+      return await fullSnapshot(chrome, tabId, true);
+    } catch {
+      await waitForComplete(chrome, tabId);
+      try { return await fullSnapshot(chrome, tabId, false); }
+      catch { return "(post-action snapshot unavailable — the page may still be loading; call snapshot)"; }
+    }
+  }
 
   // Resolve once the tab finishes loading (for navigate's post-action snapshot). Falls through
   // immediately where chrome.tabs.onUpdated is absent (e.g. tests).
@@ -167,6 +179,7 @@
       /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("click needs a ref (preferred) or a selector");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-clicked");
         const { frameId, bare } = parseRef(args.ref);
         const target = { tabId: ctx.tab.id, frameIds: [frameId] };
         await injectWalker(ctx.chrome, target);
@@ -260,6 +273,7 @@
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, text: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("type needs a ref (preferred) or a selector");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-typed");
         const { frameId, bare } = parseRef(args.ref);
         const target = { tabId: ctx.tab.id, frameIds: [frameId] };
         await injectWalker(ctx.chrome, target);
@@ -276,6 +290,12 @@
               if (!el) return { ok: false, error: "no element for selector: " + sel };
               how = "selector " + sel;
             }
+            // Actionability subset (P0), aligned with click: visible + enabled (Falcon).
+            const vis = typeof el.checkVisibility === "function"
+              ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+              : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+            if (!vis) return { ok: false, error: how + " is not visible" };
+            if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
             el.focus();
             // React 18+ controlled inputs ignore a plain `el.value = …`; drive the native prototype
             // setter so React's onChange sees it (ADR §3.2). contenteditable / others fall back.
@@ -333,9 +353,9 @@
 
     "katashiro.wait_for": {
       description:
-        "Wait until a condition holds in the active tab, then return the fresh snapshot. Give one of " +
-        "`selector` (element present) or `text` (text appears). Never sleeps a fixed time. Use after " +
-        "an action that loads content before acting on it.",
+        "Wait until a condition holds in the active tab's top frame, then return the fresh snapshot. " +
+        "Give one of `selector` (element present) or `text` (text appears). Never sleeps a fixed time. " +
+        "Use after an action that loads content before acting on it.",
       inputSchema: {
         type: "object",
         properties: {

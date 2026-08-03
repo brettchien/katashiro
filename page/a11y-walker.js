@@ -6,18 +6,19 @@
 // for name+role. The registry lives on the isolated-world window, so it survives across the separate
 // executeScript calls for snapshot and click/type (until the frame reloads).
 //
-// Single-frame for now; frame merge (fN:eM) is a later step — `prefix` is the hook.
+// Runs per-frame under all-frames injection; the tool namespaces child-frame refs (fN:eM) at merge.
 (() => {
   const A11Y = window.__katashiroA11y;
   if (!A11Y) return; // vendored lib must be injected first
 
-  // Persistent per-frame registry. byRef resolves ref->Element; byEl re-issues a stable ref to the same
-  // Element within one snapshot; snapshotId is the generation an action must match.
+  // Persistent per-frame registry. byRef resolves ref->Element; snapshotId is the generation an action
+  // must match. Each emitted element gets a fresh ref minted from the counter — a DFS visits every
+  // element exactly once per walk, so there is no re-issue to dedup. (An earlier Element->refId map
+  // was removed: retained across snapshots it re-used stale eN and collided with freshly-minted refs,
+  // silently mis-resolving a ref to the wrong node.)
   const REG = (window.__katashiroReg ||= {
     snapshotId: 0,
-    prefix: "",
-    byRef: new Map(),   // refId -> Element (cleared each snapshot; strong ref, guarded by isConnected)
-    byEl: new WeakMap() // Element -> refId (auto-drops detached nodes)
+    byRef: new Map() // refId -> Element (cleared each snapshot; strong ref, guarded by isConnected)
   });
 
   const INTERACTIVE_ROLES = new Set([
@@ -69,11 +70,7 @@
   }
 
   function issueRef(el) {
-    let ref = REG.byEl.get(el);
-    if (!ref) {
-      ref = REG.prefix + "e" + (++REG._counter || (REG._counter = 1));
-      REG.byEl.set(el, ref);
-    }
+    const ref = "e" + (++REG._counter);
     REG.byRef.set(ref, el);
     return ref;
   }
@@ -96,7 +93,10 @@
       let childDepth = depth;
       let childInside = inInteractive;
       if (meaningful && isVisible(el)) {
-        const label = name ? ` "${name.replace(/\s+/g, " ").trim()}"` : "";
+        // Strip the ref sentinel + quotes/newlines from the page-controlled name so it can't corrupt
+        // the tree format or the frame-prefix rewrite in mergeFrames (Orca F3 / name-escape).
+        const clean = name.replace(/[[\]"\n]/g, " ").replace(/\s+/g, " ").trim();
+        const label = clean ? ` "${clean}"` : "";
         const ref = interactive ? ` [ref=${issueRef(el)}]` : "";
         const level = el.getAttribute("aria-level") || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : "");
         const lvl = level ? ` [level=${level}]` : "";
@@ -139,7 +139,9 @@
       let hard = setTimeout(fin, 1500);   // hard cap
       let quiet = setTimeout(fin, 200);   // mutations quiet for 200ms
       const mo = new MutationObserver(() => { clearTimeout(quiet); quiet = setTimeout(fin, 200); });
-      try { mo.observe(document.documentElement, { subtree: true, childList: true, attributes: true }); } catch { /* no doc */ }
+      // childList+subtree only — watching attributes too made every CSS-animation/clock/live-region tick
+      // reset the quiet timer, so dynamic pages always hit the hard cap (~1.5s/action). (Orca)
+      try { mo.observe(document.documentElement, { subtree: true, childList: true }); } catch { /* no doc */ }
       function fin() { clearTimeout(hard); clearTimeout(quiet); mo.disconnect(); resolve(); }
     });
     return window.__katashiroSnapshot(forceId);
