@@ -20,10 +20,19 @@
     "default_path": "sidepanel.html"
   },
   "action": {
-    "default_title": "Open Katashiro"
+    "default_title": "Open Katashiro",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
   },
   "icons": {
-    "128": "icon.png"
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
   },
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self'; connect-src 'self' ws: wss: http: https:; img-src 'self' data:; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
