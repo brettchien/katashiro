@@ -176,11 +176,16 @@ body {
 }
 
 .roster-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background-color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1;
   flex-shrink: 0;
+  /* now an emoji (🔗 linked / ⛓️‍💥 broken) — neutralize the old colored-circle styling that the
+     per-state rules below still set, so no coloured box shows behind the glyph. */
+  background: none !important;
+  box-shadow: none !important;
+  width: auto;
+  height: auto;
+  border-radius: 0;
 }
 
 .roster-chip.online .roster-dot {

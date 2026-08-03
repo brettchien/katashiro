@@ -597,6 +597,8 @@ function updateRoster() {
 
     const dot = document.createElement("span");
     dot.className = "roster-dot";
+    dot.textContent = st.cls === "online" ? "🔗" : "⛓️‍💥"; // linked / broken — reason in the title
+    dot.title = st.label;
     chip.appendChild(dot);
 
     const nm = document.createElement("span");
@@ -608,10 +610,14 @@ function updateRoster() {
     // from the config toggle (which only says "allowed"): this reflects the RUNTIME tunnel.
     if (c.agent.browserAccess !== false) {
       const br = document.createElement("span");
-      if (c.browserAttached) {
+      if (c.browserAttached && actMode) {
         br.className = "roster-browser attached";
-        br.textContent = "👀";                   // watching — the agent can see this tab
-        br.title = "瀏覽器已連結 — 此 agent 看得到／可操作目前分頁";
+        br.textContent = "🐵";                   // live + operational (act mode on — can act on the tab)
+        br.title = "瀏覽器已連結 + 可操作（act mode 開）";
+      } else if (c.browserAttached) {
+        br.className = "roster-browser attached";
+        br.textContent = "🙊";                   // live but read-only (act mode off)
+        br.title = "瀏覽器已連結，唯讀（act mode 關 — Settings → 瀏覽器寫入 可開啟操作）";
       } else {
         br.className = "roster-browser detached";
         br.textContent = "🙈";                   // see-no-evil — tunnel not attached
@@ -699,6 +705,7 @@ function setActMode(on) {
   actMode = on === true;
   persist();
   renderActMode();
+  updateRoster(); // browser status monkeys reflect act mode (🐵 operational / 🙊 read-only)
 }
 
 addAgentBtn.addEventListener("click", () => {
