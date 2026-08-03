@@ -597,7 +597,8 @@ function updateRoster() {
 
     const dot = document.createElement("span");
     dot.className = "roster-dot";
-    dot.textContent = st.cls === "online" ? "🔗" : "⛓️‍💥"; // linked / broken — reason in the title
+    // 🔗 linked · 🔒 auth failed (lock) · ⛓️‍💥 broken (unreachable / connecting / disabled).
+    dot.textContent = st.cls === "online" ? "🔗" : c.lastFailure === "auth" ? "🔒" : "⛓️‍💥";
     dot.title = st.label;
     chip.appendChild(dot);
 
