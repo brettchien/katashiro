@@ -248,6 +248,7 @@ class Conn {
           }).then(() => {
             this.acpReady = true;
             updateRoster();
+            saveHistory();                 // persist the (confirmed) resumable session id
             appendSystemMessage(`已續接 ${this.name} 的 ACP session。`);
             this.flushQueue();
           });
@@ -256,9 +257,10 @@ class Conn {
           cwd: ACP_CWD,
           mcpServers: this.browserMcpServers(),
         }).then((res) => {
-          this.acpSessionId = res && res.sessionId; // in-memory only (per-window; see constructor)
+          this.acpSessionId = res && res.sessionId; // seeded per-window; persisted below
           this.acpReady = true;
           updateRoster();
+          saveHistory();                 // persist the new session id for this window
           appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
           this.flushQueue();
         });
@@ -416,6 +418,7 @@ class Conn {
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
     renderMarkdownInto(s.bubble, s.text);
+    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
     maybeScroll();
   }
 }
@@ -424,7 +427,12 @@ class Conn {
 function buildRoom() {
   room.forEach((c) => c.disconnect());
   room.length = 0;
-  agents.forEach((a) => room.push(new Conn(a)));
+  agents.forEach((a) => {
+    const c = new Conn(a);
+    // Seed this window's saved session id so the first handshake resumes (not session/new).
+    if (savedSessions[a.url]) c.acpSessionId = savedSessions[a.url];
+    room.push(c);
+  });
 }
 
 function connectAll() {
@@ -473,7 +481,7 @@ const actWriteBtn = document.getElementById("act-write");
 const actModeHintEl = document.getElementById("act-mode-hint");
 
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], (r) => {
+chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -489,6 +497,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], (r) => {
     persist();
 
     switchView("chat");
+    await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
     buildRoom();
     connectAll();
     updateRoster();
@@ -497,6 +506,66 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], (r) => {
 
 function persist() {
   chrome.storage.local.set({ agents, roomConfig, actMode });
+}
+
+// --- Chat history (per-window, chrome.storage.session) ------------------------
+// The side panel is a plain extension page: closing it tears down the DOM, losing the scrollback.
+// Persist the messages AND each agent's resumable ACP session id to chrome.storage.session, keyed
+// by window, so reopening the panel restores the same conversation and resumes the same session
+// (the "已續接 …" path). Keyed by window so two windows keep separate history + sessions — the
+// per-window isolation, but now restorable (the old shared-by-url seed was the thing that mixed
+// tunnels; a per-window key does not). storage.session clears on browser close, so conversations
+// are never written to disk.
+const HISTORY_CAP = 200;
+let historyKey = null;                    // "history:<windowId>"
+let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
+const historyMessages = [];               // in-memory mirror of the persisted scrollback
+let restoring = false;                    // true while replaying — suppresses re-recording
+
+function currentWindowId() {
+  return new Promise((resolve) => {
+    try { chrome.windows.getCurrent((w) => resolve(w && w.id != null ? w.id : "default")); }
+    catch { resolve("default"); }
+  });
+}
+
+function saveHistory() {
+  if (!historyKey) return;
+  const sessions = {};
+  room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
+  chrome.storage.session.set({ [historyKey]: { sessions, messages: historyMessages } });
+}
+
+// Append a record to the persisted scrollback (skipped while restoring). System/status notices are
+// deliberately NOT recorded — they are regenerated on each (re)connect (the 已續接/已連線 lines).
+function recordMessage(rec) {
+  if (restoring) return;
+  historyMessages.push(rec);
+  if (historyMessages.length > HISTORY_CAP) historyMessages.splice(0, historyMessages.length - HISTORY_CAP);
+  saveHistory();
+}
+
+function replayMessage(rec) {
+  if (rec.kind === "error") appendErrorMessage(rec.senderName, rec.text, null); // no retry on restore
+  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp });
+}
+
+// Load per-window history + saved session ids and replay the scrollback. Runs BEFORE the room is
+// built so each conn seeds its acpSessionId (→ session/resume restores the same conversation) and
+// the restored messages sit above the reconnect notices.
+async function loadHistory() {
+  const wid = await currentWindowId();
+  historyKey = `history:${wid}`;
+  const got = await chrome.storage.session.get(historyKey);
+  const data = (got && got[historyKey]) || {};
+  savedSessions = data.sessions || {};
+  const msgs = Array.isArray(data.messages) ? data.messages : [];
+  if (msgs.length) {
+    restoring = true;
+    msgs.forEach(replayMessage);
+    historyMessages.push(...msgs);
+    restoring = false;
+  }
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
@@ -915,6 +984,7 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
+  recordMessage({ kind: isMe ? "sent" : "received", senderId, senderName, text, timestamp });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.
   if (isMe) scrollToBottom(); else maybeScroll();
@@ -971,6 +1041,7 @@ function appendErrorMessage(senderName, text, onRetry) {
   content.appendChild(bubble);
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
+  recordMessage({ kind: "error", senderName, text, timestamp: Date.now() });
   maybeScroll();
 }
 
