@@ -641,7 +641,7 @@ function switchView(viewName) {
   chatView.classList.remove("active");
   settingsView.classList.remove("active");
   if (viewName === "setup") setupView.classList.add("active");
-  else if (viewName === "chat") chatView.classList.add("active");
+  else if (viewName === "chat") { chatView.classList.add("active"); updateRoster(); } // reflect any act-mode change made in Settings
   else if (viewName === "settings") settingsView.classList.add("active");
 }
 
