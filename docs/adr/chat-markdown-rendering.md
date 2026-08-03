@@ -6,6 +6,12 @@
 - **Related:** [ROADMAP](../../ROADMAP.md), [a11y-snapshot ADR](./a11y-snapshot-and-element-refs.md) (vendoring pattern)
 
 > Citations are inline as `[Key]` at the point of the claim; each key resolves in **References**.
+>
+> **Rev. 2 (2026-08-03):** incorporated round-1 security review (Falcon / Mira / Orca). Added: a
+> hardened extension-page CSP as an independent egress lock (§3.7); a pinned, no-relax DOMPurify config
+> + `markdown-it({html:false})` + single `renderMarkdown` sink (§3.2); link **and media** scheme
+> hardening + click→`chrome.tabs.create` (§3.5); DOMPurify/markdown-it treated as security
+> dependencies (§3.1). No factual conflicts among reviewers; all approved the direction.
 
 ---
 
@@ -76,14 +82,30 @@ Vendor three prebuilt, eval-free bundles into `vendor/` (same flow as `dom-acces
 js, ts, python, rust, go, bash/shell, json, yaml, html, css, sql, diff — extend as needed). Loaded via
 `<script src>` in `sidepanel.html` before `sidepanel.js`.
 
-### 3.2 Render pipeline — sanitize is non-negotiable
+**DOMPurify (and secondarily markdown-it) are *security* dependencies, not pure-compute libs like
+`dom-accessibility-api`** (Orca S3). mXSS bypasses are found and patched periodically, so a frozen
+bundle accrues latent XSS over time. Pin exact versions, track cure53 / GHSA advisories, and keep an
+explicit update path — this is *not* "vendor once and forget" like a computation library.
+
+### 3.2 Render pipeline — one sanitized sink, config locked to safe defaults
 ```
-html = markdownIt.render(text)            // markdown-it, GFM tables on, fenced code via highlight.js
-safe = DOMPurify.sanitize(html, CONFIG)   // MANDATORY — replaces the textContent XSS guard (§1.2)
-bubble.innerHTML = safe
+const md = markdownIt({ html: false, linkify: true });  // html:false ⇒ any raw HTML in the message is
+                                                         // ESCAPED to text before sanitizing (double defense)
+function renderMarkdown(text) {                          // the ONLY path from remote text to innerHTML
+  const html = md.render(text);                          // highlight.js runs in the fence hook (§3.4)
+  return DOMPurify.sanitize(html, DP_CONFIG);            // MANDATORY — this is the XSS guard now (§1.2)
+}
 ```
-Applied at **both** render sites: `finalizeStream` (the streamed agent bubble) and `appendMessage`
-(non-streamed / room-relayed messages). User messages render through the same sanitized pipeline.
+`appendMessage` and `finalizeStream` may reach the DOM **only** via `renderMarkdown` → `bubble.innerHTML`;
+a lint/grep rule bans any other `innerHTML =` of remote text. User and agent messages both go through it.
+
+**`DP_CONFIG` is pinned to safe defaults and relaxing it is forbidden** — the config is where this
+defense is most easily broken (Falcon/Orca):
+- `USE_PROFILES: { html: true }` (HTML only — **no `svg`/`mathMl` profile**) and `SANITIZE_DOM: true`
+  (blocks DOM-clobbering, e.g. `<form id="document">` / `<input name="DOMPurify">` shadowing globals).
+- **Do NOT** set `ALLOW_UNKNOWN_PROTOCOLS`, loosen `ALLOWED_URI_REGEXP`, or `ADD_TAGS` / add `style`
+  or event-handler attributes. The **only** permitted `ADD_ATTR` is `['target']` — DOMPurify strips
+  `target` by default, so the `target="_blank"` hook (§3.5) is a silent no-op without it.
 
 ### 3.3 Streaming stays plain; render at finalize
 During streaming, keep the current `textContent` append (`appendToStream`). Markdown is rendered **once
@@ -93,11 +115,16 @@ and is O(n²). (A debounced during-stream render is a later, optional polish.)
 ### 3.4 Syntax highlighting + copy-code (core)
 - `highlight.js` runs in markdown-it's `highlight` fence hook; unknown/omitted languages fall back to
   plain `<code>`.
-- Every `<pre>` gets a **copy button** (overlay) using `navigator.clipboard.writeText`.
+- Every `<pre>` gets a **copy button**, built with `createElement` **after** sanitize and reading the
+  code via `textContent` — never concatenated into the markdown HTML string before sanitizing.
 
-### 3.5 Link hardening
+### 3.5 Link + media hardening
 A DOMPurify `afterSanitizeAttributes` hook forces `target="_blank"` + `rel="noopener noreferrer"` on
-anchors, and drops non-`http(s)`/`mailto` schemes.
+anchors (needs `ADD_ATTR:['target']`, §3.2) and drops non-`http(s)`/`mailto` schemes. The **same scheme
+check covers `<img>`/media `src`**, so a remote/`data:` image can't beacon around the anchor rule.
+Because navigating inside a side panel is broken UX, a delegated click handler on the message container
+opens anchors via `chrome.tabs.create({url})` — **re-validating the scheme (`http(s):`/`mailto:` only)
+at click time**, never trusting the post-sanitize `href` blindly.
 
 ### 3.6 Fence renderer is mermaid-ready (hook only, no engine yet)
 The fence renderer routes by language. A ```` ```mermaid ```` block is, for now, rendered as a normal
@@ -108,6 +135,24 @@ mermaid.js — mermaid's UMD runs `Function(...)` at module load, and since an M
 **cannot** be granted `'unsafe-eval'` (§1.3), it could only run inside a sandboxed iframe / offscreen
 document, never directly on the panel.
 
+### 3.7 Defense in depth — a hardened extension-page CSP (independent egress lock)
+
+DOMPurify is one wall; §1.2's threat is token **exfiltration**, so add a second, independent lock that
+holds **even if the sanitizer is bypassed** (a 0-day or a future config slip). `manifest.json` has no
+`content_security_policy` today (§1.3); add `content_security_policy.extension_pages`:
+```
+"content_security_policy": {
+  "extension_pages":
+    "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none';
+     img-src 'self' data:; style-src 'self'; connect-src 'self' <the ACP endpoint origin(s)>"
+}
+```
+`connect-src` (fetch/WS egress) + `img-src` (no remote `<img>` beacon) + `form-action 'none'` +
+`base-uri 'none'` mean an injected `<img>` / `fetch` / form-post **cannot ship the `chrome.storage`
+tokens off-box** — the sanitizer and the CSP would both have to fail. This is the biggest gap in a
+sanitizer-only design (Orca S1). `connect-src` must list exactly the WS/HTTP origins the side panel
+legitimately talks to (the ACP endpoints), nothing wildcard.
+
 ---
 
 ## Consequences
@@ -115,14 +160,17 @@ document, never directly on the panel.
 ### Positive
 - The readability problem (§1.1) is fixed: bold/headings/lists/**tables**/code all render.
 - Code blocks are highlighted and one-click copyable — agent-provided commands/code become usable.
-- The `innerHTML` sink is guarded by DOMPurify, a stronger and more explicit posture than "never use
-  innerHTML" once the content must be rich.
+- The `innerHTML` sink is guarded by **two independent layers** — DOMPurify (§3.2) and a hardened
+  egress CSP (§3.7) — so a sanitizer bypass alone cannot exfil the `chrome.storage` tokens.
 
 ### Negative / tradeoffs
 - Three vendored bundles (largest is highlight.js — mitigated by the curated language set).
-- DOMPurify is now load-bearing: a misconfig or a bypassed path reintroduces the §1.2 XSS. Every
-  rich-render path MUST go through it; no direct `innerHTML` of remote text anywhere.
-- Streaming shows plain text until the turn finalizes (acceptable; rich render on completion).
+- DOMPurify is load-bearing (though no longer the *sole* guard — the CSP is the backstop): every
+  rich-render path MUST go through the single `renderMarkdown` sink; no other `innerHTML` of remote text.
+- The `connect-src` allowlist (§3.7) must track the real ACP endpoints, and DOMPurify must be kept
+  patched (§3.1) — both are ongoing obligations, not one-time.
+- Streaming shows plain text until the turn finalizes (acceptable; rich render on completion). A stream
+  that never finalizes leaves that message as (roughly readable) raw markdown.
 
 ### Neutral
 - markdown-it/DOMPurify/highlight.js are all eval-free → **no CSP change** needed (unlike mermaid).
@@ -143,8 +191,9 @@ document, never directly on the panel.
 ---
 
 ## 5. Scope & Non-Goals
-- **In scope:** markdown-it + DOMPurify + GFM tables + syntax highlighting + copy-code + link
-  hardening + finalize-only rendering + the mermaid-ready fence hook.
+- **In scope:** markdown-it (`html:false`) + DOMPurify (pinned, no-relax config) + the single
+  `renderMarkdown` sink + GFM tables + syntax highlighting + copy-code + link/media hardening +
+  the hardened extension-page CSP (§3.7) + finalize-only rendering + the mermaid-ready fence hook.
 - **Out of scope (separate follow-ups):** the diagram engine itself (mermaid vs dagre+SVG — its own
   ADR, leaning dagre+SVG for whiteboard synergy), KaTeX/math, surfacing dropped `session/update` types
   (tool-call traces / inline screenshots), auto-scroll fix, error bubbles, stop/retry. All tracked in
