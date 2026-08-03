@@ -47,6 +47,31 @@
 
   // The only path remote text may take to reach innerHTML. A lint/grep rule bans any other
   // `innerHTML =` of remote text (streaming stays textContent; system notices stay textContent).
+  // Link + media hardening (§3.5), registered once. Runs per element after DOMPurify sanitizes its
+  // attributes — defense in depth behind markdown-it's validateLink and DOMPurify's own URI filter:
+  //  - anchors: drop any href whose scheme isn't http(s)/mailto; on the survivors force
+  //    target="_blank" + rel="noopener noreferrer" (needs ADD_ATTR:['target'], §3.2) so an opened
+  //    link can't reach back via window.opener.
+  //  - media (`src`): drop any scheme that isn't http(s)/data: (data: images are allowed by the
+  //    §3.7 CSP img-src; remote-image beaconing is separately blocked there).
+  const ANCHOR_SCHEMES = /^(https?:|mailto:)/i;
+  const MEDIA_SCHEMES = /^(https?:|data:)/i;
+  if (global.DOMPurify && global.DOMPurify.addHook) {
+    global.DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      if (node.nodeName === "A") {
+        const href = (node.getAttribute("href") || "").trim();
+        if (href && !ANCHOR_SCHEMES.test(href)) {
+          node.removeAttribute("href");
+        } else if (href) {
+          node.setAttribute("target", "_blank");
+          node.setAttribute("rel", "noopener noreferrer");
+        }
+      } else if (node.getAttribute && node.getAttribute("src")) {
+        if (!MEDIA_SCHEMES.test(node.getAttribute("src").trim())) node.removeAttribute("src");
+      }
+    });
+  }
+
   function renderMarkdown(text) {
     const html = md.render(text == null ? "" : String(text));
     return global.DOMPurify.sanitize(html, DP_CONFIG);

@@ -774,6 +774,17 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
+// Anchors in rendered markdown open in a real browser tab — navigating inside the side panel is
+// broken UX. Re-validate the scheme at click time (http(s)/mailto only); never trust the
+// post-sanitize href blindly (ADR §3.5). Delegated so it covers every current/future bubble.
+messagesList.addEventListener("click", (e) => {
+  const a = e.target.closest && e.target.closest("a[href]");
+  if (!a || !messagesList.contains(a)) return;
+  e.preventDefault();
+  const url = (a.getAttribute("href") || "").trim();
+  if (/^(https?:|mailto:)/i.test(url)) chrome.tabs.create({ url });
+});
+
 // Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
 // cascade — a human message always breaks any agent↔agent loop. User text goes verbatim (the
 // gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
