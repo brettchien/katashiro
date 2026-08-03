@@ -181,6 +181,18 @@ meaningfully closes the *third-party* path, but that requires moving the ACP soc
 into the service worker — a **larger refactor tracked as its own ADR** (ACP connection ownership). This
 markdown ADR sets `connect-src` as tight as today's panel-owned socket allows and does not over-claim.
 
+> **Implementation note (P4).** Building this surfaced that the panel opens **two** egress kinds to the
+> user's *arbitrary* ACP host: the `wss`/`ws` socket (`sidepanel.js` `new WebSocket(agent.url)`) **and**
+> an `http(s)` reachability probe (`probe()` `fetch(agent.url.replace(/^ws/,"http"))`, used to tell
+> auth-fail from unreachable when the WS handshake dies). A static MV3 manifest cannot enumerate a
+> user-typed host, so the shipped `connect-src` is `'self' ws: wss: http: https:` — permissive on the
+> connect vector by necessity. The **egress lock's real value is the other directives** (`default-src
+> 'none'` base + `img-src 'self' data:` + `object-src 'none'` + `base-uri 'none'` + `form-action 'none'`
+> + `script-src 'self'`), which block img-beacon / form-post / plugin / base-hijack exfil with no origin
+> knowledge. Genuinely locking the connect vector to `'self'` is deferred to the ACP connection-ownership
+> ADR (move the socket **and the probe** into the service worker). This is the "does not over-claim"
+> posture above, made concrete.
+
 ---
 
 ## Consequences
