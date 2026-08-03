@@ -696,6 +696,23 @@
         if (!result.ok) return errText(result.error);
         return okText(`selected ${result.selected} in ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
+    },
+
+    "katashiro.reload": {
+      description:
+        "Reload the active tab. Set `bypassCache` for a hard reload that ignores the HTTP cache. " +
+        "Returns the updated snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: { bypassCache: { type: "boolean", description: "hard reload, ignoring the HTTP cache" } }
+      },
+      /** @param {{ bypassCache?: boolean }} args */
+      async call(args, ctx) {
+        await ctx.chrome.tabs.reload(ctx.tab.id, { bypassCache: !!args.bypassCache });
+        await waitForComplete(ctx.chrome, ctx.tab.id);
+        return okText(`reloaded${args.bypassCache ? " (bypassing cache)" : ""}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
     }
   };
 

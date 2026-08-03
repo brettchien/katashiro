@@ -115,6 +115,7 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.press_key` | **write** | `key`, `ref?`+`snapshotId?`\|`selector?` | Dispatches synthetic key events (fires page handlers — Enter/Escape/arrows — not trusted native input). Returns the snapshot. |
 | `katashiro.navigate` | **write** | `url` (absolute) | Navigates the tab, waits for load, returns the snapshot. |
 | `katashiro.history` | **write** | `direction` (`back`\|`forward`) | Goes back/forward in the tab's history; returns the snapshot. |
+| `katashiro.reload` | **write** | `bypassCache?` | Reloads the tab (hard reload if `bypassCache`); waits for load, returns the snapshot. |
 
 ### Act mode — writes are off by default
 

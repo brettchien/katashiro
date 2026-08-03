@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -28,6 +28,7 @@ function mockChrome(opts = {}) {
       },
       goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
       goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
+      reload: async (tabId, o) => { calls.reload.push({ tabId, o }); },
       captureVisibleTab: async (windowId, o) => {
         calls.captureVisibleTab.push({ windowId, o });
         return opts.dataUrl || "data:image/png;base64,QUJD"; // "ABC"
@@ -122,7 +123,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 14 DOM-semantic browser tools", async () => {
+test("tools/list returns the 15 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -140,7 +141,8 @@ test("tools/list returns the 14 DOM-semantic browser tools", async () => {
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
-    "katashiro.select_option"
+    "katashiro.select_option",
+    "katashiro.reload"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -396,6 +398,22 @@ test("select_option without value or label is refused", async () => {
   assert.match(res.content[0].text, /needs a value or a label/);
 });
 
+test("reload reloads the active tab and returns the snapshot", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.reload", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /reloaded/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+  assert.deepEqual(calls.reload, [{ tabId: 42, o: { bypassCache: false } }]);
+});
+
+test("reload with bypassCache does a hard reload", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.reload", arguments: { bypassCache: true } }, d);
+  assert.match(res.content[0].text, /reloaded \(bypassing cache\)/);
+  assert.deepEqual(calls.reload, [{ tabId: 42, o: { bypassCache: true } }]);
+});
+
 // --- act mode: the write consent gate ---------------------------------------
 
 // Which tools mutate the page is a registry fact, so assert it there rather than restating
@@ -410,6 +428,7 @@ test("exactly the page-mutating tools are marked write", () => {
     "katashiro.history",
     "katashiro.navigate",
     "katashiro.press_key",
+    "katashiro.reload",
     "katashiro.select_option",
     "katashiro.type"
   ]);
@@ -541,7 +560,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 14);
+  assert.equal(tools.length, 15);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -740,7 +759,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 14, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 15, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
