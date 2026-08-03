@@ -384,6 +384,268 @@
         if (!result.ok) return errText(result.error);
         return okText(await snapshotAfter(ctx.chrome, ctx.tab.id));
       }
+    },
+
+    "katashiro.get_text": {
+      description:
+        "Return the visible text (innerText) of an element (default: whole body) in the active tab. " +
+        "Cheaper than read_dom's raw HTML when you only need the text; to find elements to act on, " +
+        "prefer snapshot. Read-only.",
+      inputSchema: {
+        type: "object",
+        properties: { selector: { type: "string", description: "optional CSS selector to scope" } }
+      },
+      /** @param {{ selector?: string }} args */
+      async call(args, ctx) {
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
+          func: (sel) => {
+            const el = sel ? document.querySelector(sel) : document.body;
+            if (!el) return { ok: false, error: "no element for selector: " + sel };
+            return { ok: true, text: (el.innerText || "").slice(0, 100000) };
+          },
+          args: [args.selector || null]
+        });
+        return result.ok ? okText(result.text) : errText(result.error);
+      }
+    },
+
+    "katashiro.scroll": {
+      description:
+        "Scroll the active tab to reveal content (perception aid — works in read-only mode). Use " +
+        "`to` ('top'|'bottom'), or `direction` ('up'|'down') with optional `amount` px (default one " +
+        "viewport), or a `ref`/`selector` to bring that element into view. Returns the updated snapshot.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: { type: "string", enum: ["top", "bottom"], description: "scroll the page to the top or bottom" },
+          direction: { type: "string", enum: ["up", "down"], description: "scroll one step up or down" },
+          amount: { type: "number", description: "pixels for `direction` (default: one viewport height)" },
+          ref: { type: "string", description: "element ref from a snapshot to scroll into view" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector to scroll into view (fallback)" }
+        }
+      },
+      /** @param {{ to?: string, direction?: string, amount?: number, ref?: string, snapshotId?: number, selector?: string }} args */
+      async call(args, ctx) {
+        if (args.ref) {
+          if (args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-scrolled");
+          const { frameId, bare } = parseRef(args.ref);
+          const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+          await injectWalker(ctx.chrome, target);
+          const [{ result }] = await ctx.chrome.scripting.executeScript({
+            target,
+            func: (ref, snapshotId) => {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              r.el.scrollIntoView({ block: "center" });
+              return { ok: true, how: "ref " + ref };
+            },
+            args: [bare, args.snapshotId]
+          });
+          if (!result.ok) return errText(result.error);
+          return okText(`scrolled to ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+        }
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id },
+          func: (to, direction, amount, sel) => {
+            if (sel) {
+              const el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              el.scrollIntoView({ block: "center" });
+              return { ok: true, how: "selector " + sel };
+            }
+            if (to === "top") { window.scrollTo({ top: 0 }); return { ok: true, how: "to top" }; }
+            if (to === "bottom") { window.scrollTo({ top: document.body.scrollHeight }); return { ok: true, how: "to bottom" }; }
+            const step = (amount || window.innerHeight) * (direction === "up" ? -1 : 1);
+            window.scrollBy({ top: step });
+            return { ok: true, how: (direction || "down") + " " + Math.abs(step) + "px" };
+          },
+          args: [args.to || null, args.direction || null, args.amount ?? null, args.selector || null]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`scrolled ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.tabs": {
+      description:
+        "List the open browser tabs (index, title, URL, and which is active). Read-only. katashiro's " +
+        "other tools act on the active tab.",
+      inputSchema: { type: "object", properties: {} },
+      /** @param {object} _args (none) */
+      async call(_args, ctx) {
+        const tabs = await ctx.chrome.tabs.query({});
+        if (!tabs.length) return okText("(no tabs)");
+        return okText(tabs.map((t, i) => `${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}`).join("\n"));
+      }
+    },
+
+    "katashiro.history": {
+      description: "Go back or forward in the active tab's navigation history. Returns the updated snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: { direction: { type: "string", enum: ["back", "forward"], description: "back or forward" } },
+        required: ["direction"]
+      },
+      /** @param {{ direction: string }} args */
+      async call(args, ctx) {
+        if (args.direction === "back") await ctx.chrome.tabs.goBack(ctx.tab.id);
+        else if (args.direction === "forward") await ctx.chrome.tabs.goForward(ctx.tab.id);
+        else return errText("history needs direction 'back' or 'forward'");
+        await waitForComplete(ctx.chrome, ctx.tab.id);
+        return okText(`went ${args.direction}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.press_key": {
+      description:
+        "Press a keyboard key (e.g. Enter, Escape, Tab, ArrowDown) in the active tab, targeting the " +
+        "focused element or a `ref`/`selector`. Dispatches synthetic key events — this fires page key " +
+        "handlers (Enter-to-submit, arrow nav, Escape) but not trusted native input; to insert text " +
+        "use `type`. Returns the updated snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          key: { type: "string", description: "key name, e.g. Enter, Escape, Tab, ArrowDown" },
+          ref: { type: "string", description: "element ref from a snapshot to target" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" }
+        },
+        required: ["key"]
+      },
+      /** @param {{ key: string, ref?: string, snapshotId?: number, selector?: string }} args */
+      async call(args, ctx) {
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel, key) => {
+            let el, how = "the focused element";
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref; el.focus();
+            } else if (sel) {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel; el.focus();
+            } else {
+              el = document.activeElement || document.body;
+            }
+            const opts = { key, bubbles: true, cancelable: true };
+            for (const type of ["keydown", "keypress", "keyup"]) el.dispatchEvent(new KeyboardEvent(type, opts));
+            return { ok: true, how };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, args.key]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`pressed ${args.key} on ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.hover": {
+      description:
+        "Hover the pointer over an element to reveal menus/tooltips (read-only perception aid). Prefer " +
+        "`ref` from a snapshot; `selector` is a fallback. Returns the updated snapshot.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" }
+        }
+      },
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
+      async call(args, ctx) {
+        if (!args.ref && !args.selector) return errText("hover needs a ref (preferred) or a selector");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-hovered");
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
+            el.scrollIntoView({ block: "center" });
+            for (const type of ["pointerover", "mouseover", "pointerenter", "mouseenter", "mousemove"]) {
+              el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
+            }
+            return { ok: true, how };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`hovered ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.select_option": {
+      description:
+        "Select an option in a <select> dropdown in the active tab. Match by `value` or visible " +
+        "`label`. Prefer `ref` from a snapshot; `selector` is a fallback. Returns the updated snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" },
+          value: { type: "string", description: "option value to select" },
+          label: { type: "string", description: "visible option text to select (if value unknown)" }
+        }
+      },
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string, value?: string, label?: string }} args */
+      async call(args, ctx) {
+        if (!args.ref && !args.selector) return errText("select_option needs a ref (preferred) or a selector");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-selected");
+        if (args.value == null && args.label == null) return errText("select_option needs a value or a label");
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel, value, label) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
+            if (!(el instanceof HTMLSelectElement)) return { ok: false, error: how + " is not a <select>" };
+            let opt = null;
+            for (const o of el.options) {
+              if (value != null && o.value === value) { opt = o; break; }
+              if (label != null && (o.label === label || o.textContent.trim() === label)) { opt = o; break; }
+            }
+            if (!opt) return { ok: false, error: "no option matching " + (value != null ? "value " + JSON.stringify(value) : "label " + JSON.stringify(label)) };
+            el.value = opt.value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, how, selected: opt.value };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, args.value ?? null, args.label ?? null]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`selected ${result.selected} in ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
     }
   };
 

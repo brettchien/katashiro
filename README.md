@@ -95,13 +95,26 @@ DOM work runs injected in the page via `chrome.scripting.executeScript`. A tool 
 selector matched nothing, no active tab — comes back as an MCP result with `isError: true`, not
 a protocol error, so the agent can read the reason and adapt.
 
+Most tools take a `ref` (+ its `snapshotId`) from the most recent `snapshot` — the primary,
+cheapest way to perceive the page — with a CSS `selector` as a fallback. Action tools return the
+**post-action snapshot** so the agent rarely needs a follow-up read.
+
 | Tool | | Params | Returns |
 | --- | --- | --- | --- |
+| `katashiro.snapshot` | read | — | Accessibility-tree snapshot as compact text, a stable `ref` on each interactive element, and a `snapshotId`. PRIMARY way to see the page. |
 | `katashiro.read_dom` | read | `selector?` (CSS) | `outerHTML` of the match, capped at 100k chars. No selector ⇒ `document.body`. |
+| `katashiro.get_text` | read | `selector?` (CSS) | `innerText` of the match (capped 100k). No selector ⇒ `document.body`. |
 | `katashiro.screenshot` | read | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
-| `katashiro.click` | **write** | `selector` | Text ack; `isError` if the selector matches nothing. |
-| `katashiro.type` | **write** | `selector`, `text` | Focuses the element, sets `value` (or `textContent`), fires `input` + `change`. |
-| `katashiro.navigate` | **write** | `url` (absolute) | Text ack — issued via `chrome.tabs.update`, does not wait for load. |
+| `katashiro.scroll` | read | `to`\|`direction`+`amount?`\|`ref`\|`selector` | Scrolls to reveal content (perception aid — works in read-only). Returns the updated snapshot. |
+| `katashiro.hover` | read | `ref`\|`selector` | Dispatches pointer events to reveal menus/tooltips. Returns the updated snapshot. |
+| `katashiro.tabs` | read | — | Lists the open tabs (index, title, URL, active marker). |
+| `katashiro.wait_for` | read | `selector`\|`text`, `timeout?` | Polls until the element/text appears (never a fixed sleep), then returns the snapshot. |
+| `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector` | Clicks the element; returns the updated snapshot. Stale-ref checked. |
+| `katashiro.type` | **write** | `ref`+`snapshotId`\|`selector`, `text` | Sets `value` via the native setter (React-safe) or `textContent`, fires `input`+`change`; returns the snapshot. |
+| `katashiro.select_option` | **write** | `ref`+`snapshotId`\|`selector`, `value`\|`label` | Selects a `<select>` option by value or visible label; fires `change`; returns the snapshot. |
+| `katashiro.press_key` | **write** | `key`, `ref?`+`snapshotId?`\|`selector?` | Dispatches synthetic key events (fires page handlers — Enter/Escape/arrows — not trusted native input). Returns the snapshot. |
+| `katashiro.navigate` | **write** | `url` (absolute) | Navigates the tab, waits for load, returns the snapshot. |
+| `katashiro.history` | **write** | `direction` (`back`\|`forward`) | Goes back/forward in the tab's history; returns the snapshot. |
 
 ### Act mode — writes are off by default
 
