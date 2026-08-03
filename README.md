@@ -107,7 +107,7 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.screenshot` | read | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
 | `katashiro.scroll` | read | `to`\|`direction`+`amount?`\|`ref`\|`selector` | Scrolls to reveal content (perception aid — works in read-only). Returns the updated snapshot. |
 | `katashiro.hover` | read | `ref`\|`selector` | Dispatches pointer events to reveal menus/tooltips. Returns the updated snapshot. |
-| `katashiro.tabs` | read | — | Lists the open tabs (index, title, URL, active marker). |
+| `katashiro.tabs` | read | — | Lists **all** open tabs across every window (index, title, URL, active marker) — wider exposure than the active-tab-only tools, by design. |
 | `katashiro.wait_for` | read | `selector`\|`text`, `timeout?` | Polls until the element/text appears (never a fixed sleep), then returns the snapshot. |
 | `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector` | Clicks the element; returns the updated snapshot. Stale-ref checked. |
 | `katashiro.type` | **write** | `ref`+`snapshotId`\|`selector`, `text` | Sets `value` via the native setter (React-safe) or `textContent`, fires `input`+`change`; returns the snapshot. |

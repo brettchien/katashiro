@@ -412,9 +412,10 @@
 
     "katashiro.scroll": {
       description:
-        "Scroll the active tab to reveal content (perception aid — works in read-only mode). Use " +
-        "`to` ('top'|'bottom'), or `direction` ('up'|'down') with optional `amount` px (default one " +
-        "viewport), or a `ref`/`selector` to bring that element into view. Returns the updated snapshot.",
+        "Scroll the active tab to reveal content (perception aid — works in read-only mode; may " +
+        "trigger the page's lazy-loading). Give one of: `to` ('top'|'bottom'), `direction` " +
+        "('up'|'down') with optional `amount` px (default one viewport), or a `ref`/`selector` to " +
+        "bring that element into view. Returns the updated snapshot.",
       inputSchema: {
         type: "object",
         properties: {
@@ -428,6 +429,9 @@
       },
       /** @param {{ to?: string, direction?: string, amount?: number, ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
+        if (!args.to && !args.direction && !args.ref && !args.selector) {
+          return errText("scroll needs one of: to ('top'/'bottom'), direction ('up'/'down'), ref, or selector");
+        }
         if (args.ref) {
           if (args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-scrolled");
           const { frameId, bare } = parseRef(args.ref);
@@ -470,11 +474,16 @@
 
     "katashiro.tabs": {
       description:
-        "List the open browser tabs (index, title, URL, and which is active). Read-only. katashiro's " +
-        "other tools act on the active tab.",
+        "List all open browser tabs across every window (index, title, URL, and which is active). " +
+        "Read-only. katashiro's other tools act on the active tab; `index` is enumeration order, not a " +
+        "tab id, and there is no tab-switch tool yet.",
       inputSchema: { type: "object", properties: {} },
       /** @param {object} _args (none) */
       async call(_args, ctx) {
+        // Deliberately lists ALL tabs (every window), not just the active one, so the agent can orient
+        // across the browsing context. Wider exposure than every other tool (which touch only the
+        // active tab): titles/URLs of unrelated tabs (mail, banking) reach the agent — accepted as
+        // intentional because the agent is the user's own broker (review F1, decision b).
         const tabs = await ctx.chrome.tabs.query({});
         if (!tabs.length) return okText("(no tabs)");
         return okText(tabs.map((t, i) => `${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}`).join("\n"));
@@ -491,9 +500,14 @@
       },
       /** @param {{ direction: string }} args */
       async call(args, ctx) {
-        if (args.direction === "back") await ctx.chrome.tabs.goBack(ctx.tab.id);
-        else if (args.direction === "forward") await ctx.chrome.tabs.goForward(ctx.tab.id);
-        else return errText("history needs direction 'back' or 'forward'");
+        if (args.direction !== "back" && args.direction !== "forward") return errText("history needs direction 'back' or 'forward'");
+        try {
+          if (args.direction === "back") await ctx.chrome.tabs.goBack(ctx.tab.id);
+          else await ctx.chrome.tabs.goForward(ctx.tab.id);
+        } catch (e) {
+          // goBack/goForward reject at the ends of the tab's history — a clean errText, not a throw.
+          return errText(`no ${args.direction} history (${(e && e.message) || "at the end of the tab's history"})`);
+        }
         await waitForComplete(ctx.chrome, ctx.tab.id);
         return okText(`went ${args.direction}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
@@ -525,20 +539,43 @@
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target,
           func: (ref, snapshotId, sel, key) => {
-            let el, how = "the focused element";
+            let el, how = "the focused element", targeted = false;
             if (ref) {
               const r = window.__katashiroResolve(ref, snapshotId);
               if (!r.ok) return { ok: false, error: r.error };
-              el = r.el; how = "ref " + ref; el.focus();
+              el = r.el; how = "ref " + ref; targeted = true;
             } else if (sel) {
               el = document.querySelector(sel);
               if (!el) return { ok: false, error: "no element for selector: " + sel };
-              how = "selector " + sel; el.focus();
+              how = "selector " + sel; targeted = true;
             } else {
               el = document.activeElement || document.body;
             }
-            const opts = { key, bubbles: true, cancelable: true };
-            for (const type of ["keydown", "keypress", "keyup"]) el.dispatchEvent(new KeyboardEvent(type, opts));
+            // Actionability when a specific element was named (skip for the implicit focused element):
+            // a disabled/hidden target can't receive real keys, so refuse rather than fake success.
+            if (targeted) {
+              const vis = typeof el.checkVisibility === "function"
+                ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+                : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+              if (!vis) return { ok: false, error: how + " is not visible" };
+              if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
+              el.focus();
+            }
+            // Populate code/keyCode/which too — many real handlers key off e.code / e.keyCode, so a
+            // bare `key` alone silently no-ops (false green on Enter etc.). keypress is deprecated and
+            // only ever fired for printable keys, so skip it for named keys (Enter/Escape/arrows).
+            const CODES = { Enter: "Enter", Escape: "Escape", Tab: "Tab", " ": "Space", Backspace: "Backspace", Delete: "Delete", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown" };
+            const KEYCODES = { Enter: 13, Escape: 27, Tab: 9, " ": 32, Backspace: 8, Delete: 46, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Home: 36, End: 35, PageUp: 33, PageDown: 34 };
+            let code = CODES[key], keyCode = KEYCODES[key];
+            const printable = key.length === 1;
+            if (!code && printable) {
+              if (/[a-z]/i.test(key)) { code = "Key" + key.toUpperCase(); keyCode = key.toUpperCase().charCodeAt(0); }
+              else if (/[0-9]/.test(key)) { code = "Digit" + key; keyCode = key.charCodeAt(0); }
+            }
+            const opts = { key, code: code || "", keyCode: keyCode || 0, which: keyCode || 0, bubbles: true, cancelable: true };
+            el.dispatchEvent(new KeyboardEvent("keydown", opts));
+            if (printable) el.dispatchEvent(new KeyboardEvent("keypress", opts));
+            el.dispatchEvent(new KeyboardEvent("keyup", opts));
             return { ok: true, how };
           },
           args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, args.key]
@@ -580,6 +617,12 @@
               if (!el) return { ok: false, error: "no element for selector: " + sel };
               how = "selector " + sel;
             }
+            // Visible check only — hovering an invisible element is pointless, but hovering a
+            // *disabled* (yet visible) control is legitimate (e.g. to read its explanatory tooltip).
+            const vis = typeof el.checkVisibility === "function"
+              ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+              : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+            if (!vis) return { ok: false, error: how + " is not visible" };
             el.scrollIntoView({ block: "center" });
             for (const type of ["pointerover", "mouseover", "pointerenter", "mouseenter", "mousemove"]) {
               el.dispatchEvent(new MouseEvent(type, { bubbles: true }));
@@ -630,6 +673,13 @@
               how = "selector " + sel;
             }
             if (!(el instanceof HTMLSelectElement)) return { ok: false, error: how + " is not a <select>" };
+            // Actionability: a real user can't change a hidden or disabled select — refuse rather
+            // than silently set its value (review: Mira / Falcon / Orca).
+            const vis = typeof el.checkVisibility === "function"
+              ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+              : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+            if (!vis) return { ok: false, error: how + " is not visible" };
+            if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
             let opt = null;
             for (const o of el.options) {
               if (value != null && o.value === value) { opt = o; break; }

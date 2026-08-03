@@ -26,8 +26,8 @@ function mockChrome(opts = {}) {
       update: async (tabId, upd) => {
         calls.tabsUpdate.push({ tabId, upd });
       },
-      goBack: async (tabId) => { calls.goBack.push(tabId); },
-      goForward: async (tabId) => { calls.goForward.push(tabId); },
+      goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
+      goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       captureVisibleTab: async (windowId, o) => {
         calls.captureVisibleTab.push({ windowId, o });
         return opts.dataUrl || "data:image/png;base64,QUJD"; // "ABC"
@@ -334,6 +334,21 @@ test("history goes back and returns the post-action snapshot", async () => {
   assert.match(res.content[0].text, /went back/);
   assert.match(res.content[0].text, /# snapshot [0-9]+/);
   assert.deepEqual(calls.goBack, [42]);
+});
+
+test("history at the end of the stack returns a clean error, not a throw", async () => {
+  const { deps: d } = deps({ historyThrows: true });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.history", arguments: { direction: "back" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /no back history/);
+});
+
+test("scroll with no positioning argument is refused", async () => {
+  const { deps: d, calls } = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.scroll", arguments: {} }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs one of/);
+  assert.equal(calls.executeScript.length, 0); // refused before touching the page
 });
 
 test("press_key dispatches to a ref and returns the snapshot", async () => {
