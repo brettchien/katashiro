@@ -375,10 +375,18 @@ class Conn {
   }
 
   finalizeStream(_stopReason) {
-    // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
-    if (this.stream && this.stream.bubble && this.stream.text === "") {
-      const row = this.stream.bubble.closest(".message");
-      if (row) row.remove();
+    if (this.stream && this.stream.bubble) {
+      if (this.stream.text === "") {
+        // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
+        const row = this.stream.bubble.closest(".message");
+        if (row) row.remove();
+      } else {
+        // Render the accumulated markdown once, now that the turn is complete (ADR §3.3):
+        // streaming stayed plain textContent; markdown is parsed+sanitized only here. A stream
+        // that stops/errors still reaches finalize, so the message renders (not left as raw md).
+        this.stream.bubble.innerHTML = renderMarkdown(this.stream.text);
+        scrollToBottom();
+      }
     }
     this.stream = null;
   }
@@ -819,10 +827,11 @@ function formatTime(timestamp) {
   return `${hours}:${minutes} (TPE)`;
 }
 
-// Build message rows with createElement + textContent ONLY. NEVER innerHTML with
-// senderName/text: they can carry remote-controlled content (agent output, or a handshake
-// error echoed from a malicious/MITM server) — an innerHTML sink there is remote-XSS that
-// could run arbitrary JS in the extension page and exfiltrate chrome.storage tokens.
+// Build message rows with createElement + textContent for everything EXCEPT the message body,
+// which is markdown → sanitized HTML via the single `renderMarkdown` sink (ADR §3.2). senderName
+// stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
+// handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
+// renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
 function appendMessage({ senderId, senderName, text, timestamp }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
@@ -847,7 +856,7 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.textContent = text;
+  bubble.innerHTML = renderMarkdown(text);   // sanitized sink (ADR §3.2) — never raw innerHTML
   content.appendChild(bubble);
 
   const ts = document.createElement("div");
