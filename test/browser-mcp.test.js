@@ -31,8 +31,9 @@ function mockChrome(opts = {}) {
     scripting: {
       executeScript: async (inj) => {
         calls.executeScript.push(inj);
-        // Simulate the in-page func's return (the func itself needs a DOM; not run here).
-        return [{ result: opts.scriptResult ?? { ok: true } }];
+        // Simulate the in-page func's return (the func itself needs a DOM; not run here). frameId:0
+        // is the top frame — the merge/all-frames path keys on it.
+        return [{ frameId: 0, result: opts.scriptResult ?? { ok: true } }];
       }
     }
   };
@@ -116,7 +117,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 5 DOM-semantic browser tools", async () => {
+test("tools/list returns the 7 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -125,7 +126,9 @@ test("tools/list returns the 5 DOM-semantic browser tools", async () => {
     "katashiro.read_dom",
     "katashiro.navigate",
     "katashiro.type",
-    "katashiro.screenshot"
+    "katashiro.screenshot",
+    "katashiro.snapshot",
+    "katashiro.wait_for"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -177,14 +180,60 @@ test("katashiro.navigate drives chrome.tabs.update", async () => {
   assert.match(res.content[0].text, /example\.com/);
 });
 
-test("katashiro.type injects a script with selector + text args", async () => {
-  const { deps: d, calls } = deps();
+test("katashiro.type injects the walker, then types via selector fallback", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #q" } });
   await BrowserMcp.handleMcpMessage(
     "tools/call",
     { name: "katashiro.type", arguments: { selector: "#q", text: "hello" } },
     d
   );
-  assert.deepEqual(calls.executeScript[0].args, ["#q", "hello"]);
+  // first call injects the vendored lib + walker; the act call carries [ref, snapshotId, selector, text]
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args.includes("hello"));
+  assert.deepEqual(act.args, [null, null, "#q", "hello"]);
+});
+
+test("katashiro.click resolves a ref and returns the post-action snapshot", async () => {
+  const { deps: d, calls } = deps({
+    scriptResult: { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: "- button [ref=e5]" }
+  });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } },
+    d
+  );
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /clicked ref e5/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/); // snapshot-after-action appended
+  // walker injected; act call carries [ref, snapshotId, selector, ...]
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.ok(calls.executeScript.some((c) => Array.isArray(c.args) && c.args[0] === "e5"));
+});
+
+test("a ref without its snapshotId is refused (the stale guard cannot be skipped)", async () => {
+  for (const name of ["katashiro.click", "katashiro.type"]) {
+    const { deps: d } = deps();
+    const args = name === "katashiro.type" ? { ref: "e5", text: "x" } : { ref: "e5" };
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name, arguments: args }, d);
+    assert.equal(res.isError, true, `${name} must refuse a ref with no snapshotId`);
+    assert.match(res.content[0].text, /snapshotId/);
+  }
+});
+
+test("katashiro.wait_for polls then returns a snapshot; missing condition errors", async () => {
+  const ok = deps({ scriptResult: { ok: true, snapshotId: 3, title: "T", url: "u", tree: "- x" } });
+  const hit = await BrowserMcp.handleMcpMessage(
+    "tools/call", { name: "katashiro.wait_for", arguments: { selector: "#ready" } }, ok.deps
+  );
+  assert.equal(hit.isError, undefined);
+  assert.match(hit.content[0].text, /# snapshot [0-9]+/);
+
+  const bad = deps();
+  const none = await BrowserMcp.handleMcpMessage(
+    "tools/call", { name: "katashiro.wait_for", arguments: {} }, bad.deps
+  );
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /needs a selector or text/);
 });
 
 test("katashiro.screenshot captures the tab as JPEG and returns base64 image content", async () => {
@@ -279,7 +328,7 @@ test("act mode on lets a write through", async () => {
     d
   );
   assert.equal(res.isError, undefined);
-  assert.equal(calls.executeScript.length, 1);
+  assert.ok(calls.executeScript.length >= 1, "the write executed (inject + act + post-snapshot)");
 });
 
 test("a refused write says it was refused, not that there was no tab", async () => {
@@ -366,7 +415,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 5);
+  assert.equal(tools.length, 7);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -565,7 +614,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 5, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 7, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -579,4 +628,73 @@ test("onStatus(false) only when the LAST tunnel closes", async () => {
   }
   assert.deepEqual(bag.statuses, [true, false]);
   assert.equal(bag.state.mcpConnectionId, null);
+});
+
+// --- snapshot (a11y-tree perception) ----------------------------------------
+
+test("snapshot injects the vendored a11y engine + walker, then returns the tree with a header", async () => {
+  const { chrome, calls } = mockChrome({
+    scriptResult: {
+      ok: true, snapshotId: 3, url: "https://example.test/", title: "Example",
+      tree: '- button "Go" [ref=e1]'
+    }
+  });
+  // Read-only: reachable even with act mode OFF (no write gate).
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: false });
+  assert.equal(res.isError, undefined, "snapshot is not gated by act mode");
+  assert.match(res.content[0].text, /snapshot [0-9]+ — Example/);
+  assert.match(res.content[0].text, /\[ref=e1\]/);
+  // It injected the vendored lib + walker as files, then ran a func to build the snapshot.
+  const filesInj = calls.executeScript.find((c) => c.files);
+  assert.deepEqual(filesInj.files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.ok(calls.executeScript.some((c) => typeof c.func === "function"), "runs the snapshot func");
+});
+
+test("snapshot with no usable frame content degrades to a placeholder, not a crash", async () => {
+  // The multi-frame merge is resilient: a frame that yields nothing doesn't fail the whole snapshot.
+  const { chrome } = mockChrome({ scriptResult: { ok: false, error: "no body" } });
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: true });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+// --- frames (fN:eM) ---------------------------------------------------------
+
+test("snapshot merges child frames with f<id>:eN namespaced refs", async () => {
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7 }] },
+    scripting: {
+      executeScript: async (inj) => {
+        if (inj.files) return [{ frameId: 0, result: { ok: true } }];
+        return [
+          { frameId: 0, result: { ok: true, title: "Top", url: "https://top/", tree: '- button "A" [ref=e1]' } },
+          { frameId: 7, result: { ok: true, title: "", url: "https://iframe/", tree: '- textbox "Email" [ref=e1]' } }
+        ];
+      }
+    }
+  };
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", {}, { chrome, actMode: false });
+  const text = res.content[0].text;
+  assert.match(text, /# snapshot [0-9]+ — Top/);
+  assert.match(text, /- button "A" \[ref=e1\]/);                 // top frame: bare ref
+  assert.match(text, /--- frame f7 \(https:\/\/iframe\/\) ---/); // child frame section
+  assert.match(text, /- textbox "Email" \[ref=f7:e1\]/);         // child frame: namespaced ref
+});
+
+test("click on a child-frame ref targets that frame with the bare ref", async () => {
+  const calls = [];
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7 }] },
+    scripting: {
+      executeScript: async (inj) => {
+        calls.push(inj);
+        return [{ frameId: 0, result: { ok: true, how: "ref e3", title: "T", url: "u", tree: "- x" } }];
+      }
+    }
+  };
+  await BrowserMcp.callBrowserTool("katashiro.click", { ref: "f7:e3", snapshotId: 5 }, { chrome, actMode: true });
+  const framed = calls.filter((c) => c.target && Array.isArray(c.target.frameIds) && c.target.frameIds[0] === 7);
+  assert.ok(framed.length >= 1, "inject + act targeted frame 7");
+  const act = calls.find((c) => Array.isArray(c.args) && c.args[0] === "e3");
+  assert.ok(act, "act call passes the bare in-frame ref e3, not the prefixed one");
 });

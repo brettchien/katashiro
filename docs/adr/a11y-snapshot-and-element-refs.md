@@ -301,8 +301,11 @@ Borrow the hard ARIA computation; write only katashiro-specific glue.
   `@dagrejs` package — the unscoped `dagre` is stale).
 
 **Glue katashiro must write itself (no lib covers it):** (1) the ref registry — a **content-script,
-per-frame** `Map<refId, Element>` for resolution plus a `WeakMap<Element, refId>` for stable re-issue
-*within* a snapshot; the side-panel holds only `ref → {tabId, frameId, generation}`; (2) the tree
+per-frame** `Map<refId, Element>` for resolution, with each element minting a fresh ref from a counter
+per snapshot (an earlier `WeakMap<Element, refId>` for "re-issue within a snapshot" was dropped in the
+implementation — a DFS visits each element once so there is nothing to re-issue, and retained across
+snapshots it collided refs and mis-resolved; see PR #2); the side-panel holds only
+`ref → {tabId, frameId, generation}`; (2) the tree
 walker + snapshot serialization, including the interactability filter (§3.1), open-shadow recursion,
 and the settle wait (§3.3); (3) frame merge + `fN:eM` addressing and message routing back to the owning
 frame; (4) the MCP tool surface (`snapshot`/`click(ref)`/`type(ref)`/`get_text`) + content-script ↔
