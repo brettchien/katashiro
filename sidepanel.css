@@ -201,6 +201,16 @@ body {
   font-size: 10px;
   line-height: 1;
 }
+/* Tunnel attached (live) — full, with a subtle accent glow. */
+.roster-browser.attached {
+  opacity: 1;
+  filter: drop-shadow(0 0 3px var(--accent-glow));
+}
+/* Allowed but not attached — dimmed + desaturated so the ⛓️‍💥 (or fallback 🔗) reads as "off". */
+.roster-browser.detached {
+  opacity: 0.5;
+  filter: grayscale(0.6);
+}
 
 /* --- Per-row connection status in the settings agent list --- */
 .agent-status {

@@ -569,6 +569,20 @@ async function loadHistory() {
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
+// Broken-chain (⛓️‍💥, Emoji 15.1) marks "browser allowed but tunnel not attached". It's a ZWJ
+// sequence, so on an older OS it degrades to two glyphs (⛓️💥); detect that once and fall back to a
+// dimmed 🔗 (styled by `.detached`). Detection: a supported ZWJ sequence merges into one glyph, so
+// it measures narrower than the same codepoints without the joiner.
+const BROKEN_CHAIN = (() => {
+  try {
+    const ctx = document.createElement("canvas").getContext("2d");
+    ctx.font = "20px sans-serif";
+    const joined = ctx.measureText("⛓️‍💥").width;   // ⛓️‍💥
+    const unjoined = ctx.measureText("⛓️💥").width;       // ⛓️💥 (no ZWJ)
+    return joined < unjoined - 1 ? "⛓️‍💥" : null;
+  } catch { return null; }
+})();
+
 // Single source of truth for a conn's display state (roster chips + settings rows).
 function connState(c) {
   if (!c) return { cls: "offline", label: "離線" };
@@ -604,11 +618,19 @@ function updateRoster() {
     nm.textContent = c.name;                             // textContent: agent name is user config
     chip.appendChild(nm);
 
-    if (c.browserAttached) {
+    // Browser tunnel: three states, shown only when this agent is allowed browser access. Separate
+    // from the config toggle (which only says "allowed"): this reflects the RUNTIME tunnel.
+    if (c.agent.browserAccess !== false) {
       const br = document.createElement("span");
-      br.className = "roster-browser";
-      br.textContent = "🔗";
-      br.title = "瀏覽器已連結 — 此 agent 可操作目前分頁";
+      if (c.browserAttached) {
+        br.className = "roster-browser attached";
+        br.textContent = "🔗";
+        br.title = "瀏覽器已連結 — 此 agent 可操作目前分頁";
+      } else {
+        br.className = "roster-browser detached";
+        br.textContent = BROKEN_CHAIN || "🔗";  // broken chain, or a dimmed 🔗 fallback (CSS)
+        br.title = "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）";
+      }
       chip.appendChild(br);
     }
 
