@@ -404,14 +404,17 @@ class Conn {
     maybeScroll();
   }
 
-  finalizeStream(_stopReason) {
+  finalizeStream(stopReason) {
     const s = this.stream;
     this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
     if (!s || !s.bubble) return;
+    const cancelled = stopReason === "cancelled";
     if (s.text === "") {
-      // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect).
+      // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect). If the user stopped
+      // it before any text arrived, say so rather than vanishing silently.
       const row = s.bubble.closest(".message");
       if (row) row.remove();
+      if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
       return;
     }
     // Render the accumulated markdown once, now that the turn is complete (ADR §3.3): streaming
@@ -419,6 +422,7 @@ class Conn {
     // still reaches finalize, so the message renders (not left as raw md).
     renderMarkdownInto(s.bubble, s.text);
     recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
+    if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
   }
 }
