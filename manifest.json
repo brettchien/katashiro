@@ -24,5 +24,8 @@
   },
   "icons": {
     "128": "icon.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "default-src 'none'; script-src 'self'; connect-src 'self' ws: wss: http: https:; img-src 'self' data:; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
   }
 }
