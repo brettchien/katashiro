@@ -15,15 +15,26 @@ or touch the page. Therefore:
 
 Every capability below is a variation on those two directions.
 
-> **Status (2026-07): the reverse-RPC mechanism is delivered.** The agent→extension
-> "act" direction (Phase 2 "Route B" below) is now realized via **MCP-over-ACP**: openab
+> **Status (2026-08): read + act are both live and validated.** The agent→extension
+> "act" direction (Phase 2 "Route B" below) is realized via **MCP-over-ACP**: openab
 > tunnels MCP over the `/acp` socket, and the extension serves DOM-semantic **browser tools**
-> (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) as an MCP server that the agent
-> discovers (`tools/list`) and calls (`tools/call`). See the tunnel contract in the openab
-> repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes the brittle Route A
-> (fenced-JSON) idea. Of the Phase 3 safety gates, **act mode is now in place** (writes off by
-> default); origin allowlist, per-write confirm, and audit log still stand between this and
-> high-blast-radius writes.
+> as an MCP server that the agent discovers (`tools/list`) and calls (`tools/call`). See the
+> tunnel contract in the openab repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes
+> the brittle Route A (fenced-JSON) idea.
+>
+> The **served tool surface is seven tools**: `katashiro.read_dom` / `snapshot` / `screenshot`
+> (read) and `click` / `type` / `navigate` / `wait_for` (act). Reads now go through an
+> **accessibility-tree snapshot with stable element refs** (cross-frame, stale-ref checked)
+> rather than a raw `innerText` dump — see `docs/adr/a11y-snapshot-and-element-refs.md`. Action
+> tools return the post-action snapshot so the agent rarely needs a follow-up read.
+>
+> The full loop was **live-validated end-to-end on Falcon (2026-07-31, PR #1447 D-29)**:
+> real browser drive over a deployed pod, all tool calls audited.
+>
+> Of the Phase 3 safety gates, **act mode is in place** (writes off by default) and an
+> **audit log exists on the openab facade side** (`mcp.audit` records every tool call). The
+> gates still missing before high-blast-radius writes: **origin allowlist, per-write confirm
+> (raw request), and a high-risk-origin blocklist.**
 
 ---
 
@@ -41,7 +52,15 @@ The agent cannot yet see or change anything in the browser.
 
 ---
 
-## Phase 1 — Read the current page 📖
+## Phase 1 — Read the current page ✅
+
+**Shipped** (via MCP-over-ACP, not inline prompt context). The agent reads the active tab
+through `katashiro.read_dom` / `snapshot` / `screenshot`. Rather than the original
+"prepend capped `innerText` to the next turn" design, reads are pull-on-demand MCP tool
+calls returning an a11y-tree snapshot with element refs (see the ADR). The manifest-permission
+and injection-blocked-page notes below still describe the extension's read plumbing.
+
+Original plan (for reference):
 
 Give the agent read access to the active tab as prompt context.
 
@@ -58,12 +77,14 @@ prompt blocks through to the model**.
 
 ---
 
-## Phase 2 — Change the rendered page (client-side DOM) ✍️
+## Phase 2 — Change the rendered page (client-side DOM) ✅
 
-Let the agent mutate the live DOM. Ephemeral — changes vanish on reload; the
-server is not touched.
+**Shipped via Route B (MCP-over-ACP), live-validated on Falcon 2026-07-31.** The agent
+mutates the live DOM through `katashiro.click` / `type` / `navigate` / `wait_for`, each
+gated behind act mode (Phase 3 gate #1). Changes are ephemeral — they vanish on reload; the
+server is not touched. Route A (fenced-JSON) was abandoned in favour of the real reverse RPC.
 
-Two channels for agent → extension commands:
+Original plan — two candidate channels for agent → extension commands (Route B won):
 
 - **Route A (ships today, no broker change)**: agent emits a fenced
   `openab-action` JSON block; the extension parses it on turn completion,
@@ -106,8 +127,11 @@ Two mechanisms:
 2. **Origin allowlist** — only whitelisted domains can be written to / called.
 3. **Per-write confirmation showing the raw request** (method + URL + body), not
    just the agent's natural-language intent.
-4. **No `eval` / no arbitrary JS / no arbitrary-URL fetch** — ops allowlisted, params schema-validated.
-5. **Audit log** of every executed action.
+4. ✅ **No `eval` / no arbitrary JS / no arbitrary-URL fetch** — the served tools are a fixed
+   allowlist with schema-validated params; there is no arbitrary-JS op.
+5. ✅ **Audit log** — the openab facade records every tool call (`mcp.audit: facade source
+   call … tool=katashiro.* … is_error=…`). *(Server-side; a client-side action log in the
+   Side Panel is still worth adding for the user's own visibility.)*
 6. **Blocklist high-risk origins** (banking, cloud consoles, GitHub org admin) by default.
 
 **Exit criteria**: agent completes a real persistent task on an allowlisted site,
@@ -124,7 +148,11 @@ not a browser-runtime capability, and is not part of this extension.
 
 ## Suggested build order
 
-1. Phase 1 (read) — low risk, immediate value.
-2. Phase 2 Route A (DOM write + confirm) — no broker dependency.
-3. Audit openab for ACP client-tool support → decide whether Phase 2 Route B is viable.
-4. Phase 3 only after act-mode + origin allowlist + audit-log gates exist.
+1. ✅ Phase 1 (read) — done via MCP-over-ACP (a11y snapshot + refs).
+2. ✅ Phase 2 (DOM write) — done via Route B (MCP-over-ACP), abandoned Route A.
+3. ✅ act mode (gate #1), no-eval (gate #4), server-side audit log (gate #5).
+4. **Next — remaining Phase 3 write-safety gates**, in order:
+   - **Origin allowlist** (gate #2) — only whitelisted domains can be written to.
+   - **Per-write confirm showing the raw request** (gate #3).
+   - **High-risk-origin blocklist** (gate #6).
+   Ship these before opening act mode on real, persistent, authenticated sites.
