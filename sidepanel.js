@@ -74,6 +74,7 @@ class Conn {
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
     this.promptQueue = [];
     this.turnActive = false;
+    this.lastPrompt = null;                              // last turn's text, for retry
     this.mcpServer = null;                               // our type:acp MCP server instance
     // Router state: declared instances + connectionId → instance. A second client-side MCP
     // server would just be another entry in `servers`; the gateway tunnels to each separately.
@@ -313,7 +314,9 @@ class Conn {
     if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady && this.acpSessionId)) return;
 
     const text = this.promptQueue.shift();
+    this.lastPrompt = text;                              // remember for retry
     this.turnActive = true;
+    updateStopButton();
     this.startStream();
 
     this.acpRequest("session/prompt", {
@@ -322,22 +325,38 @@ class Conn {
     }, ACP_PROMPT_TIMEOUT_MS)
       .then((res) => {
         this.turnActive = false;
+        updateStopButton();
         const replyText = this.stream ? this.stream.text : "";
-        this.finalizeStream(res && res.stopReason);
+        this.finalizeStream(res && res.stopReason);      // stopReason "cancelled" ⇒ partial reply kept
         relayAgentReply(this, replyText); // fan this agent's reply out to the room
         this.flushQueue();
       })
       .catch((err) => {
         this.turnActive = false;
+        updateStopButton();
         if (/closed|not open/i.test(String(err))) {
-          this.promptQueue.unshift(text);                // retry after resume
+          this.promptQueue.unshift(text);                // transient: retry after resume
           this.finalizeStream();
         } else {
-          this.appendToStream("\n[錯誤] " + err);
-          this.finalizeStream("error");
+          this.finalizeStream("error");                  // render any partial reply, then a distinct
+          appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
         }
         this.flushQueue();
       });
+  }
+
+  // Stop the in-flight turn: session/cancel is a one-way NOTIFICATION (no id). The gateway fires
+  // the prompt's cancel signal, which resolves our session/prompt request with stopReason
+  // "cancelled" — so the normal .then path finalizes the (partial) reply; nothing to settle here.
+  cancelTurn() {
+    if (!this.turnActive || !this.acpSessionId) return;
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN)) return;
+    this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
+  }
+
+  // Re-send the last turn (after an error / stop). No-op if a turn is already in flight.
+  retryLast() {
+    if (this.lastPrompt && !this.turnActive) this.enqueue(this.lastPrompt);
   }
 
   // --- Streaming bubble (per conn — agents stream concurrently) --------------
@@ -371,7 +390,7 @@ class Conn {
     msgDiv.append(avatar, contentEl);
     messagesList.appendChild(msgDiv);
     this.stream.bubble = bubble;
-    scrollToBottom();
+    maybeScroll();
   }
 
   appendToStream(chunk) {
@@ -380,7 +399,7 @@ class Conn {
     if (this.stream.text === "") this.stream.bubble.classList.remove("typing");
     this.stream.text += chunk;
     this.stream.bubble.textContent = this.stream.text;   // textContent: no HTML injection
-    scrollToBottom();
+    maybeScroll();
   }
 
   finalizeStream(_stopReason) {
@@ -397,7 +416,7 @@ class Conn {
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
     renderMarkdownInto(s.bubble, s.text);
-    scrollToBottom();
+    maybeScroll();
   }
 }
 
@@ -424,6 +443,8 @@ function reconnectConn(i) {
 const messagesList = document.getElementById("messages-list");
 const messageInput = document.getElementById("message-input");
 const sendBtn = document.getElementById("send-btn");
+const stopBtn = document.getElementById("stop-btn");
+const jumpLatestBtn = document.getElementById("jump-latest");
 const statusIndicator = document.querySelector(".status-indicator");
 const settingsBtn = document.getElementById("settings-btn");
 const connectBtn = document.getElementById("connect-btn");
@@ -783,6 +804,9 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
+// Stop every in-flight turn (each conn sends its own session/cancel).
+if (stopBtn) stopBtn.addEventListener("click", () => room.forEach((c) => c.cancelTurn()));
+
 // Anchors in rendered markdown open in a real browser tab — navigating inside the side panel is
 // broken UX. Re-validate the scheme at click time (http(s)/mailto only); never trust the
 // post-sanitize href blindly (ADR §3.5). Delegated so it covers every current/future bubble.
@@ -891,7 +915,9 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
-  scrollToBottom();
+  // The user's own message always pulls the view down (they expect to follow it); an incoming
+  // relayed message only follows if they're already at the bottom.
+  if (isMe) scrollToBottom(); else maybeScroll();
 }
 
 // System notices carry handshake error strings (remote-reachable) — same XSS sink, same
@@ -904,9 +930,75 @@ function appendSystemMessage(text) {
   inner.textContent = text;
   msgDiv.appendChild(inner);
   messagesList.appendChild(msgDiv);
-  scrollToBottom();
+  maybeScroll();
+}
+
+// A failed turn gets its OWN bubble (distinct red styling), separate from agent content, with an
+// optional retry. The error text is remote-reachable (a prompt/handshake error echoed from a
+// malicious/MITM server), so it stays textContent — never markdown/innerHTML (same guard as
+// system notices).
+function appendErrorMessage(senderName, text, onRetry) {
+  const msgDiv = document.createElement("div");
+  msgDiv.className = "message received error";
+
+  const avatar = document.createElement("div");
+  avatar.className = "avatar error-avatar";
+  avatar.textContent = "!";
+  msgDiv.appendChild(avatar);
+
+  const content = document.createElement("div");
+  content.className = "message-content";
+  if (senderName) {
+    const nameEl = document.createElement("div");
+    nameEl.className = "sender-name";
+    nameEl.textContent = senderName;
+    content.appendChild(nameEl);
+  }
+  const bubble = document.createElement("div");
+  bubble.className = "bubble error-bubble";
+  const msg = document.createElement("div");
+  msg.className = "error-text";
+  msg.textContent = text;
+  bubble.appendChild(msg);
+  if (onRetry) {
+    const retry = document.createElement("button");
+    retry.className = "retry-btn";
+    retry.type = "button";
+    retry.textContent = "重試";
+    retry.addEventListener("click", () => { retry.disabled = true; onRetry(); });
+    bubble.appendChild(retry);
+  }
+  content.appendChild(bubble);
+  msgDiv.appendChild(content);
+  messagesList.appendChild(msgDiv);
+  maybeScroll();
+}
+
+// The stop button is shown whenever ANY agent has a turn in flight; clicking it cancels them all.
+function anyTurnActive() {
+  return room.some((c) => c.turnActive);
+}
+function updateStopButton() {
+  if (stopBtn) stopBtn.hidden = !anyTurnActive();
 }
 
 function scrollToBottom() {
   messagesList.scrollTop = messagesList.scrollHeight;
+}
+
+// Stick-to-bottom: only auto-follow new content when the user is already near the bottom.
+// If they've scrolled up to read history, incoming chunks must NOT yank the viewport down;
+// instead surface a "jump to latest" affordance they can tap.
+const NEAR_BOTTOM_PX = 80;
+function isNearBottom() {
+  return messagesList.scrollHeight - messagesList.scrollTop - messagesList.clientHeight < NEAR_BOTTOM_PX;
+}
+function maybeScroll() {
+  if (isNearBottom()) scrollToBottom();
+  else if (jumpLatestBtn) jumpLatestBtn.hidden = false;
+}
+if (jumpLatestBtn) {
+  jumpLatestBtn.addEventListener("click", () => { scrollToBottom(); jumpLatestBtn.hidden = true; });
+  // Hide the affordance again once the user scrolls back to the bottom on their own.
+  messagesList.addEventListener("scroll", () => { if (isNearBottom()) jumpLatestBtn.hidden = true; });
 }
