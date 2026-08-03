@@ -95,7 +95,7 @@
       if (meaningful && isVisible(el)) {
         // Strip the ref sentinel + quotes/newlines from the page-controlled name so it can't corrupt
         // the tree format or the frame-prefix rewrite in mergeFrames (Orca F3 / name-escape).
-        const clean = name.replace(/[[\]"\n]/g, " ").replace(/\s+/g, " ").trim();
+        const clean = name.replace(/[[\]"\r\n]/g, " ").replace(/\s+/g, " ").trim();
         const label = clean ? ` "${clean}"` : "";
         const ref = interactive ? ` [ref=${issueRef(el)}]` : "";
         const level = el.getAttribute("aria-level") || (/^H[1-6]$/.test(el.tagName) ? el.tagName[1] : "");
