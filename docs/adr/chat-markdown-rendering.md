@@ -185,7 +185,8 @@ markdown ADR sets `connect-src` as tight as today's panel-owned socket allows an
 - The readability problem (§1.1) is fixed: bold/headings/lists/**tables**/code all render.
 - Code blocks are highlighted and one-click copyable — agent-provided commands/code become usable.
 - The `innerHTML` sink is guarded by **two independent layers** — DOMPurify (§3.2) and a hardened
-  egress CSP (§3.7) — so a sanitizer bypass alone cannot exfil the `chrome.storage` tokens.
+  egress CSP (§3.7) — so a sanitizer bypass alone cannot exfil the `chrome.storage` tokens **to a
+  third party** (a malicious ACP endpoint itself is a separate trust-boundary matter — §3.7).
 
 ### Negative / tradeoffs
 - Three vendored bundles (largest is highlight.js — mitigated by the curated language set).
