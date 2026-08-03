@@ -45,7 +45,18 @@ all future rich-render surfaces: whiteboard, tool-call traces, etc.).
 
 ## 4. Options (to decide here later)
 - **A. Keep the socket in the panel** — accept that panel `connect-src` must allowlist the ACP origin;
-  document §3.7 as third-party-only (current markdown-ADR posture).
+  document §3.7 as third-party-only (current markdown-ADR posture). **As shipped (markdown PR §3.7,
+  "decision a"):** because the panel opens both the `ws`/`wss` socket **and** an `http(s)` `probe()`
+  fetch to a *user-typed, arbitrary* ACP host, a static MV3 manifest cannot enumerate the origin, so
+  the realized `connect-src` is the permissive `'self' ws: wss: http: https:`. The egress lock's value
+  is then carried entirely by the other directives (`img-src` / `object-src` / `base-uri` /
+  `form-action` / `script-src`), not by `connect-src`.
+  - **A′ (interim hardening, no refactor).** Tighten to `'self' https: wss: http://localhost:*
+    ws://localhost:*` — force TLS on *remote* ACP (aligning with the `wss`/TLS MITM control in §2) while
+    keeping plaintext for local dev. Cheap, but still can't scope the connect vector to specific hosts,
+    and blocks any legitimate plaintext-remote endpoint. Surfaced by Orca in the markdown-PR review; a
+    stopgap that stays valid only until B/C actually lands. If plaintext-remote must be supported
+    instead, document here that those connections run with the MITM control disabled.
 - **B. Move the socket to the SW** — panel `connect-src 'self'`; closes third-party exfil; requires the
   SW↔panel protocol + session-state design above. Does **not** close the malicious-ACP relay path.
 - **C. Hybrid / offscreen document** — a persistent offscreen doc owns the socket (MV3's durable DOM
