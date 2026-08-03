@@ -13,16 +13,21 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
         calls.query.push(q);
-        return opts.noTab ? [] : [{ id: 42, windowId: 7 }];
+        if (opts.noTab) return [];
+        // active-tab lookup (activeTab()) vs list-all (katashiro.tabs): the latter can be seeded.
+        if (!q.active && opts.tabsList) return opts.tabsList;
+        return [{ id: 42, windowId: 7 }];
       },
       update: async (tabId, upd) => {
         calls.tabsUpdate.push({ tabId, upd });
       },
+      goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
+      goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       captureVisibleTab: async (windowId, o) => {
         calls.captureVisibleTab.push({ windowId, o });
         return opts.dataUrl || "data:image/png;base64,QUJD"; // "ABC"
@@ -117,7 +122,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 7 DOM-semantic browser tools", async () => {
+test("tools/list returns the 14 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -128,7 +133,14 @@ test("tools/list returns the 7 DOM-semantic browser tools", async () => {
     "katashiro.type",
     "katashiro.screenshot",
     "katashiro.snapshot",
-    "katashiro.wait_for"
+    "katashiro.wait_for",
+    "katashiro.get_text",
+    "katashiro.scroll",
+    "katashiro.tabs",
+    "katashiro.history",
+    "katashiro.press_key",
+    "katashiro.hover",
+    "katashiro.select_option"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -273,6 +285,117 @@ test("tools/call for an unknown tool returns an isError result", async () => {
   assert.match(res.content[0].text, /unknown tool/);
 });
 
+// --- breadth tools: get_text / scroll / tabs / history / press_key / hover / select_option ---
+
+test("get_text returns the element innerText", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, text: "hello page" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.equal(res.content[0].text, "hello page");
+});
+
+test("get_text reports a missing selector as an error", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: false, error: "no element for selector: #x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: { selector: "#x" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /no element for selector/);
+});
+
+test("scroll (page) reports the move and returns the post-action snapshot", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "to bottom", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.scroll", arguments: { to: "bottom" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /scrolled to bottom/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+test("scroll is read-only — runs with act mode off", async () => {
+  const { deps: d } = deps({ actMode: false, scriptResult: { ok: true, how: "down 800px", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.scroll", arguments: { direction: "down" } }, d);
+  assert.equal(res.isError, undefined); // not gated
+  assert.match(res.content[0].text, /scrolled down 800px/);
+});
+
+test("tabs lists open tabs with the active marker", async () => {
+  const { deps: d } = deps({ tabsList: [
+    { active: true, title: "A", url: "https://a/" },
+    { active: false, title: "B", url: "https://b/" }
+  ] });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.tabs", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /\* \[0\] A — https:\/\/a\//);
+  assert.match(res.content[0].text, /\[1\] B — https:\/\/b\//);
+});
+
+test("history goes back and returns the post-action snapshot", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.history", arguments: { direction: "back" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /went back/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+  assert.deepEqual(calls.goBack, [42]);
+});
+
+test("history at the end of the stack returns a clean error, not a throw", async () => {
+  const { deps: d } = deps({ historyThrows: true });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.history", arguments: { direction: "back" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /no back history/);
+});
+
+test("scroll with no positioning argument is refused", async () => {
+  const { deps: d, calls } = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.scroll", arguments: {} }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs one of/);
+  assert.equal(calls.executeScript.length, 0); // refused before touching the page
+});
+
+test("press_key dispatches to a ref and returns the snapshot", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.press_key", arguments: { key: "Enter", ref: "e5", snapshotId: 1 } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /pressed Enter on ref e5/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+test("press_key with a ref but no snapshotId is refused", async () => {
+  const { deps: d } = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.press_key", arguments: { key: "Enter", ref: "e5" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /must carry its snapshotId/);
+});
+
+test("hover dispatches pointer events and returns the snapshot", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.hover", arguments: { ref: "e5", snapshotId: 1 } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /hovered ref e5/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+test("hover is read-only — runs with act mode off", async () => {
+  const { deps: d } = deps({ actMode: false, scriptResult: { ok: true, how: "ref e5", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.hover", arguments: { ref: "e5", snapshotId: 1 } }, d);
+  assert.equal(res.isError, undefined); // not gated
+  assert.match(res.content[0].text, /hovered ref e5/);
+});
+
+test("select_option selects by value and returns the snapshot", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", selected: "v2", title: "T", url: "https://t/", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.select_option", arguments: { ref: "e5", snapshotId: 1, value: "v2" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /selected v2 in ref e5/);
+  assert.match(res.content[0].text, /# snapshot [0-9]+/);
+});
+
+test("select_option without value or label is refused", async () => {
+  const { deps: d } = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.select_option", arguments: { ref: "e5", snapshotId: 1 } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs a value or a label/);
+});
+
 // --- act mode: the write consent gate ---------------------------------------
 
 // Which tools mutate the page is a registry fact, so assert it there rather than restating
@@ -284,7 +407,10 @@ const WRITE_TOOLS = Object.entries(BrowserMcp.TOOLS)
 test("exactly the page-mutating tools are marked write", () => {
   assert.deepEqual(WRITE_TOOLS.sort(), [
     "katashiro.click",
+    "katashiro.history",
     "katashiro.navigate",
+    "katashiro.press_key",
+    "katashiro.select_option",
     "katashiro.type"
   ]);
 });
@@ -415,7 +541,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 7);
+  assert.equal(tools.length, 14);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -614,7 +740,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 7, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 14, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
