@@ -9,8 +9,11 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-// Load the vendored markdown-it IIFE (no DOM needed) so markdown.js can build `md` at import.
-new Function(fs.readFileSync(path.join(__dirname, "../vendor/markdown-it.iife.js"), "utf8")).call(globalThis);
+// Load the vendored markdown-it + highlight.js IIFEs (no DOM needed) so markdown.js can build `md`
+// (with its highlight hook) at import.
+for (const f of ["../vendor/markdown-it.iife.js", "../vendor/highlight.iife.js"]) {
+  new Function(fs.readFileSync(path.join(__dirname, f), "utf8")).call(globalThis);
+}
 const { md, DP_CONFIG } = require("../markdown.js");
 
 test("markdown-it renders GFM tables and inline formatting", () => {
@@ -29,6 +32,16 @@ test("markdown-it's validateLink drops javascript: hrefs before DOMPurify even r
   assert.doesNotMatch(md.render("[x](javascript:alert(1))"), /<a[^>]+href/i);
   // a legit link still renders as a real anchor
   assert.match(md.render("[ok](https://x.com)"), /<a[^>]+href="https:\/\/x\.com"/);
+});
+
+test("fenced code is highlighted via the hljs hook, unknown langs fall back to plain", () => {
+  const js = md.render("```javascript\nconst x = 1;\n```");
+  assert.match(js, /<pre class="hljs">/);
+  assert.match(js, /<span class="hljs-keyword">const<\/span>/);
+  // an unknown language still renders a code block, just without tokens
+  const unknown = md.render("```nosuchlang\nplain text\n```");
+  assert.match(unknown, /<pre class="hljs"><code>plain text/);
+  assert.doesNotMatch(unknown, /hljs-/);
 });
 
 test("DP_CONFIG is pinned to the no-relax security defaults (ADR §3.2)", () => {

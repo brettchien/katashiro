@@ -384,7 +384,7 @@ class Conn {
         // Render the accumulated markdown once, now that the turn is complete (ADR §3.3):
         // streaming stayed plain textContent; markdown is parsed+sanitized only here. A stream
         // that stops/errors still reaches finalize, so the message renders (not left as raw md).
-        this.stream.bubble.innerHTML = renderMarkdown(this.stream.text);
+        renderMarkdownInto(this.stream.bubble, this.stream.text);
         scrollToBottom();
       }
     }
@@ -856,7 +856,7 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  bubble.innerHTML = renderMarkdown(text);   // sanitized sink (ADR §3.2) — never raw innerHTML
+  renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
   content.appendChild(bubble);
 
   const ts = document.createElement("div");

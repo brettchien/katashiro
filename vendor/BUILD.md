@@ -47,3 +47,22 @@ advisories, and rebuild — not "vendor once and forget".
   ```
 - Verified: eval-free (grep → 0); `renderMarkdown` renders GFM tables and strips
   `<script>` / `javascript:` / `onerror` (jsdom smoke test).
+
+## `highlight.iife.js`
+
+Syntax highlighting for fenced code blocks (ADR §3.4), run inside markdown-it's `highlight` hook.
+Exposed as the global `hljs`. **Curated language subset** — ~a dozen common languages, not all ~190
+— to keep the bundle small.
+
+- Source: `highlight.js@11.11.1` (BSD-3-Clause), core + registered languages:
+  `javascript, typescript, python, rust, go, bash, shell, json, yaml, xml, css, sql, diff`.
+- Rebuild:
+  ```sh
+  cd build && npm i highlight.js@11
+  # entry-hljs.js: import core + each language, hljs.registerLanguage(...), globalThis.hljs = hljs
+  npx esbuild entry-hljs.js --bundle --format=iife --minify --legal-comments=none \
+    --outfile=../vendor/highlight.iife.js
+  ```
+  (Token colors live in `sidepanel.css` — a self-hosted GitHub-dark-ish `.hljs-*` subset, no CDN.)
+- Verified: eval-free (grep → 0); `hljs.listLanguages()` = the 13 registered above; `hljs.highlight`
+  emits `<span class="hljs-…">` tokens.
