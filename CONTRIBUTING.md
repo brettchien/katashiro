@@ -23,12 +23,17 @@ bundler, no `node_modules`.
 | `background.js`  | Service worker — opens the Side Panel on action click       |
 | `sidepanel.html` | Chat UI markup                                             |
 | `sidepanel.css`  | Glassmorphic dark-mode styling                            |
-| `sidepanel.js`   | ACP/WebSocket transport, agent management, message rendering|
+| `sidepanel.js`   | ACP/WebSocket transport, agent management, chat rendering + history/resume, roster |
+| `browser-mcp.js` | The browser MCP server (tool registry + DOM tool bodies) served over the ACP tunnel |
+| `room-core.js`   | Pure multi-agent room logic — @mention routing, agent-to-agent relay, loop guard   |
+| `markdown.js`    | The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy/link hardening |
+| `page/a11y-walker.js` | Content script — a11y-tree snapshot + element-ref resolution injected into the page |
+| `vendor/`        | Prebuilt eval-free IIFE bundles (dom-accessibility-api, markdown-it, dompurify, highlight.js); see `vendor/BUILD.md` |
 
 ## Code style
 
 - Vanilla JS, no framework. Match the surrounding style (2-space indent, `const`/`let`, small focused functions).
-- Render any agent- or network-sourced text via `textContent`, never `innerHTML` — no HTML injection from remote data.
+- Render agent- or network-sourced text via `textContent` — **except the chat message body**, which is markdown and may reach `innerHTML` **only** through the single `renderMarkdown`/DOMPurify sink (`markdown.js`). No other `innerHTML` of remote data.
 - Keep comments in English; user-facing UI strings may be Traditional Chinese.
 - **No secrets.** Never commit tokens, keys, or private endpoints. `ws://localhost:8080/acp` is the only endpoint placeholder.
 

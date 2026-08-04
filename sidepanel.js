@@ -1,9 +1,10 @@
-// Katashiro side panel — multi-agent room (Phase 1: N simultaneous connections).
+// Katashiro side panel — multi-agent room.
 //
 // Each configured agent gets its OWN live WebSocket + ACP session, held in a `Conn`
-// instance. All room members are connected at once; a user message is BROADCAST to
-// every connected agent, and each agent streams its own reply (attributed) into the
-// shared scrollback. There is NO agent-to-agent relay yet (that is Phase 2).
+// instance. All room members are connected at once; a user message is routed per room mode
+// (@mention → addressed agents; else broadcast), and each agent streams its own reply
+// (attributed) into the shared scrollback. Agent-to-agent relay is live — an agent's reply is
+// fanned out to the others (`<message from="...">`-wrapped) under a loop guard (see room-core.js).
 
 // --- Room-level state --------------------------------------------------------
 let myUserId = "me";

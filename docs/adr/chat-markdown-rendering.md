@@ -1,6 +1,6 @@
 # ADR: Markdown rendering in the chat (sanitized)
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented
 - **Date:** 2026-08-03
 - **Author:** Brett Chien
 - **Related:** [ROADMAP](../../ROADMAP.md), [a11y-snapshot ADR](./a11y-snapshot-and-element-refs.md) (vendoring pattern)
@@ -43,7 +43,8 @@ replaced by a **sanitizer that is not optional**.
 
 ### 1.3 MV3 constraints
 
-`manifest.json` has no `content_security_policy` → the MV3 default
+At the time of writing, `manifest.json` had no `content_security_policy` (the hardened
+`extension_pages` CSP in §3.7 was added by this ADR's implementation) → the MV3 default
 `script-src 'self'; object-src 'self'` applies, and Chrome enforces a **minimum** of
 `script-src 'self' 'wasm-unsafe-eval'` that cannot be relaxed — critically, **`'unsafe-eval'` cannot be
 added to extension pages at all** (rejected at install as insecure) `[MV3-CSP]`. So: no CDN, no inline

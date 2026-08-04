@@ -20,7 +20,11 @@ Under this system:
 
 ## 🌟 Key Features
 
-- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls DOM-semantic browser tools (`katashiro.read_dom` / `click` / `type` / `navigate` / `screenshot`) that execute in the active tab via `chrome.scripting`. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **15 DOM-semantic browser tools** (8 read + 7 write — `snapshot`, `read_dom`, `get_text`, `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`, `click`, `type`, `select_option`, `press_key`, `navigate`, `history`, `reload`) that execute in the active tab via `chrome.scripting`. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
+
+- **Rich Chat**: agent and user messages render as **markdown → DOMPurify-sanitized HTML** — GFM tables, **syntax-highlighted** code with one-click **copy**, hardened links. `stop`/retry a turn (ACP `session/cancel`), **chat history + ACP session resume** persisted per window (reopen the panel and the conversation — and the session — continue), and stick-to-bottom auto-scroll with a "jump to latest" pill.
+
+- **Roster status at a glance**: per agent, a connection dot (🔗 linked / ⛓️‍💥 not) and a browser-tunnel monkey — **🐵** live + operational (act mode on), **🙊** live but read-only, **🙈** not attached.
 
 - **Multi-Agent Room**: several agents share one chatroom, each on its own ACP connection. `@mention` mode (the default) routes a message only to the agents named in it and broadcasts when none are; ambient mode gives everyone everything. Agent replies are relayed to the other agents wrapped as `<message from="...">`, so they can answer each other — bounded by a **loop guard** that pauses a runaway agent-to-agent cascade and resets the moment a human speaks. Per-agent connect/disconnect and browser-access toggles, and one openab session per Chrome window.
 
@@ -39,8 +43,11 @@ Under this system:
 - `sidepanel.js`: Main client-side script managing WebSockets, Chrome local storage, auto-reconnection, and message rendering.
 - `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](#-serving-an-mcp-server-over-reverse-mcp-over-acp).
 - `room-core.js`: Multi-agent room logic — @mention routing, agent-to-agent relay, and the loop guard.
-- `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
-- `icon.png`: A high-definition custom cyberpunk icon featuring a digital paper doll with neon circuit designs.
+- `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
+- `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
+- `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
+- `test/`: `node --test` suites (4 files, 103 tests). No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
+- `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
 
 ## 🔌 Serving an MCP server over reverse MCP-over-ACP
 

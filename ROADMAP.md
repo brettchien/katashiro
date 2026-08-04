@@ -22,11 +22,13 @@ Every capability below is a variation on those two directions.
 > tunnel contract in the openab repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes
 > the brittle Route A (fenced-JSON) idea.
 >
-> The **served tool surface is seven tools**: `katashiro.read_dom` / `snapshot` / `screenshot`
-> (read) and `click` / `type` / `navigate` / `wait_for` (act). Reads now go through an
-> **accessibility-tree snapshot with stable element refs** (cross-frame, stale-ref checked)
-> rather than a raw `innerText` dump — see `docs/adr/a11y-snapshot-and-element-refs.md`. Action
-> tools return the post-action snapshot so the agent rarely needs a follow-up read.
+> The **served tool surface is fifteen tools** — 8 read (`snapshot`, `read_dom`, `get_text`,
+> `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`) and 7 write (`click`, `type`,
+> `select_option`, `press_key`, `navigate`, `history`, `reload`); the full table with params is in
+> the [README](README.md#the-tools-we-serve). Reads go through an **accessibility-tree snapshot
+> with stable element refs** (cross-frame, stale-ref checked) rather than a raw `innerText` dump —
+> see `docs/adr/a11y-snapshot-and-element-refs.md`. Action tools return the post-action snapshot so
+> the agent rarely needs a follow-up read.
 >
 > The full loop was **live-validated end-to-end on Falcon (2026-07-31, PR #1447 D-29)**:
 > real browser drive over a deployed pod, all tool calls audited.
@@ -46,9 +48,13 @@ Shipped today (see `sidepanel.js`):
 - Per-agent persisted sessions (`acpSessionByUrl`), auto-reconnect (5 s), resume-or-fresh fallback.
 - Multi-agent management (add / delete / rename / retarget / switch active).
 - Turn queue (one turn at a time, survives reconnect), streamed agent replies.
-- LINE-style chat UI, agent output rendered via `textContent` (no HTML injection).
+- LINE-style chat UI. **Since shipped:** agent/user messages render as markdown → DOMPurify-sanitized
+  HTML (`markdown.js`, syntax highlight + copy-code), plus chat history persistence + ACP session
+  resume, stop/cancel, stick-to-bottom auto-scroll, and a roster emoji status (🔗/⛓️‍💥 connection,
+  🐵/🙊/🙈 browser tunnel). Streaming stays `textContent`; the finalized message is the only
+  sanitized-innerHTML sink (see `docs/adr/chat-markdown-rendering.md`).
 
-The agent cannot yet see or change anything in the browser.
+The agent cannot yet see or change anything in the browser (that arrives in Phases 1–2 below).
 
 ---
 

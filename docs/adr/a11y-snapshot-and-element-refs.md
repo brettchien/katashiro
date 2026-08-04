@@ -1,9 +1,17 @@
 # ADR: Accessibility-Tree Snapshot + Element Refs as the Primary Perception Model
 
-- **Status:** Proposed
+- **Status:** Accepted — implemented
 - **Date:** 2026-08-02
 - **Author:** Brett Chien
 - **Related:** [ROADMAP](../../ROADMAP.md), MCP-over-ACP tunnel contract (openab `docs/mcp-over-acp-tunnel-contract.md`)
+
+> **Implementation note (as shipped).** A few decisions below landed differently: `read_dom` kept
+> returning **raw `outerHTML`** (§3.6's "default read_dom to the snapshot format" was not done);
+> the text case is instead covered by a separate **`get_text`** tool (plain `innerText`, not the
+> §5 Readability idea). `wait_for` shipped as `{selector?, text?, timeout?}` (top-frame only) —
+> without the §3.4 `ref?`/`state?` params. Everything else (snapshot + refs + stale-ref check,
+> native-setter `type`, snapshot-after-action, visible+enabled actionability, vendored
+> `dom-accessibility-api`) matches. The full served tool table is in the [README](../../README.md#the-tools-we-serve).
 
 > Citations are inline as `[Key]` at the point of the claim; each key resolves in **References** at the
 > end. This makes provenance traceable per-decision — which part is inspired by what.
