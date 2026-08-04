@@ -137,21 +137,43 @@ This is the first of the Phase 3 gates. **Origin allowlist, per-action confirmat
 audit log are still missing** — with act mode on, an agent can click and type on any site you
 have open. See the [ROADMAP](ROADMAP.md).
 
-## 🚀 How to Load and Test
+## 🚀 Install
 
-### 1. Load the Extension in Chrome
-1. Open Google Chrome and navigate to `chrome://extensions/`.
-2. Toggle the **Developer mode** switch in the top-right corner.
-3. Click the **Load unpacked** button in the top-left corner.
-4. Select the project folder: `katashiro`.
+Katashiro is a zero-build MV3 extension — there is no compile step; you load the folder as-is.
+It runs on Chromium browsers (Chrome, Edge). Arc needs a `chrome.sidePanel` polyfill; Firefox is
+not supported.
 
-### 2. Launch the Side Panel
-- Click the **Katashiro** icon in the extensions toolbar (or pin it and click the toolbar icon) to slide open the Side Panel on the right side of the screen.
+### Option A — from a release (recommended)
 
-### 3. Connect to OpenAB
-- Click the **Settings (⚙️)** icon in the top header.
-- Enter your OpenAB WebSocket endpoint URL (e.g., `ws://localhost:8080/acp`).
-- Click **Save and Reconnect** to establish a real-time connection.
+1. Download the latest **`katashiro-<version>.zip`** from the [**Releases**](../../releases) page.
+2. Unzip it to a folder you'll keep (the extension loads from this folder — don't delete it).
+3. Open `chrome://extensions/` and turn on **Developer mode** (top-right).
+4. Click **Load unpacked** and select the unzipped folder.
+
+### Option B — from source
+
+```bash
+git clone https://github.com/brettchien/katashiro.git
+```
+Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → select the `katashiro` folder.
+
+> **Updating:** after replacing the files (or pulling), click the extension's **↻ reload** on
+> `chrome://extensions/`, then **close and reopen the Side Panel** — the reload button alone does
+> not refresh an already-open panel.
+
+### Launch & connect
+
+1. Click the **Katashiro** toolbar icon to open the Side Panel (pin it for easy access).
+2. Enter your OpenAB WebSocket endpoint (e.g. `ws://localhost:8080/acp`) — add the transport token
+   if your endpoint requires one (non-loopback endpoints do).
+3. It connects and streams. Manage agents / room mode / browser write-consent (act mode) from
+   **Settings (⚙️)**.
+
+### Run the tests
+
+```bash
+node --test test/*.test.js   # 103 tests, no Chrome required (chrome.*/crypto/socket are mocked)
+```
 
 ## 📚 Documentation
 
