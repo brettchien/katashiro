@@ -155,9 +155,23 @@
     };
   }
 
+  // Coalesce all queued turns for one agent into a single prompt. When an agent is busy the user
+  // (or an agent→agent relay) can pile up several messages; rather than replay them as N separate
+  // turns, the next round sends the whole backlog as ONE turn — Discord-style batch delivery. Order
+  // is preserved and entries are joined by a blank line so they still read as distinct messages;
+  // empty / whitespace-only entries are dropped.
+  function batchPrompts(list) {
+    if (!Array.isArray(list)) return "";
+    return list
+      .map((t) => (t == null ? "" : String(t)))
+      .filter((t) => t.trim() !== "")
+      .join("\n\n");
+  }
+
   return {
     escapeAttr,
     wrapRelay,
+    batchPrompts,
     parseMentions,
     resolveNames,
     resolveTargets,
