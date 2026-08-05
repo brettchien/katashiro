@@ -98,6 +98,17 @@
             <span class="mode-hint" id="act-mode-hint"></span>
           </div>
 
+          <!-- Browser origin allowlist (Phase 3 gate #2): which sites the agent may read/act on -->
+          <div class="input-group">
+            <label>授權網域</label>
+            <span class="mode-hint">只有在此授權的網域，agent 才讀得到／操作得到（含唯讀）。走 Chrome 原生權限逐站授權，隨時可移除。</span>
+            <div class="origin-add">
+              <input type="text" id="grant-origin-input" class="agent-input" placeholder="https://example.com">
+              <button id="grant-origin-btn" class="secondary-btn">＋ 授權</button>
+            </div>
+            <div id="origin-list" class="origin-list"><!-- rendered by sidepanel.js --></div>
+          </div>
+
           <!-- Existing agents -->
           <div class="input-group">
             <label>已設定的 Agent</label>
