@@ -33,6 +33,30 @@ test("wrapRelay tolerates empty/null text", () => {
   assert.equal(RoomCore.wrapRelay("A", null), '<message from="A">\n\n</message>');
 });
 
+test("batchPrompts joins a backlog into one blank-line-separated prompt, order preserved", () => {
+  assert.equal(RoomCore.batchPrompts(["first", "second", "third"]), "first\n\nsecond\n\nthird");
+});
+
+test("batchPrompts is a no-op shape for a single message", () => {
+  assert.equal(RoomCore.batchPrompts(["only one"]), "only one");
+});
+
+test("batchPrompts drops empty/whitespace-only entries but keeps the rest in order", () => {
+  assert.equal(RoomCore.batchPrompts(["a", "", "  ", "b"]), "a\n\nb");
+  assert.equal(RoomCore.batchPrompts([null, "kept", undefined]), "kept");
+});
+
+test("batchPrompts yields '' for an empty, all-blank, or non-array backlog", () => {
+  assert.equal(RoomCore.batchPrompts([]), "");
+  assert.equal(RoomCore.batchPrompts(["", "   ", null]), "");
+  assert.equal(RoomCore.batchPrompts(null), "");
+  assert.equal(RoomCore.batchPrompts(undefined), "");
+});
+
+test("batchPrompts preserves multi-line message bodies (only trims for the empty check)", () => {
+  assert.equal(RoomCore.batchPrompts(["line1\nline2", "next"]), "line1\nline2\n\nnext");
+});
+
 test("parseMentions extracts a single mention", () => {
   assert.deepEqual(RoomCore.parseMentions("hi @Falcon"), ["Falcon"]);
 });

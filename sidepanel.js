@@ -316,8 +316,12 @@ class Conn {
     if (this.turnActive || this.promptQueue.length === 0) return;
     if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady && this.acpSessionId)) return;
 
-    const text = this.promptQueue.shift();
-    this.lastPrompt = text;                              // remember for retry
+    // Batch delivery: drain the WHOLE backlog and send it as one turn, not one-per-round. If the
+    // agent was busy while the user (or a relay) piled up several messages, they arrive together on
+    // the next round — Discord-style — instead of dribbling out over N turns.
+    const text = RoomCore.batchPrompts(this.promptQueue.splice(0));
+    if (!text) return;                                   // nothing sendable (all blank) — stay idle
+    this.lastPrompt = text;                              // remember for retry (the whole batch)
     this.turnActive = true;
     updateStopButton();
     this.startStream();
