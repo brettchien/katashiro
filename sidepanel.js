@@ -486,6 +486,10 @@ const actReadBtn = document.getElementById("act-read");
 const actWriteBtn = document.getElementById("act-write");
 const actModeHintEl = document.getElementById("act-mode-hint");
 
+const grantOriginInput = document.getElementById("grant-origin-input");
+const grantOriginBtn = document.getElementById("grant-origin-btn");
+const originListEl = document.getElementById("origin-list");
+
 // --- Startup -----------------------------------------------------------------
 chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
@@ -655,6 +659,7 @@ function switchView(viewName) {
 settingsBtn.addEventListener("click", () => {
   renderRoomConfig();
   renderActMode();
+  renderGrantedOrigins();
   renderAgentList();
   switchView("settings");
 });
@@ -728,6 +733,90 @@ function setActMode(on) {
   persist();
   renderActMode();
   updateRoster(); // browser status monkeys reflect act mode (🐵 operational / 🙊 read-only)
+}
+
+// --- Origin allowlist (Phase 3 gate #2) --------------------------------------
+// katashiro can only read or act on origins the user has granted at the Chrome level (optional
+// host permissions). The browser-MCP gate (`callBrowserTool`) checks `chrome.permissions.contains`
+// per call; this UI is where the user adds/removes those grants. `chrome.permissions.request` MUST
+// run in a user gesture (the button click), so the whole flow lives in the click handler.
+
+// Normalize a user-typed site into a Chrome host-permission pattern ("https://host/*"), or null if
+// it isn't a usable http(s) origin. Accepts bare hosts ("example.com") and full URLs alike.
+function toOriginPattern(raw) {
+  let s = (raw || "").trim();
+  if (!s) return null;
+  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
+  try {
+    const u = new URL(s);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.origin + "/*";
+  } catch {
+    return null;
+  }
+}
+
+// Render the currently granted origins as removable chips.
+function renderGrantedOrigins() {
+  if (!originListEl) return;
+  chrome.permissions.getAll((perms) => {
+    const origins = (perms && perms.origins) || [];
+    originListEl.replaceChildren();
+    if (!origins.length) {
+      const empty = document.createElement("div");
+      empty.className = "origin-empty";
+      empty.textContent = "尚未授權任何網域 —— agent 現在讀不到／碰不到任何頁面。";
+      originListEl.appendChild(empty);
+      return;
+    }
+    origins.forEach((pattern) => {
+      const chip = document.createElement("div");
+      chip.className = "origin-chip";
+      const label = document.createElement("span");
+      label.className = "origin-label";
+      label.textContent = pattern.replace(/\/\*$/, ""); // show the origin, not the path wildcard
+      const remove = document.createElement("button");
+      remove.className = "origin-remove";
+      remove.type = "button";
+      remove.title = "移除授權";
+      remove.textContent = "✕";
+      remove.addEventListener("click", () => {
+        chrome.permissions.remove({ origins: [pattern] }, () => renderGrantedOrigins());
+      });
+      chip.appendChild(label);
+      chip.appendChild(remove);
+      originListEl.appendChild(chip);
+    });
+  });
+}
+
+function grantOrigin() {
+  const pattern = toOriginPattern(grantOriginInput && grantOriginInput.value);
+  if (!pattern) {
+    if (grantOriginInput) {
+      grantOriginInput.classList.add("invalid");
+      grantOriginInput.focus();
+    }
+    return;
+  }
+  // request() shows Chrome's native per-origin consent prompt; it must run in this gesture.
+  chrome.permissions.request({ origins: [pattern] }, (granted) => {
+    if (granted && grantOriginInput) grantOriginInput.value = "";
+    renderGrantedOrigins();
+  });
+}
+
+if (grantOriginBtn) grantOriginBtn.addEventListener("click", grantOrigin);
+if (grantOriginInput) {
+  grantOriginInput.addEventListener("input", () => grantOriginInput.classList.remove("invalid"));
+  grantOriginInput.addEventListener("keydown", (e) => { if (e.key === "Enter") grantOrigin(); });
+}
+// Keep the list live if a grant is revoked from Chrome's own UI while the panel is open.
+if (chrome.permissions && chrome.permissions.onRemoved) {
+  chrome.permissions.onRemoved.addListener(renderGrantedOrigins);
+}
+if (chrome.permissions && chrome.permissions.onAdded) {
+  chrome.permissions.onAdded.addListener(renderGrantedOrigins);
 }
 
 addAgentBtn.addEventListener("click", () => {

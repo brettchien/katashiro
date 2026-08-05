@@ -33,10 +33,12 @@ Every capability below is a variation on those two directions.
 > The full loop was **live-validated end-to-end on Falcon (2026-07-31, PR #1447 D-29)**:
 > real browser drive over a deployed pod, all tool calls audited.
 >
-> Of the Phase 3 safety gates, **act mode is in place** (writes off by default) and an
-> **audit log exists on the openab facade side** (`mcp.audit` records every tool call). The
-> gates still missing before high-blast-radius writes: **origin allowlist, per-write confirm
-> (raw request), and a high-risk-origin blocklist.**
+> Of the Phase 3 safety gates, **act mode is in place** (writes off by default), an
+> **audit log exists on the openab facade side** (`mcp.audit` records every tool call), and the
+> **origin allowlist is in place** — the extension can only see or touch origins the user has
+> granted at the Chrome level (optional host permissions), checked per call for reads and writes
+> alike. The gates still missing before high-blast-radius writes: **per-write confirm (raw
+> request), and a high-risk-origin blocklist.**
 
 ---
 
@@ -130,7 +132,11 @@ Two mechanisms:
 
 1. ✅ **Read-only by default**; writes require explicit **act mode**. *(Shipped: `write: true`
    in the tool registry, gated in `callBrowserTool` on `deps.actMode`, toggled in Settings.)*
-2. **Origin allowlist** — only whitelisted domains can be written to / called.
+2. ✅ **Origin allowlist** — only origins the user has granted can be read or acted on. *(Shipped
+   via Chrome's native permission model: `<all_urls>` moved out of `host_permissions` into
+   `optional_host_permissions`; the user grants/revokes per-origin in Settings → 授權網域
+   (`chrome.permissions.request`/`remove`), and `callBrowserTool` refuses any tool — read or
+   write — whose active-tab origin fails `chrome.permissions.contains`.)*
 3. **Per-write confirmation showing the raw request** (method + URL + body), not
    just the agent's natural-language intent.
 4. ✅ **No `eval` / no arbitrary JS / no arbitrary-URL fetch** — the served tools are a fixed
@@ -157,8 +163,8 @@ not a browser-runtime capability, and is not part of this extension.
 1. ✅ Phase 1 (read) — done via MCP-over-ACP (a11y snapshot + refs).
 2. ✅ Phase 2 (DOM write) — done via Route B (MCP-over-ACP), abandoned Route A.
 3. ✅ act mode (gate #1), no-eval (gate #4), server-side audit log (gate #5).
-4. **Next — remaining Phase 3 write-safety gates**, in order:
-   - **Origin allowlist** (gate #2) — only whitelisted domains can be written to.
+4. ✅ Origin allowlist (gate #2) — via Chrome `optional_host_permissions` + a Settings 授權網域 UI.
+5. **Next — remaining Phase 3 write-safety gates**, in order:
    - **Per-write confirm showing the raw request** (gate #3).
    - **High-risk-origin blocklist** (gate #6).
    Ship these before opening act mode on real, persistent, authenticated sites.

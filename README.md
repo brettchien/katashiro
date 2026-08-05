@@ -140,9 +140,11 @@ Write tools stay listed in `tools/list` even while act mode is off: OpenAB cache
 connection, so hiding them would freeze whatever the toggle happened to be at connect time and
 leave the agent unable to learn the capability exists at all.
 
-This is the first of the Phase 3 gates. **Origin allowlist, per-action confirmation, and an
-audit log are still missing** — with act mode on, an agent can click and type on any site you
-have open. See the [ROADMAP](ROADMAP.md).
+Act mode is one of the Phase 3 gates; the **origin allowlist** is another and is now in place —
+katashiro can only read or act on origins you've granted under **Settings → 授權網域** (backed by
+Chrome's `optional_host_permissions`, checked per call for reads and writes alike), so act mode
+only reaches sites you've allowlisted. **Per-write confirmation and a high-risk-origin blocklist
+are still missing.** See the [ROADMAP](ROADMAP.md).
 
 ## 🚀 Install
 

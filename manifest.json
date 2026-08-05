@@ -7,10 +7,9 @@
     "sidePanel",
     "storage",
     "scripting",
-    "activeTab",
     "tabs"
   ],
-  "host_permissions": [
+  "optional_host_permissions": [
     "<all_urls>"
   ],
   "background": {
