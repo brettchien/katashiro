@@ -460,6 +460,7 @@ const stopBtn = document.getElementById("stop-btn");
 const jumpLatestBtn = document.getElementById("jump-latest");
 const statusIndicator = document.querySelector(".status-indicator");
 const settingsBtn = document.getElementById("settings-btn");
+const clearChatBtn = document.getElementById("clear-chat-btn");
 const connectBtn = document.getElementById("connect-btn");
 const wsUrlInput = document.getElementById("ws-url-input");
 const rosterEl = document.getElementById("roster");
@@ -659,6 +660,21 @@ settingsBtn.addEventListener("click", () => {
 });
 
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
+
+// Clear the on-screen scrollback + this window's persisted mirror (storage.session). The agents'
+// resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
+// agents forget, so `session/resume` still restores their side of the conversation on reconnect,
+// just not the cleared bubbles. Guarded by a confirm since storage.session is the only copy.
+function clearChat() {
+  if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
+  messagesList.replaceChildren();
+  historyMessages.length = 0;
+  saveHistory();                 // persist the now-empty scrollback (session ids untouched)
+  if (jumpLatestBtn) jumpLatestBtn.hidden = true;
+  appendSystemMessage("已清除聊天畫面（agent 端記憶仍保留）。");
+}
+
+if (clearChatBtn) clearChatBtn.addEventListener("click", clearChat);
 
 // Room routing config controls (static elements — wire once).
 if (modeMentionBtn) modeMentionBtn.addEventListener("click", () => setRoomMode("mention"));

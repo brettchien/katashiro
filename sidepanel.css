@@ -282,6 +282,11 @@ body {
   transform: rotate(30deg);
 }
 
+/* The broom shouldn't spin like the gear — a subtle lift reads better for "clear". */
+#clear-chat-btn:hover {
+  transform: translateY(-1px);
+}
+
 /* Main Area & Views */
 .app-main {
   flex: 1;
