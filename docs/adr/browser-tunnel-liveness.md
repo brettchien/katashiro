@@ -117,10 +117,21 @@ real in practice.
 ### 4.1 Detection
 
 - **D0 — status quo (passive).** Rejected: leaves gap (A)'s stale-on latency.
-- **D1 — client-side ACP heartbeat.** Periodically send a cheap idempotent ACP request (candidate:
-  `session/list`) with a short timeout; on timeout/error, treat the socket as dead → mark detached
-  (and trigger reconnect per §4.2). Closes gap (A). Client-only, no openab change. Tests the
-  socket/session, not the logical tunnel.
+- **D1 — client-side ACP heartbeat (chosen; mechanism verified in openab 2026-08-06).** Periodically
+  send a request-shaped JSON-RPC frame the **gateway answers itself, immediately** — a benign unknown
+  method (e.g. `katashiro/ping`) or `session/list`, both of which hit the gateway's default dispatch
+  arm and get an instant `-32601` (`acp_server.rs:1841`). A *response of any kind* (even an error)
+  proves the socket + gateway are alive; a short-timeout no-response means the socket is dead → mark
+  detached and reconnect (§4.2). Why this shape:
+  - **Immediate, no agent, no tokens.** It never reaches the agent runtime and costs no model turn.
+  - **Not blocked by an in-flight turn.** `session/prompt` is `tokio::spawn`-ed (`acp_server.rs:1814`)
+    so the gateway's read loop keeps servicing frames during a turn — the probe is answered even
+    mid-prompt. **This dissolves the "false-positive while the agent is legitimately busy" risk**
+    (former open discussion #1): the heartbeat need not be restricted to idle.
+  - **Cross-runtime.** The gateway answers, not the agent, so it behaves identically whichever CLI is
+    attached.
+  - **Scope:** it tests the extension↔gateway socket (catches the half-open death, gap A). It does
+    **not** test whether the agent is wedged — that stays the job of the prompt timeout / cancel.
 - **D2 — gateway-side keepalive.** openab periodically pings the tunnel (or the extension) and/or
   defines an extension-initiated probe. Closes gap (B) too. **Cross-repo contract change** —
   heavier, needs coordination with the openab team.
@@ -198,11 +209,13 @@ Note: the reported retry/timeout bug (2.3) is folded into this ADR rather than h
 
 ## 6. Open questions (to settle before implementation)
 
-- **Probe method:** is `session/list` implemented by every agent runtime we target, and is it cheap
-  enough to call on an interval? If not, what is the fallback idempotent round-trip? (Verify against
-  openab + the agent CLIs.)
+- ~~**Probe method**~~ — **resolved (2026-08-06, verified in openab):** a gateway-answered
+  request-shaped frame (unknown method → instant `-32601`), not blocked by an in-flight prompt
+  (`session/prompt` is spawned), no agent, no tokens. See §4.1 D1. This also **retires the former
+  false-positive-while-busy discussion item** — no need to gate the heartbeat on idle.
 - **Heartbeat cadence:** interval and timeout defaults (straw man: 15 s interval / 5 s timeout).
-  Operator/user-configurable, or fixed?
+  Operator/user-configurable, or fixed? *(Still open — the only real knob left, since the mechanism
+  is settled.)*
 - ~~**Glyph vocabulary**~~ — **decided (2026-08-06): two-badge chip, §4.3 S.** Connection badge
   (●/◐/○/◌ + word) + browser badge (🌐 + word, incl. ⚠️無回應 for the degraded case); Settings toggle
   moves to 🌐.
