@@ -216,6 +216,42 @@ body {
   opacity: 0.65;
 }
 
+/* --- Roster chip badges (ADR §4.3 S: two self-labelled badges — connection + browser) --- */
+.roster-chip.clickable { cursor: pointer; }
+.roster-chip.clickable:hover {
+  border-color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.conn-badge, .browser-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.conn-dot { font-size: 9px; line-height: 1; }
+.conn-word, .browser-word { font-size: 11px; }
+
+/* Connection dot color by state — connecting (◐ amber) is now visibly distinct from error (○ red). */
+.conn-badge.online .conn-dot { color: var(--accent-success); }
+.conn-badge.connecting .conn-dot { color: #f59e0b; }
+.conn-badge.error .conn-dot { color: #ef4444; }
+.conn-badge.offline .conn-dot { color: var(--text-muted); }
+
+/* Browser badge — 🌐 glyph + word in a muted pill; degraded (⚠️ 無回應) draws the eye. */
+.browser-badge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+}
+.browser-badge .browser-glyph { font-size: 12px; }
+.browser-badge.attached { color: var(--accent-success); border-color: rgba(16, 185, 129, 0.4); }
+.browser-badge.detached { color: var(--text-muted); opacity: 0.85; }
+.browser-badge.degraded { color: #f59e0b; border-color: #f59e0b; }
+
 /* --- Per-row connection status in the settings agent list --- */
 .agent-status {
   display: inline-flex;

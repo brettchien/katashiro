@@ -661,6 +661,16 @@ function connState(c) {
   return { cls: "connecting", label: "連線中…" };
 }
 
+// Roster chip vocabulary (ADR §4.3 S). Connection dot glyph + short word by connState class; the
+// full reason (e.g. which auth failure) stays in the badge title. Browser-badge titles by state.
+const CONN_DOT = { online: "●", connecting: "◐", error: "○", offline: "◌" };
+const CONN_WORD = { online: "已連線", connecting: "連線中", error: "連線失敗", offline: "已停用" };
+const BROWSER_TITLE = {
+  attached: "瀏覽器 tunnel 已連結",
+  detached: "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）",
+  degraded: "瀏覽器已連結但心跳無回應 —— 連線可能已死，正在重連",
+};
+
 function updateRoster() {
   const onlineCount = room.filter((c) => c.acpReady).length;
   if (statusIndicator) {
@@ -676,39 +686,61 @@ function updateRoster() {
     const chip = document.createElement("div");
     chip.className = "roster-chip " + st.cls;
 
-    const dot = document.createElement("span");
-    dot.className = "roster-dot";
-    // 🔗 linked / ⛓️‍💥 broken — the exact reason (auth failed / unreachable / connecting) is in the title.
-    dot.textContent = st.cls === "online" ? "🔗" : "⛓️‍💥";
-    dot.title = st.label;
-    chip.appendChild(dot);
-
+    // Agent name.
     const nm = document.createElement("span");
     nm.className = "roster-name";
     nm.textContent = c.name;                             // textContent: agent name is user config
     chip.appendChild(nm);
 
-    // Browser tunnel: three states, shown only when this agent is allowed browser access. Separate
-    // from the config toggle (which only says "allowed"): this reflects the RUNTIME tunnel.
-    if (c.agent.browserAccess !== false) {
+    // Connection badge — colored dot + short word (replaces the 🔗/⛓️ glyph so "connecting" is
+    // visibly distinct from an error). The precise reason stays in the title (ADR §4.3 S).
+    const connB = document.createElement("span");
+    connB.className = "conn-badge " + st.cls;
+    connB.title = st.label;
+    const dot = document.createElement("span");
+    dot.className = "conn-dot";
+    dot.textContent = CONN_DOT[st.cls] || "◌";
+    const connWord = document.createElement("span");
+    connWord.className = "conn-word";
+    connWord.textContent = CONN_WORD[st.cls] || st.label;
+    connB.appendChild(dot);
+    connB.appendChild(connWord);
+    chip.appendChild(connB);
+
+    // Browser badge — 🌐 + word, only when this agent is allowed browser access. Pure mapping of
+    // (allowed / attached / alive / actMode) in RoomCore; `alive === false` surfaces as ⚠️ 無回應
+    // instead of a silent "未連", so a heartbeat-dead tunnel reads honestly.
+    const badge = RoomCore.browserBadge({
+      allowed: c.agent.browserAccess !== false,
+      attached: c.browserAttached,
+      alive: c.alive,
+      actMode,
+    });
+    if (badge) {
       const br = document.createElement("span");
-      if (c.browserAttached && actMode) {
-        br.className = "roster-browser attached";
-        br.textContent = "🐵";                   // live + operational (act mode on — can act on the tab)
-        br.title = "瀏覽器已連結 + 可操作（act mode 開）";
-      } else if (c.browserAttached) {
-        br.className = "roster-browser attached";
-        br.textContent = "🙊";                   // live but read-only (act mode off)
-        br.title = "瀏覽器已連結，唯讀（act mode 關 — Settings → 瀏覽器寫入 可開啟操作）";
-      } else {
-        br.className = "roster-browser detached";
-        br.textContent = "🙈";                   // see-no-evil — tunnel not attached
-        br.title = "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）";
-      }
+      br.className = "browser-badge " + badge.state;
+      br.title = BROWSER_TITLE[badge.state] || "";
+      const g = document.createElement("span");
+      g.className = "browser-glyph";
+      g.textContent = badge.glyph;
+      const bw = document.createElement("span");
+      bw.className = "browser-word";
+      bw.textContent = badge.label;
+      br.appendChild(g);
+      br.appendChild(bw);
       chip.appendChild(br);
     }
 
-    chip.title = st.label;
+    // R2 — one-click manual reconnect. When the user wants this agent up but it isn't healthy
+    // (not online, or the heartbeat has gone quiet), clicking the chip forces a reconnect without
+    // opening Settings. A healthy chip is inert.
+    const healthy = st.cls === "online" && c.alive !== false;
+    if (c.enabled !== false && !healthy) {
+      chip.classList.add("clickable");
+      chip.title = "點擊重新連線";
+      chip.addEventListener("click", () => { c.connect(); updateRoster(); });
+    }
+
     rosterEl.appendChild(chip);
   });
 
@@ -997,7 +1029,9 @@ function renderAgentList() {
     const brOn = a.browserAccess !== false;              // default on (backward compatible)
     const brToggle = document.createElement("button");
     brToggle.className = "agent-browser-toggle" + (brOn ? " on" : "");
-    brToggle.textContent = brOn ? "🔗 開" : "🔗 關";
+    // 🌐 to match the roster's browser badge — the control and the status now speak one vocabulary
+    // (ADR §4.3 S; retires the old 🔗 which collided with the connection glyph).
+    brToggle.textContent = brOn ? "🌐 開" : "🌐 關";
     brToggle.title = brOn
       ? "此 agent 可操作瀏覽器（點擊關閉存取）"
       : "此 agent 無瀏覽器存取（點擊開啟）";

@@ -152,6 +152,23 @@
     return /timed out|connection closed|socket not open|\bnot open\b|\bclosed\b/i.test(String(reason == null ? "" : reason));
   }
 
+  // The roster chip's browser badge (ADR browser-tunnel-liveness §4.3 S). Pure mapping of the four
+  // runtime facts to a badge, or null when the agent isn't allowed browser access at all (no badge):
+  //   allowed=false                    → null            (badge hidden)
+  //   attached=false                   → 🌐 未連          (tunnel not connected)
+  //   attached && alive=false          → ⚠️ 無回應        (tunnel says attached but heartbeat failing)
+  //   attached && alive && actMode     → 🌐 可操作        (writable)
+  //   attached && alive && !actMode    → 🌐 唯讀          (read-only)
+  function browserBadge(opts) {
+    const o = opts || {};
+    if (!o.allowed) return null;
+    if (!o.attached) return { state: "detached", glyph: "🌐", label: "未連" };
+    if (!o.alive) return { state: "degraded", glyph: "⚠️", label: "無回應" };
+    return o.actMode
+      ? { state: "attached", glyph: "🌐", label: "可操作" }
+      : { state: "attached", glyph: "🌐", label: "唯讀" };
+  }
+
   // --- Loop guard ------------------------------------------------------------
   // Bounds agent↔agent cascades (esp. ambient mode). Count consecutive AGENT relays; a human
   // message resets it. Once `cap` relays have gone through, further relays are suppressed until
@@ -205,6 +222,7 @@
     wrapRelay,
     batchPrompts,
     isDeadProbeReason,
+    browserBadge,
     parseMentions,
     resolveNames,
     resolveTargets,

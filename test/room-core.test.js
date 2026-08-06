@@ -73,6 +73,27 @@ test("isDeadProbeReason: ANY error response means the socket is ALIVE (not dead)
   assert.equal(RoomCore.isDeadProbeReason(null), false);
 });
 
+test("browserBadge: hidden when the agent isn't allowed browser access", () => {
+  assert.equal(RoomCore.browserBadge({ allowed: false, attached: true, alive: true, actMode: true }), null);
+});
+
+test("browserBadge: allowed but not attached → 未連", () => {
+  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: false }),
+    { state: "detached", glyph: "🌐", label: "未連" });
+});
+
+test("browserBadge: attached but heartbeat failing → ⚠️ 無回應 (not a silent 未連)", () => {
+  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: false, actMode: true }),
+    { state: "degraded", glyph: "⚠️", label: "無回應" });
+});
+
+test("browserBadge: attached + alive reflects act mode (可操作 / 唯讀)", () => {
+  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: true, actMode: true }),
+    { state: "attached", glyph: "🌐", label: "可操作" });
+  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: true, actMode: false }),
+    { state: "attached", glyph: "🌐", label: "唯讀" });
+});
+
 test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor", () => {
   const d = RoomCore.defaultRoomConfig();
   assert.equal(d.heartbeatIntervalMs, 60000);
