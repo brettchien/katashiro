@@ -431,10 +431,9 @@ class Conn {
   heartbeatTick() {
     if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady)) return; // nothing to probe
     // Passive-first (§8.6): a turn in flight, or any inbound frame within the last interval, is
-    // self-evident proof of life — don't probe it. Only genuine silence gets a probe.
-    if (this.turnActive) return;
+    // self-evident proof of life — only genuine silence gets a probe (decision in RoomCore, tested).
     const interval = roomConfig.heartbeatIntervalMs || 60000;
-    if (Date.now() - (this.lastRecvAt || 0) < interval) return;
+    if (!RoomCore.shouldProbe({ turnActive: this.turnActive, now: Date.now(), lastRecvAt: this.lastRecvAt, intervalMs: interval })) return;
     const timeout = roomConfig.heartbeatTimeoutMs || 5000;
     this.acpRequest("katashiro/ping", {}, timeout)
       .then(() => this.markAlive(true))                  // gateway answered (unlikely to resolve, but alive)
@@ -451,19 +450,21 @@ class Conn {
     updateRoster();                                      // chip reflects alive vs ⚠️ 無回應
   }
 
-  // A silent-idle probe timed out. DEGRADE the badge immediately (safe, non-destructive), but
-  // reconnect only on CONFIRMED death (§8.6): never mid-turn (a live turn's hang is R3's job), and
-  // only after HEARTBEAT_DEAD_THRESHOLD consecutive misses — one 5 s blip is not death, and WS
-  // onclose still catches a definitive drop on its own. Any inbound frame resets `missedProbes`.
+  // A silent-idle probe timed out. The decision — DEGRADE the badge (safe) vs a destructive
+  // reconnect (only on CONFIRMED death: ≥ HEARTBEAT_DEAD_THRESHOLD consecutive misses, never
+  // mid-turn) — is RoomCore.onProbeTimeoutDecision (§8.6, unit-tested). This just enacts it: a live
+  // turn's hang is R3's job, and any inbound frame resets `missedProbes` via markAlive/handleAcpMessage.
   onProbeTimeout() {
-    this.markAlive(false);                               // display only — ⚠️ 無回應
-    if (this.turnActive) return;                         // don't tear down a turn to "check" liveness
-    this.missedProbes = (this.missedProbes || 0) + 1;
-    if (this.missedProbes < HEARTBEAT_DEAD_THRESHOLD) return;
-    this.missedProbes = 0;
-    this.stopHeartbeat();
-    this.rejectAllPending("connection closed");          // fail-fast the now-confirmed-dead socket
-    this.connect();                                      // teardown + re-handshake (resume re-declares tunnel)
+    const d = RoomCore.onProbeTimeoutDecision({
+      turnActive: this.turnActive, missedProbes: this.missedProbes, threshold: HEARTBEAT_DEAD_THRESHOLD,
+    });
+    if (d.degrade) this.markAlive(false);                // display only — ⚠️ 無回應
+    this.missedProbes = d.missedProbes;
+    if (d.reconnect) {
+      this.stopHeartbeat();
+      this.rejectAllPending("connection closed");        // fail-fast the now-confirmed-dead socket
+      this.connect();                                    // teardown + re-handshake (resume re-declares tunnel)
+    }
   }
 
   // --- Streaming bubble (per conn — agents stream concurrently) --------------

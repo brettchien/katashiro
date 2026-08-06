@@ -152,6 +152,29 @@
     return /timed out|connection closed|socket not open|\bnot open\b|\bclosed\b/i.test(String(reason == null ? "" : reason));
   }
 
+  // Heartbeat state-machine decisions (ADR §8.6), extracted pure so the #17 regression point is
+  // unit-testable — the logic lives here; sidepanel.js only wires it to the socket + timer.
+
+  // Probe ONLY genuine silence: never while a turn is active (self-evidently alive), and never within
+  // `intervalMs` of the last inbound frame (recent traffic already proved the socket live).
+  function shouldProbe(f) {
+    const o = f || {};
+    if (o.turnActive) return false;
+    return (o.now - (o.lastRecvAt || 0)) >= o.intervalMs;
+  }
+
+  // Decide what a timed-out idle probe does. Always DEGRADE the badge (safe, non-destructive); a
+  // destructive reconnect needs `threshold` consecutive misses AND no active turn (a live turn's
+  // hang is R3's job, not the heartbeat's). Returns the next `missedProbes` and whether to reconnect.
+  // Mid-turn leaves the counter untouched, so a turn can never be reconnected out from under itself.
+  function onProbeTimeoutDecision(f) {
+    const o = f || {};
+    if (o.turnActive) return { degrade: true, reconnect: false, missedProbes: o.missedProbes || 0 };
+    const mp = (o.missedProbes || 0) + 1;
+    if (mp >= o.threshold) return { degrade: true, reconnect: true, missedProbes: 0 };
+    return { degrade: true, reconnect: false, missedProbes: mp };
+  }
+
   // Three-segment connection status for a roster chip (ADR browser-tunnel-liveness §8.2). Pure
   // mapping of a conn's runtime facts to LINK / TUNNEL / BROWSER segments, in dependency order.
   // A downstream segment is `dim: true` (rendered but greyed) when an upstream one is down, so a
@@ -250,6 +273,8 @@
     wrapRelay,
     batchPrompts,
     isDeadProbeReason,
+    shouldProbe,
+    onProbeTimeoutDecision,
     roomStatus,
     parseMentions,
     resolveNames,

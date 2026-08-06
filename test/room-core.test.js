@@ -73,6 +73,40 @@ test("isDeadProbeReason: ANY error response means the socket is ALIVE (not dead)
   assert.equal(RoomCore.isDeadProbeReason(null), false);
 });
 
+test("shouldProbe: never while a turn is active (a live turn is self-evidently alive)", () => {
+  assert.equal(RoomCore.shouldProbe({ turnActive: true, now: 100000, lastRecvAt: 0, intervalMs: 60000 }), false);
+});
+
+test("shouldProbe: never within intervalMs of the last inbound frame (recent traffic = alive)", () => {
+  assert.equal(RoomCore.shouldProbe({ turnActive: false, now: 100000, lastRecvAt: 50000, intervalMs: 60000 }), false); // 50s < 60s
+});
+
+test("shouldProbe: probe only genuine silence — idle AND no frame for a full interval", () => {
+  assert.equal(RoomCore.shouldProbe({ turnActive: false, now: 100000, lastRecvAt: 30000, intervalMs: 60000 }), true); // 70s ≥ 60s
+  assert.equal(RoomCore.shouldProbe({ turnActive: false, now: 60000, lastRecvAt: 0, intervalMs: 60000 }), true);      // exactly the interval
+});
+
+test("onProbeTimeoutDecision: mid-turn only degrades — never reconnects, counter untouched (the #17 fix)", () => {
+  assert.deepEqual(
+    RoomCore.onProbeTimeoutDecision({ turnActive: true, missedProbes: 1, threshold: 2 }),
+    { degrade: true, reconnect: false, missedProbes: 1 }
+  );
+});
+
+test("onProbeTimeoutDecision: idle first miss degrades + increments but does NOT reconnect (debounce)", () => {
+  assert.deepEqual(
+    RoomCore.onProbeTimeoutDecision({ turnActive: false, missedProbes: 0, threshold: 2 }),
+    { degrade: true, reconnect: false, missedProbes: 1 }
+  );
+});
+
+test("onProbeTimeoutDecision: idle miss reaching threshold reconnects + resets the counter", () => {
+  assert.deepEqual(
+    RoomCore.onProbeTimeoutDecision({ turnActive: false, missedProbes: 1, threshold: 2 }),
+    { degrade: true, reconnect: true, missedProbes: 0 }
+  );
+});
+
 test("roomStatus link: acpReady + alive → ● 已連線 online", () => {
   const s = RoomCore.roomStatus({ acpReady: true, alive: true, allowed: false });
   assert.equal(s.link.cls, "online");
