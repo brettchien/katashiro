@@ -133,6 +133,9 @@ class Conn {
   setBrowserAttached(attached) {
     if (attached === this.browserAttached) return;       // only real transitions
     this.browserAttached = attached;
+    // A fresh attach (mcp/connect) is itself proof the tunnel is live right now — stamp it so the
+    // segment reads 活躍 immediately, not 閒置 until the first mcp/message arrives (Falcon review).
+    if (attached) this.lastTunnelMsgAt = Date.now();
     updateRoster();
   }
 
