@@ -34,9 +34,14 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match manifest version $MANIFEST_VERSION"
             exit 1
           fi
+          # Stamp build provenance so the connection screen can show exact tag+sha (ADR
+          # build-provenance-and-version-display). build-info.json is gitignored; the release
+          # is the only place it ships committed.
+          node -e "require('fs').writeFileSync('build-info.json', JSON.stringify({tag: process.env.GITHUB_REF_NAME, sha: (process.env.GITHUB_SHA || '').slice(0,7), builtAt: new Date().toISOString()}) + '\n')"
+          cat build-info.json
           # Runtime files only — no test/, docs/, *.md, or .git.
           zip -r "katashiro-${VERSION}.zip" \
-            manifest.json background.js \
+            manifest.json background.js build-info.json \
             sidepanel.html sidepanel.css sidepanel.js \
             browser-mcp.js room-core.js markdown.js \
             page vendor \

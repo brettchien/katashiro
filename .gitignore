@@ -1,0 +1,4 @@
+# Build provenance stamp (ADR build-provenance-and-version-display). Written locally by
+# scripts/stamp-build.sh (or a git hook) and by the release workflow at package time — never
+# committed, so an unpacked dev load shows "dev" unless you stamp it yourself.
+build-info.json

@@ -121,6 +121,16 @@ body {
   letter-spacing: 1px;
 }
 
+/* Build identity (ADR build-provenance): vN · sha/tag/dev — confirms which build actually loaded. */
+.brand-info .build-badge {
+  display: block;
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+  margin-top: 1px;
+}
+.brand-info .build-badge:empty { display: none; }
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -216,41 +226,45 @@ body {
   opacity: 0.65;
 }
 
-/* --- Roster chip badges (ADR §4.3 S: two self-labelled badges — connection + browser) --- */
+/* --- Roster chip: three status segments (ADR §8.2) — 🔌 link · 🚇 tunnel · 🌐 browser --- */
 .roster-chip.clickable { cursor: pointer; }
 .roster-chip.clickable:hover {
   border-color: var(--text-secondary);
   background: rgba(255, 255, 255, 0.09);
 }
 
-.conn-badge, .browser-badge {
+.status-seg {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   line-height: 1;
   white-space: nowrap;
 }
-.conn-dot { font-size: 9px; line-height: 1; }
-.conn-word, .browser-word { font-size: 11px; }
+.status-seg .seg-glyph { font-size: 13px; }
+.status-seg .seg-dot { font-size: 9px; line-height: 1; }
+.status-seg .seg-word { font-size: 11px; color: var(--text-secondary); }
 
-/* Connection dot color by state — connecting (◐ amber) is now visibly distinct from error (○ red). */
-.conn-badge.online .conn-dot { color: var(--accent-success); }
-.conn-badge.connecting .conn-dot { color: #f59e0b; }
-.conn-badge.error .conn-dot { color: #ef4444; }
-.conn-badge.offline .conn-dot { color: var(--text-muted); }
+/* A dimmed segment (its upstream is down) reads as "not applicable / unknown", never as healthy. */
+.status-seg.dim { opacity: 0.35; filter: grayscale(1); }
 
-/* Browser badge — 🌐 glyph + word in a muted pill; degraded (⚠️ 無回應) draws the eye. */
-.browser-badge {
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid var(--border-color);
-  color: var(--text-secondary);
-}
-.browser-badge .browser-glyph { font-size: 12px; }
-.browser-badge.attached { color: var(--accent-success); border-color: rgba(16, 185, 129, 0.4); }
-.browser-badge.detached { color: var(--text-muted); opacity: 0.85; }
-.browser-badge.degraded { color: #f59e0b; border-color: #f59e0b; }
+/* link (WS/ACP socket): ● online / ⚠️ degraded / ◐ connecting / ○ error / ◌ offline */
+.seg-link.online     .seg-dot { color: var(--accent-success); }
+.seg-link.online     .seg-word { color: var(--text-primary); }
+.seg-link.degraded   .seg-dot,
+.seg-link.degraded   .seg-word,
+.seg-link.connecting .seg-dot { color: #f59e0b; }
+.seg-link.error      .seg-dot,
+.seg-link.error      .seg-word { color: #ef4444; }
+.seg-link.offline    .seg-dot { color: var(--text-muted); }
+
+/* tunnel (MCP-over-ACP): ● 活躍 / ○ 閒置 / ◌ 未連結 */
+.seg-tunnel.active   .seg-dot { color: var(--accent-success); }
+.seg-tunnel.active   .seg-word { color: var(--text-primary); }
+.seg-tunnel.idle     .seg-dot,
+.seg-tunnel.detached .seg-dot { color: var(--text-muted); }
+
+/* browser (act mode): 🌐 可操作 (writable) / 唯讀 (read-only) — no dot */
+.seg-browser.act  .seg-word { color: var(--accent-success); }
 
 /* --- Per-row connection status in the settings agent list --- */
 .agent-status {
