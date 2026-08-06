@@ -1,8 +1,10 @@
 # ADR: Browser-tunnel liveness — detection, reconnect, and status model
 
-- **Status:** Accepted (all decisions settled 2026-08-06)
+- **Status:** Accepted (all decisions settled 2026-08-06). **Revised 2026-08-06 (§8):** gap (B)
+  confirmed real; status model two-badge → **three segments** (link / tunnel / browser); **heartbeat
+  reworked** to passive/idle-only/non-destructive after #17 proved actively destabilising (§8.6).
 - **Date:** 2026-08-06
-- **Author:** Brett Chien (drafted by Orca)
+- **Author:** Brett Chien (drafted by Orca; §8 revision 2026-08-06)
 - **Related:** [ACP connection ownership ADR](./acp-connection-ownership.md) (sibling — connection lifecycle); openab `docs/mcp-over-acp-tunnel-contract.md` (the tunnel protocol this depends on)
 
 ---
@@ -242,3 +244,182 @@ All open questions are now settled — this ADR is Accepted and ready to impleme
 - **If deferred:** users keep hitting "the agent says it can't see the page" with a monkey that still
   shows 🐵, and keep recovering by toggling a Settings switch whose emoji (🔗) doesn't even match the
   status it fixes (🐵).
+
+---
+
+## 8. Revision (2026-08-06) — gap (B) confirmed; status model → three segments
+
+The two-badge model (§4.3 S) shipped in #17. Live-testing the same day exposed two things the original
+decision had explicitly parked, so this section revises the **status-model** decision **and reworks the
+D1 heartbeat**, and records the openab follow-up the ADR made conditional on gap (B) proving real.
+Reconnect (R1/R2/R3) and the connection-badge vocabulary stand; **detection does NOT stand unchanged —
+§8.6 reworks the D1 heartbeat and reverses its "no need to gate on idle" premise** (D3 stands).
+
+### 8.1 Gap (B) — "silent logical death" — is now real
+
+§2.1(B) / §3 treated a socket-alive, tunnel-logically-dead state as a contract violation, out of client
+scope "unless it proves real in practice". It proved real (2026-08-06, katashiro thread):
+
+- **Symptom.** The chip showed `OpenAB ● 已連線 🌐 可操作` while the agent replied `目前 OpenAB MCP 連線
+  已斷（Session not found），無法確認瀏覽器是否已連線` and could not drive the page. The browser badge
+  was **green and lying**.
+- **Server trace** (Falcon `openab-orb`, `openab_gateway::adapters::acp_server`): the tunnel opened
+  (`ACP: opening MCP-over-ACP tunnel` → `tunnel registered — client MCP server attached`); the
+  agent-side MCP session then went stale; **no `mcp/disconnect` was ever emitted** to the extension — a
+  fresh tunnel simply re-registered on the next reconnect.
+- **Root cause in openab.** `mcp/disconnect` fires only on owner-based teardown (WS close / a resume
+  that drops the server, §7). **Agent-side session-death while the tunnel registry entry stays attached
+  is not signalled at all** — so the §7 "withdrawal sends `mcp/disconnect`" guarantee does **not** cover
+  it. (This is a distinct gap from the `acp_server.rs:35` F6 resource-caps / idle-eviction follow-up,
+  whose same-name eviction already sends `mcp/disconnect` — see §8.4.)
+
+Per §5.1 this satisfies the precondition for the deferred **D2** companion change against openab (§8.4).
+
+### 8.2 Two badges conflates three transport layers
+
+§2.4 counted four facts; the shipped chip folds them into two badges, which **merges the three transport
+layers a user must tell apart** (Brett, 2026-08-06 — "已連線 分不清是 ws / tunnel / browser"):
+
+- the **connection badge `● 已連線`** is `acpReady` — really the **WS/ACP link** (extension ↔ gateway
+  socket);
+- the **browser badge `🌐 …`** conflates **tunnel attached** (`browserAttached`, from `mcp/connect`) with
+  **browser mode** (act-mode read/write) — two independent facts on one glyph.
+
+The `session/prompt`-timeout (2.3) and the `Session not found` (8.1) incidents each come from a
+*different* layer failing while the others look fine, so one "已連線" cannot express the real state.
+
+**Revised decision — three self-labelled segments per chip,** in dependency order **link → tunnel →
+browser**, each an independent dot/word; a downstream segment **dims** when an upstream one is down (a
+dead link can't leave a green browser lying):
+
+```
+OpenAB   🔌 已連線   🚇 活躍   🌐 可操作
+```
+
+| segment | glyph | states | source |
+|---|---|---|---|
+| **link** (WS/ACP) | 🔌 | ● 已連線 / ◐ 連線中 / ⚠️ 無回應 / ○ 連線失敗 / ◌ 已停用 | `connState` + heartbeat `alive` (D1) |
+| **tunnel** (MCP-over-ACP) | 🚇 | ● 活躍 / ● 已連結（閒置） / ◌ 未連結 | `browserAttached` + **§8.3 `mcp/message` freshness** |
+| **browser** (mode) | 🌐 | 可操作 / 唯讀 / —（dim when tunnel down） | `browserAttached` + `actMode` |
+
+This **supersedes §4.3 S / §5.3** (two-badge). The `alive`/⚠️無回應 state moves from the browser badge
+onto the **link** segment where it belongs (it is a socket property, not a tunnel one). The
+connection-badge vocabulary (●◐○◌ + word) and the Settings-toggle 🌐 re-label from §4.3 carry over.
+
+**Manual reconnect (R2) placement.** The one-click reconnect shipped in #17 stays, re-homed onto the
+**link** segment: clicking 🔌 when it is ⚠️ 無回應 / ○ 連線失敗 forces a re-handshake (the same
+`connect()` path). This keeps recovery on the segment whose failure it fixes (the earlier 🔗-toggle-vs-🐵
+misalignment, §2.4), and — with §8.6 — a *user*-initiated reconnect is always allowed, whereas an
+*automatic* one is gated on (3)+(4).
+
+**Purity / testability.** The per-segment state derivation (link/tunnel/browser → glyph+word, plus the
+dim rules) is added to `room-core.js` as pure functions alongside `browserBadge`/`connState`, so each
+segment's mapping is unit-tested the way `browserBadge` already is — not buried in `updateRoster`'s DOM
+code.
+
+### 8.3 New client signal — `mcp/message` as a tunnel-liveness freshener (D4)
+
+§3 established the extension is the MCP **server** and **cannot initiate** a tunnel probe, so the D1
+heartbeat tests only the **ACP socket**, never the **logical tunnel**. But there is an unused *positive*
+signal: every inbound **`mcp/message`** (gateway → extension, `browser-mcp.js handleServerRequest`) is
+proof the tunnel is alive end-to-end at that instant.
+
+**D4 (new, client-only):** stamp the arrival time of the last inbound `mcp/message`; the tunnel segment
+reads **活躍** within a **60 s** window of that stamp, else **已連結（閒置）**. This is a *freshness*
+indicator, not a health verdict — **silence ≠ death** (an idle-but-healthy tunnel also goes quiet), so
+閒置 is neutral, never an error. D4 complements D1 (socket) and D3 (failure-as-signal); it does **not**
+remove the D2 need for an authoritative death signal (§8.4).
+
+### 8.4 openab companion (D2 / gap B) — handover
+
+The authoritative "tunnel logically dead" signal must come from the gateway, because the extension
+cannot distinguish idle from dead (§8.3). Requested openab change: **when a session goes stale while its
+tunnel registry entry is still attached, emit `mcp/disconnect` (or a tunnel-status frame) to the
+extension**, reusing the existing `handle.disconnect()` / eviction path so the §7 disconnect guarantee
+also covers session-death, not only WS close.
+
+**Scope note (Falcon review) — this is NOT the F6 caps item.** `acp_server.rs:35`'s F6 is resource-caps /
+idle-eviction, and same-name eviction *already* sends `mcp/disconnect`. The gap here is specifically
+**session-stale-but-registry-still-attached**; the handover must not be coupled to F6 caps. Filed to the
+openab thread alongside the existing reap-on-`Drop` lifecycle item. Until it lands, gap (B) degrades
+gracefully (D4 shows 閒置, not a false 活躍) but the tunnel segment cannot flip to 未連結 on its own.
+
+### 8.6 Heartbeat rework — passive liveness, idle-only probe, non-destructive (revises §4.1 D1)
+
+Live-testing #17 exposed that the shipped heartbeat is not merely imperfect but **actively destabilising** —
+it tears down healthy turns. This subsection reverses the §4.1 D1 premise "no need to gate the heartbeat
+on idle" and redesigns the mechanism. Client-only; no openab dependency.
+
+**Observed (2026-08-06, Falcon `openab-orb`).** During a normal streaming turn: **82 × `ACP dropping
+stale reply from a superseded turn`** on one channel from only **5 `session/prompt`s**, `consumer idle
+timeout` cycling, and cursor-agent processes climbing 2 → 6 / memory 25% → 65% — a churn spiral, not a
+steady state.
+
+**Root cause — two design faults in the shipped code:**
+
+1. **Liveness ignores traffic.** `markAlive(true)` is called *only* from the ping-response path
+   (`sidepanel.js` heartbeatTick). An inbound `agent_message_chunk` — undeniable proof the socket is
+   alive — does **not** freshen `alive`. So during a verbose turn the *only* liveness evidence is the
+   60 s ping.
+2. **A probe timeout is destructive, and fires mid-turn.** `isDeadProbeReason` treats `timed out` as
+   dead, so a ping whose `-32601` reply is merely *delayed behind the chunk flood on the same socket*
+   (>5 s) trips `onHeartbeatDead()`, which `rejectAllPending("connection closed")` — **killing the
+   in-flight, healthy `session/prompt`** — then `connect()`s. On reconnect, `session/resume` + `flushQueue`
+   re-send the re-queued prompt as a **new turn that supersedes the old**; the old cursor-agent turn keeps
+   streaming (openab doesn't cancel it) into the dead sink → the 82 "superseded" drops, plus a fresh
+   cursor-agent per cycle → the memory climb.
+
+The §4.1 D1 assumption ("`session/prompt` is spawned gateway-side, so the probe is answered even
+mid-turn — no need to gate on idle") is the flaw: even if the gateway *dispatches* the reply promptly,
+that reply is serialised behind queued `agent_message_chunk`s on the one ordered socket, so under load it
+can miss a 5 s window. **The heartbeat thus false-positives precisely when the socket is busiest — i.e.
+most obviously alive — and then destroys the very turn that proved it.** This is strictly worse than
+pre-#17 (a merely stale badge).
+
+**Revised design — traffic is liveness; never tear down a turn to check it:**
+
+1. **Passive liveness.** Every inbound frame (`agent_message_chunk`, any request response, `mcp/message`,
+   server request) stamps `lastRecvAt` and marks the socket alive. This subsumes §8.3 D4 (the
+   `mcp/message` freshener is just the tunnel-scoped case of the general rule).
+2. **Probe only on silence, only when idle.** Send `katashiro/ping` **only if** `now - lastRecvAt >
+   interval` **and** no turn is active. A streaming turn is self-evidently alive and is never probed —
+   which removes the false-positive class entirely.
+3. **Non-destructive while a turn is active.** `onHeartbeatDead` must not `rejectAllPending` / `connect`
+   when `turnActive`. A genuinely wedged turn is the prompt-timeout / cancel path's responsibility
+   (R3), with its own turn-aware timeout — not the heartbeat's.
+4. **Debounce before reconnect.** Require a definitive signal — WS `onclose`, **or ≥2 consecutive
+   idle-probe timeouts**, or a real operation returning closed — before a destructive reconnect. One 5 s
+   blip is not death.
+5. **Separate display from action.** Degrading the chip to `⚠️ 無回應` is safe and may be eager;
+   reconnecting is destructive and must be lazy, gated on (3)+(4).
+
+**Residual risk (accepted).** With mid-turn probing removed, one case is no longer caught early: a socket
+that half-opens **while a turn is streaming-silent** (the agent is thinking, no frames flowing) is
+indistinguishable from a healthy think-pause — inbound silence during a turn is ambiguous (dead vs
+thinking), so we must not reconnect on it. That case falls back to the `session/prompt` timeout (R3),
+which — post-rework — invalidates the socket and reconnect-then-requeues (problem 2.3's fix) when it
+fires. We accept this: the alternative (#17's aggressive mid-turn reconnect) traded a rare, bounded
+silent-turn hang for a *frequent* destruction of healthy busy turns.
+
+**Be precise about each case's bound (review — Orca / Mira / Falcon):** `onclose` is **not** a prompt
+backstop for the silent-turn half-open. A peer that vanishes without FIN/RST leaves this TCP half-open,
+and a *silent* turn has no outbound send to hit an RST, so `onclose` waits on OS keepalive (hours). The
+three half-open cases therefore have three different bounds, and only the first is slow:
+
+- **silent-turn half-open** — no prompt signal; **only** hard upper bound is the 10-min R3
+  `ACP_PROMPT_TIMEOUT_MS` (shortening it is the one future lever). Do **not** model `onclose` as a faster
+  backstop here.
+- **non-silent half-open** (frames flowing / a live outbound send) — `onclose` fires promptly on the RST.
+- **idle half-open** — caught by the idle probe in **~125 s** (a 60 s-interval probe, then one more after
+  another interval, to reach the ≥2 debounce). Worth watching for during live testing.
+
+**Net:** #17's real benefit is retained — a genuinely dead **idle** socket is still caught before the
+next prompt hangs 10 minutes — while the harm (killing live turns, churn, the cursor-agent leak) is
+removed, entirely client-side. This supersedes §4.1 D1's idle premise and the destructive
+`onHeartbeatDead` behaviour folded into §5.2 R3; the fail-fast-on-confirmed-death intent stands, but
+"confirmed" now means (3)+(4), not a single probe timeout.
+
+### 8.7 Status
+
+Accepted 2026-08-06. Supersedes the status-model decision (§4.3 S / §5.3) and the heartbeat idle-premise
+(§4.1 D1) / destructive-recovery detail (§5.2 R3); all other decisions in this ADR stand.
