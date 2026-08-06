@@ -98,6 +98,13 @@
   const MODES = ["mention", "ambient"];
   const DEFAULT_LOOP_GUARD_CAP = 6;
 
+  // Tunnel-liveness heartbeat defaults (ADR browser-tunnel-liveness §5). Interval = how often to
+  // probe the socket; timeout = how long to wait for the gateway's reply before calling it dead.
+  const DEFAULT_HEARTBEAT_INTERVAL_MS = 60000; // 60 s
+  const DEFAULT_HEARTBEAT_TIMEOUT_MS = 5000; // 5 s
+  const MIN_HEARTBEAT_INTERVAL_MS = 5000; // don't let a misconfig hammer the gateway
+  const MIN_HEARTBEAT_TIMEOUT_MS = 1000;
+
   function normalizeMode(mode) {
     return MODES.includes(mode) ? mode : "mention";
   }
@@ -109,15 +116,40 @@
     return Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_LOOP_GUARD_CAP;
   }
 
+  // Clamp a stored millisecond setting to a sane floor, falling back to a default when absent/junk.
+  function normalizeMs(value, def, min) {
+    const n = Number(value);
+    return Number.isFinite(n) && n >= min ? Math.floor(n) : def;
+  }
+
   function defaultRoomConfig() {
-    return { mode: "mention", loopGuardCap: DEFAULT_LOOP_GUARD_CAP };
+    return {
+      mode: "mention",
+      loopGuardCap: DEFAULT_LOOP_GUARD_CAP,
+      heartbeatIntervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS,
+      heartbeatTimeoutMs: DEFAULT_HEARTBEAT_TIMEOUT_MS,
+    };
   }
 
   // Validate/repair a stored room config into a known-good shape (forward-compatible: later
   // fields extend this).
   function normalizeRoomConfig(cfg) {
     const c = cfg && typeof cfg === "object" ? cfg : {};
-    return { mode: normalizeMode(c.mode), loopGuardCap: normalizeCap(c.loopGuardCap) };
+    return {
+      mode: normalizeMode(c.mode),
+      loopGuardCap: normalizeCap(c.loopGuardCap),
+      heartbeatIntervalMs: normalizeMs(c.heartbeatIntervalMs, DEFAULT_HEARTBEAT_INTERVAL_MS, MIN_HEARTBEAT_INTERVAL_MS),
+      heartbeatTimeoutMs: normalizeMs(c.heartbeatTimeoutMs, DEFAULT_HEARTBEAT_TIMEOUT_MS, MIN_HEARTBEAT_TIMEOUT_MS),
+    };
+  }
+
+  // Heartbeat verdict: does a rejected probe (or turn) reason mean the SOCKET is dead, or just that
+  // the peer answered with an error? Any response — including a JSON-RPC error like -32601 — proves
+  // the socket is alive; only a client-side timeout or a closed/not-open socket means dead. Callers
+  // send a probe the gateway answers immediately (an unknown method → -32601), so a non-timeout
+  // rejection is positive liveness, and only these reasons trip a reconnect. (ADR §4.1 D1.)
+  function isDeadProbeReason(reason) {
+    return /timed out|connection closed|socket not open|\bnot open\b|\bclosed\b/i.test(String(reason == null ? "" : reason));
   }
 
   // --- Loop guard ------------------------------------------------------------
@@ -172,6 +204,7 @@
     escapeAttr,
     wrapRelay,
     batchPrompts,
+    isDeadProbeReason,
     parseMentions,
     resolveNames,
     resolveTargets,

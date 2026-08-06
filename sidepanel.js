@@ -85,6 +85,8 @@ class Conn {
     this.stream = null;                                  // { bubble, text } while streaming
     this.lastFailure = null;                             // null | "auth" | "unreachable"
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
+    this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
+    this.alive = false;                                  // last heartbeat verdict (socket responding?)
   }
 
   get name() { return this.agent.name || "Agent"; }
@@ -155,6 +157,7 @@ class Conn {
   // Open (or reopen) this conn's socket and run the handshake.
   connect() {
     this.enabled = true;
+    this.stopHeartbeat();                                // don't probe across a teardown/reconnect
     if (this.ws) {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
@@ -162,6 +165,7 @@ class Conn {
     clearTimeout(this.reconnectTimer);
     this.online = false;
     this.acpReady = false;
+    this.alive = false;
     this.openedThisAttempt = false;
     updateRoster();
 
@@ -186,6 +190,8 @@ class Conn {
       this.ws.onclose = () => {
         this.online = false;
         this.acpReady = false;
+        this.alive = false;
+        this.stopHeartbeat();
         this.mcpState.connections = {};                  // every tunnel dies with the socket
         this.mcpState.mcpConnectionId = null;
         this.setBrowserAttached(false);
@@ -212,6 +218,7 @@ class Conn {
   // Tear down permanently (no reconnect) — used on delete / retarget.
   disconnect() {
     this.enabled = false;
+    this.stopHeartbeat();
     clearTimeout(this.reconnectTimer);
     if (this.ws) {
       this.ws.onclose = null;
@@ -220,6 +227,7 @@ class Conn {
     }
     this.online = false;
     this.acpReady = false;
+    this.alive = false;
     this.finalizeStream();
   }
 
@@ -248,6 +256,8 @@ class Conn {
             mcpServers: this.browserMcpServers(),
           }).then(() => {
             this.acpReady = true;
+            this.alive = true;
+            this.startHeartbeat();
             updateRoster();
             saveHistory();                 // persist the (confirmed) resumable session id
             appendSystemMessage(`已續接 ${this.name} 的 ACP session。`);
@@ -260,6 +270,8 @@ class Conn {
         }).then((res) => {
           this.acpSessionId = res && res.sessionId; // seeded per-window; persisted below
           this.acpReady = true;
+          this.alive = true;
+          this.startHeartbeat();
           updateRoster();
           saveHistory();                 // persist the new session id for this window
           appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
@@ -341,9 +353,15 @@ class Conn {
       .catch((err) => {
         this.turnActive = false;
         updateStopButton();
-        if (/closed|not open/i.test(String(err))) {
-          this.promptQueue.unshift(text);                // transient: retry after resume
+        if (RoomCore.isDeadProbeReason(String(err))) {
+          // Dead/half-open socket — either an explicit close, or a prompt that timed out because the
+          // socket died (a heartbeat teardown rejects the in-flight turn with "connection closed").
+          // Re-queue the turn and force a reconnect so it flushes on a fresh session, rather than
+          // stranding it behind a retry button that would re-send into the dead socket (ADR R3).
+          this.promptQueue.unshift(text);
           this.finalizeStream();
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.connect(); // socket still says OPEN → force teardown
+          // else onclose already scheduled a reconnect; flushQueue re-sends once ready.
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
           appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
@@ -361,9 +379,58 @@ class Conn {
     this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
   }
 
-  // Re-send the last turn (after an error / stop). No-op if a turn is already in flight.
+  // Re-send the last turn (after an error / stop). If the socket isn't live, reconnect first and
+  // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
+  // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
   retryLast() {
-    if (this.lastPrompt && !this.turnActive) this.enqueue(this.lastPrompt);
+    if (!this.lastPrompt || this.turnActive) return;
+    this.promptQueue.push(this.lastPrompt);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
+    else this.connect();                                 // reconnect; flushQueue runs after handshake
+  }
+
+  // --- Liveness heartbeat (ADR browser-tunnel-liveness) ----------------------
+  // A half-open socket keeps reporting OPEN, so turns and the browser tunnel hang until a 10-minute
+  // timeout. Probe it: send a request the gateway answers immediately (an unknown method → -32601,
+  // handled in its read loop without touching the agent — verified in openab acp_server.rs). ANY
+  // response, error included, proves the socket is alive; only a probe timeout (or a closed socket)
+  // means dead → fail the in-flight turn now and reconnect. `session/prompt` is spawned gateway-side,
+  // so the probe is answered even mid-turn — no need to gate this on idle.
+  startHeartbeat() {
+    this.stopHeartbeat();
+    const interval = roomConfig.heartbeatIntervalMs || 60000;
+    this.heartbeatTimer = setInterval(() => this.heartbeatTick(), interval);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+  }
+
+  heartbeatTick() {
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady)) return; // nothing to probe
+    const timeout = roomConfig.heartbeatTimeoutMs || 5000;
+    this.acpRequest("katashiro/ping", {}, timeout)
+      .then(() => this.markAlive(true))                  // gateway answered (unlikely to resolve, but alive)
+      .catch((err) => {
+        if (RoomCore.isDeadProbeReason(String(err))) this.onHeartbeatDead();
+        else this.markAlive(true);                       // an error reply (e.g. -32601) still proves liveness
+      });
+  }
+
+  markAlive(alive) {
+    if (alive === this.alive) return;
+    this.alive = alive;
+    updateRoster();                                      // chip reflects alive vs ⚠️ 無回應
+  }
+
+  // The probe timed out ⇒ the socket is dead though it still says OPEN. Fail the in-flight turn
+  // immediately (don't wait out ACP_PROMPT_TIMEOUT_MS) by rejecting pending requests — the turn's
+  // .catch sees a dead reason and re-queues — then tear the socket down and reconnect.
+  onHeartbeatDead() {
+    this.markAlive(false);
+    this.stopHeartbeat();
+    this.rejectAllPending("connection closed");          // fail-fast the in-flight session/prompt
+    this.connect();                                      // teardown + re-handshake (resume re-declares tunnel)
   }
 
   // --- Streaming bubble (per conn — agents stream concurrently) --------------

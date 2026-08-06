@@ -57,6 +57,38 @@ test("batchPrompts preserves multi-line message bodies (only trims for the empty
   assert.equal(RoomCore.batchPrompts(["line1\nline2", "next"]), "line1\nline2\n\nnext");
 });
 
+test("isDeadProbeReason: timeouts and closed sockets are dead", () => {
+  assert.equal(RoomCore.isDeadProbeReason("request timed out: katashiro/ping"), true);
+  assert.equal(RoomCore.isDeadProbeReason("request timed out: session/prompt"), true);
+  assert.equal(RoomCore.isDeadProbeReason("connection closed"), true);
+  assert.equal(RoomCore.isDeadProbeReason("socket not open"), true);
+});
+
+test("isDeadProbeReason: ANY error response means the socket is ALIVE (not dead)", () => {
+  // The probe is an unknown method; -32601 proves the gateway answered → socket alive.
+  assert.equal(RoomCore.isDeadProbeReason("Method not found: katashiro/ping"), false);
+  assert.equal(RoomCore.isDeadProbeReason("Not initialized"), false);
+  assert.equal(RoomCore.isDeadProbeReason("Session busy: a prompt is already in progress"), false);
+  assert.equal(RoomCore.isDeadProbeReason(""), false);
+  assert.equal(RoomCore.isDeadProbeReason(null), false);
+});
+
+test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor", () => {
+  const d = RoomCore.defaultRoomConfig();
+  assert.equal(d.heartbeatIntervalMs, 60000);
+  assert.equal(d.heartbeatTimeoutMs, 5000);
+  // Missing / non-numeric → defaults.
+  const filled = RoomCore.normalizeRoomConfig({ mode: "mention" });
+  assert.equal(filled.heartbeatIntervalMs, 60000);
+  assert.equal(filled.heartbeatTimeoutMs, 5000);
+  assert.equal(RoomCore.normalizeRoomConfig({ heartbeatIntervalMs: "x" }).heartbeatIntervalMs, 60000);
+  // Below the floor → default (never let a misconfig hammer the gateway).
+  assert.equal(RoomCore.normalizeRoomConfig({ heartbeatIntervalMs: 100 }).heartbeatIntervalMs, 60000);
+  assert.equal(RoomCore.normalizeRoomConfig({ heartbeatTimeoutMs: 10 }).heartbeatTimeoutMs, 5000);
+  // A valid custom value is kept (floored to an int).
+  assert.equal(RoomCore.normalizeRoomConfig({ heartbeatIntervalMs: 30000.7 }).heartbeatIntervalMs, 30000);
+});
+
 test("parseMentions extracts a single mention", () => {
   assert.deepEqual(RoomCore.parseMentions("hi @Falcon"), ["Falcon"]);
 });
@@ -162,15 +194,17 @@ test("normalizeMode defaults unknown/empty to mention, passes valid through", ()
   assert.equal(RoomCore.normalizeMode(null), "mention");
 });
 
+const HB = { heartbeatIntervalMs: 60000, heartbeatTimeoutMs: 5000 }; // heartbeat defaults, appended below
+
 test("defaultRoomConfig is mention mode with the default loop-guard cap", () => {
-  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention", loopGuardCap: 6 });
+  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention", loopGuardCap: 6, ...HB });
 });
 
 test("normalizeRoomConfig repairs junk and honors valid mode + cap", () => {
-  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention", loopGuardCap: 6 });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention", loopGuardCap: 6 });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "ambient", loopGuardCap: 3 }), { mode: "ambient", loopGuardCap: 3 });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope", loopGuardCap: 0 }), { mode: "mention", loopGuardCap: 6 });
+  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention", loopGuardCap: 6, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention", loopGuardCap: 6, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "ambient", loopGuardCap: 3 }), { mode: "ambient", loopGuardCap: 3, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope", loopGuardCap: 0 }), { mode: "mention", loopGuardCap: 6, ...HB });
 });
 
 // --- loop guard -------------------------------------------------------------
