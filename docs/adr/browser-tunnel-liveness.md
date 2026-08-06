@@ -147,13 +147,38 @@ real in practice.
 
 ### 4.3 Status model / emoji
 
-- **S — separate the four facts explicitly** (connection / allowed / attached / alive) and give each
-  an unambiguous glyph, so the browser-access **control** and the runtime **status** share one
-  vocabulary and `🔗` stops meaning two things. Concrete glyph scheme is **to be decided** — e.g.
-  keep the monkey family for the runtime browser states and move the per-agent access **toggle** off
-  `🔗` onto the same monkey vocabulary (allowed vs not), reserving 🔗/⛓️‍💥 solely for the agent WS
-  connection. An `alive`-but-degraded state (attached yet failing heartbeat) needs its own signal
-  (e.g. a dimmed/⚠️-badged monkey) rather than silently flipping to 🙈.
+**S — two explicit badges per chip (decided 2026-08-06).** Today's chip is `[🔗/⛓️‍💥] name
+[🐵/🙊/🙈]`: two cryptic glyph families, the status word hidden in a tooltip, `🔗` meaning both "agent
+connection" and (in Settings) "browser-access toggle", and "connecting" rendering with the same
+⛓️‍💥 as a hard error. Replace it with a text-led chip carrying **two self-labelled badges** — a
+**connection badge** and a **browser badge** — so the two axes read at a glance and no glyph is
+overloaded:
+
+```
+OpenAB  [● 已連線]  [🌐 可操作]     connected + browser writable
+Mira    [● 已連線]  [🌐 唯讀]       connected + browser read-only (act mode off)
+k04     [● 已連線]  [🌐 未連]       connected, tunnel not attached
+Falcon  [◐ 握手中]                  connecting (connection badge only)
+Kirin   [○ 認證失敗]                auth rejected
+k06     [○ 連不到]                  server down / wrong URL
+k10     [◌ 已停用]                  user disabled this agent
+（later） [● 已連線]  [⚠️ 無回應]     attached but heartbeat failing (once D1 lands)
+```
+
+- **Connection badge** — colored dot + word, driven by `connState`: ● green 已連線 (`acpReady`) /
+  ◐ amber 握手中·連線中 (connecting/reconnecting) / ○ red 認證失敗·連不到 (auth / unreachable) /
+  ◌ grey 已停用 (`!enabled`). This retires the `🔗`/`⛓️‍💥` glyphs and makes *connecting ≠ error*
+  visible without a hover.
+- **Browser badge** — `🌐` + word, shown **only when the agent is allowed browser access**
+  (`browserAccess !== false`): 🌐 可操作 (attached + act mode) / 🌐 唯讀 (attached + read-only) /
+  🌐 未連 (detached) / ⚠️ 無回應 (**attached but heartbeat-failing** — the `alive` state D1 adds,
+  instead of silently flipping to "未連"). This retires the 🐵/🙊/🙈 monkeys.
+- **Also re-label the Settings browser-access toggle** off `🔗` onto the same 🌐 vocabulary
+  (e.g. `🌐 瀏覽器存取：開/關`), so the *control* and the *status* speak one language — the original
+  misalignment (🔗 toggle vs 🐵 status) that prompted this.
+
+The status word still carries the fine-grained reason in a tooltip (e.g. which auth failure), but the
+chip no longer *requires* a hover to tell the four facts apart.
 
 ## 5. Recommendation (proposed — for Brett to confirm)
 
@@ -164,8 +189,9 @@ real in practice.
    guard; **R3** so a prompt timeout invalidates+reconnects and retry reconnects instead of failing
    silently (fixes the reported "retry does nothing"); **R2** clickable monkey so manual recovery no
    longer needs Settings.
-3. **Status model: S** — do the vocabulary cleanup **in the same change** as detection, so the newly
-   honest state has a coherent set of glyphs rather than bolting `alive` onto the current overload.
+3. **Status model: S (two-badge chip, decided).** Do the vocabulary cleanup **in the same change** as
+   detection so the newly honest state ships coherent: connection badge + browser badge per §4.3,
+   with the `alive`/⚠️無回應 state wired to D1 and the Settings toggle re-labelled to 🌐 to match.
 
 Note: the reported retry/timeout bug (2.3) is folded into this ADR rather than hot-fixed separately
 (Brett's call, 2026-08-06), so it's fixed as part of R3 when this lands — not before.
@@ -177,8 +203,9 @@ Note: the reported retry/timeout bug (2.3) is folded into this ADR rather than h
   openab + the agent CLIs.)
 - **Heartbeat cadence:** interval and timeout defaults (straw man: 15 s interval / 5 s timeout).
   Operator/user-configurable, or fixed?
-- **Glyph vocabulary:** the final concrete emoji scheme for connection / allowed / attached / alive,
-  including the degraded (attached-but-not-responding) case.
+- ~~**Glyph vocabulary**~~ — **decided (2026-08-06): two-badge chip, §4.3 S.** Connection badge
+  (●/◐/○/◌ + word) + browser badge (🌐 + word, incl. ⚠️無回應 for the degraded case); Settings toggle
+  moves to 🌐.
 - **Scope of R2:** ship the clickable-monkey manual reconnect regardless of R1, as a always-available
   fallback?
 - **Prompt timeout vs heartbeat:** once a heartbeat detects a dead socket in seconds, is the 10-minute
