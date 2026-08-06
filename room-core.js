@@ -152,21 +152,49 @@
     return /timed out|connection closed|socket not open|\bnot open\b|\bclosed\b/i.test(String(reason == null ? "" : reason));
   }
 
-  // The roster chip's browser badge (ADR browser-tunnel-liveness §4.3 S). Pure mapping of the four
-  // runtime facts to a badge, or null when the agent isn't allowed browser access at all (no badge):
-  //   allowed=false                    → null            (badge hidden)
-  //   attached=false                   → 🌐 未連          (tunnel not connected)
-  //   attached && alive=false          → ⚠️ 無回應        (tunnel says attached but heartbeat failing)
-  //   attached && alive && actMode     → 🌐 可操作        (writable)
-  //   attached && alive && !actMode    → 🌐 唯讀          (read-only)
-  function browserBadge(opts) {
-    const o = opts || {};
-    if (!o.allowed) return null;
-    if (!o.attached) return { state: "detached", glyph: "🌐", label: "未連" };
-    if (!o.alive) return { state: "degraded", glyph: "⚠️", label: "無回應" };
-    return o.actMode
-      ? { state: "attached", glyph: "🌐", label: "可操作" }
-      : { state: "attached", glyph: "🌐", label: "唯讀" };
+  // Three-segment connection status for a roster chip (ADR browser-tunnel-liveness §8.2). Pure
+  // mapping of a conn's runtime facts to LINK / TUNNEL / BROWSER segments, in dependency order.
+  // A downstream segment is `dim: true` (rendered but greyed) when an upstream one is down, so a
+  // dead link can never leave a green browser lying (§8.2). Each segment is { cls, dot?, word,
+  // title, dim? }; `tunnel` and `browser` are null when the agent has no browser access at all.
+  //
+  //   facts = { acpReady, alive, lastFailure, enabled, online,  // link (WS/ACP socket)
+  //             allowed, attached, tunnelFresh,                 // tunnel (MCP-over-ACP)
+  //             actMode }                                       // browser (act mode)
+  //
+  // `alive === false` (heartbeat degraded) surfaces on the LINK segment as ⚠️ 無回應 — it is a
+  // socket property, not a tunnel one. `tunnelFresh` (a recent inbound mcp/message, §8.3) splits
+  // an attached tunnel into 活躍 vs 閒置; 閒置 is neutral (silence ≠ death), never an error.
+  function roomStatus(facts) {
+    const f = facts || {};
+
+    // --- link: the extension↔gateway WS/ACP socket ---
+    let link;
+    if (f.enabled === false) link = { cls: "offline", dot: "◌", word: "已停用", title: "此 agent 已停用" };
+    else if (f.lastFailure === "auth") link = { cls: "error", dot: "○", word: "認證失敗", title: "認證失敗（token 錯誤／被拒）" };
+    else if (f.lastFailure === "unreachable") link = { cls: "error", dot: "○", word: "連不到", title: "連不到（伺服器未啟動／網址錯誤）" };
+    else if (f.acpReady && f.alive === false) link = { cls: "degraded", dot: "⚠️", word: "無回應", title: "socket 心跳無回應 —— 連線可能已死" };
+    else if (f.acpReady) link = { cls: "online", dot: "●", word: "已連線", title: "WS + ACP 連線正常" };
+    else if (f.online) link = { cls: "connecting", dot: "◐", word: "握手中", title: "ACP 握手中…" };
+    else link = { cls: "connecting", dot: "◐", word: "連線中", title: "連線中…" };
+
+    const linkUp = f.acpReady === true && f.alive !== false; // upstream health gate for dim
+
+    // --- tunnel + browser: only when this agent is allowed browser access ---
+    let tunnel = null;
+    let browser = null;
+    if (f.allowed !== false) {
+      if (!f.attached) tunnel = { cls: "detached", dot: "◌", word: "未連結", title: "瀏覽器 tunnel 未連結", dim: !linkUp };
+      else if (f.tunnelFresh) tunnel = { cls: "active", dot: "●", word: "活躍", title: "tunnel 活躍（近期有 mcp/message 流量）", dim: !linkUp };
+      else tunnel = { cls: "idle", dot: "○", word: "閒置", title: "tunnel 已連結但近期無流量（閒置，非死亡）", dim: !linkUp };
+
+      const browserUp = linkUp && f.attached === true; // browser is usable only over a live tunnel
+      browser = f.actMode
+        ? { cls: "act", word: "可操作", title: "act mode 開 — agent 可操作瀏覽器", dim: !browserUp }
+        : { cls: "read", word: "唯讀", title: "act mode 關 — 唯讀", dim: !browserUp };
+    }
+
+    return { link, tunnel, browser };
   }
 
   // --- Loop guard ------------------------------------------------------------
@@ -222,7 +250,7 @@
     wrapRelay,
     batchPrompts,
     isDeadProbeReason,
-    browserBadge,
+    roomStatus,
     parseMentions,
     resolveNames,
     resolveTargets,

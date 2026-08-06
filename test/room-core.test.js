@@ -73,25 +73,60 @@ test("isDeadProbeReason: ANY error response means the socket is ALIVE (not dead)
   assert.equal(RoomCore.isDeadProbeReason(null), false);
 });
 
-test("browserBadge: hidden when the agent isn't allowed browser access", () => {
-  assert.equal(RoomCore.browserBadge({ allowed: false, attached: true, alive: true, actMode: true }), null);
+test("roomStatus link: acpReady + alive → ● 已連線 online", () => {
+  const s = RoomCore.roomStatus({ acpReady: true, alive: true, allowed: false });
+  assert.equal(s.link.cls, "online");
+  assert.equal(s.link.dot, "●");
+  assert.equal(s.link.word, "已連線");
 });
 
-test("browserBadge: allowed but not attached → 未連", () => {
-  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: false }),
-    { state: "detached", glyph: "🌐", label: "未連" });
+test("roomStatus link: acpReady but heartbeat dead → ⚠️ 無回應 degraded (a link property, not the browser's)", () => {
+  const s = RoomCore.roomStatus({ acpReady: true, alive: false, allowed: false });
+  assert.equal(s.link.cls, "degraded");
+  assert.equal(s.link.dot, "⚠️");
+  assert.equal(s.link.word, "無回應");
 });
 
-test("browserBadge: attached but heartbeat failing → ⚠️ 無回應 (not a silent 未連)", () => {
-  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: false, actMode: true }),
-    { state: "degraded", glyph: "⚠️", label: "無回應" });
+test("roomStatus link: failures and lifecycle map to error / connecting / offline", () => {
+  assert.equal(RoomCore.roomStatus({ lastFailure: "auth" }).link.cls, "error");
+  assert.equal(RoomCore.roomStatus({ lastFailure: "unreachable" }).link.cls, "error");
+  assert.equal(RoomCore.roomStatus({ enabled: false }).link.cls, "offline");
+  assert.equal(RoomCore.roomStatus({ online: true }).link.cls, "connecting"); // ws open, not acpReady = 握手中
+  assert.equal(RoomCore.roomStatus({}).link.cls, "connecting");               // nothing yet = 連線中
 });
 
-test("browserBadge: attached + alive reflects act mode (可操作 / 唯讀)", () => {
-  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: true, actMode: true }),
-    { state: "attached", glyph: "🌐", label: "可操作" });
-  assert.deepEqual(RoomCore.browserBadge({ allowed: true, attached: true, alive: true, actMode: false }),
-    { state: "attached", glyph: "🌐", label: "唯讀" });
+test("roomStatus tunnel/browser: null when the agent has no browser access", () => {
+  const s = RoomCore.roomStatus({ acpReady: true, alive: true, allowed: false });
+  assert.equal(s.tunnel, null);
+  assert.equal(s.browser, null);
+});
+
+test("roomStatus tunnel: fresh mcp/message → 活躍; stale → 閒置; detached → 未連結", () => {
+  const base = { acpReady: true, alive: true, allowed: true, attached: true };
+  assert.equal(RoomCore.roomStatus({ ...base, tunnelFresh: true }).tunnel.word, "活躍");
+  assert.equal(RoomCore.roomStatus({ ...base, tunnelFresh: false }).tunnel.word, "閒置");
+  assert.equal(RoomCore.roomStatus({ ...base, attached: false }).tunnel.word, "未連結");
+});
+
+test("roomStatus browser: act mode → 可操作 / 唯讀", () => {
+  const base = { acpReady: true, alive: true, allowed: true, attached: true, tunnelFresh: true };
+  assert.equal(RoomCore.roomStatus({ ...base, actMode: true }).browser.word, "可操作");
+  assert.equal(RoomCore.roomStatus({ ...base, actMode: false }).browser.word, "唯讀");
+});
+
+test("roomStatus dim: a down link greys tunnel+browser; a detached tunnel greys browser", () => {
+  // link down (not acpReady) → both downstream dimmed so nothing reads healthy above a dead link
+  const down = RoomCore.roomStatus({ online: true, allowed: true, attached: true, tunnelFresh: true, actMode: true });
+  assert.equal(down.tunnel.dim, true);
+  assert.equal(down.browser.dim, true);
+  // link up but tunnel detached → tunnel itself isn't dim, but browser (needs a live tunnel) is
+  const noTunnel = RoomCore.roomStatus({ acpReady: true, alive: true, allowed: true, attached: false, actMode: true });
+  assert.equal(noTunnel.tunnel.dim, false);
+  assert.equal(noTunnel.browser.dim, true);
+  // everything up → nothing dimmed
+  const up = RoomCore.roomStatus({ acpReady: true, alive: true, allowed: true, attached: true, tunnelFresh: true, actMode: true });
+  assert.equal(up.tunnel.dim, false);
+  assert.equal(up.browser.dim, false);
 });
 
 test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor", () => {

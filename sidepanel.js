@@ -45,6 +45,9 @@ const ACP_CWD = "/home/agent";
 const ACP_REQUEST_TIMEOUT_MS = 60000;
 const ACP_PROMPT_TIMEOUT_MS = 600000; // 10 min — agent turns stream long before resolving
 const RECONNECT_INTERVAL_MS = 5000;
+const TUNNEL_FRESH_MS = 60000;        // an inbound mcp/message keeps the tunnel "活躍" this long (§8.3)
+const HEARTBEAT_DEAD_THRESHOLD = 2;   // consecutive missed idle probes before a destructive reconnect (§8.6)
+const ROSTER_REFRESH_MS = 15000;      // periodic re-render so time-based states (活躍→閒置) stay current
 
 // Carry the transport token via the WebSocket subprotocol list (browsers cannot set an
 // Authorization header on a WS handshake). The server extracts the token from the
@@ -87,6 +90,9 @@ class Conn {
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
     this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
     this.alive = false;                                  // last heartbeat verdict (socket responding?)
+    this.lastRecvAt = 0;                                 // ts of the last inbound frame (passive liveness §8.6)
+    this.lastTunnelMsgAt = 0;                            // ts of the last inbound mcp/message (tunnel freshness §8.3)
+    this.missedProbes = 0;                               // consecutive idle-probe timeouts (debounce §8.6)
   }
 
   get name() { return this.agent.name || "Agent"; }
@@ -166,6 +172,7 @@ class Conn {
     this.online = false;
     this.acpReady = false;
     this.alive = false;
+    this.missedProbes = 0;                               // fresh socket ⇒ fresh debounce count
     this.openedThisAttempt = false;
     updateRoster();
 
@@ -291,6 +298,16 @@ class Conn {
 
   // Route an incoming JSON-RPC message for this conn.
   handleAcpMessage(msg) {
+    // Passive liveness (ADR §8.6): ANY inbound frame — a streaming chunk, a response, a
+    // server-driven tunnel frame — proves the socket is alive. Stamp it and clear any degraded
+    // state so the heartbeat never probes (nor false-positive-reconnects) a socket that traffic
+    // already proves live. This is the fix for #17 killing healthy streaming turns. An inbound
+    // mcp/message additionally freshens the tunnel-liveness clock (§8.3, 活躍 vs 閒置).
+    this.lastRecvAt = Date.now();
+    this.missedProbes = 0;
+    if (this.alive !== true) this.markAlive(true);       // markAlive no-ops when already alive (no render spam)
+    if (msg.method === "mcp/message") { this.lastTunnelMsgAt = this.lastRecvAt; updateRoster(); }
+
     // Response to one of our requests.
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
       const p = this.pendingReqs.get(msg.id);
@@ -389,13 +406,15 @@ class Conn {
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }
 
-  // --- Liveness heartbeat (ADR browser-tunnel-liveness) ----------------------
-  // A half-open socket keeps reporting OPEN, so turns and the browser tunnel hang until a 10-minute
-  // timeout. Probe it: send a request the gateway answers immediately (an unknown method → -32601,
-  // handled in its read loop without touching the agent — verified in openab acp_server.rs). ANY
-  // response, error included, proves the socket is alive; only a probe timeout (or a closed socket)
-  // means dead → fail the in-flight turn now and reconnect. `session/prompt` is spawned gateway-side,
-  // so the probe is answered even mid-turn — no need to gate this on idle.
+  // --- Liveness heartbeat (ADR browser-tunnel-liveness §8.6, reworked) --------
+  // Traffic IS liveness: passive `lastRecvAt` (handleAcpMessage) covers every busy socket, so the
+  // heartbeat only has to catch a genuinely SILENT-IDLE half-open (reports OPEN but is dead). It
+  // probes with a request the gateway answers immediately (unknown method → -32601, in its read
+  // loop, no agent — verified in openab acp_server.rs); ANY response, error included, proves life.
+  // Unlike #17 it does NOT probe during a turn or recent traffic (that false-positived under a
+  // chunk flood and killed healthy turns), and a single timeout only DEGRADES the badge — a
+  // destructive reconnect needs HEARTBEAT_DEAD_THRESHOLD consecutive misses and never fires
+  // mid-turn (§8.6).
   startHeartbeat() {
     this.stopHeartbeat();
     const interval = roomConfig.heartbeatIntervalMs || 60000;
@@ -408,28 +427,39 @@ class Conn {
 
   heartbeatTick() {
     if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady)) return; // nothing to probe
+    // Passive-first (§8.6): a turn in flight, or any inbound frame within the last interval, is
+    // self-evident proof of life — don't probe it. Only genuine silence gets a probe.
+    if (this.turnActive) return;
+    const interval = roomConfig.heartbeatIntervalMs || 60000;
+    if (Date.now() - (this.lastRecvAt || 0) < interval) return;
     const timeout = roomConfig.heartbeatTimeoutMs || 5000;
     this.acpRequest("katashiro/ping", {}, timeout)
       .then(() => this.markAlive(true))                  // gateway answered (unlikely to resolve, but alive)
       .catch((err) => {
-        if (RoomCore.isDeadProbeReason(String(err))) this.onHeartbeatDead();
+        if (RoomCore.isDeadProbeReason(String(err))) this.onProbeTimeout();
         else this.markAlive(true);                       // an error reply (e.g. -32601) still proves liveness
       });
   }
 
   markAlive(alive) {
+    if (alive === true) this.missedProbes = 0;           // any positive verdict resets the debounce
     if (alive === this.alive) return;
     this.alive = alive;
     updateRoster();                                      // chip reflects alive vs ⚠️ 無回應
   }
 
-  // The probe timed out ⇒ the socket is dead though it still says OPEN. Fail the in-flight turn
-  // immediately (don't wait out ACP_PROMPT_TIMEOUT_MS) by rejecting pending requests — the turn's
-  // .catch sees a dead reason and re-queues — then tear the socket down and reconnect.
-  onHeartbeatDead() {
-    this.markAlive(false);
+  // A silent-idle probe timed out. DEGRADE the badge immediately (safe, non-destructive), but
+  // reconnect only on CONFIRMED death (§8.6): never mid-turn (a live turn's hang is R3's job), and
+  // only after HEARTBEAT_DEAD_THRESHOLD consecutive misses — one 5 s blip is not death, and WS
+  // onclose still catches a definitive drop on its own. Any inbound frame resets `missedProbes`.
+  onProbeTimeout() {
+    this.markAlive(false);                               // display only — ⚠️ 無回應
+    if (this.turnActive) return;                         // don't tear down a turn to "check" liveness
+    this.missedProbes = (this.missedProbes || 0) + 1;
+    if (this.missedProbes < HEARTBEAT_DEAD_THRESHOLD) return;
+    this.missedProbes = 0;
     this.stopHeartbeat();
-    this.rejectAllPending("connection closed");          // fail-fast the in-flight session/prompt
+    this.rejectAllPending("connection closed");          // fail-fast the now-confirmed-dead socket
     this.connect();                                      // teardown + re-handshake (resume re-declares tunnel)
   }
 
@@ -536,6 +566,7 @@ const connectBtn = document.getElementById("connect-btn");
 const wsUrlInput = document.getElementById("ws-url-input");
 const rosterEl = document.getElementById("roster");
 const activeAgentLabel = document.getElementById("active-agent-label");
+const buildBadgeEl = document.getElementById("build-badge");
 
 const setupView = document.getElementById("setup-view");
 const chatView = document.getElementById("chat-view");
@@ -560,6 +591,29 @@ const actModeHintEl = document.getElementById("act-mode-hint");
 const grantOriginInput = document.getElementById("grant-origin-input");
 const grantOriginBtn = document.getElementById("grant-origin-btn");
 const originListEl = document.getElementById("origin-list");
+
+// Build identity on the connection screen (ADR build-provenance-and-version-display): the manifest
+// version always, plus a short sha/tag from build-info.json when present — release builds stamp it,
+// unpacked dev shows "dev". Lets you confirm which build actually loaded after an Update + reopen.
+async function loadBuildInfo() {
+  if (!buildBadgeEl) return;
+  const version = chrome.runtime.getManifest().version;
+  let detail = "dev";
+  try {
+    const res = await fetch(chrome.runtime.getURL("build-info.json"));
+    if (res.ok) {
+      const b = await res.json();
+      detail = b.tag || b.sha || "dev";
+    }
+  } catch (_) { /* absent in unpacked dev → dev */ }
+  buildBadgeEl.textContent = `v${version} · ${detail}`;
+  buildBadgeEl.title = `Katashiro v${version}（build: ${detail}）`;
+}
+loadBuildInfo();
+
+// Periodic re-render so purely time-based states stay current with no triggering event — chiefly
+// the tunnel segment aging from 活躍 back to 閒置 TUNNEL_FRESH_MS after the last mcp/message (§8.3).
+setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
 // --- Startup -----------------------------------------------------------------
 chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r) => {
@@ -661,15 +715,29 @@ function connState(c) {
   return { cls: "connecting", label: "連線中…" };
 }
 
-// Roster chip vocabulary (ADR §4.3 S). Connection dot glyph + short word by connState class; the
-// full reason (e.g. which auth failure) stays in the badge title. Browser-badge titles by state.
-const CONN_DOT = { online: "●", connecting: "◐", error: "○", offline: "◌" };
-const CONN_WORD = { online: "已連線", connecting: "連線中", error: "連線失敗", offline: "已停用" };
-const BROWSER_TITLE = {
-  attached: "瀏覽器 tunnel 已連結",
-  detached: "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）",
-  degraded: "瀏覽器已連結但心跳無回應 —— 連線可能已死，正在重連",
-};
+// Render one status segment (ADR §8.2): a lead glyph (🔌/🚇/🌐) + an optional state dot + a short
+// word. `seg` is a RoomCore.roomStatus() segment { cls, dot?, word, title, dim? }; `dim` greys a
+// segment whose upstream is down so it can't read as healthy.
+function renderSeg(kind, glyph, seg) {
+  const el = document.createElement("span");
+  el.className = `status-seg seg-${kind} ${seg.cls}` + (seg.dim ? " dim" : "");
+  el.title = seg.title || "";
+  const g = document.createElement("span");
+  g.className = "seg-glyph";
+  g.textContent = glyph;                                 // textContent: static lead glyph
+  el.appendChild(g);
+  if (seg.dot) {
+    const d = document.createElement("span");
+    d.className = "seg-dot";
+    d.textContent = seg.dot;                             // textContent: static state glyph
+    el.appendChild(d);
+  }
+  const w = document.createElement("span");
+  w.className = "seg-word";
+  w.textContent = seg.word;
+  el.appendChild(w);
+  return el;
+}
 
 function updateRoster() {
   const onlineCount = room.filter((c) => c.acpReady).length;
@@ -682,60 +750,34 @@ function updateRoster() {
   if (!rosterEl) return;
   rosterEl.innerHTML = "";
   room.forEach((c) => {
-    const st = connState(c);
-    const chip = document.createElement("div");
-    chip.className = "roster-chip " + st.cls;
+    const s = RoomCore.roomStatus({
+      acpReady: c.acpReady, alive: c.alive, lastFailure: c.lastFailure,
+      enabled: c.enabled, online: c.online,
+      allowed: c.agent.browserAccess !== false,
+      attached: c.browserAttached,
+      tunnelFresh: Date.now() - (c.lastTunnelMsgAt || 0) < TUNNEL_FRESH_MS,
+      actMode,
+    });
 
-    // Agent name.
+    const chip = document.createElement("div");
+    chip.className = "roster-chip " + s.link.cls;
+
     const nm = document.createElement("span");
     nm.className = "roster-name";
     nm.textContent = c.name;                             // textContent: agent name is user config
     chip.appendChild(nm);
 
-    // Connection badge — colored dot + short word (replaces the 🔗/⛓️ glyph so "connecting" is
-    // visibly distinct from an error). The precise reason stays in the title (ADR §4.3 S).
-    const connB = document.createElement("span");
-    connB.className = "conn-badge " + st.cls;
-    connB.title = st.label;
-    const dot = document.createElement("span");
-    dot.className = "conn-dot";
-    dot.textContent = CONN_DOT[st.cls] || "◌";
-    const connWord = document.createElement("span");
-    connWord.className = "conn-word";
-    connWord.textContent = CONN_WORD[st.cls] || st.label;
-    connB.appendChild(dot);
-    connB.appendChild(connWord);
-    chip.appendChild(connB);
+    // Three segments in dependency order — 🔌 link · 🚇 tunnel · 🌐 browser (ADR §8.2). tunnel and
+    // browser are omitted when the agent has no browser access; a `dim` segment is greyed so a
+    // dead upstream can't leave a downstream reading healthy.
+    chip.appendChild(renderSeg("link", "🔌", s.link));
+    if (s.tunnel) chip.appendChild(renderSeg("tunnel", "🚇", s.tunnel));
+    if (s.browser) chip.appendChild(renderSeg("browser", "🌐", s.browser));
 
-    // Browser badge — 🌐 + word, only when this agent is allowed browser access. Pure mapping of
-    // (allowed / attached / alive / actMode) in RoomCore; `alive === false` surfaces as ⚠️ 無回應
-    // instead of a silent "未連", so a heartbeat-dead tunnel reads honestly.
-    const badge = RoomCore.browserBadge({
-      allowed: c.agent.browserAccess !== false,
-      attached: c.browserAttached,
-      alive: c.alive,
-      actMode,
-    });
-    if (badge) {
-      const br = document.createElement("span");
-      br.className = "browser-badge " + badge.state;
-      br.title = BROWSER_TITLE[badge.state] || "";
-      const g = document.createElement("span");
-      g.className = "browser-glyph";
-      g.textContent = badge.glyph;
-      const bw = document.createElement("span");
-      bw.className = "browser-word";
-      bw.textContent = badge.label;
-      br.appendChild(g);
-      br.appendChild(bw);
-      chip.appendChild(br);
-    }
-
-    // R2 — one-click manual reconnect. When the user wants this agent up but it isn't healthy
-    // (not online, or the heartbeat has gone quiet), clicking the chip forces a reconnect without
-    // opening Settings. A healthy chip is inert.
-    const healthy = st.cls === "online" && c.alive !== false;
-    if (c.enabled !== false && !healthy) {
+    // R2 — one-click manual reconnect on an unhealthy link. When the user wants this agent up but
+    // the link isn't online (offline / error / heartbeat-degraded), clicking the chip forces a
+    // reconnect without opening Settings; a healthy link is inert.
+    if (c.enabled !== false && s.link.cls !== "online") {
       chip.classList.add("clickable");
       chip.title = "點擊重新連線";
       chip.addEventListener("click", () => { c.connect(); updateRoster(); });
