@@ -85,6 +85,8 @@ class Conn {
     this.stream = null;                                  // { bubble, text } while streaming
     this.lastFailure = null;                             // null | "auth" | "unreachable"
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
+    this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
+    this.alive = false;                                  // last heartbeat verdict (socket responding?)
   }
 
   get name() { return this.agent.name || "Agent"; }
@@ -155,6 +157,7 @@ class Conn {
   // Open (or reopen) this conn's socket and run the handshake.
   connect() {
     this.enabled = true;
+    this.stopHeartbeat();                                // don't probe across a teardown/reconnect
     if (this.ws) {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
@@ -162,6 +165,7 @@ class Conn {
     clearTimeout(this.reconnectTimer);
     this.online = false;
     this.acpReady = false;
+    this.alive = false;
     this.openedThisAttempt = false;
     updateRoster();
 
@@ -186,6 +190,8 @@ class Conn {
       this.ws.onclose = () => {
         this.online = false;
         this.acpReady = false;
+        this.alive = false;
+        this.stopHeartbeat();
         this.mcpState.connections = {};                  // every tunnel dies with the socket
         this.mcpState.mcpConnectionId = null;
         this.setBrowserAttached(false);
@@ -212,6 +218,7 @@ class Conn {
   // Tear down permanently (no reconnect) — used on delete / retarget.
   disconnect() {
     this.enabled = false;
+    this.stopHeartbeat();
     clearTimeout(this.reconnectTimer);
     if (this.ws) {
       this.ws.onclose = null;
@@ -220,6 +227,7 @@ class Conn {
     }
     this.online = false;
     this.acpReady = false;
+    this.alive = false;
     this.finalizeStream();
   }
 
@@ -248,6 +256,8 @@ class Conn {
             mcpServers: this.browserMcpServers(),
           }).then(() => {
             this.acpReady = true;
+            this.alive = true;
+            this.startHeartbeat();
             updateRoster();
             saveHistory();                 // persist the (confirmed) resumable session id
             appendSystemMessage(`已續接 ${this.name} 的 ACP session。`);
@@ -260,6 +270,8 @@ class Conn {
         }).then((res) => {
           this.acpSessionId = res && res.sessionId; // seeded per-window; persisted below
           this.acpReady = true;
+          this.alive = true;
+          this.startHeartbeat();
           updateRoster();
           saveHistory();                 // persist the new session id for this window
           appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
@@ -341,9 +353,15 @@ class Conn {
       .catch((err) => {
         this.turnActive = false;
         updateStopButton();
-        if (/closed|not open/i.test(String(err))) {
-          this.promptQueue.unshift(text);                // transient: retry after resume
+        if (RoomCore.isDeadProbeReason(String(err))) {
+          // Dead/half-open socket — either an explicit close, or a prompt that timed out because the
+          // socket died (a heartbeat teardown rejects the in-flight turn with "connection closed").
+          // Re-queue the turn and force a reconnect so it flushes on a fresh session, rather than
+          // stranding it behind a retry button that would re-send into the dead socket (ADR R3).
+          this.promptQueue.unshift(text);
           this.finalizeStream();
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.connect(); // socket still says OPEN → force teardown
+          // else onclose already scheduled a reconnect; flushQueue re-sends once ready.
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
           appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
@@ -361,9 +379,58 @@ class Conn {
     this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
   }
 
-  // Re-send the last turn (after an error / stop). No-op if a turn is already in flight.
+  // Re-send the last turn (after an error / stop). If the socket isn't live, reconnect first and
+  // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
+  // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
   retryLast() {
-    if (this.lastPrompt && !this.turnActive) this.enqueue(this.lastPrompt);
+    if (!this.lastPrompt || this.turnActive) return;
+    this.promptQueue.push(this.lastPrompt);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
+    else this.connect();                                 // reconnect; flushQueue runs after handshake
+  }
+
+  // --- Liveness heartbeat (ADR browser-tunnel-liveness) ----------------------
+  // A half-open socket keeps reporting OPEN, so turns and the browser tunnel hang until a 10-minute
+  // timeout. Probe it: send a request the gateway answers immediately (an unknown method → -32601,
+  // handled in its read loop without touching the agent — verified in openab acp_server.rs). ANY
+  // response, error included, proves the socket is alive; only a probe timeout (or a closed socket)
+  // means dead → fail the in-flight turn now and reconnect. `session/prompt` is spawned gateway-side,
+  // so the probe is answered even mid-turn — no need to gate this on idle.
+  startHeartbeat() {
+    this.stopHeartbeat();
+    const interval = roomConfig.heartbeatIntervalMs || 60000;
+    this.heartbeatTimer = setInterval(() => this.heartbeatTick(), interval);
+  }
+
+  stopHeartbeat() {
+    if (this.heartbeatTimer) { clearInterval(this.heartbeatTimer); this.heartbeatTimer = null; }
+  }
+
+  heartbeatTick() {
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady)) return; // nothing to probe
+    const timeout = roomConfig.heartbeatTimeoutMs || 5000;
+    this.acpRequest("katashiro/ping", {}, timeout)
+      .then(() => this.markAlive(true))                  // gateway answered (unlikely to resolve, but alive)
+      .catch((err) => {
+        if (RoomCore.isDeadProbeReason(String(err))) this.onHeartbeatDead();
+        else this.markAlive(true);                       // an error reply (e.g. -32601) still proves liveness
+      });
+  }
+
+  markAlive(alive) {
+    if (alive === this.alive) return;
+    this.alive = alive;
+    updateRoster();                                      // chip reflects alive vs ⚠️ 無回應
+  }
+
+  // The probe timed out ⇒ the socket is dead though it still says OPEN. Fail the in-flight turn
+  // immediately (don't wait out ACP_PROMPT_TIMEOUT_MS) by rejecting pending requests — the turn's
+  // .catch sees a dead reason and re-queues — then tear the socket down and reconnect.
+  onHeartbeatDead() {
+    this.markAlive(false);
+    this.stopHeartbeat();
+    this.rejectAllPending("connection closed");          // fail-fast the in-flight session/prompt
+    this.connect();                                      // teardown + re-handshake (resume re-declares tunnel)
   }
 
   // --- Streaming bubble (per conn — agents stream concurrently) --------------
@@ -594,6 +661,16 @@ function connState(c) {
   return { cls: "connecting", label: "連線中…" };
 }
 
+// Roster chip vocabulary (ADR §4.3 S). Connection dot glyph + short word by connState class; the
+// full reason (e.g. which auth failure) stays in the badge title. Browser-badge titles by state.
+const CONN_DOT = { online: "●", connecting: "◐", error: "○", offline: "◌" };
+const CONN_WORD = { online: "已連線", connecting: "連線中", error: "連線失敗", offline: "已停用" };
+const BROWSER_TITLE = {
+  attached: "瀏覽器 tunnel 已連結",
+  detached: "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）",
+  degraded: "瀏覽器已連結但心跳無回應 —— 連線可能已死，正在重連",
+};
+
 function updateRoster() {
   const onlineCount = room.filter((c) => c.acpReady).length;
   if (statusIndicator) {
@@ -609,39 +686,61 @@ function updateRoster() {
     const chip = document.createElement("div");
     chip.className = "roster-chip " + st.cls;
 
-    const dot = document.createElement("span");
-    dot.className = "roster-dot";
-    // 🔗 linked / ⛓️‍💥 broken — the exact reason (auth failed / unreachable / connecting) is in the title.
-    dot.textContent = st.cls === "online" ? "🔗" : "⛓️‍💥";
-    dot.title = st.label;
-    chip.appendChild(dot);
-
+    // Agent name.
     const nm = document.createElement("span");
     nm.className = "roster-name";
     nm.textContent = c.name;                             // textContent: agent name is user config
     chip.appendChild(nm);
 
-    // Browser tunnel: three states, shown only when this agent is allowed browser access. Separate
-    // from the config toggle (which only says "allowed"): this reflects the RUNTIME tunnel.
-    if (c.agent.browserAccess !== false) {
+    // Connection badge — colored dot + short word (replaces the 🔗/⛓️ glyph so "connecting" is
+    // visibly distinct from an error). The precise reason stays in the title (ADR §4.3 S).
+    const connB = document.createElement("span");
+    connB.className = "conn-badge " + st.cls;
+    connB.title = st.label;
+    const dot = document.createElement("span");
+    dot.className = "conn-dot";
+    dot.textContent = CONN_DOT[st.cls] || "◌";
+    const connWord = document.createElement("span");
+    connWord.className = "conn-word";
+    connWord.textContent = CONN_WORD[st.cls] || st.label;
+    connB.appendChild(dot);
+    connB.appendChild(connWord);
+    chip.appendChild(connB);
+
+    // Browser badge — 🌐 + word, only when this agent is allowed browser access. Pure mapping of
+    // (allowed / attached / alive / actMode) in RoomCore; `alive === false` surfaces as ⚠️ 無回應
+    // instead of a silent "未連", so a heartbeat-dead tunnel reads honestly.
+    const badge = RoomCore.browserBadge({
+      allowed: c.agent.browserAccess !== false,
+      attached: c.browserAttached,
+      alive: c.alive,
+      actMode,
+    });
+    if (badge) {
       const br = document.createElement("span");
-      if (c.browserAttached && actMode) {
-        br.className = "roster-browser attached";
-        br.textContent = "🐵";                   // live + operational (act mode on — can act on the tab)
-        br.title = "瀏覽器已連結 + 可操作（act mode 開）";
-      } else if (c.browserAttached) {
-        br.className = "roster-browser attached";
-        br.textContent = "🙊";                   // live but read-only (act mode off)
-        br.title = "瀏覽器已連結，唯讀（act mode 關 — Settings → 瀏覽器寫入 可開啟操作）";
-      } else {
-        br.className = "roster-browser detached";
-        br.textContent = "🙈";                   // see-no-evil — tunnel not attached
-        br.title = "瀏覽器 tunnel 未連結（agent 尚未接上或無 live 分頁）";
-      }
+      br.className = "browser-badge " + badge.state;
+      br.title = BROWSER_TITLE[badge.state] || "";
+      const g = document.createElement("span");
+      g.className = "browser-glyph";
+      g.textContent = badge.glyph;
+      const bw = document.createElement("span");
+      bw.className = "browser-word";
+      bw.textContent = badge.label;
+      br.appendChild(g);
+      br.appendChild(bw);
       chip.appendChild(br);
     }
 
-    chip.title = st.label;
+    // R2 — one-click manual reconnect. When the user wants this agent up but it isn't healthy
+    // (not online, or the heartbeat has gone quiet), clicking the chip forces a reconnect without
+    // opening Settings. A healthy chip is inert.
+    const healthy = st.cls === "online" && c.alive !== false;
+    if (c.enabled !== false && !healthy) {
+      chip.classList.add("clickable");
+      chip.title = "點擊重新連線";
+      chip.addEventListener("click", () => { c.connect(); updateRoster(); });
+    }
+
     rosterEl.appendChild(chip);
   });
 
@@ -930,7 +1029,9 @@ function renderAgentList() {
     const brOn = a.browserAccess !== false;              // default on (backward compatible)
     const brToggle = document.createElement("button");
     brToggle.className = "agent-browser-toggle" + (brOn ? " on" : "");
-    brToggle.textContent = brOn ? "🔗 開" : "🔗 關";
+    // 🌐 to match the roster's browser badge — the control and the status now speak one vocabulary
+    // (ADR §4.3 S; retires the old 🔗 which collided with the connection glyph).
+    brToggle.textContent = brOn ? "🌐 開" : "🌐 關";
     brToggle.title = brOn
       ? "此 agent 可操作瀏覽器（點擊關閉存取）"
       : "此 agent 無瀏覽器存取（點擊開啟）";

@@ -54,9 +54,10 @@ Shipped today (see `sidepanel.js`):
   turn (`RoomCore.batchPrompts`), Discord-style, rather than one turn per queued message.
 - LINE-style chat UI. **Since shipped:** agent/user messages render as markdown → DOMPurify-sanitized
   HTML (`markdown.js`, syntax highlight + copy-code), plus chat history persistence + ACP session
-  resume, stop/cancel, stick-to-bottom auto-scroll, and a roster emoji status (🔗/⛓️‍💥 connection,
-  🐵/🙊/🙈 browser tunnel). Streaming stays `textContent`; the finalized message is the only
-  sanitized-innerHTML sink (see `docs/adr/chat-markdown-rendering.md`).
+  resume, stop/cancel, stick-to-bottom auto-scroll, and a two-badge roster status (connection badge
+  ●/◐/○/◌ + browser badge 🌐/⚠️) backed by a liveness heartbeat that reconnects a dead socket (see
+  `docs/adr/browser-tunnel-liveness.md`). Streaming stays `textContent`; the finalized message is the
+  only sanitized-innerHTML sink (see `docs/adr/chat-markdown-rendering.md`).
 
 The agent cannot yet see or change anything in the browser (that arrives in Phases 1–2 below).
 
