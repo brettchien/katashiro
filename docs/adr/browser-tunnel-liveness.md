@@ -26,6 +26,13 @@ indicator: 🐵 attached + act mode, 🙊 attached + read-only, 🙈 not attache
 So detection and display already exist. This ADR is about making them **reliable**, deciding whether
 to **auto-recover**, and fixing a **status-vocabulary** inconsistency the work exposes.
 
+**Scope note — the tunnel and agent turns share one socket.** The browser tunnel (MCP-over-ACP,
+gateway → extension) and the agent turns (`session/prompt`, extension → gateway) both ride the **same
+per-`Conn` ACP WebSocket**. A half-open socket therefore kills *both* at once: the tunnel goes stale
+(problem 2.1) and the next `session/prompt` hangs until it times out (problem 2.3). So the liveness
+detection this ADR adds belongs on that shared socket, and fixing it serves both surfaces — the ADR
+is named for the tunnel but the mechanism is Conn-level.
+
 ## 2. The problems
 
 **2.1 Detection is passive.** `browserAttached` only changes on the three events above. There is no
@@ -45,7 +52,27 @@ tunnel returns on its own. But when the tunnel drops while the socket stays up, 
 it — the user must go to Settings and toggle a switch (the 🔗 browser-access toggle or the
 連線/斷線 toggle, both of which force a re-handshake; the act-mode toggle does **not**, by design).
 
-**2.3 Status vocabulary is inconsistent.** Four orthogonal facts are currently squeezed into two
+**2.3 Observed symptom — a dead socket surfaces as a prompt timeout that retry can't fix.** Because
+the agent turn rides the same socket (scope note above), the first thing a user sees when the socket
+half-opens is not the monkey — it's the *turn* failing. Reported 2026-08-06: an error bubble
+`回合失敗：request timed out: session/prompt`, and **pressing 重試 did nothing**. Tracing it:
+
+- `session/prompt` has a 10-minute client timeout (`ACP_PROMPT_TIMEOUT_MS`); a half-open socket makes
+  the turn hang the full 10 minutes before the client gives up. The error text `request timed out`
+  does not match the `/closed|not open/` transient branch, so `Conn.flushQueue`'s `.catch` shows the
+  retry bubble instead of re-queuing.
+- **Retry re-sends on the *same* connection and never reconnects.** `retryLast()` → `enqueue` →
+  `flushQueue`, whose guard requires `ws.readyState === OPEN`. A half-open socket still reports `OPEN`,
+  so retry pushes a fresh `session/prompt` into the dead socket → another 10-minute hang. If the
+  socket has meanwhile closed, the guard fails and `retryLast` is a silent no-op — while the retry
+  button is already `disabled`. Either way: **"retry has no effect."**
+- The 10-minute timeout also never invalidates the socket: nothing tears down the (probably dead)
+  connection, so it lingers reporting `OPEN`.
+
+This is problem 2.1(A) made visible on the turn layer, plus a gap 2.2 sibling: **no recovery path on
+timeout** — retry should reconnect, and a prompt timeout should invalidate the socket, not trust it.
+
+**2.4 Status vocabulary is inconsistent.** Four orthogonal facts are currently squeezed into two
 glyph families, with one glyph overloaded:
 
 - **connection** (agent WS up?) → 🔗 linked / ⛓️‍💥 broken
@@ -110,6 +137,13 @@ real in practice.
   the existing 5 s WS reconnect cadence).
 - **R2 — one-click manual affordance.** Make the roster 🙈 monkey (or a dedicated control) clickable
   to reconnect, so recovery doesn't require opening Settings. Cheap; can ship alongside R0/R1.
+- **R3 — recover on prompt timeout / retry (fixes problem 2.3).** A `session/prompt` timeout should
+  **invalidate and reconnect** the socket rather than leave it reporting `OPEN`; and `retryLast` /
+  `flushQueue` should, when the connection isn't live, **reconnect first and queue the prompt to flush
+  after the handshake** instead of no-op-ing or sending into a dead socket. This is the concrete
+  behaviour change that makes the observed "retry does nothing" go away. It rides on R1 (same
+  re-handshake path) but is called out separately because it also touches the turn/timeout code, not
+  just the tunnel-status path.
 
 ### 4.3 Status model / emoji
 
@@ -126,10 +160,15 @@ real in practice.
 1. **Detection: D1 + D3**, client-only. No openab dependency; closes the real (latency) gap. Defer
    **D2** unless silent logical death (gap B) is actually observed — and if so, open a companion
    change against the openab tunnel contract.
-2. **Reconnect: R1**, gated on `Conn.enabled`, with backoff + storm guard; **plus R2** (clickable
-   monkey) so manual recovery no longer needs Settings.
+2. **Reconnect: R1 + R3 + R2.** R1 auto re-handshake gated on `Conn.enabled` with backoff + storm
+   guard; **R3** so a prompt timeout invalidates+reconnects and retry reconnects instead of failing
+   silently (fixes the reported "retry does nothing"); **R2** clickable monkey so manual recovery no
+   longer needs Settings.
 3. **Status model: S** — do the vocabulary cleanup **in the same change** as detection, so the newly
    honest state has a coherent set of glyphs rather than bolting `alive` onto the current overload.
+
+Note: the reported retry/timeout bug (2.3) is folded into this ADR rather than hot-fixed separately
+(Brett's call, 2026-08-06), so it's fixed as part of R3 when this lands — not before.
 
 ## 6. Open questions (to settle before implementation)
 
@@ -142,6 +181,9 @@ real in practice.
   including the degraded (attached-but-not-responding) case.
 - **Scope of R2:** ship the clickable-monkey manual reconnect regardless of R1, as a always-available
   fallback?
+- **Prompt timeout vs heartbeat:** once a heartbeat detects a dead socket in seconds, is the 10-minute
+  `ACP_PROMPT_TIMEOUT_MS` still the right ceiling for a genuinely long turn, or should a
+  heartbeat-confirmed-dead socket fail the in-flight turn immediately instead of waiting it out?
 
 ## 7. Consequences
 
