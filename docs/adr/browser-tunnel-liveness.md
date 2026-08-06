@@ -268,10 +268,10 @@ scope "unless it proves real in practice". It proved real (2026-08-06, katashiro
   agent-side MCP session then went stale; **no `mcp/disconnect` was ever emitted** to the extension — a
   fresh tunnel simply re-registered on the next reconnect.
 - **Root cause in openab.** `mcp/disconnect` fires only on owner-based teardown (WS close / a resume
-  that drops the server, §7). Tunnel **eviction / agent-side session-death is an explicit follow-up
-  ("F6", `acp_server.rs:35` "eviction … is a follow-up") that is not implemented.** So the §7
-  "withdrawal sends `mcp/disconnect`" guarantee does **not** cover session-death while the socket stays
-  up.
+  that drops the server, §7). **Agent-side session-death while the tunnel registry entry stays attached
+  is not signalled at all** — so the §7 "withdrawal sends `mcp/disconnect`" guarantee does **not** cover
+  it. (This is a distinct gap from the `acp_server.rs:35` F6 resource-caps / idle-eviction follow-up,
+  whose same-name eviction already sends `mcp/disconnect` — see §8.4.)
 
 Per §5.1 this satisfies the precondition for the deferred **D2** companion change against openab (§8.4).
 
