@@ -1,6 +1,6 @@
 # ADR: Browser-tunnel liveness — detection, reconnect, and status model
 
-- **Status:** Proposed (not yet decided)
+- **Status:** Accepted (all decisions settled 2026-08-06)
 - **Date:** 2026-08-06
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [ACP connection ownership ADR](./acp-connection-ownership.md) (sibling — connection lifecycle); openab `docs/mcp-over-acp-tunnel-contract.md` (the tunnel protocol this depends on)
@@ -191,16 +191,24 @@ k10     [◌ 已停用]                  user disabled this agent
 The status word still carries the fine-grained reason in a tooltip (e.g. which auth failure), but the
 chip no longer *requires* a hover to tell the four facts apart.
 
-## 5. Recommendation (proposed — for Brett to confirm)
+## 5. Decision (settled 2026-08-06)
 
-1. **Detection: D1 + D3**, client-only. No openab dependency; closes the real (latency) gap. Defer
-   **D2** unless silent logical death (gap B) is actually observed — and if so, open a companion
-   change against the openab tunnel contract.
-2. **Reconnect: R1 + R3 + R2.** R1 auto re-handshake gated on `Conn.enabled` with backoff + storm
-   guard; **R3** so a prompt timeout invalidates+reconnects and retry reconnects instead of failing
-   silently (fixes the reported "retry does nothing"); **R2** clickable monkey so manual recovery no
-   longer needs Settings.
-3. **Status model: S (two-badge chip, decided).** Do the vocabulary cleanup **in the same change** as
+1. **Detection: D1 + D3**, client-only. Heartbeat is a gateway-answered request-shaped frame
+   (§4.1 D1), **every 60 s with a 5 s probe timeout, both operator/user-configurable**. No openab
+   dependency; closes the real (latency) gap. **D2 deferred** unless silent logical death (gap B) is
+   actually observed — and if so, open a companion change against the openab tunnel contract.
+2. **Reconnect: R1 + R2 + R3 (all three).**
+   - **R1** — auto re-handshake on a detected drop, gated on `Conn.enabled`, with backoff + storm
+     guard aligned to the existing 5 s WS cadence.
+   - **R2** — a one-click manual reconnect on the chip (the browser badge / a dedicated control), so
+     recovery never requires opening Settings.
+   - **R3** — a `session/prompt` timeout invalidates + reconnects the socket, and `retryLast` /
+     `flushQueue` reconnect-then-queue instead of no-op-ing or sending into a dead socket (fixes the
+     reported "retry does nothing", 2.3).
+   - **Fail-fast on confirmed death (decision for #3):** once the heartbeat declares the socket dead,
+     **the in-flight turn fails immediately** rather than waiting out `ACP_PROMPT_TIMEOUT_MS` — the
+     10-minute ceiling only governs a turn on a *live* socket.
+3. **Status model: S (two-badge chip).** Do the vocabulary cleanup **in the same change** as
    detection so the newly honest state ships coherent: connection badge + browser badge per §4.3,
    with the `alive`/⚠️無回應 state wired to D1 and the Settings toggle re-labelled to 🌐 to match.
 
@@ -213,17 +221,18 @@ Note: the reported retry/timeout bug (2.3) is folded into this ADR rather than h
   request-shaped frame (unknown method → instant `-32601`), not blocked by an in-flight prompt
   (`session/prompt` is spawned), no agent, no tokens. See §4.1 D1. This also **retires the former
   false-positive-while-busy discussion item** — no need to gate the heartbeat on idle.
-- **Heartbeat cadence:** interval and timeout defaults (straw man: 15 s interval / 5 s timeout).
-  Operator/user-configurable, or fixed? *(Still open — the only real knob left, since the mechanism
-  is settled.)*
+- ~~**Heartbeat cadence**~~ — **decided (2026-08-06): 60 s interval / 5 s probe timeout, both
+  configurable.**
 - ~~**Glyph vocabulary**~~ — **decided (2026-08-06): two-badge chip, §4.3 S.** Connection badge
   (●/◐/○/◌ + word) + browser badge (🌐 + word, incl. ⚠️無回應 for the degraded case); Settings toggle
   moves to 🌐.
-- **Scope of R2:** ship the clickable-monkey manual reconnect regardless of R1, as a always-available
-  fallback?
-- **Prompt timeout vs heartbeat:** once a heartbeat detects a dead socket in seconds, is the 10-minute
-  `ACP_PROMPT_TIMEOUT_MS` still the right ceiling for a genuinely long turn, or should a
-  heartbeat-confirmed-dead socket fail the in-flight turn immediately instead of waiting it out?
+- ~~**Scope of R2**~~ — **decided (2026-08-06): yes, ship R2** (manual one-click reconnect) alongside
+  the auto path R1.
+- ~~**Prompt timeout vs heartbeat**~~ — **decided (2026-08-06): fail the in-flight turn immediately**
+  once the heartbeat confirms the socket is dead; the 10-minute `ACP_PROMPT_TIMEOUT_MS` only bounds a
+  turn on a live socket.
+
+All open questions are now settled — this ADR is Accepted and ready to implement.
 
 ## 7. Consequences
 
