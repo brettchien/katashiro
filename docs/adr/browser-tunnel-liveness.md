@@ -250,9 +250,10 @@ All open questions are now settled — this ADR is Accepted and ready to impleme
 ## 8. Revision (2026-08-06) — gap (B) confirmed; status model → three segments
 
 The two-badge model (§4.3 S) shipped in #17. Live-testing the same day exposed two things the original
-decision had explicitly parked, so this section revises the **status-model** decision (only) and records
-the openab follow-up the ADR made conditional on gap (B) proving real. Detection (D1/D3), reconnect
-(R1/R2/R3), and the connection-badge vocabulary all stand unchanged.
+decision had explicitly parked, so this section revises the **status-model** decision **and reworks the
+D1 heartbeat**, and records the openab follow-up the ADR made conditional on gap (B) proving real.
+Reconnect (R1/R2/R3) and the connection-badge vocabulary stand; **detection does NOT stand unchanged —
+§8.6 reworks the D1 heartbeat and reverses its "no need to gate on idle" premise** (D3 stands).
 
 ### 8.1 Gap (B) — "silent logical death" — is now real
 
@@ -332,12 +333,16 @@ remove the D2 need for an authoritative death signal (§8.4).
 ### 8.4 openab companion (D2 / gap B) — handover
 
 The authoritative "tunnel logically dead" signal must come from the gateway, because the extension
-cannot distinguish idle from dead (§8.3). Requested openab change: **on tunnel eviction / agent-side MCP
-session-death, send `mcp/disconnect` (or a tunnel-status frame) to the extension** — i.e. implement the
-F6 eviction follow-up (`acp_server.rs:35`) so the §7 disconnect guarantee also covers session-death, not
-only WS close. Filed to the openab thread alongside the existing reap-on-`Drop` lifecycle item. Until it
-lands, gap (B) degrades gracefully (D4 shows 閒置, not a false 活躍) but the tunnel segment cannot flip to
-未連結 on its own.
+cannot distinguish idle from dead (§8.3). Requested openab change: **when a session goes stale while its
+tunnel registry entry is still attached, emit `mcp/disconnect` (or a tunnel-status frame) to the
+extension**, reusing the existing `handle.disconnect()` / eviction path so the §7 disconnect guarantee
+also covers session-death, not only WS close.
+
+**Scope note (Falcon review) — this is NOT the F6 caps item.** `acp_server.rs:35`'s F6 is resource-caps /
+idle-eviction, and same-name eviction *already* sends `mcp/disconnect`. The gap here is specifically
+**session-stale-but-registry-still-attached**; the handover must not be coupled to F6 caps. Filed to the
+openab thread alongside the existing reap-on-`Drop` lifecycle item. Until it lands, gap (B) degrades
+gracefully (D4 shows 閒置, not a false 活躍) but the tunnel segment cannot flip to 未連結 on its own.
 
 ### 8.6 Heartbeat rework — passive liveness, idle-only probe, non-destructive (revises §4.1 D1)
 
@@ -394,9 +399,19 @@ indistinguishable from a healthy think-pause — inbound silence during a turn i
 thinking), so we must not reconnect on it. That case falls back to the `session/prompt` timeout (R3),
 which — post-rework — invalidates the socket and reconnect-then-requeues (problem 2.3's fix) when it
 fires. We accept this: the alternative (#17's aggressive mid-turn reconnect) traded a rare, bounded
-silent-turn hang for a *frequent* destruction of healthy busy turns. WS `onclose` still catches the
-common (non-silent) half-open promptly. Shortening `ACP_PROMPT_TIMEOUT_MS` is a separate future lever if
-the silent-turn hang proves real in practice.
+silent-turn hang for a *frequent* destruction of healthy busy turns.
+
+**Be precise about each case's bound (review — Orca / Mira / Falcon):** `onclose` is **not** a prompt
+backstop for the silent-turn half-open. A peer that vanishes without FIN/RST leaves this TCP half-open,
+and a *silent* turn has no outbound send to hit an RST, so `onclose` waits on OS keepalive (hours). The
+three half-open cases therefore have three different bounds, and only the first is slow:
+
+- **silent-turn half-open** — no prompt signal; **only** hard upper bound is the 10-min R3
+  `ACP_PROMPT_TIMEOUT_MS` (shortening it is the one future lever). Do **not** model `onclose` as a faster
+  backstop here.
+- **non-silent half-open** (frames flowing / a live outbound send) — `onclose` fires promptly on the RST.
+- **idle half-open** — caught by the idle probe in **~125 s** (a 60 s-interval probe, then one more after
+  another interval, to reach the ≥2 debounce). Worth watching for during live testing.
 
 **Net:** #17's real benefit is retained — a genuinely dead **idle** socket is still caught before the
 next prompt hangs 10 minutes — while the harm (killing live turns, churn, the cursor-agent leak) is
