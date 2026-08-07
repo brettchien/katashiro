@@ -111,12 +111,22 @@
   // Public: build a fresh snapshot. Clears prior refs (snapshot-scoped) and bumps the generation.
   // forceId: the caller (the tool) assigns one generation across ALL frames of a page, so a
   // multi-frame snapshot shares one snapshotId. Without it, each frame would count independently.
-  window.__katashiroSnapshot = function (forceId) {
+  window.__katashiroSnapshot = function (forceId, rootSelector) {
     REG.snapshotId = (forceId != null) ? forceId : REG.snapshotId + 1;
     REG.byRef.clear();
     REG._counter = 0;
+    let root = document.body || document.documentElement;
+    if (rootSelector) {
+      // K3: scope a re-snapshot to a subtree so a targeted re-check is cheap. A frame without a
+      // match contributes nothing — the frame that owns the selector carries the scoped tree.
+      const scoped = document.querySelector(rootSelector);
+      if (!scoped) {
+        return { ok: true, snapshotId: REG.snapshotId, url: location.href, title: document.title, truncated: false, tree: "" };
+      }
+      root = scoped;
+    }
     const out = [];
-    walk(document.body || document.documentElement, 0, out, false);
+    walk(root, 0, out, false);
     const truncated = out.length >= MAX_LINES;
     if (truncated) {
       out.push(`- … truncated at ${MAX_LINES} nodes; scope with a selector, scroll, or act on what's shown`);

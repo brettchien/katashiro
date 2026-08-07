@@ -848,6 +848,40 @@ test("snapshot injects the vendored a11y engine + walker, then returns the tree 
   assert.ok(calls.executeScript.some((c) => typeof c.func === "function"), "runs the snapshot func");
 });
 
+test("K3: snapshot forwards a `selector` to the walker as the rootSelector arg (scoped re-snapshot)", async () => {
+  const seen = [];
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
+    permissions: { contains: async () => true },
+    scripting: {
+      executeScript: async (inj) => {
+        if (inj.files) return [{ frameId: 0, result: { ok: true } }];
+        seen.push(inj.args);
+        return [{ frameId: 0, result: { ok: true, title: "Top", url: "https://top/", tree: "- button [ref=e1]" } }];
+      }
+    }
+  };
+  await BrowserMcp.callBrowserTool("katashiro.snapshot", { selector: "#results" }, { chrome, actMode: false });
+  const snapArgs = seen.find((a) => Array.isArray(a) && a[2] === "#results"); // [snapshotId, after, rootSelector]
+  assert.ok(snapArgs, "the selector reaches the injected func as the rootSelector arg");
+  assert.equal(snapArgs[1], false, "an explicit snapshot uses the non-after path");
+});
+
+test("K2: a successful read carries a trailing active-tab context block; errors do not", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, text: "hello page" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.equal(res.content[0].text, "hello page");                       // raw content untouched
+  const last = res.content[res.content.length - 1];
+  assert.match(last.text, /^— tab: /);                                   // context is its own block
+  assert.match(last.text, /https:\/\/t\//);                              // the mock active-tab url
+
+  const { deps: e } = deps({ scriptResult: { ok: false, error: "no element for selector: #x" } });
+  const err = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: { selector: "#x" } }, e);
+  assert.equal(err.isError, true);
+  assert.ok(!err.content.some((c) => /^— tab:/.test((c && c.text) || "")), "errors are not annotated");
+});
+
 test("snapshot with no usable frame content degrades to a placeholder, not a crash", async () => {
   // The multi-frame merge is resilient: a frame that yields nothing doesn't fail the whole snapshot.
   const { chrome } = mockChrome({ scriptResult: { ok: false, error: "no body" } });
