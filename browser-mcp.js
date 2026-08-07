@@ -51,6 +51,33 @@
   const okText = (t) => ({ content: [{ type: "text", text: t }] });
   const errText = (t) => ({ content: [{ type: "text", text: t }], isError: true });
 
+  // K2: append the active-tab context as a SEPARATE trailing content block, so the agent always
+  // knows which page it's on and rarely needs a `tabs` call just to orient (24 orientation calls
+  // observed in one session). Added as its own block, not merged into content[0], so a raw read
+  // (read_dom / get_text) stays byte-for-byte what the agent asked for. Errors and image-only /
+  // non-text results pass through untouched.
+  function withTabContext(result, tab) {
+    if (!result || result.isError || !Array.isArray(result.content)) return result;
+    const first = result.content.find((c) => c && c.type === "text");
+    if (!first || typeof first.text !== "string") return result;
+    // Skip any result that already carries a snapshot (the pure `snapshot`, and click/type/navigate
+    // which return `…\n\n# snapshot N — <title>`): the snapshot header already shows the CURRENT
+    // title/url. Appending a tab line there would (a) duplicate it — ironic for a token-saving change
+    // (Orca nit), and (b) LIE after a navigation, since `tab` is resolved pre-dispatch and would show
+    // the OLD page while the snapshot shows the new one (Falcon stale-tab, review 2026-08-07). K2's
+    // value is on the raw reads (read_dom / get_text / tabs), which carry no snapshot header.
+    // Match on the `# snapshot <n>` prefix only — the header also has a ` (truncated)` variant
+    // before the ` — ` (browser-mcp.js header build), and truncated snapshots are exactly the big,
+    // token-expensive, most-likely-stale-after-nav case that must NOT slip past this skip (Orca).
+    if (/(^|\n)# snapshot \d+/.test(first.text)) return result;
+    const title = (tab && tab.title) ? String(tab.title).trim() : "";
+    const url = (tab && tab.url) || "(unknown)";
+    return {
+      ...result,
+      content: [...result.content, { type: "text", text: `— tab: ${title ? title + " — " : ""}${url}` }]
+    };
+  }
+
   // The vendored a11y engine + the walker, injected into the tab's isolated world. Idempotent: the
   // walker keeps any existing per-frame registry and re-defines its globals, so injecting on every
   // snapshot/ref-resolving call is safe and self-heals after a page reload.
@@ -93,14 +120,26 @@
 
   // Snapshot every frame under one shared snapshotId. `after` runs the settle-then-snapshot form
   // (post-action). Returns the merged, ref-namespaced text.
-  async function fullSnapshot(chrome, tabId, after) {
+  async function fullSnapshot(chrome, tabId, after, rootSelector) {
     const id = ++snapshotSeq;
     await injectWalker(chrome, { tabId, allFrames: true });
     const results = await chrome.scripting.executeScript({
       target: { tabId, allFrames: true },
-      func: (sid, aft) => (aft ? window.__katashiroSnapshotAfter(sid) : window.__katashiroSnapshot(sid)),
-      args: [id, !!after]
+      func: (sid, aft, sel) => (aft ? window.__katashiroSnapshotAfter(sid) : window.__katashiroSnapshot(sid, sel)),
+      args: [id, !!after, rootSelector || null]
     });
+    if (rootSelector) {
+      // K3: a scoped snapshot that matches NO frame used to return an empty-but-ok tree — the agent
+      // couldn't tell a typo'd/invalid selector from a genuinely empty region. Surface it explicitly
+      // (review: Orca), so a bad selector earns a clear retry instead of a silent blank.
+      const frames = results.map((r) => r && r.result).filter(Boolean);
+      if (!frames.some((f) => f.ok && f.matched)) {
+        const err = frames.map((f) => f && f.selectorError).find(Boolean);
+        return err
+          ? `(invalid selector ${JSON.stringify(rootSelector)}: ${err}. Call snapshot without a selector to see the whole page.)`
+          : `(selector ${JSON.stringify(rootSelector)} matched no element on this page. Check it, or call snapshot without a selector to see the whole page.)`;
+      }
+    }
     return mergeFrames(results, id);
   }
 
@@ -192,8 +231,8 @@
     "katashiro.click": {
       description:
         "Click an element in the active tab. Prefer `ref` from the most recent snapshot (pass its " +
-        "`snapshotId` too); `selector` is a fallback. Returns the updated snapshot — do not " +
-        "screenshot afterward.",
+        "`snapshotId` too); `selector` is a fallback. Returns the updated snapshot — this return is " +
+        "current, so do not call `snapshot` or screenshot again right after.",
       write: true,
       inputSchema: {
         type: "object",
@@ -267,7 +306,7 @@
     },
 
     "katashiro.navigate": {
-      description: "Navigate the active browser tab to a URL.",
+      description: "Navigate the active browser tab to a URL. Returns the updated snapshot — this return is current, do not call `snapshot` again right after.",
       write: true,
       inputSchema: {
         type: "object",
@@ -285,7 +324,8 @@
     "katashiro.type": {
       description:
         "Type text into an element in the active tab. Prefer `ref` from the most recent snapshot; " +
-        "`selector` is a fallback. Returns the updated snapshot.",
+        "`selector` is a fallback. Returns the updated snapshot — this return is current, do not call " +
+        "`snapshot` again right after.",
       write: true,
       inputSchema: {
         type: "object",
@@ -370,11 +410,18 @@
         "text, with a stable `ref` on each interactive element. Prefer this over screenshot for " +
         "reading and for finding what to act on — it is far cheaper and gives refs. Returns a " +
         "snapshotId; pass a ref (and the snapshotId) to click/type. Screenshot only when a text " +
-        "snapshot cannot answer (visual layout, images/canvas).",
-      inputSchema: { type: "object", properties: {} },
-      /** @param {object} _args (none) */
-      async call(_args, ctx) {
-        return okText(await fullSnapshot(ctx.chrome, ctx.tab.id, false));
+        "snapshot cannot answer (visual layout, images/canvas). NOTE: click/type/navigate already " +
+        "return the updated snapshot, so you rarely need to call this right after acting. To re-check " +
+        "just one region cheaply, pass `selector` to scope the snapshot to that subtree.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          selector: { type: "string", description: "optional CSS selector to scope the snapshot to that element's subtree (cheaper than a full-page re-snapshot)" }
+        }
+      },
+      /** @param {{ selector?: string }} args */
+      async call(args, ctx) {
+        return okText(await fullSnapshot(ctx.chrome, ctx.tab.id, false, args && args.selector));
       }
     },
 
@@ -785,7 +832,7 @@
     if (!(await chrome.permissions.contains({ origins: [origin + "/*"] }))) {
       return errText(originNotAllowed(origin));
     }
-    return tool.call(args, { chrome, tab });
+    return withTabContext(await tool.call(args, { chrome, tab }), tab);
   }
 
   /**

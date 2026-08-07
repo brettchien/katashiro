@@ -111,12 +111,27 @@
   // Public: build a fresh snapshot. Clears prior refs (snapshot-scoped) and bumps the generation.
   // forceId: the caller (the tool) assigns one generation across ALL frames of a page, so a
   // multi-frame snapshot shares one snapshotId. Without it, each frame would count independently.
-  window.__katashiroSnapshot = function (forceId) {
+  window.__katashiroSnapshot = function (forceId, rootSelector) {
     REG.snapshotId = (forceId != null) ? forceId : REG.snapshotId + 1;
     REG.byRef.clear();
     REG._counter = 0;
+    let root = document.body || document.documentElement;
+    if (rootSelector) {
+      // K3: scope a re-snapshot to a subtree so a targeted re-check is cheap. A frame that doesn't own
+      // the selector contributes nothing (matched:false) — the frame that does carries the scoped tree.
+      // An INVALID selector is reported via `selectorError` rather than throwing and being silently
+      // dropped by the frame merge (review: Orca), so the caller can tell "bad selector" from "no match".
+      let scoped = null;
+      let selectorError = null;
+      try { scoped = document.querySelector(rootSelector); }
+      catch (e) { selectorError = String((e && e.message) || e); }
+      if (!scoped) {
+        return { ok: true, snapshotId: REG.snapshotId, url: location.href, title: document.title, truncated: false, tree: "", matched: false, selectorError };
+      }
+      root = scoped;
+    }
     const out = [];
-    walk(document.body || document.documentElement, 0, out, false);
+    walk(root, 0, out, false);
     const truncated = out.length >= MAX_LINES;
     if (truncated) {
       out.push(`- … truncated at ${MAX_LINES} nodes; scope with a selector, scroll, or act on what's shown`);
@@ -127,7 +142,8 @@
       url: location.href,
       title: document.title,
       truncated,
-      tree: out.join("\n") || "(no interactive or labeled elements found)"
+      tree: out.join("\n") || "(no interactive or labeled elements found)",
+      matched: rootSelector ? true : undefined   // reached only when the selector resolved (K3)
     };
   };
 
