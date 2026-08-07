@@ -910,6 +910,14 @@ test("K2: a snapshot-bearing result is NOT annotated (its header already has the
   assert.ok(!res.content.some((c) => /^— tab:/.test((c && c.text) || "")), "snapshot returns skip the tab block");
 });
 
+test("K2: a TRUNCATED snapshot header also skips the tab block (Orca — big pages are the stale-prone case)", async () => {
+  // header build adds ` (truncated)` before the ` — `; the skip must not be defeated by it.
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", snapshotId: 9, title: "Big", url: "https://big/", tree: "- x", truncated: true } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { selector: "#b" } }, d);
+  assert.match(res.content[0].text, /# snapshot \d+ \(truncated\) —/);
+  assert.ok(!res.content.some((c) => /^— tab:/.test((c && c.text) || "")), "truncated snapshot returns also skip the tab block");
+});
+
 test("K2: a successful read carries a trailing active-tab context block; errors do not", async () => {
   const { deps: d } = deps({ scriptResult: { ok: true, text: "hello page" } });
   const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: {} }, d);

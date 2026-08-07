@@ -66,7 +66,10 @@
     // (Orca nit), and (b) LIE after a navigation, since `tab` is resolved pre-dispatch and would show
     // the OLD page while the snapshot shows the new one (Falcon stale-tab, review 2026-08-07). K2's
     // value is on the raw reads (read_dom / get_text / tabs), which carry no snapshot header.
-    if (/(^|\n)# snapshot \d+ —/.test(first.text)) return result;
+    // Match on the `# snapshot <n>` prefix only — the header also has a ` (truncated)` variant
+    // before the ` — ` (browser-mcp.js header build), and truncated snapshots are exactly the big,
+    // token-expensive, most-likely-stale-after-nav case that must NOT slip past this skip (Orca).
+    if (/(^|\n)# snapshot \d+/.test(first.text)) return result;
     const title = (tab && tab.title) ? String(tab.title).trim() : "";
     const url = (tab && tab.url) || "(unknown)";
     return {
