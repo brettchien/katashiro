@@ -58,7 +58,15 @@
   // non-text results pass through untouched.
   function withTabContext(result, tab) {
     if (!result || result.isError || !Array.isArray(result.content)) return result;
-    if (!result.content.some((c) => c && c.type === "text")) return result;
+    const first = result.content.find((c) => c && c.type === "text");
+    if (!first || typeof first.text !== "string") return result;
+    // Skip any result that already carries a snapshot (the pure `snapshot`, and click/type/navigate
+    // which return `…\n\n# snapshot N — <title>`): the snapshot header already shows the CURRENT
+    // title/url. Appending a tab line there would (a) duplicate it — ironic for a token-saving change
+    // (Orca nit), and (b) LIE after a navigation, since `tab` is resolved pre-dispatch and would show
+    // the OLD page while the snapshot shows the new one (Falcon stale-tab, review 2026-08-07). K2's
+    // value is on the raw reads (read_dom / get_text / tabs), which carry no snapshot header.
+    if (/(^|\n)# snapshot \d+ —/.test(first.text)) return result;
     const title = (tab && tab.title) ? String(tab.title).trim() : "";
     const url = (tab && tab.url) || "(unknown)";
     return {
@@ -117,6 +125,18 @@
       func: (sid, aft, sel) => (aft ? window.__katashiroSnapshotAfter(sid) : window.__katashiroSnapshot(sid, sel)),
       args: [id, !!after, rootSelector || null]
     });
+    if (rootSelector) {
+      // K3: a scoped snapshot that matches NO frame used to return an empty-but-ok tree — the agent
+      // couldn't tell a typo'd/invalid selector from a genuinely empty region. Surface it explicitly
+      // (review: Orca), so a bad selector earns a clear retry instead of a silent blank.
+      const frames = results.map((r) => r && r.result).filter(Boolean);
+      if (!frames.some((f) => f.ok && f.matched)) {
+        const err = frames.map((f) => f && f.selectorError).find(Boolean);
+        return err
+          ? `(invalid selector ${JSON.stringify(rootSelector)}: ${err}. Call snapshot without a selector to see the whole page.)`
+          : `(selector ${JSON.stringify(rootSelector)} matched no element on this page. Check it, or call snapshot without a selector to see the whole page.)`;
+      }
+    }
     return mergeFrames(results, id);
   }
 

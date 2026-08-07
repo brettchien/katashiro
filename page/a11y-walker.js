@@ -117,11 +117,16 @@
     REG._counter = 0;
     let root = document.body || document.documentElement;
     if (rootSelector) {
-      // K3: scope a re-snapshot to a subtree so a targeted re-check is cheap. A frame without a
-      // match contributes nothing — the frame that owns the selector carries the scoped tree.
-      const scoped = document.querySelector(rootSelector);
+      // K3: scope a re-snapshot to a subtree so a targeted re-check is cheap. A frame that doesn't own
+      // the selector contributes nothing (matched:false) — the frame that does carries the scoped tree.
+      // An INVALID selector is reported via `selectorError` rather than throwing and being silently
+      // dropped by the frame merge (review: Orca), so the caller can tell "bad selector" from "no match".
+      let scoped = null;
+      let selectorError = null;
+      try { scoped = document.querySelector(rootSelector); }
+      catch (e) { selectorError = String((e && e.message) || e); }
       if (!scoped) {
-        return { ok: true, snapshotId: REG.snapshotId, url: location.href, title: document.title, truncated: false, tree: "" };
+        return { ok: true, snapshotId: REG.snapshotId, url: location.href, title: document.title, truncated: false, tree: "", matched: false, selectorError };
       }
       root = scoped;
     }
@@ -137,7 +142,8 @@
       url: location.href,
       title: document.title,
       truncated,
-      tree: out.join("\n") || "(no interactive or labeled elements found)"
+      tree: out.join("\n") || "(no interactive or labeled elements found)",
+      matched: rootSelector ? true : undefined   // reached only when the selector resolved (K3)
     };
   };
 

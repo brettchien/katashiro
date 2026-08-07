@@ -857,7 +857,7 @@ test("K3: snapshot forwards a `selector` to the walker as the rootSelector arg (
       executeScript: async (inj) => {
         if (inj.files) return [{ frameId: 0, result: { ok: true } }];
         seen.push(inj.args);
-        return [{ frameId: 0, result: { ok: true, title: "Top", url: "https://top/", tree: "- button [ref=e1]" } }];
+        return [{ frameId: 0, result: { ok: true, matched: true, title: "Top", url: "https://top/", tree: "- button [ref=e1]" } }];
       }
     }
   };
@@ -865,6 +865,49 @@ test("K3: snapshot forwards a `selector` to the walker as the rootSelector arg (
   const snapArgs = seen.find((a) => Array.isArray(a) && a[2] === "#results"); // [snapshotId, after, rootSelector]
   assert.ok(snapArgs, "the selector reaches the injected func as the rootSelector arg");
   assert.equal(snapArgs[1], false, "an explicit snapshot uses the non-after path");
+});
+
+test("K3: a selector that matches no frame returns an explicit signal, not an empty snapshot", async () => {
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
+    permissions: { contains: async () => true },
+    scripting: {
+      executeScript: async (inj) => {
+        if (inj.files) return [{ frameId: 0, result: { ok: true } }];
+        return [{ frameId: 0, result: { ok: true, matched: false, title: "Top", url: "https://top/", tree: "" } }];
+      }
+    }
+  };
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", { selector: "#nope" }, { chrome, actMode: false });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /matched no element/);
+  assert.match(res.content[0].text, /#nope/);
+});
+
+test("K3: an invalid selector is reported (not silently dropped by the frame merge)", async () => {
+  const chrome = {
+    tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
+    permissions: { contains: async () => true },
+    scripting: {
+      executeScript: async (inj) => {
+        if (inj.files) return [{ frameId: 0, result: { ok: true } }];
+        return [{ frameId: 0, result: { ok: true, matched: false, selectorError: "'::::' is not a valid selector", title: "Top", url: "https://top/", tree: "" } }];
+      }
+    }
+  };
+  const res = await BrowserMcp.callBrowserTool("katashiro.snapshot", { selector: "::::" }, { chrome, actMode: false });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /invalid selector/);
+  assert.match(res.content[0].text, /not a valid selector/);
+});
+
+test("K2: a snapshot-bearing result is NOT annotated (its header already has the current tab; no stale/dup)", async () => {
+  // click returns "clicked …\n\n# snapshot N — <title>" — the header carries the current page.
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: "- x", matched: undefined } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { selector: "#b" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /# snapshot \d+ —/);
+  assert.ok(!res.content.some((c) => /^— tab:/.test((c && c.text) || "")), "snapshot returns skip the tab block");
 });
 
 test("K2: a successful read carries a trailing active-tab context block; errors do not", async () => {
