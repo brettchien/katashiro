@@ -163,6 +163,23 @@ test("roomStatus dim: a down link greys tunnel+browser; a detached tunnel greys 
   assert.equal(up.browser.dim, false);
 });
 
+test("resolveActiveUrl: a stored active wins when it still names a configured agent", () => {
+  const agents = [{ url: "ws://a" }, { url: "ws://b" }];
+  assert.equal(RoomCore.resolveActiveUrl(agents, "ws://b"), "ws://b");
+});
+
+test("resolveActiveUrl: falls back to the FIRST agent when stored is stale / unset (migration)", () => {
+  const agents = [{ url: "ws://a" }, { url: "ws://b" }];
+  assert.equal(RoomCore.resolveActiveUrl(agents, "ws://gone"), "ws://a");
+  assert.equal(RoomCore.resolveActiveUrl(agents, undefined), "ws://a");
+  assert.equal(RoomCore.resolveActiveUrl(agents, null), "ws://a");
+});
+
+test("resolveActiveUrl: null when there are no agents", () => {
+  assert.equal(RoomCore.resolveActiveUrl([], "ws://x"), null);
+  assert.equal(RoomCore.resolveActiveUrl(null, null), null);
+});
+
 test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor", () => {
   const d = RoomCore.defaultRoomConfig();
   assert.equal(d.heartbeatIntervalMs, 60000);

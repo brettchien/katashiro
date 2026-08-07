@@ -778,6 +778,7 @@ body {
 .agent-actions { flex-wrap: wrap; justify-content: flex-end; }
 
 .agent-conn-toggle,
+.agent-active-toggle,
 .agent-browser-toggle {
   padding: 5px 9px;
   border-radius: 8px;
@@ -794,6 +795,26 @@ body {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+/* Single-active selector (settings): the in-use agent is highlighted + inert. */
+.agent-active-toggle.on {
+  background: var(--accent-success-glow);
+  color: var(--accent-success);
+  border-color: var(--accent-success);
+  cursor: default;
+}
+
+/* Dormant roster chip — a selector for an inactive agent; click activates it. */
+.roster-chip.dormant {
+  opacity: 0.55;
+  border-style: dashed;
+}
+.roster-chip.dormant:hover { opacity: 0.85; }
+.roster-activate {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .agent-browser-toggle.on {

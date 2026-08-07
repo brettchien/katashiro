@@ -268,6 +268,16 @@
       .join("\n\n");
   }
 
+  // Which agent is the single active one (ADR single-active-agent). The stored `activeAgentUrl` wins
+  // if it still names a configured agent; otherwise fall back to the FIRST agent — so an existing sole
+  // config migrates to active with no user action, and a deleted active falls through to a valid one.
+  // Returns null when there are no agents.
+  function resolveActiveUrl(agents, stored) {
+    const list = Array.isArray(agents) ? agents : [];
+    if (stored && list.some((a) => a && a.url === stored)) return stored;
+    return list.length ? list[0].url : null;
+  }
+
   return {
     escapeAttr,
     wrapRelay,
@@ -276,6 +286,7 @@
     shouldProbe,
     onProbeTimeoutDecision,
     roomStatus,
+    resolveActiveUrl,
     parseMentions,
     resolveNames,
     resolveTargets,
