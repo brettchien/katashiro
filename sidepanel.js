@@ -34,7 +34,12 @@ let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 // is the subject of.
 let actMode = false;
 function roomMembers() {
-  return room.map((c) => ({ id: c.id, name: c.name }));
+  // Single-active: only the active agent participates in routing (mention / broadcast / relay). A
+  // dormant agent must never be a target — an enqueued prompt would silently pile up in its
+  // promptQueue and flush when it is later activated (its Conn is reused) (review: Orca).
+  return room
+    .filter((c) => c.agent.url === activeAgentUrl)
+    .map((c) => ({ id: c.id, name: c.name }));
 }
 function connById(id) {
   return room.find((c) => c.id === id) || null;
@@ -407,6 +412,10 @@ class Conn {
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
   retryLast() {
+    // Single-active: a stale error bubble from a now-dormant agent still has a live 重試 button;
+    // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
+    // alongside the active one (review: Orca, the C2 race).
+    if (this.agent.url !== activeAgentUrl) return;
     if (!this.lastPrompt || this.turnActive) return;
     this.promptQueue.push(this.lastPrompt);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
