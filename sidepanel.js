@@ -19,6 +19,10 @@ let agents = [];
 // One live Conn per agent, kept index-parallel to `agents`.
 const room = [];
 
+// Single-active model (ADR single-active-agent): all agents are configured, but only THIS one is
+// connected / in chat at a time. Resolved from storage at startup; changed via setActiveAgent().
+let activeAgentUrl = null;
+
 // Room routing config (mode + loop-guard cap). RoomCore owns the pure logic; we persist it.
 let roomConfig = RoomCore.defaultRoomConfig();
 let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
@@ -30,7 +34,12 @@ let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 // is the subject of.
 let actMode = false;
 function roomMembers() {
-  return room.map((c) => ({ id: c.id, name: c.name }));
+  // Single-active: only the active agent participates in routing (mention / broadcast / relay). A
+  // dormant agent must never be a target — an enqueued prompt would silently pile up in its
+  // promptQueue and flush when it is later activated (its Conn is reused) (review: Orca).
+  return room
+    .filter((c) => c.agent.url === activeAgentUrl)
+    .map((c) => ({ id: c.id, name: c.name }));
 }
 function connById(id) {
   return room.find((c) => c.id === id) || null;
@@ -403,6 +412,10 @@ class Conn {
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
   retryLast() {
+    // Single-active: a stale error bubble from a now-dormant agent still has a live 重試 button;
+    // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
+    // alongside the active one (review: Orca, the C2 race).
+    if (this.agent.url !== activeAgentUrl) return;
     if (!this.lastPrompt || this.turnActive) return;
     this.promptQueue.push(this.lastPrompt);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
@@ -541,12 +554,28 @@ function buildRoom() {
     const c = new Conn(a);
     // Seed this window's saved session id so the first handshake resumes (not session/new).
     if (savedSessions[a.url]) c.acpSessionId = savedSessions[a.url];
+    // Single-active (ADR single-active-agent): a dormant agent stays enabled:false so it renders
+    // 已停用 rather than "連線中…"; only the active one is connected by connectAll.
+    c.enabled = (a.url === activeAgentUrl);
     room.push(c);
   });
 }
 
 function connectAll() {
-  room.forEach((c) => c.connect());
+  room.forEach((c) => { if (c.agent.url === activeAgentUrl) c.connect(); });
+}
+
+// Switch the single active agent: disconnect the current one, connect the chosen one, persist.
+function setActiveAgent(url) {
+  if (!url || url === activeAgentUrl || !agents.some((a) => a.url === url)) return;
+  activeAgentUrl = url;
+  persist();
+  room.forEach((c) => {
+    if (c.agent.url === url) c.connect();   // connect() flips enabled=true + handshakes
+    else c.disconnect();                    // disconnect() flips enabled=false → 已停用
+  });
+  updateRoster();
+  if (settingsView && settingsView.classList.contains("active")) renderAgentList();
 }
 
 // Replace a single conn in place (retarget on url/token change).
@@ -554,7 +583,10 @@ function reconnectConn(i) {
   if (i < 0 || i >= room.length) return;
   if (room[i]) room[i].disconnect();
   room[i] = new Conn(agents[i]);
-  room[i].connect();
+  // Single-active: only re-connect if this is the active agent; editing a dormant agent's url/token
+  // must not bring a second connection up.
+  if (agents[i].url === activeAgentUrl) room[i].connect();
+  else room[i].enabled = false;
 }
 
 // --- DOM refs ----------------------------------------------------------------
@@ -568,6 +600,7 @@ const settingsBtn = document.getElementById("settings-btn");
 const clearChatBtn = document.getElementById("clear-chat-btn");
 const connectBtn = document.getElementById("connect-btn");
 const wsUrlInput = document.getElementById("ws-url-input");
+const setupNameInput = document.getElementById("setup-name-input");
 const rosterEl = document.getElementById("roster");
 const activeAgentLabel = document.getElementById("active-agent-label");
 const buildBadgeEl = document.getElementById("build-badge");
@@ -620,7 +653,7 @@ loadBuildInfo();
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r) => {
+chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl"], async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -628,6 +661,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r)
     } else {
       agents = [{ ...DEFAULT_AGENT }];
     }
+    activeAgentUrl = RoomCore.resolveActiveUrl(agents, r.activeAgentUrl); // single-active
     roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
     loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
     // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
@@ -644,7 +678,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode"], async (r)
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, roomConfig, actMode });
+  chrome.storage.local.set({ agents, roomConfig, actMode, activeAgentUrl });
 }
 
 // --- Chat history (per-window, chrome.storage.session) ------------------------
@@ -754,6 +788,29 @@ function updateRoster() {
   if (!rosterEl) return;
   rosterEl.innerHTML = "";
   room.forEach((c) => {
+    const isActive = c.agent.url === activeAgentUrl;
+    const chip = document.createElement("div");
+
+    const nm = document.createElement("span");
+    nm.className = "roster-name";
+    nm.textContent = c.name;                             // textContent: agent name is user config
+
+    // Dormant agent (single-active): a selector chip. Click activates it (radio) — the switch the
+    // user wants on the chips, not only in Settings.
+    if (!isActive) {
+      chip.className = "roster-chip dormant clickable";
+      chip.title = "點此設為使用中的 agent";
+      chip.appendChild(nm);
+      const hint = document.createElement("span");
+      hint.className = "roster-activate";
+      hint.textContent = "點此啟用";
+      chip.appendChild(hint);
+      chip.addEventListener("click", () => setActiveAgent(c.agent.url));
+      rosterEl.appendChild(chip);
+      return;
+    }
+
+    // Active agent — full three-segment status (🔌 link · 🚇 tunnel · 🌐 browser, ADR §8.2).
     const s = RoomCore.roomStatus({
       acpReady: c.acpReady, alive: c.alive, lastFailure: c.lastFailure,
       enabled: c.enabled, online: c.online,
@@ -762,25 +819,13 @@ function updateRoster() {
       tunnelFresh: Date.now() - (c.lastTunnelMsgAt || 0) < TUNNEL_FRESH_MS,
       actMode,
     });
-
-    const chip = document.createElement("div");
-    chip.className = "roster-chip " + s.link.cls;
-
-    const nm = document.createElement("span");
-    nm.className = "roster-name";
-    nm.textContent = c.name;                             // textContent: agent name is user config
+    chip.className = "roster-chip active " + s.link.cls;
     chip.appendChild(nm);
-
-    // Three segments in dependency order — 🔌 link · 🚇 tunnel · 🌐 browser (ADR §8.2). tunnel and
-    // browser are omitted when the agent has no browser access; a `dim` segment is greyed so a
-    // dead upstream can't leave a downstream reading healthy.
     chip.appendChild(renderSeg("link", "🔌", s.link));
     if (s.tunnel) chip.appendChild(renderSeg("tunnel", "🚇", s.tunnel));
     if (s.browser) chip.appendChild(renderSeg("browser", "🌐", s.browser));
 
-    // R2 — one-click manual reconnect on an unhealthy link. When the user wants this agent up but
-    // the link isn't online (offline / error / heartbeat-degraded), clicking the chip forces a
-    // reconnect without opening Settings; a healthy link is inert.
+    // R2 — one-click manual reconnect on an unhealthy link; a healthy link is inert.
     if (c.enabled !== false && s.link.cls !== "online") {
       chip.classList.add("clickable");
       chip.title = "點擊重新連線";
@@ -974,10 +1019,15 @@ addAgentBtn.addEventListener("click", () => {
   const token = (newAgentToken?.value || "").trim();
   if (!name || !url) return;
   agents.push({ name, url, token });
+  // Single-active: a newly added agent stays dormant (selectable via its chip / the radio) unless it
+  // is the very first agent — then it becomes active. Never auto-connect it alongside the active one.
+  const makeActive = !activeAgentUrl;
+  if (makeActive) activeAgentUrl = url;
   persist();
   const c = new Conn(agents[agents.length - 1]);
+  c.enabled = makeActive;
   room.push(c);
-  c.connect();
+  if (makeActive) c.connect();
   newAgentName.value = "";
   newAgentUrl.value = "";
   if (newAgentToken) newAgentToken.value = "";
@@ -989,7 +1039,9 @@ if (connectBtn) {
   connectBtn.addEventListener("click", () => {
     const url = wsUrlInput.value.trim();
     if (!url) return;
-    agents = [{ name: "OpenAB", url }];
+    const name = (setupNameInput?.value || "").trim() || "OpenAB";   // setup now captures the name
+    agents = [{ name, url }];
+    activeAgentUrl = url;                                             // the sole agent is active
     persist();
     switchView("chat");
     buildRoom();
@@ -1026,7 +1078,10 @@ function renderAgentList() {
     url.addEventListener("change", () => {
       const next = url.value.trim() || a.url;
       url.value = next;
-      if (next !== a.url) { a.url = next; persist(); reconnectConn(i); updateRoster(); }
+      if (next !== a.url) {
+        if (a.url === activeAgentUrl) activeAgentUrl = next;   // keep the active pointer on this agent
+        a.url = next; persist(); reconnectConn(i); updateRoster();
+      }
     });
 
     const tok = document.createElement("input");
@@ -1058,18 +1113,16 @@ function renderAgentList() {
     const actions = document.createElement("div");
     actions.className = "agent-actions";
 
-    // Connect / disconnect toggle (reflects user intent, not transient network state).
-    const connToggle = document.createElement("button");
-    const isEnabled = !!(c && c.enabled);
-    connToggle.className = "agent-conn-toggle" + (isEnabled ? " on" : "");
-    connToggle.textContent = isEnabled ? "斷線" : "連線";
-    connToggle.title = isEnabled ? "中斷此 agent 連線" : "連線此 agent";
-    connToggle.addEventListener("click", () => {
-      if (c && c.enabled) c.disconnect();
-      else if (c) c.connect();
-      renderAgentList();
-      updateRoster();
-    });
+    // Single-active selector (ADR single-active-agent): "設為使用中" activates this agent (connects it,
+    // disconnects the others) — the radio, mirrored on the roster chips. Replaces the old per-agent
+    // connect/disconnect toggle, which doesn't fit a one-active-at-a-time model.
+    const activeBtn = document.createElement("button");
+    const isActive = a.url === activeAgentUrl;
+    activeBtn.className = "agent-active-toggle" + (isActive ? " on" : "");
+    activeBtn.textContent = isActive ? "● 使用中" : "設為使用中";
+    activeBtn.title = isActive ? "目前在聊天中使用的 agent" : "切為使用中（會斷開目前的 agent）";
+    activeBtn.disabled = isActive;
+    activeBtn.addEventListener("click", () => { setActiveAgent(a.url); });
 
     // Per-agent browser access control (on ⇒ declares the browser MCP tunnel for this agent).
     const brOn = a.browserAccess !== false;              // default on (backward compatible)
@@ -1095,7 +1148,7 @@ function renderAgentList() {
     del.textContent = "✕";
     del.addEventListener("click", () => deleteAgent(i));
 
-    actions.appendChild(connToggle);
+    actions.appendChild(activeBtn);
     actions.appendChild(brToggle);
     actions.appendChild(del);
 
@@ -1120,15 +1173,14 @@ function updateAgentListStatus() {
 
 function deleteAgent(i) {
   if (i < 0 || i >= agents.length) return;
-  if (room[i]) room[i].disconnect();
-  room.splice(i, 1);
+  const wasActive = agents[i].url === activeAgentUrl;
   agents.splice(i, 1);
-  if (agents.length === 0) {
-    agents = [{ ...DEFAULT_AGENT }];
-    buildRoom();
-    connectAll();
-  }
+  if (agents.length === 0) agents = [{ ...DEFAULT_AGENT }];
+  // If the active agent was deleted, pick a new one; otherwise keep it (still valid).
+  activeAgentUrl = RoomCore.resolveActiveUrl(agents, wasActive ? null : activeAgentUrl);
   persist();
+  buildRoom();      // disconnects the old room, rebuilds index-parallel to `agents`
+  connectAll();     // connects only the active one
   renderAgentList();
   updateRoster();
 }

@@ -32,7 +32,11 @@
       <!-- Connection Setup View (if not connected) -->
       <section id="setup-view" class="view">
         <div class="setup-card">
-          <p class="setup-desc">請輸入 WebSocket 伺服器網址以連線至 OpenAB 代理端點：</p>
+          <p class="setup-desc">請輸入 agent 名稱與 WebSocket 伺服器網址以連線至 OpenAB 代理端點：</p>
+          <div class="input-group">
+            <label for="setup-name-input">Agent 名稱</label>
+            <input type="text" id="setup-name-input" placeholder="OpenAB" value="OpenAB">
+          </div>
           <div class="input-group">
             <label for="ws-url-input">WebSocket URL</label>
             <input type="text" id="ws-url-input" placeholder="ws://localhost:8080/acp" value="ws://localhost:8080/acp">
