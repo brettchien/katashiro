@@ -686,7 +686,11 @@ body {
   background: rgba(10, 15, 26, 0.85);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  justify-content: center;
+  /* flex-start + margin:auto on the card (not justify-content:center) so overflow
+     scrolls correctly — centering via justify-content clips the overflowed start
+     of the content out of scroll reach when it doesn't fit. */
+  justify-content: flex-start;
+  overflow-y: auto;
   padding: 24px;
 }
 
@@ -699,6 +703,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  margin: auto 0;
+  flex-shrink: 0;
 }
 
 .settings-card h2 {

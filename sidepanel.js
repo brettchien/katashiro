@@ -860,6 +860,14 @@ settingsBtn.addEventListener("click", () => {
 
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
 
+// Close on Escape or a click on the backdrop itself (not the card) — standard modal UX.
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsView.classList.contains("active")) switchView("chat");
+});
+settingsView.addEventListener("click", (e) => {
+  if (e.target === settingsView) switchView("chat");
+});
+
 // Clear the on-screen scrollback + this window's persisted mirror (storage.session). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
