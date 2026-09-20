@@ -898,7 +898,14 @@ function switchView(viewName) {
   chatView.classList.remove("active");
   settingsView.classList.remove("active");
   if (viewName === "setup") setupView.classList.add("active");
-  else if (viewName === "chat") { chatView.classList.add("active"); updateRoster(); } // reflect any act-mode change made in Settings
+  else if (viewName === "chat") {
+    chatView.classList.add("active");
+    updateRoster();                                    // reflect any act-mode change made in Settings
+    // Scroll math is invalid while a view is display:none (scrollHeight/clientHeight read 0), so a
+    // reply that streamed in under Settings leaves chat pinned to the top on return. Re-pin to the
+    // bottom once it's visible again — but only if the user was following the latest.
+    if (stickToBottom) requestAnimationFrame(scrollToBottom);
+  }
   else if (viewName === "settings") settingsView.classList.add("active");
 }
 
