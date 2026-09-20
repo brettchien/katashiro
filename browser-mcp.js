@@ -279,6 +279,45 @@
       }
     },
 
+    "katashiro.click_text": {
+      description:
+        "Click the element that best matches a natural-language description — Jev disambiguates " +
+        "against the current accessibility snapshot, so no ref is needed. Requires a Jev token " +
+        "(Settings → Jev grounding); without one it is refused — use `click` with a ref instead. " +
+        "Returns which element was chosen plus the post-action snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "what to click, in words, e.g. 'the login button' or 'the first search result'" }
+        },
+        required: ["description"]
+      },
+      /** @param {{ description?: string }} args */
+      async call(args, ctx) {
+        const desc = ((args && args.description) || "").trim();
+        if (!desc) return errText("click_text needs a `description` of the element to click");
+        if (!ctx.jev || !ctx.jevToken) return errText("click_text needs a Jev token — set one in katashiro Settings (Jev grounding), or use `click` with a ref");
+        // Snapshot now to get candidate refs + labels, then let Jev pick the matching one.
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const idMatch = snap.match(/# snapshot (\d+)/);
+        const snapshotId = idMatch ? Number(idMatch[1]) : null;
+        const criteria = extractRefCandidates(snap);
+        if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to click");
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { pick: { type: "choice", instructions: `Which element should be clicked to: ${desc}?`, criteria } },
+          { token: ctx.jevToken }
+        );
+        const ref = ctx.jev.choice(answers, "pick");
+        if (!ref || !criteria[ref]) return errText(`Jev could not pick an element for "${desc}" (grounding unavailable or no match). Call snapshot and use click with a ref.`);
+        // Reuse the click tool's actionability + post-action snapshot machinery.
+        const clickRes = await TOOLS["katashiro.click"].call({ ref, snapshotId }, ctx);
+        if (clickRes && clickRes.isError) return clickRes;
+        return okText(`click_text "${desc}" → ${ref} (${criteria[ref]})\n\n${firstText(clickRes) || ""}`);
+      }
+    },
+
     "katashiro.read_dom": {
       description:
         "Return the raw HTML of an element (default: whole body) in the active tab. For perceiving " +
@@ -810,6 +849,74 @@
   // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
   // `deps.actMode` is the user's write consent, read fresh per call so a toggle takes effect
   // immediately. `tools` is the serving instance's registry — defaults to the browser one.
+  // --- Jev grounding (Phase 2: verification layer) ---------------------------
+  // After a successful page WRITE, optionally ask Jev whether it took effect and append a
+  // one-line signal (`# grounding: ok=0.xx`) to the result the agent sees, so it can retry on a
+  // low score. Fail-open in every branch: no token / no snapshot / Jev unavailable or erroring
+  // ⇒ the result is returned untouched, identical to grounding-off behaviour.
+  function firstText(result) {
+    const c = result && result.content;
+    if (!Array.isArray(c)) return null;
+    const t = c.find((b) => b && b.type === "text" && typeof b.text === "string");
+    return t ? t.text : null;
+  }
+  function appendToLastText(result, extra) {
+    const c = result && result.content;
+    if (!Array.isArray(c)) return result;
+    for (let i = c.length - 1; i >= 0; i--) {
+      if (c[i] && c[i].type === "text" && typeof c[i].text === "string") {
+        c[i] = Object.assign({}, c[i], { text: c[i].text + extra });
+        return result;
+      }
+    }
+    return result;
+  }
+  // JevGrounding is a sibling global in the extension; injectable as deps.jev for tests/node.
+  function resolveJev(deps) {
+    if (typeof JevGrounding !== "undefined") return JevGrounding;
+    return (deps && deps.jev) || null;
+  }
+  // Pull { ref: label } candidates from a snapshot's text tree: every interactive line carries a
+  // [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; map the ref to that line, marker stripped.
+  // Capped so a huge page can't blow up the choice criteria / token cost.
+  function extractRefCandidates(snapText, cap) {
+    const out = {};
+    const max = cap || 60;
+    const lines = String(snapText == null ? "" : snapText).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/\[ref=([^\]]+)\]/);
+      if (!m) continue;
+      const ref = m[1];
+      if (out[ref]) continue;
+      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim();
+      out[ref] = label || ref;
+      if (Object.keys(out).length >= max) break;
+    }
+    return out;
+  }
+
+  async function groundWrite(name, result, deps) {
+    if (!deps || !deps.jevToken) return result;          // BYO-key: no key ⇒ off
+    if (!result || result.isError) return result;        // don't ground a failed action
+    const jev = resolveJev(deps);
+    if (!jev) return result;
+    const snap = firstText(result);                      // write tools return the post-action snapshot
+    if (!snap) return result;
+    try {
+      const answers = await jev.evaluate(
+        snap,
+        { ok: { type: "noul", instructions:
+          `Did the last browser action (${name}) take effect and change the page as intended?` } },
+        { token: deps.jevToken }
+      );
+      const p = jev.noul(answers, "ok");
+      if (p == null) return result;
+      return appendToLastText(result, `\n\n# grounding: ok=${p.toFixed(2)}`);
+    } catch (_e) {
+      return result;                                     // fail-open
+    }
+  }
+
   async function callBrowserTool(name, args, deps, tools) {
     const registry = tools || TOOLS;
     const chrome = deps.chrome;
@@ -832,7 +939,11 @@
     if (!(await chrome.permissions.contains({ origins: [origin + "/*"] }))) {
       return errText(originNotAllowed(origin));
     }
-    return withTabContext(await tool.call(args, { chrome, tab }), tab);
+    // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
+    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
+    const result = withTabContext(await tool.call(args, ctx), tab);
+    // Write tools carry the post-action snapshot; ground it when a Jev token is set.
+    return tool.write ? await groundWrite(name, result, deps) : result;
   }
 
   /**

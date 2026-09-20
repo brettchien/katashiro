@@ -130,12 +130,13 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 15 DOM-semantic browser tools", async () => {
+test("tools/list returns the 16 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
   assert.deepEqual(names, [
     "katashiro.click",
+    "katashiro.click_text",
     "katashiro.read_dom",
     "katashiro.navigate",
     "katashiro.type",
@@ -432,6 +433,7 @@ const WRITE_TOOLS = Object.entries(BrowserMcp.TOOLS)
 test("exactly the page-mutating tools are marked write", () => {
   assert.deepEqual(WRITE_TOOLS.sort(), [
     "katashiro.click",
+    "katashiro.click_text",
     "katashiro.history",
     "katashiro.navigate",
     "katashiro.press_key",
@@ -613,7 +615,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 15);
+  assert.equal(tools.length, 16);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -812,7 +814,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 15, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 16, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -982,4 +984,68 @@ test("click on a child-frame ref targets that frame with the bare ref", async ()
   assert.ok(framed.length >= 1, "inject + act targeted frame 7");
   const act = calls.find((c) => Array.isArray(c.args) && c.args[0] === "e3");
   assert.ok(act, "act call passes the bare in-frame ref e3, not the prefixed one");
+});
+
+// --- Jev grounding: verification layer (Phase 2) ----------------------------
+// A write tool's post-action snapshot gets a `# grounding: ok=` signal appended when a Jev
+// token + evaluator are present; nothing changes when they're absent (fail-open / grounding off).
+// JevGrounding is undefined under node, so the module falls back to the injected deps.jev.
+const mockJev = {
+  evaluate: async (_state, _questions, _opts) => ({ ok: 0.91 }),
+  noul: (a, n) => (a && typeof a[n] === "number" ? a[n] : null),
+};
+const clickScript = { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: "- button [ref=e5]" };
+
+test("grounding: write result gains a `# grounding: ok=` line when token+jev are set", async () => {
+  const { deps: d } = deps({ scriptResult: clickScript });
+  d.jevToken = "sk-or-x";
+  d.jev = mockJev;
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } }, d);
+  assert.match(res.content[0].text, /# grounding: ok=0\.91/);
+});
+
+test("grounding: no token ⇒ result is untouched (grounding off)", async () => {
+  const { deps: d } = deps({ scriptResult: clickScript });
+  d.jev = mockJev; // evaluator present, but no token
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } }, d);
+  assert.doesNotMatch(res.content[0].text, /# grounding:/);
+});
+
+test("grounding: a refused/read-only tool is never grounded", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, html: "<body>hi</body>" } });
+  d.jevToken = "sk-or-x";
+  d.jev = mockJev;
+  // read_dom is not a write tool → groundWrite is never reached
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.read_dom", arguments: {} }, d);
+  assert.doesNotMatch(res.content[0].text, /# grounding:/);
+});
+
+// --- Jev semantic tool: click_text (Phase 3) --------------------------------
+// click_text snapshots the page, asks Jev `choice` to disambiguate the description to a ref,
+// then delegates to the click tool. Refused (isError) when no Jev token is set.
+const mockJevChoice = {
+  evaluate: async () => ({ pick: "e5" }),
+  choice: (a, n) => (a && typeof a[n] === "string" ? a[n] : null),
+  noul: (a, n) => (a && typeof a[n] === "number" ? a[n] : null),
+};
+
+test("click_text: Jev disambiguates the description to a ref and clicks it", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: '- button "Submit" [ref=e5]' } });
+  d.jevToken = "sk-or-x";
+  d.jev = mockJevChoice;
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click_text", arguments: { description: "the submit button" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /click_text "the submit button" . e5/);
+});
+
+test("click_text: refused (isError) when no Jev token is set", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, title: "T", url: "u", tree: '- button [ref=e5]' } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click_text", arguments: { description: "x" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs a Jev token/);
+});
+
+test("click_text: is advertised in the tool registry (16 tools total)", () => {
+  assert.ok(BrowserMcp.TOOLS["katashiro.click_text"], "click_text is registered");
+  assert.equal(BrowserMcp.TOOLS["katashiro.click_text"].write, true, "click_text is a write tool (act-gated)");
 });
