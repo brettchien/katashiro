@@ -27,6 +27,11 @@ let activeAgentUrl = null;
 let roomConfig = RoomCore.defaultRoomConfig();
 let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 
+// Jev grounding token (optional, BYO-key): the user's OpenRouter key for the Jev decisions
+// API. Empty = grounding disabled. Persisted in chrome.storage.local and passed into the
+// browser tool layer so it can verify actions / disambiguate elements / detect page state.
+let jevToken = "";
+
 // Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
 // and click/type/navigate are refused. Kept separate from roomConfig — that one is about who
 // hears whom, this one is a consent boundary on the browser. Default off, and deliberately not
@@ -136,6 +141,9 @@ class Conn {
       // Read at dispatch time, not captured at connect time, so flipping the toggle applies to
       // the very next tool call — no reconnect, no stale consent.
       actMode,
+      // Jev grounding token (BYO-key), same read-fresh rationale. Empty ⇒ grounding off:
+      // browser-mcp appends no verification signal, behaviour is exactly as before.
+      jevToken,
     };
   }
 
@@ -620,14 +628,12 @@ const modeMentionBtn = document.getElementById("mode-mention");
 const modeAmbientBtn = document.getElementById("mode-ambient");
 const modeHintEl = document.getElementById("mode-hint");
 const loopGuardCapInput = document.getElementById("loopguard-cap");
+const jevTokenInput = document.getElementById("jev-token-input");
 
 const actReadBtn = document.getElementById("act-read");
 const actWriteBtn = document.getElementById("act-write");
 const actModeHintEl = document.getElementById("act-mode-hint");
 
-const grantOriginInput = document.getElementById("grant-origin-input");
-const grantOriginBtn = document.getElementById("grant-origin-btn");
-const originListEl = document.getElementById("origin-list");
 
 // Build identity on the connection screen (ADR build-provenance-and-version-display): the manifest
 // version always, plus a short sha/tag from build-info.json when present — release builds stamp it,
@@ -653,7 +659,7 @@ loadBuildInfo();
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl"], async (r) => {
+chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"], async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -667,6 +673,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAge
     // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
     // is the one you fall back into.
     actMode = r.actMode === true;
+    jevToken = (r.jevToken || "").trim();
     persist();
 
     switchView("chat");
@@ -678,7 +685,7 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAge
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, roomConfig, actMode, activeAgentUrl });
+  chrome.storage.local.set({ agents, roomConfig, actMode, activeAgentUrl, jevToken });
 }
 
 // --- Chat history (per-window, chrome.storage.session) ------------------------
@@ -853,8 +860,8 @@ function switchView(viewName) {
 settingsBtn.addEventListener("click", () => {
   renderRoomConfig();
   renderActMode();
-  renderGrantedOrigins();
   renderAgentList();
+  if (jevTokenInput) jevTokenInput.value = jevToken;
   switchView("settings");
 });
 
@@ -894,6 +901,44 @@ if (loopGuardCapInput) {
     persist();
   });
 }
+
+// Jev grounding token (BYO-key). Trim on save — a pasted key often carries trailing whitespace.
+if (jevTokenInput) {
+  jevTokenInput.addEventListener("change", () => {
+    jevToken = (jevTokenInput.value || "").trim();
+    jevTokenInput.value = jevToken;
+    persist();
+  });
+}
+
+// A 👁 toggle that reveals/masks a password input — lets the user verify a pasted token
+// (catch truncation / stray whitespace) instead of debugging blind behind the mask.
+function makeRevealBtn(input) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "secondary-btn reveal-btn";
+  btn.textContent = "👁";
+  btn.title = "顯示 / 隱藏 token";
+  btn.addEventListener("click", () => {
+    const reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    btn.textContent = reveal ? "🙈" : "👁";
+  });
+  return btn;
+}
+
+// Wrap a token <input> and its 👁 toggle in a flex row so the eye sits at the field's right edge.
+function attachReveal(input) {
+  if (!input || !input.parentNode) return;
+  const row = document.createElement("div");
+  row.className = "token-row";
+  input.parentNode.insertBefore(row, input);
+  row.appendChild(input);
+  row.appendChild(makeRevealBtn(input));
+}
+
+// Attach reveal toggles to the two static token fields (Jev grounding + add-agent token).
+[jevTokenInput, document.getElementById("new-agent-token")].forEach(attachReveal);
 
 // Reflect the room routing config (mode + cap) in the settings UI.
 function renderRoomConfig() {
@@ -937,89 +982,6 @@ function setActMode(on) {
   updateRoster(); // browser status monkeys reflect act mode (🐵 operational / 🙊 read-only)
 }
 
-// --- Origin allowlist (Phase 3 gate #2) --------------------------------------
-// katashiro can only read or act on origins the user has granted at the Chrome level (optional
-// host permissions). The browser-MCP gate (`callBrowserTool`) checks `chrome.permissions.contains`
-// per call; this UI is where the user adds/removes those grants. `chrome.permissions.request` MUST
-// run in a user gesture (the button click), so the whole flow lives in the click handler.
-
-// Normalize a user-typed site into a Chrome host-permission pattern ("https://host/*"), or null if
-// it isn't a usable http(s) origin. Accepts bare hosts ("example.com") and full URLs alike.
-function toOriginPattern(raw) {
-  let s = (raw || "").trim();
-  if (!s) return null;
-  if (!/^https?:\/\//i.test(s)) s = "https://" + s;
-  try {
-    const u = new URL(s);
-    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
-    return u.origin + "/*";
-  } catch {
-    return null;
-  }
-}
-
-// Render the currently granted origins as removable chips.
-function renderGrantedOrigins() {
-  if (!originListEl) return;
-  chrome.permissions.getAll((perms) => {
-    const origins = (perms && perms.origins) || [];
-    originListEl.replaceChildren();
-    if (!origins.length) {
-      const empty = document.createElement("div");
-      empty.className = "origin-empty";
-      empty.textContent = "尚未授權任何網域 —— agent 現在讀不到／碰不到任何頁面。";
-      originListEl.appendChild(empty);
-      return;
-    }
-    origins.forEach((pattern) => {
-      const chip = document.createElement("div");
-      chip.className = "origin-chip";
-      const label = document.createElement("span");
-      label.className = "origin-label";
-      label.textContent = pattern.replace(/\/\*$/, ""); // show the origin, not the path wildcard
-      const remove = document.createElement("button");
-      remove.className = "origin-remove";
-      remove.type = "button";
-      remove.title = "移除授權";
-      remove.textContent = "✕";
-      remove.addEventListener("click", () => {
-        chrome.permissions.remove({ origins: [pattern] }, () => renderGrantedOrigins());
-      });
-      chip.appendChild(label);
-      chip.appendChild(remove);
-      originListEl.appendChild(chip);
-    });
-  });
-}
-
-function grantOrigin() {
-  const pattern = toOriginPattern(grantOriginInput && grantOriginInput.value);
-  if (!pattern) {
-    if (grantOriginInput) {
-      grantOriginInput.classList.add("invalid");
-      grantOriginInput.focus();
-    }
-    return;
-  }
-  // request() shows Chrome's native per-origin consent prompt; it must run in this gesture.
-  chrome.permissions.request({ origins: [pattern] }, (granted) => {
-    if (granted && grantOriginInput) grantOriginInput.value = "";
-    renderGrantedOrigins();
-  });
-}
-
-if (grantOriginBtn) grantOriginBtn.addEventListener("click", grantOrigin);
-if (grantOriginInput) {
-  grantOriginInput.addEventListener("input", () => grantOriginInput.classList.remove("invalid"));
-  grantOriginInput.addEventListener("keydown", (e) => { if (e.key === "Enter") grantOrigin(); });
-}
-// Keep the list live if a grant is revoked from Chrome's own UI while the panel is open.
-if (chrome.permissions && chrome.permissions.onRemoved) {
-  chrome.permissions.onRemoved.addListener(renderGrantedOrigins);
-}
-if (chrome.permissions && chrome.permissions.onAdded) {
-  chrome.permissions.onAdded.addListener(renderGrantedOrigins);
-}
 
 addAgentBtn.addEventListener("click", () => {
   const name = newAgentName.value.trim();
@@ -1116,7 +1078,11 @@ function renderAgentList() {
     meta.appendChild(statusPill);
     meta.appendChild(nm);
     meta.appendChild(url);
-    meta.appendChild(tok);
+    const tokRow = document.createElement("div");   // token input + 👁 reveal on one row
+    tokRow.className = "token-row";
+    tokRow.appendChild(tok);
+    tokRow.appendChild(makeRevealBtn(tok));
+    meta.appendChild(tokRow);
 
     const actions = document.createElement("div");
     actions.className = "agent-actions";
@@ -1394,19 +1360,27 @@ function scrollToBottom() {
   messagesList.scrollTop = messagesList.scrollHeight;
 }
 
-// Stick-to-bottom: only auto-follow new content when the user is already near the bottom.
-// If they've scrolled up to read history, incoming chunks must NOT yank the viewport down;
-// instead surface a "jump to latest" affordance they can tap.
+// Stick-to-bottom: auto-follow new content while the user is pinned near the bottom, and stop
+// (surfacing a "jump to latest" affordance) the moment they scroll up to read history.
 const NEAR_BOTTOM_PX = 80;
 function isNearBottom() {
   return messagesList.scrollHeight - messagesList.scrollTop - messagesList.clientHeight < NEAR_BOTTOM_PX;
 }
+// Follow flag driven by REAL user scrolls — not re-derived per streamed chunk. The old approach
+// recomputed isNearBottom() right after appending a chunk; a single chunk taller than
+// NEAR_BOTTOM_PX then read as "user scrolled away" and killed the auto-follow mid-stream. A sticky
+// flag only flips when the user actually scrolls, so streaming stays glued to the bottom.
+let stickToBottom = true;
 function maybeScroll() {
-  if (isNearBottom()) scrollToBottom();
+  if (stickToBottom) scrollToBottom();
   else if (jumpLatestBtn) jumpLatestBtn.hidden = false;
 }
 if (jumpLatestBtn) {
-  jumpLatestBtn.addEventListener("click", () => { scrollToBottom(); jumpLatestBtn.hidden = true; });
-  // Hide the affordance again once the user scrolls back to the bottom on their own.
-  messagesList.addEventListener("scroll", () => { if (isNearBottom()) jumpLatestBtn.hidden = true; });
+  jumpLatestBtn.addEventListener("click", () => { stickToBottom = true; scrollToBottom(); jumpLatestBtn.hidden = true; });
 }
+// A user scroll updates the follow flag; a programmatic scrollToBottom lands near-bottom, so the
+// flag stays true and we keep following. Only a manual scroll-up flips it off.
+messagesList.addEventListener("scroll", () => {
+  stickToBottom = isNearBottom();
+  if (jumpLatestBtn && stickToBottom) jumpLatestBtn.hidden = true;
+});
