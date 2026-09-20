@@ -287,7 +287,7 @@ class Conn {
             this.startHeartbeat();
             updateRoster();
             saveHistory();                 // persist the (confirmed) resumable session id
-            appendSystemMessage(`已續接 ${this.name} 的 ACP session。`);
+            appendSystemMessage(`已續接 ${this.name} 的 ACP session（${(this.acpSessionId || "").slice(0, 8) || "?"}）。`);
             this.flushQueue();
           });
         }
@@ -301,7 +301,7 @@ class Conn {
           this.startHeartbeat();
           updateRoster();
           saveHistory();                 // persist the new session id for this window
-          appendSystemMessage(`已連線至 ${this.name} (ACP)。`);
+          appendSystemMessage(`已連線至 ${this.name}（ACP session ${(this.acpSessionId || "").slice(0, 8) || "?"}）。`);
           this.flushQueue();
         });
       })
@@ -831,6 +831,10 @@ function updateRoster() {
     chip.appendChild(renderSeg("link", "🔌", s.link));
     if (s.tunnel) chip.appendChild(renderSeg("tunnel", "🚇", s.tunnel));
     if (s.browser) chip.appendChild(renderSeg("browser", "🌐", s.browser));
+
+    // Show which ACP session this chip is bound to (hover) — lets you confirm which
+    // session you're talking to vs the gateway/mon-tick's `sess=` id.
+    chip.title = `ACP session: ${c.acpSessionId || "—"}`;
 
     // R2 — one-click manual reconnect on an unhealthy link; a healthy link is inert.
     if (c.enabled !== false && s.link.cls !== "online") {
