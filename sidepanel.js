@@ -250,6 +250,9 @@ class Conn {
     this.stopHeartbeat();
     clearTimeout(this.reconnectTimer);
     if (this.ws) {
+      this.cancelTurn();                               // stop an in-flight turn server-side before dropping the
+                                                       // socket, so the gateway cancels the agent-core turn instead
+                                                       // of leaving it running (no-op if no turn / socket not open)
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
@@ -898,7 +901,14 @@ function switchView(viewName) {
   chatView.classList.remove("active");
   settingsView.classList.remove("active");
   if (viewName === "setup") setupView.classList.add("active");
-  else if (viewName === "chat") { chatView.classList.add("active"); updateRoster(); } // reflect any act-mode change made in Settings
+  else if (viewName === "chat") {
+    chatView.classList.add("active");
+    updateRoster();                                    // reflect any act-mode change made in Settings
+    // Scroll math is invalid while a view is display:none (scrollHeight/clientHeight read 0), so a
+    // reply that streamed in under Settings leaves chat pinned to the top on return. Re-pin to the
+    // bottom once it's visible again — but only if the user was following the latest.
+    if (stickToBottom) requestAnimationFrame(scrollToBottom);
+  }
   else if (viewName === "settings") settingsView.classList.add("active");
 }
 
@@ -1224,6 +1234,11 @@ sendBtn.addEventListener("click", sendMessage);
 
 // Stop every in-flight turn (each conn sends its own session/cancel).
 if (stopBtn) stopBtn.addEventListener("click", () => room.forEach((c) => c.cancelTurn()));
+
+// Panel closing: best-effort cancel any in-flight turn so the gateway stops the agent-core turn
+// instead of leaving it running to completion (whose reply is then dropped as stale). This is the
+// client half of session teardown; reaping the server-side agent process is a gateway-side fix.
+window.addEventListener("pagehide", () => { room.forEach((c) => c.cancelTurn()); });
 
 // Anchors in rendered markdown open in a real browser tab — navigating inside the side panel is
 // broken UX. Re-validate the scheme at click time (http(s)/mailto only); never trust the
