@@ -201,6 +201,36 @@ test("katashiro.navigate drives chrome.tabs.update", async () => {
   assert.match(res.content[0].text, /example\.com/);
 });
 
+test("tools/call fires onToolCall start→done with a shared callId on success", async () => {
+  const { deps: d } = deps();
+  const events = [];
+  d.onToolCall = (e) => events.push(e);
+  await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.navigate", arguments: { url: "https://example.com" } },
+    d
+  );
+  assert.deepEqual(events.map((e) => e.phase), ["start", "done"]);
+  assert.equal(events[0].name, "katashiro.navigate");
+  assert.equal(events[1].name, "katashiro.navigate");
+  assert.equal(events[0].callId, events[1].callId, "start and settle share one callId");
+  // args are deliberately NOT part of the UI signal — verb + outcome only.
+  assert.equal("args" in events[0], false);
+});
+
+test("tools/call fires onToolCall start→error when the tool result isError", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: false, error: "no element for selector: #gone" } });
+  const events = [];
+  d.onToolCall = (e) => events.push(e);
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.click", arguments: { selector: "#gone" } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.deepEqual(events.map((e) => e.phase), ["start", "error"]);
+});
+
 test("katashiro.type injects the walker, then types via selector fallback", async () => {
   const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #q" } });
   await BrowserMcp.handleMcpMessage(
