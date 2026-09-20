@@ -849,27 +849,12 @@
   // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
   // `deps.actMode` is the user's write consent, read fresh per call so a toggle takes effect
   // immediately. `tools` is the serving instance's registry — defaults to the browser one.
-  // --- Jev grounding (Phase 2: verification layer) ---------------------------
-  // After a successful page WRITE, optionally ask Jev whether it took effect and append a
-  // one-line signal (`# grounding: ok=0.xx`) to the result the agent sees, so it can retry on a
-  // low score. Fail-open in every branch: no token / no snapshot / Jev unavailable or erroring
-  // ⇒ the result is returned untouched, identical to grounding-off behaviour.
+  // firstText / extractRefCandidates support click_text's Jev disambiguation.
   function firstText(result) {
     const c = result && result.content;
     if (!Array.isArray(c)) return null;
     const t = c.find((b) => b && b.type === "text" && typeof b.text === "string");
     return t ? t.text : null;
-  }
-  function appendToLastText(result, extra) {
-    const c = result && result.content;
-    if (!Array.isArray(c)) return result;
-    for (let i = c.length - 1; i >= 0; i--) {
-      if (c[i] && c[i].type === "text" && typeof c[i].text === "string") {
-        c[i] = Object.assign({}, c[i], { text: c[i].text + extra });
-        return result;
-      }
-    }
-    return result;
   }
   // JevGrounding is a sibling global in the extension; injectable as deps.jev for tests/node.
   function resolveJev(deps) {
@@ -893,28 +878,6 @@
       if (Object.keys(out).length >= max) break;
     }
     return out;
-  }
-
-  async function groundWrite(name, result, deps) {
-    if (!deps || !deps.jevToken) return result;          // BYO-key: no key ⇒ off
-    if (!result || result.isError) return result;        // don't ground a failed action
-    const jev = resolveJev(deps);
-    if (!jev) return result;
-    const snap = firstText(result);                      // write tools return the post-action snapshot
-    if (!snap) return result;
-    try {
-      const answers = await jev.evaluate(
-        snap,
-        { ok: { type: "noul", instructions:
-          `Did the last browser action (${name}) take effect and change the page as intended?` } },
-        { token: deps.jevToken }
-      );
-      const p = jev.noul(answers, "ok");
-      if (p == null) return result;
-      return appendToLastText(result, `\n\n# grounding: ok=${p.toFixed(2)}`);
-    } catch (_e) {
-      return result;                                     // fail-open
-    }
   }
 
   async function callBrowserTool(name, args, deps, tools) {
@@ -941,9 +904,7 @@
     }
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
-    const result = withTabContext(await tool.call(args, ctx), tab);
-    // Write tools carry the post-action snapshot; ground it when a Jev token is set.
-    return tool.write ? await groundWrite(name, result, deps) : result;
+    return withTabContext(await tool.call(args, ctx), tab);
   }
 
   /**

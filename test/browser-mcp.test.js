@@ -986,40 +986,6 @@ test("click on a child-frame ref targets that frame with the bare ref", async ()
   assert.ok(act, "act call passes the bare in-frame ref e3, not the prefixed one");
 });
 
-// --- Jev grounding: verification layer (Phase 2) ----------------------------
-// A write tool's post-action snapshot gets a `# grounding: ok=` signal appended when a Jev
-// token + evaluator are present; nothing changes when they're absent (fail-open / grounding off).
-// JevGrounding is undefined under node, so the module falls back to the injected deps.jev.
-const mockJev = {
-  evaluate: async (_state, _questions, _opts) => ({ ok: 0.91 }),
-  noul: (a, n) => (a && typeof a[n] === "number" ? a[n] : null),
-};
-const clickScript = { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: "- button [ref=e5]" };
-
-test("grounding: write result gains a `# grounding: ok=` line when token+jev are set", async () => {
-  const { deps: d } = deps({ scriptResult: clickScript });
-  d.jevToken = "sk-or-x";
-  d.jev = mockJev;
-  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } }, d);
-  assert.match(res.content[0].text, /# grounding: ok=0\.91/);
-});
-
-test("grounding: no token ⇒ result is untouched (grounding off)", async () => {
-  const { deps: d } = deps({ scriptResult: clickScript });
-  d.jev = mockJev; // evaluator present, but no token
-  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { ref: "e5", snapshotId: 1 } }, d);
-  assert.doesNotMatch(res.content[0].text, /# grounding:/);
-});
-
-test("grounding: a refused/read-only tool is never grounded", async () => {
-  const { deps: d } = deps({ scriptResult: { ok: true, html: "<body>hi</body>" } });
-  d.jevToken = "sk-or-x";
-  d.jev = mockJev;
-  // read_dom is not a write tool → groundWrite is never reached
-  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.read_dom", arguments: {} }, d);
-  assert.doesNotMatch(res.content[0].text, /# grounding:/);
-});
-
 // --- Jev semantic tool: click_text (Phase 3) --------------------------------
 // click_text snapshots the page, asks Jev `choice` to disambiguate the description to a ref,
 // then delegates to the click tool. Refused (isError) when no Jev token is set.
