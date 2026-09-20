@@ -133,6 +133,8 @@ class Conn {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
       },
       onStatus: (attached) => this.setBrowserAttached(attached),
+      // Minimal per-tool activity signal (name + outcome, no args) for the chat transcript.
+      onToolCall: (info) => this.renderToolActivity(info),
       // Read at dispatch time, not captured at connect time, so flipping the toggle applies to
       // the very next tool call — no reconnect, no stale consent.
       actMode,
@@ -511,6 +513,37 @@ class Conn {
     msgDiv.append(avatar, contentEl);
     messagesList.appendChild(msgDiv);
     this.stream.bubble = bubble;
+    this.stream.contentEl = contentEl;   // anchor for the tool-activity strip (inserted above bubble)
+    maybeScroll();
+  }
+
+  // Append a compact browser-tool activity marker to the current turn: verb + ⏳/✓/✗ only, no
+  // arguments. It lets the user see that tools ran (and whether they succeeded) during a long,
+  // text-silent tool sequence — distinct from the agent's reply bubble, never confused for text.
+  renderToolActivity(info) {
+    if (!info || !info.name || !this.turnActive) return;   // only annotate an in-flight agent turn
+    if (!this.stream || !this.stream.bubble) this.startStream();
+    const s = this.stream;
+    if (!s.toolStrip) {
+      s.toolStrip = document.createElement("div");
+      s.toolStrip.className = "tool-activity";
+      s.contentEl.insertBefore(s.toolStrip, s.bubble);     // above the reply bubble
+      s.toolPills = {};
+    }
+    const verb = info.name.replace(/^[^.]*\./, "");        // drop the "katashiro." provider prefix
+    if (info.phase === "start") {
+      const pill = document.createElement("span");
+      pill.className = "tool-pill running";
+      pill.textContent = `${verb} ⏳`;                      // verb only — no args/command
+      s.toolStrip.appendChild(pill);
+      if (info.callId) s.toolPills[info.callId] = pill;
+    } else {
+      const pill = (info.callId && s.toolPills[info.callId]) || s.toolStrip.lastElementChild;
+      if (!pill) return;
+      const ok = info.phase !== "error";
+      pill.className = `tool-pill ${ok ? "done" : "error"}`;
+      pill.textContent = `${verb} ${ok ? "✓" : "✗"}`;
+    }
     maybeScroll();
   }
 
@@ -531,6 +564,15 @@ class Conn {
     if (s.text === "") {
       // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect). If the user stopped
       // it before any text arrived, say so rather than vanishing silently.
+      // Exception: a turn that ran browser tools but emitted no text is a legitimate pure-action
+      // turn — keep the row (and its tool-activity strip) so the user still sees what happened;
+      // only the empty typing bubble is dropped.
+      if (s.toolStrip && s.toolStrip.childElementCount > 0) {
+        s.bubble.remove();
+        if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
+        maybeScroll();
+        return;
+      }
       const row = s.bubble.closest(".message");
       if (row) row.remove();
       if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);

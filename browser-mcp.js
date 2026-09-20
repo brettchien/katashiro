@@ -888,15 +888,29 @@
             // toggle happened to be at connect time and leave the agent unable to learn the
             // capability exists. Refusing at call time is the honest place to enforce it.
             return { tools: listing };
-          case "tools/call":
+          case "tools/call": {
             // Tool-execution failures (no active tab, restricted page like chrome://, missing
             // host permission, injected-script error) become MCP isError results — not protocol
             // errors — so the agent sees the failure and can adapt.
+            //
+            // Surface a minimal activity signal to the UI: fire `onToolCall` with the tool name
+            // and outcome only — intentionally NOT the arguments — so the panel can show "these
+            // ran / did they succeed" without turning into a verbose command log.
+            const callId = (deps.crypto && deps.crypto.randomUUID)
+              ? deps.crypto.randomUUID()
+              : `${Date.now()}-${params.name}`;
+            if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "start" });
             try {
-              return await callBrowserTool(params.name, params.arguments || {}, deps, tools);
+              const result = await callBrowserTool(params.name, params.arguments || {}, deps, tools);
+              if (deps.onToolCall) {
+                deps.onToolCall({ callId, name: params.name, phase: (result && result.isError) ? "error" : "done" });
+              }
+              return result;
             } catch (e) {
+              if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "error" });
               return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
             }
+          }
           default: {
             const err = new Error(`method not found: ${method}`);
             err.code = -32601;

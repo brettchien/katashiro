@@ -588,6 +588,36 @@ body {
   30% { transform: translateY(-3px); opacity: 0.8; }
 }
 
+/* Browser-tool activity strip: a compact row of executed-tool markers above the reply bubble.
+   Deliberately subordinate to the message bubble — small, monospace, muted — so it reads as
+   "actions the agent took" and never competes with the agent's actual text reply. */
+.tool-activity {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 5px;
+}
+.tool-pill {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  padding: 0 7px;
+  border-radius: 10px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  white-space: nowrap;
+}
+.tool-pill.running { color: var(--text-secondary); }
+.tool-pill.done {
+  color: var(--accent-success);
+  border-color: var(--accent-success-glow);
+}
+.tool-pill.error {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
 .timestamp {
   font-size: 9px;
   color: var(--text-muted);
