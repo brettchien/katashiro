@@ -677,9 +677,6 @@ const newAgentUrl = document.getElementById("new-agent-url");
 const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
-const exportConfigBtn = document.getElementById("export-config-btn");
-const importConfigBtn = document.getElementById("import-config-btn");
-const importConfigFile = document.getElementById("import-config-file");
 
 const modeMentionBtn = document.getElementById("mode-mention");
 const modeAmbientBtn = document.getElementById("mode-ambient");
@@ -968,47 +965,6 @@ settingsBtn.addEventListener("click", () => {
 });
 
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
-
-// --- Config backup: export / import ------------------------------------------
-// Config syncs via storage.sync (Google account), but export/import is still useful: an offline
-// file backup, moving to a different profile, or seeding a device where sync isn't signed in.
-// Import re-seeds storage.sync and reloads so the panel re-initialises cleanly (rebuilds room +
-// resumes) rather than hand-patching live state. CONFIG_KEYS is declared with the sync helpers.
-if (exportConfigBtn) {
-  exportConfigBtn.addEventListener("click", () => {
-    chrome.storage.sync.get(CONFIG_KEYS, (cfg) => {
-      const payload = { katashiroConfig: 1, exportedAt: new Date().toISOString(), config: cfg };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `katashiro-config-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    });
-  });
-}
-if (importConfigBtn && importConfigFile) {
-  importConfigBtn.addEventListener("click", () => importConfigFile.click());
-  importConfigFile.addEventListener("change", () => {
-    const file = importConfigFile.files && importConfigFile.files[0];
-    importConfigFile.value = "";                          // allow re-importing the same file later
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onerror = () => appendSystemMessage("匯入失敗：讀取檔案錯誤");
-    reader.onload = () => {
-      let parsed;
-      try { parsed = JSON.parse(String(reader.result)); }
-      catch { appendSystemMessage("匯入失敗：不是有效的 JSON 檔"); return; }
-      const cfg = parsed && parsed.config;
-      if (!cfg || !Array.isArray(cfg.agents)) { appendSystemMessage("匯入失敗：檔案格式不符（缺 agents）"); return; }
-      const next = {};                                     // whitelist known keys only
-      for (const k of CONFIG_KEYS) if (k in cfg) next[k] = cfg[k];
-      chrome.storage.sync.set(next, () => location.reload());
-    };
-    reader.readAsText(file);
-  });
-}
 
 // Close on Escape or a click on the backdrop itself (not the card) — standard modal UX.
 document.addEventListener("keydown", (e) => {
