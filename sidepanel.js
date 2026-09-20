@@ -402,7 +402,16 @@ class Conn {
           // stranding it behind a retry button that would re-send into the dead socket (ADR R3).
           this.promptQueue.unshift(text);
           this.finalizeStream();
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.connect(); // socket still says OPEN → force teardown
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            // Socket still reports OPEN — the turn may actually be alive server-side (e.g. a long
+            // tool phase that outran our client timeout). Cancel it explicitly before tearing down
+            // and re-sending, so the gateway stops the old turn instead of finishing it into a
+            // reply we no longer listen for (which it would otherwise drop as a superseded turn).
+            if (this.acpSessionId) {
+              this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
+            }
+            this.connect(); // force teardown + re-handshake (resume re-declares tunnel)
+          }
           // else onclose already scheduled a reconnect; flushQueue re-sends once ready.
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
@@ -668,6 +677,9 @@ const newAgentUrl = document.getElementById("new-agent-url");
 const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
+const exportConfigBtn = document.getElementById("export-config-btn");
+const importConfigBtn = document.getElementById("import-config-btn");
+const importConfigFile = document.getElementById("import-config-file");
 
 const modeMentionBtn = document.getElementById("mode-mention");
 const modeAmbientBtn = document.getElementById("mode-ambient");
@@ -922,6 +934,47 @@ settingsBtn.addEventListener("click", () => {
 });
 
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
+
+// --- Config backup: export / import ------------------------------------------
+// storage.local (agents, tokens, room config, Jev key) is wiped on uninstall/reinstall, so this
+// is the only way to carry settings across a reinstall. Import re-seeds storage.local and reloads
+// so the panel re-initialises cleanly (rebuilds the room + resumes) rather than hand-patching state.
+const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"];
+if (exportConfigBtn) {
+  exportConfigBtn.addEventListener("click", () => {
+    chrome.storage.local.get(CONFIG_KEYS, (cfg) => {
+      const payload = { katashiroConfig: 1, exportedAt: new Date().toISOString(), config: cfg };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `katashiro-config-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  });
+}
+if (importConfigBtn && importConfigFile) {
+  importConfigBtn.addEventListener("click", () => importConfigFile.click());
+  importConfigFile.addEventListener("change", () => {
+    const file = importConfigFile.files && importConfigFile.files[0];
+    importConfigFile.value = "";                          // allow re-importing the same file later
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => appendSystemMessage("匯入失敗：讀取檔案錯誤");
+    reader.onload = () => {
+      let parsed;
+      try { parsed = JSON.parse(String(reader.result)); }
+      catch { appendSystemMessage("匯入失敗：不是有效的 JSON 檔"); return; }
+      const cfg = parsed && parsed.config;
+      if (!cfg || !Array.isArray(cfg.agents)) { appendSystemMessage("匯入失敗：檔案格式不符（缺 agents）"); return; }
+      const next = {};                                     // whitelist known keys only
+      for (const k of CONFIG_KEYS) if (k in cfg) next[k] = cfg[k];
+      chrome.storage.local.set(next, () => location.reload());
+    };
+    reader.readAsText(file);
+  });
+}
 
 // Close on Escape or a click on the backdrop itself (not the card) — standard modal UX.
 document.addEventListener("keydown", (e) => {

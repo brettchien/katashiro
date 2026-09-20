@@ -126,6 +126,18 @@
             <button id="add-agent-btn" class="secondary-btn">＋ 新增</button>
           </div>
 
+          <!-- Config backup: export/import all settings. storage.local is wiped on reinstall, so
+               this is the only way to carry agents / tokens / config across a reinstall. -->
+          <div class="input-group">
+            <label>設定備份</label>
+            <span class="mode-hint">匯出會把所有設定（含 agent token 與 Jev key）存成 JSON 檔；重裝擴充後匯入即可還原。檔案含密鑰，請自行妥善保管。</span>
+            <div class="button-row">
+              <button id="export-config-btn" class="secondary-btn">⬇ 匯出設定</button>
+              <button id="import-config-btn" class="secondary-btn">⬆ 匯入設定</button>
+            </div>
+            <input type="file" id="import-config-file" accept="application/json,.json" hidden>
+          </div>
+
           <div class="button-row">
             <button id="cancel-settings-btn" class="secondary-btn">關閉</button>
           </div>
