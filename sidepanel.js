@@ -91,6 +91,7 @@ class Conn {
     this.nextReqId = 1;
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
     this.promptQueue = [];
+    this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
     this.lastPrompt = null;                              // last turn's text, for retry
     this.mcpServer = null;                               // our type:acp MCP server instance
@@ -360,8 +361,9 @@ class Conn {
     }
   }
 
-  enqueue(text) {
+  enqueue(text, images) {
     this.promptQueue.push(text);
+    if (images && images.length) this.pendingImages.push(...images);
     this.flushQueue();
   }
 
@@ -374,15 +376,20 @@ class Conn {
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
     const text = RoomCore.batchPrompts(this.promptQueue.splice(0));
-    if (!text) return;                                   // nothing sendable (all blank) — stay idle
-    this.lastPrompt = text;                              // remember for retry (the whole batch)
+    const images = this.pendingImages.splice(0);         // images staged for this turn
+    if (!text && images.length === 0) return;            // nothing sendable — stay idle
+    this.lastPrompt = text;                              // remember for retry (text only; images not retained)
     this.turnActive = true;
     updateStopButton();
     this.startStream();
 
+    // ACP prompt is [ContentBlock]: an optional text block followed by any pasted images.
+    const blocks = [];
+    if (text) blocks.push({ type: "text", text });
+    for (const img of images) blocks.push({ type: "image", data: img.data, mimeType: img.mimeType });
     this.acpRequest("session/prompt", {
       sessionId: this.acpSessionId,
-      prompt: [{ type: "text", text }],
+      prompt: blocks,
     }, ACP_PROMPT_TIMEOUT_MS)
       .then((res) => {
         this.turnActive = false;
@@ -1258,12 +1265,72 @@ function deleteAgent(i) {
   updateRoster();
 }
 
+// --- Pasted-image staging ----------------------------------------------------
+// Screenshots pasted into the composer are staged as ACP image content blocks and previewed
+// before send. Kept in memory only (never persisted to history) to avoid bloating storage.session.
+const attachPreview = document.getElementById("attach-preview");
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;                 // 5 MB per image (pre-base64)
+let stagedImages = [];                                   // [{ mimeType, data(base64), dataUrl }]
+
+function updateSendEnabled() {
+  sendBtn.disabled = messageInput.value.trim().length === 0 && stagedImages.length === 0;
+}
+
+function renderStagedPreviews() {
+  if (!attachPreview) return;
+  attachPreview.textContent = "";
+  stagedImages.forEach((img, i) => {
+    const thumb = document.createElement("div");
+    thumb.className = "attach-thumb";
+    const el = document.createElement("img");
+    el.src = img.dataUrl;                                // dataUrl: our own FileReader output, safe
+    el.alt = "pasted image";
+    const rm = document.createElement("button");
+    rm.className = "attach-remove";
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.title = "移除";
+    rm.addEventListener("click", () => { stagedImages.splice(i, 1); renderStagedPreviews(); updateSendEnabled(); });
+    thumb.append(el, rm);
+    attachPreview.appendChild(thumb);
+  });
+  attachPreview.hidden = stagedImages.length === 0;
+}
+
+function stageImageBlob(blob) {
+  if (blob.size > MAX_IMAGE_BYTES) {
+    appendSystemMessage(`圖片太大（約 ${Math.round(blob.size / 1048576)}MB，上限 5MB），未附加`);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = String(reader.result);
+    const m = /^data:(image\/[a-z0-9.+-]+);base64,(.*)$/i.exec(dataUrl);
+    if (!m) return;                                      // not a base64 image data URL — ignore
+    stagedImages.push({ mimeType: m[1], data: m[2], dataUrl });
+    renderStagedPreviews();
+    updateSendEnabled();
+  };
+  reader.readAsDataURL(blob);
+}
+
 // --- Message input -----------------------------------------------------------
 messageInput.addEventListener("input", () => {
-  const text = messageInput.value.trim();
-  sendBtn.disabled = text.length === 0;
+  updateSendEnabled();
   messageInput.style.height = "auto";
   messageInput.style.height = (messageInput.scrollHeight - 2) + "px";
+});
+
+messageInput.addEventListener("paste", (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  let handled = false;
+  for (const it of items) {
+    if (it.kind === "file" && it.type && it.type.startsWith("image/")) {
+      const blob = it.getAsFile();
+      if (blob) { stageImageBlob(blob); handled = true; }
+    }
+  }
+  if (handled) e.preventDefault();                       // don't also paste the image's path/text into the box
 });
 
 messageInput.addEventListener("keydown", (e) => {
@@ -1304,19 +1371,25 @@ messagesList.addEventListener("click", (e) => {
 // gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
 function sendMessage() {
   const text = messageInput.value.trim();
-  if (!text) return;
+  const images = stagedImages.slice();                   // snapshot the staged attachments
+  if (!text && images.length === 0) return;
 
-  appendMessage({ senderId: myUserId, senderName: myUserName, text, timestamp: Date.now() });
+  appendMessage({
+    senderId: myUserId, senderName: myUserName, text, timestamp: Date.now(),
+    images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
+  });
 
   loopGuard.onHuman();
   const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(text);
+    if (c) c.enqueue(text, images);
   });
 
   messageInput.value = "";
   messageInput.style.height = "auto";
+  stagedImages = [];
+  renderStagedPreviews();
   sendBtn.disabled = true;
 }
 
@@ -1357,7 +1430,7 @@ function formatTime(timestamp) {
 // stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
 // handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
 // renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
-function appendMessage({ senderId, senderName, text, timestamp }) {
+function appendMessage({ senderId, senderName, text, timestamp, images }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -1381,7 +1454,16 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (text) renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (Array.isArray(images)) {
+    for (const src of images) {
+      const im = document.createElement("img");
+      im.className = "bubble-image";
+      im.src = src;                                     // our own FileReader data URL
+      im.alt = "image";
+      bubble.appendChild(im);
+    }
+  }
   content.appendChild(bubble);
 
   const ts = document.createElement("div");
