@@ -28,8 +28,8 @@ let roomConfig = RoomCore.defaultRoomConfig();
 let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 
 // Jev grounding token (optional, BYO-key): the user's OpenRouter key for the Jev decisions
-// API. Empty = grounding disabled. Persisted in chrome.storage.local and passed into the
-// browser tool layer so it can verify actions / disambiguate elements / detect page state.
+// API. Empty = grounding disabled. Persisted with the rest of config in chrome.storage.sync and
+// passed into the browser tool layer so it can verify actions / disambiguate elements / detect page state.
 let jevToken = "";
 
 // Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
@@ -402,7 +402,16 @@ class Conn {
           // stranding it behind a retry button that would re-send into the dead socket (ADR R3).
           this.promptQueue.unshift(text);
           this.finalizeStream();
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.connect(); // socket still says OPEN → force teardown
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            // Socket still reports OPEN — the turn may actually be alive server-side (e.g. a long
+            // tool phase that outran our client timeout). Cancel it explicitly before tearing down
+            // and re-sending, so the gateway stops the old turn instead of finishing it into a
+            // reply we no longer listen for (which it would otherwise drop as a superseded turn).
+            if (this.acpSessionId) {
+              this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
+            }
+            this.connect(); // force teardown + re-handshake (resume re-declares tunnel)
+          }
           // else onclose already scheduled a reconnect; flushQueue re-sends once ready.
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
@@ -703,8 +712,35 @@ loadBuildInfo();
 // the tunnel segment aging from 活躍 back to 閒置 TUNNEL_FRESH_MS after the last mcp/message (§8.3).
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
+// --- Config storage: chrome.storage.sync (follows the Google account) --------
+// Config — agents, tokens, room config, active agent, Jev key — lives in storage.sync so it
+// survives uninstall/reinstall and syncs across devices signed into the same Chrome profile.
+// Session ids + scrollback stay in storage.session (per-window, ephemeral — never synced).
+// NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
+// ws://localhost) may need adjusting on another machine.
+const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"];
+function pickConfig(o) {
+  const out = {};
+  for (const k of CONFIG_KEYS) if (k in o) out[k] = o[k];
+  return out;
+}
+// Read config from sync; one-time migrate a pre-sync storage.local config up if sync is still empty.
+function loadConfig() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(CONFIG_KEYS, (synced) => {
+      const hasSynced = (Array.isArray(synced.agents) && synced.agents.length) || synced.wsUrl;
+      if (hasSynced) return resolve(synced);
+      chrome.storage.local.get(CONFIG_KEYS, (local) => {
+        const hasLocal = (Array.isArray(local.agents) && local.agents.length) || local.wsUrl;
+        if (hasLocal) chrome.storage.sync.set(pickConfig(local)); // migrate up (local left as fallback)
+        resolve(hasLocal ? local : synced);
+      });
+    });
+  });
+}
+
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"], async (r) => {
+loadConfig().then(async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -730,7 +766,14 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAge
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, roomConfig, actMode, activeAgentUrl, jevToken });
+  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken };
+  chrome.storage.sync.set(cfg, () => {
+    if (chrome.runtime.lastError) {
+      // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
+      chrome.storage.local.set(cfg);
+      console.warn("katashiro: config sync failed, kept local copy:", chrome.runtime.lastError.message);
+    }
+  });
 }
 
 // --- Chat history (per-window, chrome.storage.session) ------------------------
