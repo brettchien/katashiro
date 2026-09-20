@@ -182,12 +182,12 @@
     "change this, in the katashiro side panel under Settings → 瀏覽器寫入. Ask them to turn " +
     "it on rather than retrying.";
 
-  // Origin allowlist (Phase 3 gate #2). katashiro can only see or touch a page whose origin the
-  // user has granted at the Chrome level (optional host permissions) — reads AND writes alike, so
-  // an ungated snapshot of an arbitrary logged-in site is refused just like a click. The grant is
-  // checked live per call (`chrome.permissions.contains`) against the active tab's origin, so
-  // revoking a domain takes hold on the very next call. Pages with no grantable web origin
-  // (chrome://, about:, the Web Store, file://, PDF viewer) can never be allowlisted.
+  // Origin gate. katashiro declares <all_urls> host permissions, so a fresh install can act on any
+  // web page. But Chrome's site-access controls let the user withhold that grant per site (toolbar
+  // icon → "on click" / "on specific sites"); when they do, `chrome.permissions.contains` reports
+  // the origin as not granted. We honour that live per call — reads AND writes alike — so
+  // restricting a site in Chrome takes hold on the very next call. Pages with no web origin
+  // (chrome://, about:, the Web Store, file://, PDF viewer) have nothing to grant and are refused.
   function pageOrigin(url) {
     try {
       const u = new URL(url || "");
@@ -203,9 +203,9 @@
     "http(s) web page.";
   function originNotAllowed(origin) {
     return (
-      `browser access to ${origin} is not granted. katashiro only reads or acts on origins the ` +
-      `user has explicitly allowlisted. Ask the user to add ${origin} in the katashiro side panel ` +
-      "under Settings → 授權網域, then retry — don't retry before they do."
+      `browser access to ${origin} is not granted — the user has restricted katashiro's site ` +
+      `access for this page in Chrome. Ask them to allow ${origin} via the katashiro toolbar icon ` +
+      "(site access → on this site) or chrome://extensions, then retry — don't retry before they do."
     );
   }
 
@@ -895,7 +895,7 @@
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
     // "no active browser tab" diagnosis ahead of any per-tool failure.
     const tab = await activeTab(chrome);
-    // Origin allowlist gate (Phase 3 gate #2): no host-permission grant for this page's origin,
+    // Origin gate: if the user withheld katashiro's Chrome site access for this page's origin,
     // no access — enforced here so every tool (read or write) passes through it exactly once.
     const origin = pageOrigin(tab.url);
     if (!origin) return errText(ORIGIN_UNSUPPORTED);
