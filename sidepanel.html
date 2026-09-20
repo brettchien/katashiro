@@ -104,15 +104,11 @@
             <span class="mode-hint" id="act-mode-hint"></span>
           </div>
 
-          <!-- Browser origin allowlist (Phase 3 gate #2): which sites the agent may read/act on -->
+          <!-- Jev grounding (optional, BYO-key): OpenRouter token for the Jev decisions API -->
           <div class="input-group">
-            <label>授權網域</label>
-            <span class="mode-hint">只有在此授權的網域，agent 才讀得到／操作得到（含唯讀）。走 Chrome 原生權限逐站授權，隨時可移除。</span>
-            <div class="origin-add">
-              <input type="text" id="grant-origin-input" class="agent-input" placeholder="https://example.com">
-              <button id="grant-origin-btn" class="secondary-btn">＋ 授權</button>
-            </div>
-            <div id="origin-list" class="origin-list"><!-- rendered by sidepanel.js --></div>
+            <label for="jev-token-input">Jev grounding（選填）</label>
+            <span class="mode-hint">填入你的 OpenRouter API key，katashiro 會用 Jev（TypeSafe System One）以自然語言消歧要點擊的元素（click_text 工具）。留空則關閉，其餘功能不受影響；用量走你自己的 OpenRouter 帳號。</span>
+            <input type="password" id="jev-token-input" class="agent-input" placeholder="sk-or-…（OpenRouter key）">
           </div>
 
           <!-- Existing agents -->
@@ -144,6 +140,7 @@
   <script src="vendor/dompurify.iife.js"></script>
   <script src="vendor/highlight.iife.js"></script>
   <script src="markdown.js"></script>
+  <script src="jev-grounding.js"></script>
   <script src="browser-mcp.js"></script>
   <script src="room-core.js"></script>
   <script src="sidepanel.js"></script>

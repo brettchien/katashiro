@@ -456,6 +456,10 @@ body {
 
 .messages-list {
   flex: 1;
+  /* A flex child with flex:1 needs min-height:0 to shrink below its content and become the
+     scroll viewport; without it the list grows to full content height, overflow-y never
+     engages, and scrollToBottom() can't reach the latest message (won't auto-follow). */
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
   display: flex;
@@ -1128,3 +1132,19 @@ body {
 }
 .jump-latest:hover { filter: brightness(1.1); }
 .jump-latest[hidden] { display: none; }
+
+/* Token input + 👁 reveal toggle on one row — the eye sits at the right of the field. */
+.token-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.token-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.token-row .reveal-btn {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  line-height: 1.2;
+}

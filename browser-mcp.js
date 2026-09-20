@@ -182,12 +182,10 @@
     "change this, in the katashiro side panel under Settings → 瀏覽器寫入. Ask them to turn " +
     "it on rather than retrying.";
 
-  // Origin allowlist (Phase 3 gate #2). katashiro can only see or touch a page whose origin the
-  // user has granted at the Chrome level (optional host permissions) — reads AND writes alike, so
-  // an ungated snapshot of an arbitrary logged-in site is refused just like a click. The grant is
-  // checked live per call (`chrome.permissions.contains`) against the active tab's origin, so
-  // revoking a domain takes hold on the very next call. Pages with no grantable web origin
-  // (chrome://, about:, the Web Store, file://, PDF viewer) can never be allowlisted.
+  // Supported-scheme check. katashiro declares <all_urls> host permissions and leaves enforcement
+  // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
+  // pre-reject pages with no scriptable web origin (chrome://, about:, the Web Store, file://, PDF
+  // viewer) here, so those return a clear message instead of a raw Chrome error.
   function pageOrigin(url) {
     try {
       const u = new URL(url || "");
@@ -201,13 +199,6 @@
     "this page has no grantable web origin (it's a chrome://, about:, Web Store, PDF, or file:// " +
     "page), so katashiro can neither read nor act on it. Ask the user to switch to a normal " +
     "http(s) web page.";
-  function originNotAllowed(origin) {
-    return (
-      `browser access to ${origin} is not granted. katashiro only reads or acts on origins the ` +
-      `user has explicitly allowlisted. Ask the user to add ${origin} in the katashiro side panel ` +
-      "under Settings → 授權網域, then retry — don't retry before they do."
-    );
-  }
 
   /**
    * The single source of truth for the tools we serve: schema and implementation live in
@@ -276,6 +267,45 @@
         });
         if (!result.ok) return errText(result.error);
         return okText(`clicked ${args.ref ? "ref " + args.ref : result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.click_text": {
+      description:
+        "Click the element that best matches a natural-language description — Jev disambiguates " +
+        "against the current accessibility snapshot, so no ref is needed. Requires a Jev token " +
+        "(Settings → Jev grounding); without one it is refused — use `click` with a ref instead. " +
+        "Returns which element was chosen plus the post-action snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "what to click, in words, e.g. 'the login button' or 'the first search result'" }
+        },
+        required: ["description"]
+      },
+      /** @param {{ description?: string }} args */
+      async call(args, ctx) {
+        const desc = ((args && args.description) || "").trim();
+        if (!desc) return errText("click_text needs a `description` of the element to click");
+        if (!ctx.jev || !ctx.jevToken) return errText("click_text needs a Jev token — set one in katashiro Settings (Jev grounding), or use `click` with a ref");
+        // Snapshot now to get candidate refs + labels, then let Jev pick the matching one.
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const idMatch = snap.match(/# snapshot (\d+)/);
+        const snapshotId = idMatch ? Number(idMatch[1]) : null;
+        const criteria = extractRefCandidates(snap);
+        if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to click");
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { pick: { type: "choice", instructions: `Which element should be clicked to: ${desc}?`, criteria } },
+          { token: ctx.jevToken }
+        );
+        const ref = ctx.jev.choice(answers, "pick");
+        if (!ref || !criteria[ref]) return errText(`Jev could not pick an element for "${desc}" (grounding unavailable or no match). Call snapshot and use click with a ref.`);
+        // Reuse the click tool's actionability + post-action snapshot machinery.
+        const clickRes = await TOOLS["katashiro.click"].call({ ref, snapshotId }, ctx);
+        if (clickRes && clickRes.isError) return clickRes;
+        return okText(`click_text "${desc}" → ${ref} (${criteria[ref]})\n\n${firstText(clickRes) || ""}`);
       }
     },
 
@@ -810,6 +840,37 @@
   // `deps.chrome` is the injected chrome API (real in the extension, mocked in tests).
   // `deps.actMode` is the user's write consent, read fresh per call so a toggle takes effect
   // immediately. `tools` is the serving instance's registry — defaults to the browser one.
+  // firstText / extractRefCandidates support click_text's Jev disambiguation.
+  function firstText(result) {
+    const c = result && result.content;
+    if (!Array.isArray(c)) return null;
+    const t = c.find((b) => b && b.type === "text" && typeof b.text === "string");
+    return t ? t.text : null;
+  }
+  // JevGrounding is a sibling global in the extension; injectable as deps.jev for tests/node.
+  function resolveJev(deps) {
+    if (typeof JevGrounding !== "undefined") return JevGrounding;
+    return (deps && deps.jev) || null;
+  }
+  // Pull { ref: label } candidates from a snapshot's text tree: every interactive line carries a
+  // [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; map the ref to that line, marker stripped.
+  // Capped so a huge page can't blow up the choice criteria / token cost.
+  function extractRefCandidates(snapText, cap) {
+    const out = {};
+    const max = cap || 60;
+    const lines = String(snapText == null ? "" : snapText).split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(/\[ref=([^\]]+)\]/);
+      if (!m) continue;
+      const ref = m[1];
+      if (out[ref]) continue;
+      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim();
+      out[ref] = label || ref;
+      if (Object.keys(out).length >= max) break;
+    }
+    return out;
+  }
+
   async function callBrowserTool(name, args, deps, tools) {
     const registry = tools || TOOLS;
     const chrome = deps.chrome;
@@ -825,14 +886,12 @@
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
     // "no active browser tab" diagnosis ahead of any per-tool failure.
     const tab = await activeTab(chrome);
-    // Origin allowlist gate (Phase 3 gate #2): no host-permission grant for this page's origin,
-    // no access — enforced here so every tool (read or write) passes through it exactly once.
-    const origin = pageOrigin(tab.url);
-    if (!origin) return errText(ORIGIN_UNSUPPORTED);
-    if (!(await chrome.permissions.contains({ origins: [origin + "/*"] }))) {
-      return errText(originNotAllowed(origin));
-    }
-    return withTabContext(await tool.call(args, { chrome, tab }), tab);
+    // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
+    // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
+    if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
+    // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
+    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
+    return withTabContext(await tool.call(args, ctx), tab);
   }
 
   /**
