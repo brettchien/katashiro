@@ -28,8 +28,8 @@ let roomConfig = RoomCore.defaultRoomConfig();
 let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 
 // Jev grounding token (optional, BYO-key): the user's OpenRouter key for the Jev decisions
-// API. Empty = grounding disabled. Persisted in chrome.storage.local and passed into the
-// browser tool layer so it can verify actions / disambiguate elements / detect page state.
+// API. Empty = grounding disabled. Persisted with the rest of config in chrome.storage.sync and
+// passed into the browser tool layer so it can verify actions / disambiguate elements / detect page state.
 let jevToken = "";
 
 // Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
@@ -715,8 +715,35 @@ loadBuildInfo();
 // the tunnel segment aging from 活躍 back to 閒置 TUNNEL_FRESH_MS after the last mcp/message (§8.3).
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
+// --- Config storage: chrome.storage.sync (follows the Google account) --------
+// Config — agents, tokens, room config, active agent, Jev key — lives in storage.sync so it
+// survives uninstall/reinstall and syncs across devices signed into the same Chrome profile.
+// Session ids + scrollback stay in storage.session (per-window, ephemeral — never synced).
+// NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
+// ws://localhost) may need adjusting on another machine.
+const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"];
+function pickConfig(o) {
+  const out = {};
+  for (const k of CONFIG_KEYS) if (k in o) out[k] = o[k];
+  return out;
+}
+// Read config from sync; one-time migrate a pre-sync storage.local config up if sync is still empty.
+function loadConfig() {
+  return new Promise((resolve) => {
+    chrome.storage.sync.get(CONFIG_KEYS, (synced) => {
+      const hasSynced = (Array.isArray(synced.agents) && synced.agents.length) || synced.wsUrl;
+      if (hasSynced) return resolve(synced);
+      chrome.storage.local.get(CONFIG_KEYS, (local) => {
+        const hasLocal = (Array.isArray(local.agents) && local.agents.length) || local.wsUrl;
+        if (hasLocal) chrome.storage.sync.set(pickConfig(local)); // migrate up (local left as fallback)
+        resolve(hasLocal ? local : synced);
+      });
+    });
+  });
+}
+
 // --- Startup -----------------------------------------------------------------
-chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"], async (r) => {
+loadConfig().then(async (r) => {
     if (Array.isArray(r.agents) && r.agents.length) {
       agents = r.agents;
     } else if (r.wsUrl) {
@@ -742,7 +769,14 @@ chrome.storage.local.get(["agents", "wsUrl", "roomConfig", "actMode", "activeAge
 );
 
 function persist() {
-  chrome.storage.local.set({ agents, roomConfig, actMode, activeAgentUrl, jevToken });
+  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken };
+  chrome.storage.sync.set(cfg, () => {
+    if (chrome.runtime.lastError) {
+      // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
+      chrome.storage.local.set(cfg);
+      console.warn("katashiro: config sync failed, kept local copy:", chrome.runtime.lastError.message);
+    }
+  });
 }
 
 // --- Chat history (per-window, chrome.storage.session) ------------------------
@@ -936,13 +970,13 @@ settingsBtn.addEventListener("click", () => {
 cancelSettingsBtn.addEventListener("click", () => switchView("chat"));
 
 // --- Config backup: export / import ------------------------------------------
-// storage.local (agents, tokens, room config, Jev key) is wiped on uninstall/reinstall, so this
-// is the only way to carry settings across a reinstall. Import re-seeds storage.local and reloads
-// so the panel re-initialises cleanly (rebuilds the room + resumes) rather than hand-patching state.
-const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"];
+// Config syncs via storage.sync (Google account), but export/import is still useful: an offline
+// file backup, moving to a different profile, or seeding a device where sync isn't signed in.
+// Import re-seeds storage.sync and reloads so the panel re-initialises cleanly (rebuilds room +
+// resumes) rather than hand-patching live state. CONFIG_KEYS is declared with the sync helpers.
 if (exportConfigBtn) {
   exportConfigBtn.addEventListener("click", () => {
-    chrome.storage.local.get(CONFIG_KEYS, (cfg) => {
+    chrome.storage.sync.get(CONFIG_KEYS, (cfg) => {
       const payload = { katashiroConfig: 1, exportedAt: new Date().toISOString(), config: cfg };
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -970,7 +1004,7 @@ if (importConfigBtn && importConfigFile) {
       if (!cfg || !Array.isArray(cfg.agents)) { appendSystemMessage("匯入失敗：檔案格式不符（缺 agents）"); return; }
       const next = {};                                     // whitelist known keys only
       for (const k of CONFIG_KEYS) if (k in cfg) next[k] = cfg[k];
-      chrome.storage.local.set(next, () => location.reload());
+      chrome.storage.sync.set(next, () => location.reload());
     };
     reader.readAsText(file);
   });
