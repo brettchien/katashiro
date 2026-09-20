@@ -287,7 +287,7 @@ class Conn {
             this.startHeartbeat();
             updateRoster();
             saveHistory();                 // persist the (confirmed) resumable session id
-            appendSystemMessage(`已續接 ${this.name} 的 ACP session（${(this.acpSessionId || "").slice(0, 8) || "?"}）。`);
+            appendSystemMessage(`已續接 ${this.name} 的 ACP session（${(this.acpSessionId || "").slice(0, 13) || "?"}）。`);
             this.flushQueue();
           });
         }
@@ -301,7 +301,7 @@ class Conn {
           this.startHeartbeat();
           updateRoster();
           saveHistory();                 // persist the new session id for this window
-          appendSystemMessage(`已連線至 ${this.name}（ACP session ${(this.acpSessionId || "").slice(0, 8) || "?"}）。`);
+          appendSystemMessage(`已連線至 ${this.name}（ACP session ${(this.acpSessionId || "").slice(0, 13) || "?"}）。`);
           this.flushQueue();
         });
       })
