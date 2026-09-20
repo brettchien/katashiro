@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], permContains: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -21,8 +21,8 @@ function mockChrome(opts = {}) {
         if (opts.noTab) return [];
         // active-tab lookup (activeTab()) vs list-all (katashiro.tabs): the latter can be seeded.
         if (!q.active && opts.tabsList) return opts.tabsList;
-        // The active tab carries a url so the origin-allowlist gate has an origin to check;
-        // opts.tabUrl overrides it (e.g. a chrome:// page with no grantable origin).
+        // The active tab carries a url so the supported-scheme check has an origin to inspect;
+        // opts.tabUrl overrides it (e.g. a chrome:// page with no scriptable origin).
         return [{ id: 42, windowId: 7, url: opts.tabUrl || "https://t/" }];
       },
       update: async (tabId, upd) => {
@@ -44,11 +44,6 @@ function mockChrome(opts = {}) {
         return [{ frameId: 0, result: opts.scriptResult ?? { ok: true } }];
       }
     },
-    // Origin-allowlist gate: granted by default so the tool-mechanics tests exercise the tool
-    // bodies; opts.originAllowed:false simulates a page the user has NOT allowlisted.
-    permissions: {
-      contains: async ({ origins }) => { calls.permContains.push(origins); return opts.originAllowed !== false; }
-    }
   };
   return { chrome, calls };
 }
@@ -506,50 +501,21 @@ test("write tools stay advertised while act mode is off (discovery is cached)", 
   for (const name of WRITE_TOOLS) assert.ok(names.includes(name), `${name} should still list`);
 });
 
-// --- origin allowlist gate (Phase 3 gate #2) --------------------------------
+// --- supported-scheme check + act-mode ordering -----------------------------
 
-test("a not-allowlisted origin refuses reads AND writes with a usable explanation", async () => {
-  for (const name of ["katashiro.read_dom", "katashiro.screenshot", "katashiro.click"]) {
-    const { deps: d, calls } = deps({ originAllowed: false });
-    const res = await BrowserMcp.handleMcpMessage(
-      "tools/call",
-      { name, arguments: { selector: "#x" } },
-      d
-    );
-    assert.equal(res.isError, true, `${name} should be refused on a non-allowlisted origin`);
-    assert.match(res.content[0].text, /not granted/);
-    assert.match(res.content[0].text, /https:\/\/t/); // names the origin the user must grant
-    // Refused before the page is touched.
-    assert.equal(calls.executeScript.length, 0, `${name} must not inject`);
-    assert.equal(calls.captureVisibleTab.length, 0, `${name} must not screenshot`);
-    // The origin actually checked is the active tab's, with a path wildcard.
-    assert.deepEqual(calls.permContains.at(-1), ["https://t/*"]);
-  }
-});
-
-test("an allowlisted origin lets a read through", async () => {
-  const { deps: d } = deps({ originAllowed: true, scriptResult: { ok: true, html: "<p>hi</p>" } });
-  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.read_dom", arguments: {} }, d);
-  assert.equal(res.isError, undefined);
-  assert.equal(res.content[0].text, "<p>hi</p>");
-});
-
-test("a page with no grantable web origin (chrome://) is refused before any permission check", async () => {
+test("a page with no scriptable web origin (chrome://) is refused with a clear message", async () => {
   const { deps: d, calls } = deps({ tabUrl: "chrome://settings", scriptResult: { ok: true, html: "x" } });
   const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.read_dom", arguments: {} }, d);
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /no grantable web origin/);
-  assert.equal(calls.permContains.length, 0, "an ungrantable page never reaches permissions.contains");
+  assert.equal(calls.executeScript.length, 0, "an unsupported page is never scripted");
 });
 
-test("the act-mode gate precedes the origin gate — a write off-mode says act mode, not origin", async () => {
-  // Consent ordering: a refused write blames act mode even when the origin also isn't allowlisted,
-  // so the user flips one switch at a time instead of chasing the wrong one.
-  const { deps: d } = deps({ actMode: false, originAllowed: false });
+test("a write with act mode off is refused with the act-mode message", async () => {
+  const { deps: d } = deps({ actMode: false });
   const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { selector: "#x" } }, d);
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /act mode is off/);
-  assert.doesNotMatch(res.content[0].text, /not granted/);
 });
 
 // --- tunnel control: handleServerRequest ------------------------------------
@@ -854,7 +820,6 @@ test("K3: snapshot forwards a `selector` to the walker as the rootSelector arg (
   const seen = [];
   const chrome = {
     tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
-    permissions: { contains: async () => true },
     scripting: {
       executeScript: async (inj) => {
         if (inj.files) return [{ frameId: 0, result: { ok: true } }];
@@ -872,7 +837,6 @@ test("K3: snapshot forwards a `selector` to the walker as the rootSelector arg (
 test("K3: a selector that matches no frame returns an explicit signal, not an empty snapshot", async () => {
   const chrome = {
     tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
-    permissions: { contains: async () => true },
     scripting: {
       executeScript: async (inj) => {
         if (inj.files) return [{ frameId: 0, result: { ok: true } }];
@@ -889,7 +853,6 @@ test("K3: a selector that matches no frame returns an explicit signal, not an em
 test("K3: an invalid selector is reported (not silently dropped by the frame merge)", async () => {
   const chrome = {
     tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
-    permissions: { contains: async () => true },
     scripting: {
       executeScript: async (inj) => {
         if (inj.files) return [{ frameId: 0, result: { ok: true } }];
@@ -948,7 +911,6 @@ test("snapshot with no usable frame content degrades to a placeholder, not a cra
 test("snapshot merges child frames with f<id>:eN namespaced refs", async () => {
   const chrome = {
     tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
-    permissions: { contains: async () => true },
     scripting: {
       executeScript: async (inj) => {
         if (inj.files) return [{ frameId: 0, result: { ok: true } }];
@@ -971,7 +933,6 @@ test("click on a child-frame ref targets that frame with the bare ref", async ()
   const calls = [];
   const chrome = {
     tabs: { query: async () => [{ id: 42, windowId: 7, url: "https://top/" }] },
-    permissions: { contains: async () => true },
     scripting: {
       executeScript: async (inj) => {
         calls.push(inj);

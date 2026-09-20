@@ -182,12 +182,10 @@
     "change this, in the katashiro side panel under Settings → 瀏覽器寫入. Ask them to turn " +
     "it on rather than retrying.";
 
-  // Origin gate. katashiro declares <all_urls> host permissions, so a fresh install can act on any
-  // web page. But Chrome's site-access controls let the user withhold that grant per site (toolbar
-  // icon → "on click" / "on specific sites"); when they do, `chrome.permissions.contains` reports
-  // the origin as not granted. We honour that live per call — reads AND writes alike — so
-  // restricting a site in Chrome takes hold on the very next call. Pages with no web origin
-  // (chrome://, about:, the Web Store, file://, PDF viewer) have nothing to grant and are refused.
+  // Supported-scheme check. katashiro declares <all_urls> host permissions and leaves enforcement
+  // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
+  // pre-reject pages with no scriptable web origin (chrome://, about:, the Web Store, file://, PDF
+  // viewer) here, so those return a clear message instead of a raw Chrome error.
   function pageOrigin(url) {
     try {
       const u = new URL(url || "");
@@ -201,13 +199,6 @@
     "this page has no grantable web origin (it's a chrome://, about:, Web Store, PDF, or file:// " +
     "page), so katashiro can neither read nor act on it. Ask the user to switch to a normal " +
     "http(s) web page.";
-  function originNotAllowed(origin) {
-    return (
-      `browser access to ${origin} is not granted — the user has restricted katashiro's site ` +
-      `access for this page in Chrome. Ask them to allow ${origin} via the katashiro toolbar icon ` +
-      "(site access → on this site) or chrome://extensions, then retry — don't retry before they do."
-    );
-  }
 
   /**
    * The single source of truth for the tools we serve: schema and implementation live in
@@ -895,13 +886,9 @@
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
     // "no active browser tab" diagnosis ahead of any per-tool failure.
     const tab = await activeTab(chrome);
-    // Origin gate: if the user withheld katashiro's Chrome site access for this page's origin,
-    // no access — enforced here so every tool (read or write) passes through it exactly once.
-    const origin = pageOrigin(tab.url);
-    if (!origin) return errText(ORIGIN_UNSUPPORTED);
-    if (!(await chrome.permissions.contains({ origins: [origin + "/*"] }))) {
-      return errText(originNotAllowed(origin));
-    }
+    // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
+    // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
+    if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
     return withTabContext(await tool.call(args, ctx), tab);
