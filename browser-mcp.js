@@ -309,6 +309,75 @@
       }
     },
 
+    "katashiro.type_text": {
+      description:
+        "Type text into the field that best matches a natural-language description — Jev disambiguates " +
+        "against the current accessibility snapshot, so no ref is needed. Requires a Jev token " +
+        "(Settings → Jev grounding); without one it is refused — use `type` with a ref instead. " +
+        "Returns which field was chosen plus the post-action snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "which field to type into, in words, e.g. 'the search box' or 'the email field'" },
+          text: { type: "string", description: "the text to type" }
+        },
+        required: ["description", "text"]
+      },
+      /** @param {{ description?: string, text?: string }} args */
+      async call(args, ctx) {
+        const desc = ((args && args.description) || "").trim();
+        if (!desc) return errText("type_text needs a `description` of the field to type into");
+        if (args.text == null) return errText("type_text needs `text` to type");
+        if (!ctx.jev || !ctx.jevToken) return errText("type_text needs a Jev token — set one in katashiro Settings (Jev grounding), or use `type` with a ref");
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const idMatch = snap.match(/# snapshot (\d+)/);
+        const snapshotId = idMatch ? Number(idMatch[1]) : null;
+        const criteria = extractRefCandidates(snap, desc);
+        if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to type into");
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { pick: { type: "choice", instructions: `Which element is the field to type into for: ${desc}?`, criteria } },
+          { token: ctx.jevToken }
+        );
+        const ref = ctx.jev.choice(answers, "pick");
+        if (!ref || !criteria[ref]) return errText(`Jev could not pick a field for "${desc}" (grounding unavailable or no match). Call snapshot and use type with a ref.`);
+        const typeRes = await TOOLS["katashiro.type"].call({ ref, snapshotId, text: args.text }, ctx);
+        if (typeRes && typeRes.isError) return typeRes;
+        return okText(`type_text "${desc}" → ${ref} (${criteria[ref]})\n\n${firstText(typeRes) || ""}`);
+      }
+    },
+
+    "katashiro.assert": {
+      description:
+        "Ask Jev a yes/no question about the CURRENT page state (e.g. 'is this a login wall?', 'did " +
+        "the search results load?', 'is there a captcha?') and get back the probability the condition " +
+        "holds, for the agent to branch on. Read-only — perceives, never acts. Requires a Jev token " +
+        "(Settings → Jev grounding).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "a yes/no question about the page, e.g. 'is the user logged in?'" }
+        },
+        required: ["question"]
+      },
+      /** @param {{ question?: string }} args */
+      async call(args, ctx) {
+        const question = ((args && args.question) || "").trim();
+        if (!question) return errText("assert needs a `question` about the page state");
+        if (!ctx.jev || !ctx.jevToken) return errText("assert needs a Jev token — set one in katashiro Settings (Jev grounding)");
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { holds: { type: "noul", instructions: question } },
+          { token: ctx.jevToken }
+        );
+        const p = ctx.jev.noul(answers, "holds");
+        if (p == null) return errText(`Jev could not evaluate "${question}" (grounding unavailable).`);
+        return okText(`assert "${question}" → ${p >= 0.5 ? "yes" : "no"} (${p.toFixed(2)})`);
+      }
+    },
+
     "katashiro.read_dom": {
       description:
         "Return the raw HTML of an element (default: whole body) in the active tab. For perceiving " +
