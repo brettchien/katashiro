@@ -1006,3 +1006,26 @@ test("click_text: is advertised in the tool registry (16 tools total)", () => {
   assert.ok(BrowserMcp.TOOLS["katashiro.click_text"], "click_text is registered");
   assert.equal(BrowserMcp.TOOLS["katashiro.click_text"].write, true, "click_text is a write tool (act-gated)");
 });
+
+// --- click_text candidate context: relevance-ranked extractRefCandidates -----
+// The old first-N-in-document-order cut dropped a deep target on busy pages; ranking by
+// description-keyword overlap must keep the target in the criteria Jev sees.
+test("extractRefCandidates ranks the description-matching target above the cap (busy page)", () => {
+  const lines = [];
+  for (let i = 1; i <= 65; i++) lines.push(`- link "nav item ${i}" [ref=e${i}]`);
+  lines.push('- link "中信兄弟 精華 highlights" [ref=e99]'); // the target, deep past the 60 cap
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "中信兄弟 精華", 60);
+  assert.ok(cands["e99"], "deep matching target survives the cap via relevance ranking");
+  assert.match(cands["e99"], /中信兄弟/);
+});
+
+test("extractRefCandidates keeps document order when the description has no usable keywords", () => {
+  const lines = ["- button \"b1\" [ref=e1]", "- button \"b2\" [ref=e2]", "- button \"b3\" [ref=e3]"];
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "", 60);
+  assert.deepEqual(Object.keys(cands), ["e1", "e2", "e3"]);
+});
+
+test("extractRefCandidates strips the ref marker, keeping role + accessible name as the label", () => {
+  const cands = BrowserMcp.extractRefCandidates('- button "Sign in" [ref=e5]', "sign in", 60);
+  assert.equal(cands["e5"], 'button "Sign in"');
+});

@@ -293,7 +293,7 @@
         const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
         const idMatch = snap.match(/# snapshot (\d+)/);
         const snapshotId = idMatch ? Number(idMatch[1]) : null;
-        const criteria = extractRefCandidates(snap);
+        const criteria = extractRefCandidates(snap, desc);
         if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to click");
         const answers = await ctx.jev.evaluate(
           snap,
@@ -852,22 +852,54 @@
     if (typeof JevGrounding !== "undefined") return JevGrounding;
     return (deps && deps.jev) || null;
   }
-  // Pull { ref: label } candidates from a snapshot's text tree: every interactive line carries a
-  // [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; map the ref to that line, marker stripped.
-  // Capped so a huge page can't blow up the choice criteria / token cost.
-  function extractRefCandidates(snapText, cap) {
-    const out = {};
+  // Very small stopword set so common words in a description ("the button to …") don't dominate
+  // the relevance score. English function words + nothing for CJK (which we keep whole).
+  const DESC_STOPWORDS = new Set(["the", "to", "of", "in", "on", "at", "an", "and", "or", "for", "a", "click", "button", "link"]);
+
+  // Split a description into lowercased keyword tokens: alphanumeric runs and CJK runs, dropping
+  // very short tokens and stopwords. CJK is kept as whole runs (no segmenter) and substring-matched.
+  function descKeywords(description) {
+    return String(description == null ? "" : description)
+      .toLowerCase()
+      .split(/[^a-z0-9㐀-鿿]+/)
+      .filter((t) => t.length >= 2 && !DESC_STOPWORDS.has(t));
+  }
+
+  // How many of the description keywords appear in the (lowercased) candidate label.
+  function overlapScore(label, keywords) {
+    const l = String(label).toLowerCase();
+    let s = 0;
+    for (const k of keywords) if (l.includes(k)) s++;
+    return s;
+  }
+
+  // Pull { ref: label } candidates from a snapshot's text tree, RANKED by relevance to
+  // `description` before the cap is applied — so the target survives even on a busy page where it
+  // sits deep in the DOM (the old first-N-in-document-order cut dropped it). Every interactive line
+  // carries a [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; the label is that line, marker
+  // stripped (the a11y snapshot already puts role + accessible name there). Ties and the
+  // no-keyword-match case fall back to document order, so behaviour is unchanged for short pages.
+  function extractRefCandidates(snapText, description, cap) {
     const max = cap || 60;
     const lines = String(snapText == null ? "" : snapText).split("\n");
+    const seen = new Set();
+    const cands = [];
     for (let i = 0; i < lines.length; i++) {
       const m = lines[i].match(/\[ref=([^\]]+)\]/);
       if (!m) continue;
       const ref = m[1];
-      if (out[ref]) continue;
-      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim();
-      out[ref] = label || ref;
-      if (Object.keys(out).length >= max) break;
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim() || ref;
+      cands.push({ ref: ref, label: label, order: i });
     }
+    const keywords = descKeywords(description);
+    if (keywords.length) {
+      for (const c of cands) c.score = overlapScore(c.label, keywords);
+      cands.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+    }
+    const out = {};
+    for (const c of cands.slice(0, max)) out[c.ref] = c.label;
     return out;
   }
 
@@ -1085,5 +1117,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest };
+  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates };
 });
