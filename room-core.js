@@ -152,6 +152,20 @@
     return /timed out|connection closed|socket not open|\bnot open\b|\bclosed\b/i.test(String(reason == null ? "" : reason));
   }
 
+  // Decide what to do when a turn's `session/prompt` rejects, extracted pure so the
+  // reconnect-duplication fix is unit-testable and the policy is auditable in one place:
+  //   - dead reason + CLOSED socket  → "requeue": the socket died, so the prompt almost certainly
+  //       never landed; re-queue it for the reconnect to flush on a fresh session (ADR R3).
+  //   - dead reason + OPEN socket    → "cancel": a timeout on a live connection — the turn is very
+  //       likely still running server-side, so re-sending would DUPLICATE it. Cancel + let the user
+  //       retry; never auto-re-send into a live session.
+  //   - anything else                → "error": a genuine failure to surface with a retry button.
+  function promptFailureAction(deadProbe, socketOpen) {
+    if (deadProbe && !socketOpen) return "requeue";
+    if (deadProbe) return "cancel";
+    return "error";
+  }
+
   // Heartbeat state-machine decisions (ADR §8.6), extracted pure so the #17 regression point is
   // unit-testable — the logic lives here; sidepanel.js only wires it to the socket + timer.
 
@@ -283,6 +297,7 @@
     wrapRelay,
     batchPrompts,
     isDeadProbeReason,
+    promptFailureAction,
     shouldProbe,
     onProbeTimeoutDecision,
     roomStatus,
