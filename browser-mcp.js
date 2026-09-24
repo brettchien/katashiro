@@ -925,12 +925,14 @@
   // the relevance score. English function words + nothing for CJK (which we keep whole).
   const DESC_STOPWORDS = new Set(["the", "to", "of", "in", "on", "at", "an", "and", "or", "for", "a", "click", "button", "link"]);
 
-  // Split a description into lowercased keyword tokens: alphanumeric runs and CJK runs, dropping
-  // very short tokens and stopwords. CJK is kept as whole runs (no segmenter) and substring-matched.
+  // Split a description into lowercased keyword tokens on non-letter/non-number boundaries, dropping
+  // very short tokens and stopwords. `\p{L}` keeps every script — Latin, CJK, kana, hangul, Cyrillic,
+  // … — so a non-English description isn't shredded into empty tokens; CJK is kept as whole runs (no
+  // segmenter) and substring-matched against candidate labels.
   function descKeywords(description) {
     return String(description == null ? "" : description)
       .toLowerCase()
-      .split(/[^a-z0-9㐀-鿿]+/)
+      .split(/[^\p{L}\p{N}]+/u)
       .filter((t) => t.length >= 2 && !DESC_STOPWORDS.has(t));
   }
 

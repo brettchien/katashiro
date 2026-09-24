@@ -1074,3 +1074,11 @@ test("assert: refused (isError) without a Jev token", async () => {
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /needs a Jev token/);
 });
+
+test("extractRefCandidates ranks non-Chinese scripts too (\\p{L} coverage, e.g. Hangul)", () => {
+  const lines = [];
+  for (let i = 1; i <= 65; i++) lines.push(`- link "nav ${i}" [ref=e${i}]`);
+  lines.push('- button "로그인 하기" [ref=e99]'); // Korean "log in", deep past the 60 cap
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "로그인", 60);
+  assert.ok(cands["e99"], "Hangul target survives the cap (old zh-only regex would have dropped it)");
+});
