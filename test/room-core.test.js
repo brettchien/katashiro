@@ -357,3 +357,15 @@ test("loop guard cap defaults on junk and can be re-capped live", () => {
   g.setCap(2);
   assert.equal(g.state().cap, 2);
 });
+
+// --- promptFailureAction: reconnect-duplication policy ----------------------
+test("promptFailureAction: dead reason + CLOSED socket → requeue (prompt never landed)", () => {
+  assert.equal(RoomCore.promptFailureAction(true, false), "requeue");
+});
+test("promptFailureAction: dead reason + OPEN socket → cancel (turn alive; re-send would duplicate)", () => {
+  assert.equal(RoomCore.promptFailureAction(true, true), "cancel");
+});
+test("promptFailureAction: non-dead reason → error (surface with retry), any socket state", () => {
+  assert.equal(RoomCore.promptFailureAction(false, true), "error");
+  assert.equal(RoomCore.promptFailureAction(false, false), "error");
+});

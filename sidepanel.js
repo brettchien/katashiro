@@ -395,24 +395,28 @@ class Conn {
       .catch((err) => {
         this.turnActive = false;
         updateStopButton();
-        if (RoomCore.isDeadProbeReason(String(err))) {
-          // Dead/half-open socket — either an explicit close, or a prompt that timed out because the
-          // socket died (a heartbeat teardown rejects the in-flight turn with "connection closed").
-          // Re-queue the turn and force a reconnect so it flushes on a fresh session, rather than
-          // stranding it behind a retry button that would re-send into the dead socket (ADR R3).
+        const socketOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
+        const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
+        if (action === "requeue") {
+          // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
+          // that rejects the in-flight turn with "connection closed"). The prompt almost certainly
+          // never landed, so re-queue it — the onclose-scheduled reconnect flushes it on a fresh
+          // session (ADR R3). Safe: a dead socket means the agent never received this turn.
           this.promptQueue.unshift(text);
           this.finalizeStream();
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            // Socket still reports OPEN — the turn may actually be alive server-side (e.g. a long
-            // tool phase that outran our client timeout). Cancel it explicitly before tearing down
-            // and re-sending, so the gateway stops the old turn instead of finishing it into a
-            // reply we no longer listen for (which it would otherwise drop as a superseded turn).
-            if (this.acpSessionId) {
-              this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
-            }
-            this.connect(); // force teardown + re-handshake (resume re-declares tunnel)
+        } else if (action === "cancel") {
+          // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
+          // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer
+          // that supersedes tool-heavy turns). The old code force-reconnected and re-sent here, which
+          // DUPLICATED a turn the agent had already received and acted on — the resend fired on
+          // resume and the agent ran the same message 2–3× (the reconnect-duplication bug). Never
+          // auto-re-send into a live session: cancel the stale turn and let the USER re-issue via the
+          // retry button. No reconnect either — the socket + tunnel are fine.
+          if (this.acpSessionId) {
+            this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
           }
-          // else onclose already scheduled a reconnect; flushQueue re-sends once ready.
+          this.finalizeStream();
+          appendErrorMessage(this.name, "回合逾時（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。", () => this.retryLast());
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
           appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
