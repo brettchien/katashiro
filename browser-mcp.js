@@ -293,7 +293,7 @@
         const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
         const idMatch = snap.match(/# snapshot (\d+)/);
         const snapshotId = idMatch ? Number(idMatch[1]) : null;
-        const criteria = extractRefCandidates(snap);
+        const criteria = extractRefCandidates(snap, desc);
         if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to click");
         const answers = await ctx.jev.evaluate(
           snap,
@@ -306,6 +306,75 @@
         const clickRes = await TOOLS["katashiro.click"].call({ ref, snapshotId }, ctx);
         if (clickRes && clickRes.isError) return clickRes;
         return okText(`click_text "${desc}" → ${ref} (${criteria[ref]})\n\n${firstText(clickRes) || ""}`);
+      }
+    },
+
+    "katashiro.type_text": {
+      description:
+        "Type text into the field that best matches a natural-language description — Jev disambiguates " +
+        "against the current accessibility snapshot, so no ref is needed. Requires a Jev token " +
+        "(Settings → Jev grounding); without one it is refused — use `type` with a ref instead. " +
+        "Returns which field was chosen plus the post-action snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "which field to type into, in words, e.g. 'the search box' or 'the email field'" },
+          text: { type: "string", description: "the text to type" }
+        },
+        required: ["description", "text"]
+      },
+      /** @param {{ description?: string, text?: string }} args */
+      async call(args, ctx) {
+        const desc = ((args && args.description) || "").trim();
+        if (!desc) return errText("type_text needs a `description` of the field to type into");
+        if (args.text == null) return errText("type_text needs `text` to type");
+        if (!ctx.jev || !ctx.jevToken) return errText("type_text needs a Jev token — set one in katashiro Settings (Jev grounding), or use `type` with a ref");
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const idMatch = snap.match(/# snapshot (\d+)/);
+        const snapshotId = idMatch ? Number(idMatch[1]) : null;
+        const criteria = extractRefCandidates(snap, desc);
+        if (!Object.keys(criteria).length) return errText("no interactive elements with refs in the current snapshot — nothing to type into");
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { pick: { type: "choice", instructions: `Which element is the field to type into for: ${desc}?`, criteria } },
+          { token: ctx.jevToken }
+        );
+        const ref = ctx.jev.choice(answers, "pick");
+        if (!ref || !criteria[ref]) return errText(`Jev could not pick a field for "${desc}" (grounding unavailable or no match). Call snapshot and use type with a ref.`);
+        const typeRes = await TOOLS["katashiro.type"].call({ ref, snapshotId, text: args.text }, ctx);
+        if (typeRes && typeRes.isError) return typeRes;
+        return okText(`type_text "${desc}" → ${ref} (${criteria[ref]})\n\n${firstText(typeRes) || ""}`);
+      }
+    },
+
+    "katashiro.assert": {
+      description:
+        "Ask Jev a yes/no question about the CURRENT page state (e.g. 'is this a login wall?', 'did " +
+        "the search results load?', 'is there a captcha?') and get back the probability the condition " +
+        "holds, for the agent to branch on. Read-only — perceives, never acts. Requires a Jev token " +
+        "(Settings → Jev grounding).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "a yes/no question about the page, e.g. 'is the user logged in?'" }
+        },
+        required: ["question"]
+      },
+      /** @param {{ question?: string }} args */
+      async call(args, ctx) {
+        const question = ((args && args.question) || "").trim();
+        if (!question) return errText("assert needs a `question` about the page state");
+        if (!ctx.jev || !ctx.jevToken) return errText("assert needs a Jev token — set one in katashiro Settings (Jev grounding)");
+        const snap = await fullSnapshot(ctx.chrome, ctx.tab.id, false);
+        const answers = await ctx.jev.evaluate(
+          snap,
+          { holds: { type: "noul", instructions: question } },
+          { token: ctx.jevToken }
+        );
+        const p = ctx.jev.noul(answers, "holds");
+        if (p == null) return errText(`Jev could not evaluate "${question}" (grounding unavailable).`);
+        return okText(`assert "${question}" → ${p >= 0.5 ? "yes" : "no"} (${p.toFixed(2)})`);
       }
     },
 
@@ -852,22 +921,56 @@
     if (typeof JevGrounding !== "undefined") return JevGrounding;
     return (deps && deps.jev) || null;
   }
-  // Pull { ref: label } candidates from a snapshot's text tree: every interactive line carries a
-  // [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; map the ref to that line, marker stripped.
-  // Capped so a huge page can't blow up the choice criteria / token cost.
-  function extractRefCandidates(snapText, cap) {
-    const out = {};
+  // Very small stopword set so common words in a description ("the button to …") don't dominate
+  // the relevance score. English function words + nothing for CJK (which we keep whole).
+  const DESC_STOPWORDS = new Set(["the", "to", "of", "in", "on", "at", "an", "and", "or", "for", "a", "click", "button", "link"]);
+
+  // Split a description into lowercased keyword tokens on non-letter/non-number boundaries, dropping
+  // very short tokens and stopwords. `\p{L}` keeps every script — Latin, CJK, kana, hangul, Cyrillic,
+  // … — so a non-English description isn't shredded into empty tokens; CJK is kept as whole runs (no
+  // segmenter) and substring-matched against candidate labels.
+  function descKeywords(description) {
+    return String(description == null ? "" : description)
+      .toLowerCase()
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter((t) => t.length >= 2 && !DESC_STOPWORDS.has(t));
+  }
+
+  // How many of the description keywords appear in the (lowercased) candidate label.
+  function overlapScore(label, keywords) {
+    const l = String(label).toLowerCase();
+    let s = 0;
+    for (const k of keywords) if (l.includes(k)) s++;
+    return s;
+  }
+
+  // Pull { ref: label } candidates from a snapshot's text tree, RANKED by relevance to
+  // `description` before the cap is applied — so the target survives even on a busy page where it
+  // sits deep in the DOM (the old first-N-in-document-order cut dropped it). Every interactive line
+  // carries a [ref=eN] (or frame-prefixed [ref=f7:e3]) marker; the label is that line, marker
+  // stripped (the a11y snapshot already puts role + accessible name there). Ties and the
+  // no-keyword-match case fall back to document order, so behaviour is unchanged for short pages.
+  function extractRefCandidates(snapText, description, cap) {
     const max = cap || 60;
     const lines = String(snapText == null ? "" : snapText).split("\n");
+    const seen = new Set();
+    const cands = [];
     for (let i = 0; i < lines.length; i++) {
       const m = lines[i].match(/\[ref=([^\]]+)\]/);
       if (!m) continue;
       const ref = m[1];
-      if (out[ref]) continue;
-      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim();
-      out[ref] = label || ref;
-      if (Object.keys(out).length >= max) break;
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      const label = lines[i].replace(/\s*\[ref=[^\]]+\]\s*/, " ").replace(/^[\s\-*]+/, "").trim() || ref;
+      cands.push({ ref: ref, label: label, order: i });
     }
+    const keywords = descKeywords(description);
+    if (keywords.length) {
+      for (const c of cands) c.score = overlapScore(c.label, keywords);
+      cands.sort((a, b) => (b.score - a.score) || (a.order - b.order));
+    }
+    const out = {};
+    for (const c of cands.slice(0, max)) out[c.ref] = c.label;
     return out;
   }
 
@@ -1085,5 +1188,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest };
+  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates };
 });

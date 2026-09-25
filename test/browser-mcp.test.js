@@ -125,13 +125,15 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 16 DOM-semantic browser tools", async () => {
+test("tools/list returns the 18 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
   assert.deepEqual(names, [
     "katashiro.click",
     "katashiro.click_text",
+    "katashiro.type_text",
+    "katashiro.assert",
     "katashiro.read_dom",
     "katashiro.navigate",
     "katashiro.type",
@@ -464,7 +466,8 @@ test("exactly the page-mutating tools are marked write", () => {
     "katashiro.press_key",
     "katashiro.reload",
     "katashiro.select_option",
-    "katashiro.type"
+    "katashiro.type",
+    "katashiro.type_text"
   ]);
 });
 
@@ -611,7 +614,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 16);
+  assert.equal(tools.length, 18);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -810,7 +813,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 16, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 18, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -1005,4 +1008,77 @@ test("click_text: refused (isError) when no Jev token is set", async () => {
 test("click_text: is advertised in the tool registry (16 tools total)", () => {
   assert.ok(BrowserMcp.TOOLS["katashiro.click_text"], "click_text is registered");
   assert.equal(BrowserMcp.TOOLS["katashiro.click_text"].write, true, "click_text is a write tool (act-gated)");
+});
+
+// --- click_text candidate context: relevance-ranked extractRefCandidates -----
+// The old first-N-in-document-order cut dropped a deep target on busy pages; ranking by
+// description-keyword overlap must keep the target in the criteria Jev sees.
+test("extractRefCandidates ranks the description-matching target above the cap (busy page)", () => {
+  const lines = [];
+  for (let i = 1; i <= 65; i++) lines.push(`- link "nav item ${i}" [ref=e${i}]`);
+  lines.push('- link "中信兄弟 精華 highlights" [ref=e99]'); // the target, deep past the 60 cap
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "中信兄弟 精華", 60);
+  assert.ok(cands["e99"], "deep matching target survives the cap via relevance ranking");
+  assert.match(cands["e99"], /中信兄弟/);
+});
+
+test("extractRefCandidates keeps document order when the description has no usable keywords", () => {
+  const lines = ["- button \"b1\" [ref=e1]", "- button \"b2\" [ref=e2]", "- button \"b3\" [ref=e3]"];
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "", 60);
+  assert.deepEqual(Object.keys(cands), ["e1", "e2", "e3"]);
+});
+
+test("extractRefCandidates strips the ref marker, keeping role + accessible name as the label", () => {
+  const cands = BrowserMcp.extractRefCandidates('- button "Sign in" [ref=e5]', "sign in", 60);
+  assert.equal(cands["e5"], 'button "Sign in"');
+});
+
+// --- Jev semantic tools: type_text + assert ---------------------------------
+const mockJevPick = {
+  evaluate: async () => ({ pick: "e5" }),
+  choice: (a, n) => (a && typeof a[n] === "string" ? a[n] : null),
+  noul: (a, n) => (a && typeof a[n] === "number" ? a[n] : null),
+};
+const mockJevNoul = {
+  evaluate: async () => ({ holds: 0.92 }),
+  choice: (a, n) => (a && typeof a[n] === "string" ? a[n] : null),
+  noul: (a, n) => (a && typeof a[n] === "number" ? a[n] : null),
+};
+
+test("type_text: Jev disambiguates the field and types into it", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, how: "ref e5", snapshotId: 2, title: "T", url: "https://t/", tree: '- textbox "Search" [ref=e5]' } });
+  d.jevToken = "sk-or-x"; d.jev = mockJevPick;
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.type_text", arguments: { description: "the search box", text: "hello" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /type_text "the search box" . e5/);
+});
+
+test("type_text: refused (isError) without a Jev token", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, tree: '- textbox "Search" [ref=e5]' } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.type_text", arguments: { description: "x", text: "y" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs a Jev token/);
+});
+
+test("assert: returns Jev's yes/no verdict + probability, read-only (runs with act mode off)", async () => {
+  const { deps: d } = deps({ actMode: false, scriptResult: { ok: true, title: "T", url: "u", tree: '- heading "Sign in"' } });
+  d.jevToken = "sk-or-x"; d.jev = mockJevNoul;
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.assert", arguments: { question: "is this a login wall?" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /assert "is this a login wall\?" . yes \(0\.92\)/);
+});
+
+test("assert: refused (isError) without a Jev token", async () => {
+  const { deps: d } = deps({ scriptResult: { ok: true, tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.assert", arguments: { question: "?" } }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs a Jev token/);
+});
+
+test("extractRefCandidates ranks non-Chinese scripts too (\\p{L} coverage, e.g. Hangul)", () => {
+  const lines = [];
+  for (let i = 1; i <= 65; i++) lines.push(`- link "nav ${i}" [ref=e${i}]`);
+  lines.push('- button "로그인 하기" [ref=e99]'); // Korean "log in", deep past the 60 cap
+  const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "로그인", 60);
+  assert.ok(cands["e99"], "Hangul target survives the cap (old zh-only regex would have dropped it)");
 });
