@@ -13,13 +13,14 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], windowsUpdate: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
         calls.query.push(q);
         if (opts.noTab) return [];
-        // active-tab lookup (activeTab()) vs list-all (katashiro.tabs): the latter can be seeded.
+        // active-tab lookup (activeTab()) vs list-all (katashiro.tabs / new_tab / switch_tab): the
+        // latter can be seeded via opts.tabsList.
         if (!q.active && opts.tabsList) return opts.tabsList;
         // The active tab carries a url so the supported-scheme check has an origin to inspect;
         // opts.tabUrl overrides it (e.g. a chrome:// page with no scriptable origin).
@@ -28,6 +29,10 @@ function mockChrome(opts = {}) {
       update: async (tabId, upd) => {
         calls.tabsUpdate.push({ tabId, upd });
       },
+      create: async (props) => {
+        calls.tabsCreate.push(props);
+        return opts.createdTab || { id: 99, windowId: 7, url: props.url };
+      },
       goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
       goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       reload: async (tabId, o) => { calls.reload.push({ tabId, o }); },
@@ -35,6 +40,9 @@ function mockChrome(opts = {}) {
         calls.captureVisibleTab.push({ windowId, o });
         return opts.dataUrl || "data:image/png;base64,QUJD"; // "ABC"
       }
+    },
+    windows: {
+      update: async (windowId, o) => { calls.windowsUpdate.push({ windowId, o }); }
     },
     scripting: {
       executeScript: async (inj) => {
@@ -125,7 +133,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 18 DOM-semantic browser tools", async () => {
+test("tools/list returns the 20 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -143,6 +151,8 @@ test("tools/list returns the 18 DOM-semantic browser tools", async () => {
     "katashiro.get_text",
     "katashiro.scroll",
     "katashiro.tabs",
+    "katashiro.new_tab",
+    "katashiro.switch_tab",
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
@@ -197,6 +207,131 @@ test("katashiro.navigate drives chrome.tabs.update", async () => {
   );
   assert.deepEqual(calls.tabsUpdate, [{ tabId: 42, upd: { url: "https://example.com" } }]);
   assert.match(res.content[0].text, /example\.com/);
+});
+
+// --- tab management: new_tab / switch_tab -----------------------------------
+
+test("katashiro.new_tab opens an active tab at a URL and snapshots it", async () => {
+  const { deps: d, calls } = deps({ createdTab: { id: 99, windowId: 7, url: "https://new/" }, tabsList: [{ id: 42, windowId: 7, url: "https://t/" }, { id: 99, windowId: 7, url: "https://new/" }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.new_tab", arguments: { url: "https://new/" } },
+    d
+  );
+  assert.deepEqual(calls.tabsCreate, [{ active: true, url: "https://new/" }]);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /opened new tab \[1\] \(now active\) — https:\/\/new\//);
+  assert.match(res.content[0].text, /# snapshot/);            // switched to a scriptable page ⇒ snapshot
+});
+
+test("katashiro.new_tab in the background does not steal focus or snapshot", async () => {
+  const { deps: d, calls } = deps({ createdTab: { id: 99, windowId: 7, url: "https://bg/" } });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.new_tab", arguments: { url: "https://bg/", active: false } },
+    d
+  );
+  assert.deepEqual(calls.tabsCreate, [{ active: false, url: "https://bg/" }]);
+  assert.match(res.content[0].text, /\(background\)/);
+  assert.doesNotMatch(res.content[0].text, /# snapshot/);      // background ⇒ no snapshot
+});
+
+test("katashiro.new_tab with no url opens a blank tab (no snapshot)", async () => {
+  const { deps: d, calls } = deps({ createdTab: { id: 99, windowId: 7, url: "chrome://newtab/" } });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.new_tab", arguments: {} },
+    d
+  );
+  assert.deepEqual(calls.tabsCreate, [{ active: true }]);      // no url key
+  assert.match(res.content[0].text, /\(new tab page\)/);
+  assert.doesNotMatch(res.content[0].text, /# snapshot/);
+});
+
+test("katashiro.new_tab works even when the active tab is a chrome:// page", async () => {
+  // sessionScope bypasses the active-tab origin pre-flight that would reject page tools here.
+  const { deps: d, calls } = deps({ tabUrl: "chrome://settings/", createdTab: { id: 99, windowId: 7, url: "https://ok/" }, tabsList: [{ id: 99, windowId: 7, url: "https://ok/" }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.new_tab", arguments: { url: "https://ok/" } },
+    d
+  );
+  assert.equal(res.isError, undefined);
+  assert.equal(calls.tabsCreate.length, 1);
+});
+
+test("katashiro.switch_tab by index activates the tab and focuses its window", async () => {
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a/", title: "A" },
+    { id: 55, windowId: 8, url: "https://b/", title: "B" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.switch_tab", arguments: { index: 1 } },
+    d
+  );
+  assert.deepEqual(calls.tabsUpdate, [{ tabId: 55, upd: { active: true } }]);
+  assert.deepEqual(calls.windowsUpdate, [{ windowId: 8, o: { focused: true } }]);
+  assert.match(res.content[0].text, /switched to tab \[1\] — B — https:\/\/b\//);
+});
+
+test("katashiro.switch_tab by url substring picks the first match", async () => {
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a.example/", title: "A" },
+    { id: 55, windowId: 7, url: "https://mail.google.com/", title: "Mail" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.switch_tab", arguments: { url: "mail.google" } },
+    d
+  );
+  assert.deepEqual(calls.tabsUpdate, [{ tabId: 55, upd: { active: true } }]);
+  assert.match(res.content[0].text, /switched to tab \[1\] — Mail/);
+});
+
+test("katashiro.switch_tab with an out-of-range index is a clean error", async () => {
+  const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.switch_tab", arguments: { index: 9 } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /out of range/);
+  assert.equal(calls.tabsUpdate.length, 0);                    // nothing activated
+});
+
+test("katashiro.switch_tab with no index or url is a clean error", async () => {
+  const { deps: d } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.switch_tab", arguments: {} },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /needs an `index`.*or a `url`/);
+});
+
+test("katashiro.new_tab is a write — refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.new_tab", arguments: { url: "https://x/" } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /act mode is off/);
+  assert.equal(calls.tabsCreate.length, 0);                    // gated before any browser call
+});
+
+test("katashiro.tabs lists tabs even when the active tab is a chrome:// page", async () => {
+  // Regression: tabs is sessionScope, so listing no longer requires a scriptable active tab.
+  const { deps: d } = deps({ tabUrl: "chrome://newtab/", tabsList: [{ id: 42, windowId: 7, url: "https://a/", title: "A", active: true }] });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.tabs", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /\[0\] A — https:\/\/a\//);
 });
 
 test("tools/call fires onToolCall start→done with a shared callId on success", async () => {
@@ -451,21 +586,23 @@ test("reload with bypassCache does a hard reload", async () => {
 
 // --- act mode: the write consent gate ---------------------------------------
 
-// Which tools mutate the page is a registry fact, so assert it there rather than restating
-// the list in every gate test below.
+// Which tools mutate state (the page, or the browser's tabs) is a registry fact, so assert it
+// there rather than restating the list in every gate test below.
 const WRITE_TOOLS = Object.entries(BrowserMcp.TOOLS)
   .filter(([, t]) => t.write)
   .map(([name]) => name);
 
-test("exactly the page-mutating tools are marked write", () => {
+test("exactly the mutating tools are marked write", () => {
   assert.deepEqual(WRITE_TOOLS.sort(), [
     "katashiro.click",
     "katashiro.click_text",
     "katashiro.history",
     "katashiro.navigate",
+    "katashiro.new_tab",
     "katashiro.press_key",
     "katashiro.reload",
     "katashiro.select_option",
+    "katashiro.switch_tab",
     "katashiro.type",
     "katashiro.type_text"
   ]);
@@ -614,7 +751,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 18);
+  assert.equal(tools.length, 20);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -813,7 +950,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 18, "the surviving server still answers");
+  assert.equal(k.result.tools.length, 20, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -1005,7 +1142,7 @@ test("click_text: refused (isError) when no Jev token is set", async () => {
   assert.match(res.content[0].text, /needs a Jev token/);
 });
 
-test("click_text: is advertised in the tool registry (16 tools total)", () => {
+test("click_text: is advertised in the tool registry (18 tools total)", () => {
   assert.ok(BrowserMcp.TOOLS["katashiro.click_text"], "click_text is registered");
   assert.equal(BrowserMcp.TOOLS["katashiro.click_text"].write, true, "click_text is a write tool (act-gated)");
 });
