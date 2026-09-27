@@ -45,6 +45,9 @@
    * @property {string} description  human-readable, shown to the agent
    * @property {object} inputSchema  JSON Schema for the `arguments` object
    * @property {boolean} [write]     mutates the page — refused unless act mode is on
+   * @property {boolean} [sessionScope]  acts on the browser (tabs/windows), not the active page's
+   *   DOM — so it skips the active-tab resolution + origin pre-flight and resolves its own targets.
+   *   Its ctx has no `tab`.
    * @property {(args: object, ctx: ToolContext) => Promise<CallToolResult>} call
    */
 
@@ -648,8 +651,12 @@
     "katashiro.tabs": {
       description:
         "List all open browser tabs across every window (index, title, URL, and which is active). " +
-        "Read-only. katashiro's other tools act on the active tab; `index` is enumeration order, not a " +
-        "tab id, and there is no tab-switch tool yet.",
+        "Read-only. katashiro's other tools act on the active tab; the `[index]` shown is a live " +
+        "enumeration order (not a stable tab id) — pass it to `switch_tab` to change the active tab, " +
+        "or use `new_tab` to open one.",
+      // sessionScope: the browsing context is a browser-level fact, not the active page's — so this
+      // still works when the active tab is a chrome:// / blank page with no scriptable origin.
+      sessionScope: true,
       inputSchema: { type: "object", properties: {} },
       /** @param {object} _args (none) */
       async call(_args, ctx) {
@@ -660,6 +667,88 @@
         const tabs = await ctx.chrome.tabs.query({});
         if (!tabs.length) return okText("(no tabs)");
         return okText(tabs.map((t, i) => `${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}`).join("\n"));
+      }
+    },
+
+    "katashiro.new_tab": {
+      description:
+        "Open a new browser tab and, by default, switch to it so subsequent tools act on it. Pass a " +
+        "`url` to load a page; omit it for a blank New Tab page. Set `active: false` to open it in the " +
+        "background without stealing focus. Returns the new tab's index plus — when it switched to a " +
+        "scriptable http(s) page — the post-open snapshot. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "absolute URL to open; omit for a blank tab" },
+          active: { type: "boolean", description: "switch to the new tab (default true)" }
+        }
+      },
+      /** @param {{ url?: string, active?: boolean }} args */
+      async call(args, ctx) {
+        const makeActive = args.active !== false;               // default true
+        const url = (args.url != null && String(args.url).trim() !== "") ? String(args.url).trim() : null;
+        const created = { active: makeActive };
+        if (url) created.url = url;
+        const tab = await ctx.chrome.tabs.create(created);
+        // Report the index in the same enumeration `tabs` / `switch_tab` use, so the three agree.
+        const all = await ctx.chrome.tabs.query({});
+        const index = all.findIndex((t) => t.id === tab.id);
+        const label = `opened new tab [${index}]${makeActive ? " (now active)" : " (background)"} — ${url || "(new tab page)"}`;
+        // Snapshot only when we actually switched to a scriptable page — that's where the agent's
+        // next action lands. A background tab, blank tab, or chrome:// URL carries no snapshot.
+        if (makeActive && url && pageOrigin(url)) {
+          await waitForComplete(ctx.chrome, tab.id);
+          return okText(`${label}\n\n${await snapshotAfter(ctx.chrome, tab.id)}`);
+        }
+        return okText(label);
+      }
+    },
+
+    "katashiro.switch_tab": {
+      description:
+        "Switch to (activate) an already-open tab so subsequent tools act on it. Identify it by " +
+        "`index` from a fresh `tabs` listing, or by `url` (the first tab whose URL contains this " +
+        "substring — more stable than an index, which shifts as tabs open and close). Focuses the tab " +
+        "and its window; returns the now-active tab plus, for a scriptable http(s) page, its snapshot. " +
+        "Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "tab index from a fresh `tabs` listing" },
+          url: { type: "string", description: "substring of the target tab's URL (alternative to index)" }
+        }
+      },
+      /** @param {{ index?: number, url?: string }} args */
+      async call(args, ctx) {
+        const all = await ctx.chrome.tabs.query({});
+        if (!all.length) return errText("no open tabs to switch to");
+        let target = null;
+        const needle = (args.url != null) ? String(args.url).trim() : "";
+        if (needle) {
+          target = all.find((t) => (t.url || "").includes(needle));
+          if (!target) return errText(`no open tab whose URL contains "${needle}" — call tabs to see what's open`);
+        } else if (Number.isInteger(args.index)) {
+          if (args.index < 0 || args.index >= all.length) {
+            return errText(`tab index ${args.index} is out of range (0..${all.length - 1}) — call tabs for the current list`);
+          }
+          target = all[args.index];
+        } else {
+          return errText("switch_tab needs an `index` (from tabs) or a `url` substring to identify the tab");
+        }
+        await ctx.chrome.tabs.update(target.id, { active: true });
+        // The tab may live in a background window; focus that window too, else "active" is invisible.
+        // chrome.windows is absent under `node --test`, so a missing API is not a failure.
+        if (target.windowId != null && ctx.chrome.windows && ctx.chrome.windows.update) {
+          try { await ctx.chrome.windows.update(target.windowId, { focused: true }); } catch { /* best-effort focus */ }
+        }
+        const idx = all.findIndex((t) => t.id === target.id);
+        const label = `switched to tab [${idx}] — ${target.title || "(untitled)"} — ${target.url || ""}`;
+        if (pageOrigin(target.url)) return okText(`${label}\n\n${await snapshotAfter(ctx.chrome, target.id)}`);
+        return okText(label);
       }
     },
 
@@ -986,6 +1075,13 @@
     // Consent before environment: a refused write should say it was refused, not report
     // whatever tab trouble it would have hit had it been allowed to run.
     if (tool.write && !deps.actMode) return errText(ACT_MODE_OFF);
+    // Session-level tools (list / open / switch tabs) act on the browser, not a specific page's
+    // DOM, so they neither need nor are constrained by the current active tab's origin — a
+    // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
+    if (tool.sessionScope) {
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken };
+      return await tool.call(args, ctx);
+    }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
     // "no active browser tab" diagnosis ahead of any per-tool failure.
     const tab = await activeTab(chrome);
