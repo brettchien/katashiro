@@ -402,6 +402,12 @@ test("configSyncState: a failed sync write reports local-only, regardless of oth
 test("configSyncState: still on defaults (no stored config yet) reports waiting", () => {
   assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: true }), "waiting");
 });
+test("configSyncState: still on defaults after the wait window reports empty (nothing synced exists)", () => {
+  assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: true, waitExpired: true }), "empty");
+  // A failed write still wins; a config that arrived (not on defaults) is synced even after the window.
+  assert.equal(RoomCore.configSyncState({ writeFailed: true, runningOnDefaults: true, waitExpired: true }), "local");
+  assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: false, waitExpired: true }), "synced");
+});
 test("configSyncState: a stored config with a good write reports synced; missing state is synced", () => {
   assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: false }), "synced");
   assert.equal(RoomCore.configSyncState(undefined), "synced");

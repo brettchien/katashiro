@@ -349,6 +349,7 @@ body {
 }
 .sync-badge.waiting { animation: sync-pulse 1.6s ease-in-out infinite; }
 @keyframes sync-pulse { 50% { opacity: 0.35; } }
+.sync-badge.empty { opacity: 0.6; }
 
 /* Main Area & Views */
 .app-main {

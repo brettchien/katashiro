@@ -717,8 +717,12 @@ loadBuildInfo();
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 
 // --- Config storage: chrome.storage.sync (follows the Google account) --------
-// Config — agents, tokens, room config, active agent, Jev key — lives in storage.sync so it
-// survives uninstall/reinstall and syncs across devices signed into the same Chrome profile.
+// Config — agents, tokens, room config, active agent, Jev key — lives in storage.sync so it syncs
+// across devices signed into the same Chrome profile (with Chrome sync + Extensions enabled).
+// It does NOT survive removing the extension: on uninstall Chrome clears the extension's sync
+// storage and sends a DELETE for every synced key to the server (Chromium
+// SyncStorageBackend::DeleteStorage → SyncableSettingsStorage::Clear → ACTION_DELETE). Upgrade an
+// unpacked install with chrome://extensions ↻ reload, which keeps storage — never remove + re-add.
 // Session ids + scrollback stay in storage.session (per-window, ephemeral — never synced).
 // NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
 // ws://localhost) may need adjusting on another machine.
@@ -752,6 +756,9 @@ let userEdited = false;
 // the last successful one land.
 let syncWriteFailed = false;
 let lastSyncWriteAt = null;
+// How long to show ⏳ while waiting for a synced config before concluding none exists (📭).
+const SYNC_WAIT_MS = 20000;
+let syncWaitExpired = false;
 
 // Paint the header config-sync badge. chrome.storage.sync gives no "uploaded to Google" signal, so
 // the tooltip is explicit that ☁️ means "in Chrome's sync storage", and cloud delivery depends on
@@ -759,19 +766,28 @@ let lastSyncWriteAt = null;
 function renderSyncBadge() {
   const el = document.getElementById("sync-badge");
   if (!el) return;
-  const state = RoomCore.configSyncState({ writeFailed: syncWriteFailed, runningOnDefaults });
+  const state = RoomCore.configSyncState({
+    writeFailed: syncWriteFailed, runningOnDefaults, waitExpired: syncWaitExpired,
+  });
   el.hidden = false;
-  el.classList.remove("synced", "waiting", "local");
+  el.classList.remove("synced", "waiting", "empty", "local");
   el.classList.add(state);
   if (state === "local") {
     el.textContent = "⚠️";
     el.title = "設定同步寫入失敗（可能超過 Chrome 同步容量），目前只存在這台機器 —— 重裝會遺失。";
     return;
   }
+  if (state === "empty") {
+    el.textContent = "📭";
+    el.title = "雲端沒有找到 katashiro 的設定。第一次使用：直接設定，之後就會開始同步。" +
+      "若是移除後重裝：移除 extension 時 Chrome 會一併刪除它的同步資料（設計如此），無法還原 —— " +
+      "之後升級請用 chrome://extensions 的 ↻ 重新載入，不要移除。";
+    return;
+  }
   if (state === "waiting") {
     el.textContent = "⏳";
-    el.title = "尚無已儲存的設定，目前用預設值。若剛重裝：正在等 Google 帳號的同步設定下載，幾秒內會自動還原；" +
-      "若是第一次使用：設定後就會開始同步。";
+    el.title = "尚無已儲存的設定，目前用預設值。正在確認 Google 帳號是否有已同步的設定" +
+      "（例如在新裝置第一次載入），有的話幾秒內會自動套用。";
     return;
   }
   el.textContent = "☁️";
@@ -810,6 +826,11 @@ loadConfig().then(async (r) => {
     // because the Google copy hasn't arrived yet, and writing defaults would overwrite it
     // (last-write-wins). A real stored config is safe to re-save (normalizes the legacy wsUrl).
     if (RoomCore.shouldPersistOnStartup(r)) persist();
+    // On defaults: give the synced copy a window to arrive, then stop pulsing and say plainly that
+    // nothing synced exists (a late arrival still flips it to ☁️ via the onChanged listener).
+    if (runningOnDefaults) {
+      setTimeout(() => { syncWaitExpired = true; renderSyncBadge(); }, SYNC_WAIT_MS);
+    }
     renderSyncBadge();
 
     switchView("chat");
