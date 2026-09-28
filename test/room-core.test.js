@@ -369,3 +369,27 @@ test("promptFailureAction: non-dead reason → error (surface with retry), any s
   assert.equal(RoomCore.promptFailureAction(false, true), "error");
   assert.equal(RoomCore.promptFailureAction(false, false), "error");
 });
+
+// --- config storage policy: don't clobber the Google-synced copy on reinstall --------------
+test("hasStoredConfig: agents list or legacy wsUrl count as stored; empty/missing do not", () => {
+  assert.equal(RoomCore.hasStoredConfig({ agents: [{ name: "a", url: "ws://x" }] }), true);
+  assert.equal(RoomCore.hasStoredConfig({ wsUrl: "ws://x" }), true);
+  assert.equal(RoomCore.hasStoredConfig({ agents: [] }), false);
+  assert.equal(RoomCore.hasStoredConfig({}), false);
+  assert.equal(RoomCore.hasStoredConfig(null), false);
+});
+
+test("shouldPersistOnStartup: never write defaults back (sync may not have downloaded yet)", () => {
+  assert.equal(RoomCore.shouldPersistOnStartup({}), false);                       // empty → defaults
+  assert.equal(RoomCore.shouldPersistOnStartup({ agents: [{ url: "ws://x" }] }), true);
+  assert.equal(RoomCore.shouldPersistOnStartup({ wsUrl: "ws://x" }), true);       // legacy → normalize
+});
+
+test("shouldAdoptRemoteConfig: adopt a late sync only while on defaults and untouched", () => {
+  const remote = { agents: [{ url: "ws://x" }] };
+  assert.equal(RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults: true, userEdited: false, remote }), true);
+  assert.equal(RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults: true, userEdited: true, remote }), false);   // local edit wins
+  assert.equal(RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults: false, userEdited: false, remote }), false); // already have real config
+  assert.equal(RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults: true, userEdited: false, remote: {} }), false); // nothing real arrived
+  assert.equal(RoomCore.shouldAdoptRemoteConfig(undefined), false);
+});

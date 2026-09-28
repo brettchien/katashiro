@@ -743,23 +743,38 @@ function loadConfig() {
   });
 }
 
+// True while the in-memory config is the built-in default because storage had nothing yet (e.g.
+// the Google-synced copy hadn't downloaded after a reinstall). Cleared once a real config lands.
+let runningOnDefaults = false;
+// Set by the first local config write (any user edit). A local edit always beats a late sync.
+let userEdited = false;
+
+// Load a stored (or empty → default) config object into the live state.
+function applyConfig(r) {
+  if (Array.isArray(r.agents) && r.agents.length) {
+    agents = r.agents;
+  } else if (r.wsUrl) {
+    agents = [{ name: "OpenAB", url: r.wsUrl }];
+  } else {
+    agents = [{ ...DEFAULT_AGENT }];
+  }
+  activeAgentUrl = RoomCore.resolveActiveUrl(agents, r.activeAgentUrl); // single-active
+  roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
+  loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
+  // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
+  // is the one you fall back into.
+  actMode = r.actMode === true;
+  jevToken = (r.jevToken || "").trim();
+}
+
 // --- Startup -----------------------------------------------------------------
 loadConfig().then(async (r) => {
-    if (Array.isArray(r.agents) && r.agents.length) {
-      agents = r.agents;
-    } else if (r.wsUrl) {
-      agents = [{ name: "OpenAB", url: r.wsUrl }];
-    } else {
-      agents = [{ ...DEFAULT_AGENT }];
-    }
-    activeAgentUrl = RoomCore.resolveActiveUrl(agents, r.activeAgentUrl); // single-active
-    roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
-    loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
-    // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
-    // is the one you fall back into.
-    actMode = r.actMode === true;
-    jevToken = (r.jevToken || "").trim();
-    persist();
+    applyConfig(r);
+    runningOnDefaults = !RoomCore.hasStoredConfig(r);
+    // Never write the defaults back on startup: on a fresh install sync can still be empty only
+    // because the Google copy hasn't arrived yet, and writing defaults would overwrite it
+    // (last-write-wins). A real stored config is safe to re-save (normalizes the legacy wsUrl).
+    if (RoomCore.shouldPersistOnStartup(r)) persist();
 
     switchView("chat");
     await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
@@ -769,7 +784,31 @@ loadConfig().then(async (r) => {
   }
 );
 
+// The synced config can land a few seconds after startup (reinstall, new device). While we are
+// still on defaults and the user hasn't touched anything, adopt it and reconnect — so the panel
+// recovers without a reopen. Once the user edits locally, their edit wins over the late arrival.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "sync" || !CONFIG_KEYS.some((k) => k in changes)) return;
+  chrome.storage.sync.get(CONFIG_KEYS, (remote) => {
+    if (!RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults, userEdited, remote })) return;
+    runningOnDefaults = false;
+    applyConfig(remote);
+    buildRoom();
+    connectAll();
+    updateRoster();
+    if (settingsView && settingsView.classList.contains("active")) {
+      renderRoomConfig();
+      renderActMode();
+      renderAgentList();
+      if (jevTokenInput) jevTokenInput.value = jevToken;
+    }
+    appendSystemMessage("已從 Google 帳號同步還原設定。");
+  });
+});
+
 function persist() {
+  userEdited = true;
+  runningOnDefaults = false;           // whatever is in memory now is intentional, not a placeholder
   const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken };
   chrome.storage.sync.set(cfg, () => {
     if (chrome.runtime.lastError) {

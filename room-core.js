@@ -160,6 +160,28 @@
   //       likely still running server-side, so re-sending would DUPLICATE it. Cancel + let the user
   //       retry; never auto-re-send into a live session.
   //   - anything else                → "error": a genuine failure to surface with a retry button.
+  // --- Config storage policy (Google-synced config) ---------------------------
+  // Does a loaded config carry real, user-set data — as opposed to nothing, which means the caller
+  // falls back to defaults? Same shape test the loader uses (agents list, or the legacy wsUrl).
+  function hasStoredConfig(cfg) {
+    return !!cfg && ((Array.isArray(cfg.agents) && cfg.agents.length > 0) || !!cfg.wsUrl);
+  }
+
+  // Startup write-back: only write back a config that actually came from storage. On a fresh
+  // (re)install chrome.storage.sync is often still empty because the Google copy hasn't downloaded
+  // yet — writing the defaults then would overwrite that copy (sync is last-write-wins), which is how
+  // settings were lost across uninstall/reinstall.
+  function shouldPersistOnStartup(loaded) {
+    return hasStoredConfig(loaded);
+  }
+
+  // A synced config that arrives AFTER startup: adopt it only while we are still running on
+  // defaults and the user hasn't changed anything locally since — a local edit always wins.
+  function shouldAdoptRemoteConfig(state) {
+    const s = state || {};
+    return !!s.runningOnDefaults && !s.userEdited && hasStoredConfig(s.remote);
+  }
+
   function promptFailureAction(deadProbe, socketOpen) {
     if (deadProbe && !socketOpen) return "requeue";
     if (deadProbe) return "cancel";
@@ -298,6 +320,9 @@
     batchPrompts,
     isDeadProbeReason,
     promptFailureAction,
+    hasStoredConfig,
+    shouldPersistOnStartup,
+    shouldAdoptRemoteConfig,
     shouldProbe,
     onProbeTimeoutDecision,
     roomStatus,
