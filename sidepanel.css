@@ -337,6 +337,19 @@ body {
   transform: translateY(-1px);
 }
 
+/* Config sync status (☁️ / ⏳ / ⚠️) — informational, so a plain glyph with a tooltip rather than a
+   button (no gear-style spin on hover). */
+.sync-badge {
+  font-size: 15px;
+  line-height: 1;
+  padding: 6px 4px;
+  cursor: help;
+  opacity: 0.85;
+  user-select: none;
+}
+.sync-badge.waiting { animation: sync-pulse 1.6s ease-in-out infinite; }
+@keyframes sync-pulse { 50% { opacity: 0.35; } }
+
 /* Main Area & Views */
 .app-main {
   flex: 1;

@@ -393,3 +393,16 @@ test("shouldAdoptRemoteConfig: adopt a late sync only while on defaults and unto
   assert.equal(RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults: true, userEdited: false, remote: {} }), false); // nothing real arrived
   assert.equal(RoomCore.shouldAdoptRemoteConfig(undefined), false);
 });
+
+// --- config-sync badge state ------------------------------------------------------------------
+test("configSyncState: a failed sync write reports local-only, regardless of other state", () => {
+  assert.equal(RoomCore.configSyncState({ writeFailed: true, runningOnDefaults: false }), "local");
+  assert.equal(RoomCore.configSyncState({ writeFailed: true, runningOnDefaults: true }), "local");
+});
+test("configSyncState: still on defaults (no stored config yet) reports waiting", () => {
+  assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: true }), "waiting");
+});
+test("configSyncState: a stored config with a good write reports synced; missing state is synced", () => {
+  assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: false }), "synced");
+  assert.equal(RoomCore.configSyncState(undefined), "synced");
+});

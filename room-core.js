@@ -182,6 +182,18 @@
     return !!s.runningOnDefaults && !s.userEdited && hasStoredConfig(s.remote);
   }
 
+  // Config-sync badge state — what the extension can actually OBSERVE. chrome.storage.sync exposes
+  // no "uploaded to Google" signal, so this reports the local sync-area write, never cloud delivery:
+  //   "local"   — the last write to storage.sync failed (e.g. quota) and fell back to storage.local
+  //   "waiting" — no stored config yet: running on defaults, waiting for the synced copy to arrive
+  //   "synced"  — config lives in storage.sync
+  function configSyncState(state) {
+    const s = state || {};
+    if (s.writeFailed) return "local";
+    if (s.runningOnDefaults) return "waiting";
+    return "synced";
+  }
+
   function promptFailureAction(deadProbe, socketOpen) {
     if (deadProbe && !socketOpen) return "requeue";
     if (deadProbe) return "cancel";
@@ -323,6 +335,7 @@
     hasStoredConfig,
     shouldPersistOnStartup,
     shouldAdoptRemoteConfig,
+    configSyncState,
     shouldProbe,
     onProbeTimeoutDecision,
     roomStatus,

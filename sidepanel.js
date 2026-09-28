@@ -748,6 +748,41 @@ function loadConfig() {
 let runningOnDefaults = false;
 // Set by the first local config write (any user edit). A local edit always beats a late sync.
 let userEdited = false;
+// Config-sync badge inputs: did the last storage.sync write fail (fell back to local), and when did
+// the last successful one land.
+let syncWriteFailed = false;
+let lastSyncWriteAt = null;
+
+// Paint the header config-sync badge. chrome.storage.sync gives no "uploaded to Google" signal, so
+// the tooltip is explicit that ☁️ means "in Chrome's sync storage", and cloud delivery depends on
+// Chrome sync being signed in with Extensions enabled (verify at chrome://sync-internals).
+function renderSyncBadge() {
+  const el = document.getElementById("sync-badge");
+  if (!el) return;
+  const state = RoomCore.configSyncState({ writeFailed: syncWriteFailed, runningOnDefaults });
+  el.hidden = false;
+  el.classList.remove("synced", "waiting", "local");
+  el.classList.add(state);
+  if (state === "local") {
+    el.textContent = "⚠️";
+    el.title = "設定同步寫入失敗（可能超過 Chrome 同步容量），目前只存在這台機器 —— 重裝會遺失。";
+    return;
+  }
+  if (state === "waiting") {
+    el.textContent = "⏳";
+    el.title = "尚無已儲存的設定，目前用預設值。若剛重裝：正在等 Google 帳號的同步設定下載，幾秒內會自動還原；" +
+      "若是第一次使用：設定後就會開始同步。";
+    return;
+  }
+  el.textContent = "☁️";
+  const when = lastSyncWriteAt
+    ? new Date(lastSyncWriteAt).toLocaleTimeString("zh-TW", { hour: "2-digit", minute: "2-digit" })
+    : "本次啟動未寫入";
+  chrome.storage.sync.getBytesInUse(null, (bytes) => {
+    el.title = `設定已存進 Chrome 同步儲存（${bytes} bytes，上次寫入：${when}）。` +
+      "是否已上傳到 Google 取決於 Chrome 同步設定（需登入並開啟「擴充功能」）—— 要確認請看 chrome://sync-internals。";
+  });
+}
 
 // Load a stored (or empty → default) config object into the live state.
 function applyConfig(r) {
@@ -775,6 +810,7 @@ loadConfig().then(async (r) => {
     // because the Google copy hasn't arrived yet, and writing defaults would overwrite it
     // (last-write-wins). A real stored config is safe to re-save (normalizes the legacy wsUrl).
     if (RoomCore.shouldPersistOnStartup(r)) persist();
+    renderSyncBadge();
 
     switchView("chat");
     await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
@@ -802,6 +838,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       renderAgentList();
       if (jevTokenInput) jevTokenInput.value = jevToken;
     }
+    renderSyncBadge();
     appendSystemMessage("已從 Google 帳號同步還原設定。");
   });
 });
@@ -815,7 +852,12 @@ function persist() {
       // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
       chrome.storage.local.set(cfg);
       console.warn("katashiro: config sync failed, kept local copy:", chrome.runtime.lastError.message);
+      syncWriteFailed = true;
+    } else {
+      syncWriteFailed = false;
+      lastSyncWriteAt = Date.now();
     }
+    renderSyncBadge();
   });
 }
 
