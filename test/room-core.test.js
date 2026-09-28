@@ -304,25 +304,25 @@ test("normalizeMode defaults unknown/empty to mention, passes valid through", ()
 const HB = { heartbeatIntervalMs: 60000, heartbeatTimeoutMs: 5000 }; // heartbeat defaults, appended below
 
 test("defaultRoomConfig is mention mode with the default loop-guard cap", () => {
-  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention", loopGuardCap: 6, ...HB });
+  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention", loopGuardCap: 10, ...HB });
 });
 
 test("normalizeRoomConfig repairs junk and honors valid mode + cap", () => {
-  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention", loopGuardCap: 6, ...HB });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention", loopGuardCap: 6, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention", loopGuardCap: 10, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention", loopGuardCap: 10, ...HB });
   assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "ambient", loopGuardCap: 3 }), { mode: "ambient", loopGuardCap: 3, ...HB });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope", loopGuardCap: 0 }), { mode: "mention", loopGuardCap: 6, ...HB });
+  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope", loopGuardCap: 0 }), { mode: "mention", loopGuardCap: 10, ...HB });
 });
 
 // --- loop guard -------------------------------------------------------------
-test("normalizeCap coerces to a positive int, defaulting junk to 6", () => {
+test("normalizeCap coerces to a positive int, defaulting junk to 10", () => {
   assert.equal(RoomCore.normalizeCap(3), 3);
   assert.equal(RoomCore.normalizeCap("4"), 4);
   assert.equal(RoomCore.normalizeCap(2.9), 2);
-  assert.equal(RoomCore.normalizeCap(0), 6);
-  assert.equal(RoomCore.normalizeCap(-1), 6);
-  assert.equal(RoomCore.normalizeCap("x"), 6);
-  assert.equal(RoomCore.normalizeCap(undefined), 6);
+  assert.equal(RoomCore.normalizeCap(0), 10);
+  assert.equal(RoomCore.normalizeCap(-1), 10);
+  assert.equal(RoomCore.normalizeCap("x"), 10);
+  assert.equal(RoomCore.normalizeCap(undefined), 10);
 });
 
 test("loop guard allows up to cap consecutive agent relays, then blocks", () => {
@@ -353,7 +353,7 @@ test("a human message resets the cascade", () => {
 
 test("loop guard cap defaults on junk and can be re-capped live", () => {
   const g = RoomCore.createLoopGuard("bad");
-  assert.equal(g.state().cap, 6);
+  assert.equal(g.state().cap, 10);
   g.setCap(2);
   assert.equal(g.state().cap, 2);
 });
