@@ -167,10 +167,11 @@
     return !!cfg && ((Array.isArray(cfg.agents) && cfg.agents.length > 0) || !!cfg.wsUrl);
   }
 
-  // Startup write-back: only write back a config that actually came from storage. On a fresh
-  // (re)install chrome.storage.sync is often still empty because the Google copy hasn't downloaded
-  // yet — writing the defaults then would overwrite that copy (sync is last-write-wins), which is how
-  // settings were lost across uninstall/reinstall.
+  // Startup write-back: only write back a config that actually came from storage. On a first load
+  // (e.g. a new device) chrome.storage.sync can still be empty because the Google copy hasn't
+  // downloaded yet — writing the defaults then would overwrite that copy (sync is last-write-wins).
+  // (Removing the extension is a different case: Chrome deletes its synced keys server-side on
+  // uninstall, so there is nothing to recover — see the config-storage note in sidepanel.js.)
   function shouldPersistOnStartup(loaded) {
     return hasStoredConfig(loaded);
   }
@@ -186,11 +187,13 @@
   // no "uploaded to Google" signal, so this reports the local sync-area write, never cloud delivery:
   //   "local"   — the last write to storage.sync failed (e.g. quota) and fell back to storage.local
   //   "waiting" — no stored config yet: running on defaults, waiting for the synced copy to arrive
+  //   "empty"   — still on defaults after the wait window: nothing synced exists for this extension
+  //               (first use, or the extension was removed — Chrome deletes synced keys on uninstall)
   //   "synced"  — config lives in storage.sync
   function configSyncState(state) {
     const s = state || {};
     if (s.writeFailed) return "local";
-    if (s.runningOnDefaults) return "waiting";
+    if (s.runningOnDefaults) return s.waitExpired ? "empty" : "waiting";
     return "synced";
   }
 
