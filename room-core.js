@@ -96,7 +96,7 @@
   // chime in. The actual routing lives in resolveTargets(); this is the config layer the
   // settings UI persists.
   const MODES = ["mention", "ambient"];
-  const DEFAULT_LOOP_GUARD_CAP = 6;
+  const DEFAULT_LOOP_GUARD_CAP = 10;
 
   // Tunnel-liveness heartbeat defaults (ADR browser-tunnel-liveness §5). Interval = how often to
   // probe the socket; timeout = how long to wait for the gateway's reply before calling it dead.
