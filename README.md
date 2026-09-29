@@ -175,6 +175,12 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 > `chrome://extensions/`, then **close and reopen the Side Panel** — the reload button alone does
 > not refresh an already-open panel.
 
+> **Settings sync:** config lives in `chrome.storage.sync`, so it follows your Google account to
+> every Chrome with sync (Extensions) on. `manifest.json` pins the extension ID
+> (`hgilgjleemnjgehpgikeonbijpjgapmf`) via `key`, so every install shares that config no matter
+> which folder it's loaded from. **Don't remove the extension to upgrade** — Chrome deletes an
+> extension's synced settings on removal; use ↻ reload instead.
+
 ### Launch & connect
 
 1. Click the **Katashiro** toolbar icon to open the Side Panel (pin it for easy access).

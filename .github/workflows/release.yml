@@ -43,7 +43,7 @@ jobs:
           zip -r "katashiro-${VERSION}.zip" \
             manifest.json background.js build-info.json \
             sidepanel.html sidepanel.css sidepanel.js \
-            browser-mcp.js room-core.js markdown.js \
+            browser-mcp.js room-core.js markdown.js jev-grounding.js \
             page vendor \
             icon.png icon16.png icon32.png icon48.png icon128.png
 
