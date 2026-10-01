@@ -20,7 +20,7 @@ Under this system:
 
 ## 🌟 Key Features
 
-- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **18 DOM-semantic browser tools** (8 read + 10 write — `snapshot`, `read_dom`, `get_text`, `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`, `click`, `click_text`, `type`, `select_option`, `press_key`, `navigate`, `history`, `reload`, `new_tab`, `switch_tab`) — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`/`new_tab`/`switch_tab`) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **19 DOM-semantic browser tools** (8 read + 11 write — `snapshot`, `read_dom`, `get_text`, `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`, `click`, `click_text`, `type`, `select_option`, `press_key`, `navigate`, `history`, `reload`, `new_tab`, `switch_tab`, `close_tab`) — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`/`new_tab`/`switch_tab`/`close_tab`) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
 
 - **Rich Chat**: agent and user messages render as **markdown → DOMPurify-sanitized HTML** — GFM tables, **syntax-highlighted** code with one-click **copy**, hardened links. `stop`/retry a turn (ACP `session/cancel`), **chat history + ACP session resume** persisted per window (reopen the panel and the conversation — and the session — continue), and stick-to-bottom auto-scroll with a "jump to latest" pill. A **clear-screen** button (🧹) wipes the on-screen transcript and this window's persisted scrollback while **keeping each agent's ACP session** — the local view resets, the agents don't forget.
 
@@ -99,7 +99,7 @@ Two conventions worth copying:
 
 Most tools act on the **active tab** (`tabs.query({ active: true, lastFocusedWindow: true })`);
 DOM work runs injected in the page via `chrome.scripting.executeScript`. The exception is the
-**tab-management** tools (`tabs`, `new_tab`, `switch_tab`) — they operate on the browser's tab set,
+**tab-management** tools (`tabs`, `new_tab`, `switch_tab`, `close_tab`) — they operate on the browser's tab set,
 not a single page, so they don't require (and aren't blocked by) a scriptable active tab; opening
 or switching a tab is how the agent *changes* which tab is active. A tool that fails — selector
 matched nothing, no active tab — comes back as an MCP result with `isError: true`, not a protocol
@@ -120,6 +120,7 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.tabs` | read | — | Lists **all** open tabs across every window (index, title, URL, active marker) — wider exposure than the active-tab-only tools, by design. The `[index]` is a live enumeration order, not a stable id. |
 | `katashiro.new_tab` | **write** | `url?`, `active?` | Opens a new tab and (default) switches to it so later tools act on it; `active: false` opens it in the background. Returns the new tab's index, plus the snapshot when it switched to a scriptable page. |
 | `katashiro.switch_tab` | **write** | `index`\|`url` | Activates an existing tab — by `index` (from a fresh `tabs`) or by `url` substring (more stable). Focuses the tab and its window; returns the now-active tab, plus its snapshot for a scriptable page. |
+| `katashiro.close_tab` | **write** | `index`\|`url`\|— | Closes a tab — by `index` (from a fresh `tabs`), by `url` substring, or the active tab when neither is given. Refuses to close the last open tab. Indexes shift afterwards; call `tabs` before acting again. |
 | `katashiro.wait_for` | read | `selector`\|`text`, `timeout?` | Polls until the element/text appears (never a fixed sleep), then returns the snapshot. |
 | `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector` | Clicks the element; returns the updated snapshot. Stale-ref checked. |
 | `katashiro.type` | **write** | `ref`+`snapshotId`\|`selector`, `text` | Sets `value` via the native setter (React-safe) or `textContent`, fires `input`+`change`; returns the snapshot. |
