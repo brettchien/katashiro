@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], windowsUpdate: [], insertCSS: [], removeCSS: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], tabsRemove: [], windowsUpdate: [], insertCSS: [], removeCSS: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -33,6 +33,7 @@ function mockChrome(opts = {}) {
         calls.tabsCreate.push(props);
         return opts.createdTab || { id: 99, windowId: 7, url: props.url };
       },
+      remove: async (tabId) => { calls.tabsRemove.push(tabId); },
       goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
       goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       reload: async (tabId, o) => { calls.reload.push({ tabId, o }); },
@@ -137,7 +138,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 25 DOM-semantic browser tools", async () => {
+test("tools/list returns the 26 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -157,6 +158,7 @@ test("tools/list returns the 25 DOM-semantic browser tools", async () => {
     "katashiro.tabs",
     "katashiro.new_tab",
     "katashiro.switch_tab",
+    "katashiro.close_tab",
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
@@ -321,6 +323,87 @@ test("katashiro.switch_tab with no index or url is a clean error", async () => {
   );
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /needs an `index`.*or a `url`/);
+});
+
+test("katashiro.close_tab by index removes that tab", async () => {
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a/", title: "A" },
+    { id: 55, windowId: 8, url: "https://b/", title: "B" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: { index: 1 } },
+    d
+  );
+  assert.deepEqual(calls.tabsRemove, [55]);
+  assert.match(res.content[0].text, /closed tab \[1\] — B — https:\/\/b\//);
+});
+
+test("katashiro.close_tab by url substring closes the first match", async () => {
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a.example/", title: "A" },
+    { id: 55, windowId: 7, url: "https://mail.google.com/", title: "Mail" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: { url: "mail.google" } },
+    d
+  );
+  assert.deepEqual(calls.tabsRemove, [55]);
+  assert.match(res.content[0].text, /closed tab \[1\] — Mail/);
+});
+
+test("katashiro.close_tab with no index or url closes the active tab", async () => {
+  // The mock's active-tab lookup returns id 42.
+  const tabsList = [
+    { id: 55, windowId: 7, url: "https://b/", title: "B" },
+    { id: 42, windowId: 7, url: "https://t/", title: "T", active: true }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: {} },
+    d
+  );
+  assert.deepEqual(calls.tabsRemove, [42]);
+  assert.match(res.content[0].text, /closed tab \[1\] — T/);
+});
+
+test("katashiro.close_tab with an out-of-range index or unmatched url is a clean error", async () => {
+  const tabsList = [{ id: 42, windowId: 7, url: "https://a/" }, { id: 55, windowId: 7, url: "https://b/" }];
+  for (const args of [{ index: 9 }, { url: "nope.example" }]) {
+    const { deps: d, calls } = deps({ tabsList });
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.close_tab", arguments: args }, d);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, /out of range|no open tab whose URL contains/);
+    assert.equal(calls.tabsRemove.length, 0);                  // nothing closed
+  }
+});
+
+test("katashiro.close_tab refuses to close the last open tab", async () => {
+  const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: { index: 0 } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /last open tab/);
+  assert.equal(calls.tabsRemove.length, 0);
+});
+
+test("katashiro.close_tab is a write — refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false, tabsList: [{ id: 42 }, { id: 55 }] });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: { index: 1 } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /act mode is off/);
+  assert.equal(calls.tabsRemove.length, 0);                    // gated before any browser call
 });
 
 test("katashiro.new_tab is a write — refused when act mode is off", async () => {
@@ -606,6 +689,7 @@ test("exactly the mutating tools are marked write", () => {
   assert.deepEqual(WRITE_TOOLS.sort(), [
     "katashiro.click",
     "katashiro.click_text",
+    "katashiro.close_tab",
     "katashiro.fill_form",
     "katashiro.history",
     "katashiro.inject_css",
