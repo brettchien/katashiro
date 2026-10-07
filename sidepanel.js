@@ -138,7 +138,8 @@ class Conn {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
       },
       onStatus: (attached) => this.setBrowserAttached(attached),
-      // Minimal per-tool activity signal (name + outcome, no args) for the chat transcript.
+      // Per-tool activity signal for the chat transcript: name + outcome + MASKED args/summary/ms
+      // (browser-mcp.js applies each tool's redact hook; raw args never reach the UI).
       onToolCall: (info) => this.renderToolActivity(info),
       // Read at dispatch time, not captured at connect time, so flipping the toggle applies to
       // the very next tool call — no reconnect, no stale consent.
@@ -541,9 +542,11 @@ class Conn {
     maybeScroll();
   }
 
-  // Append a compact browser-tool activity marker to the current turn: verb + ⏳/✓/✗ only, no
-  // arguments. It lets the user see that tools ran (and whether they succeeded) during a long,
-  // text-silent tool sequence — distinct from the agent's reply bubble, never confused for text.
+  // Append a compact browser-tool activity marker to the current turn: verb + ⏳/✓/✗. It lets
+  // the user see that tools ran (and whether they succeeded) during a long, text-silent tool
+  // sequence — distinct from the agent's reply bubble, never confused for text. Details stay out
+  // of the strip: hover shows the command + outcome + duration, click expands the full (masked)
+  // arguments and a result excerpt underneath. `info.args` is already masked by browser-mcp.js.
   renderToolActivity(info) {
     if (!info || !info.name || !this.turnActive) return;   // only annotate an in-flight agent turn
     if (!this.stream || !this.stream.bubble) this.startStream();
@@ -555,19 +558,25 @@ class Conn {
       s.toolPills = {};
     }
     const verb = info.name.replace(/^[^.]*\./, "");        // drop the "katashiro." provider prefix
+    let pill;
     if (info.phase === "start") {
-      const pill = document.createElement("span");
+      pill = document.createElement("button");
+      pill.type = "button";
       pill.className = "tool-pill running";
-      pill.textContent = `${verb} ⏳`;                      // verb only — no args/command
+      pill.textContent = `${verb} ⏳`;
+      pill.addEventListener("click", () => toggleToolDetail(s, pill));
       s.toolStrip.appendChild(pill);
       if (info.callId) s.toolPills[info.callId] = pill;
     } else {
-      const pill = (info.callId && s.toolPills[info.callId]) || s.toolStrip.lastElementChild;
+      pill = (info.callId && s.toolPills[info.callId]) || s.toolStrip.lastElementChild;
       if (!pill) return;
       const ok = info.phase !== "error";
       pill.className = `tool-pill ${ok ? "done" : "error"}`;
       pill.textContent = `${verb} ${ok ? "✓" : "✗"}`;
     }
+    pill.toolInfo = { ...info, verb };
+    pill.title = toolTooltip(pill.toolInfo);               // property, not markup
+    if (s.toolDetailPill === pill) renderToolDetail(s, pill); // refresh an open expander on settle
     maybeScroll();
   }
 
@@ -1451,6 +1460,84 @@ function relayAgentReply(originConn, text) {
 }
 
 // --- Rendering helpers -------------------------------------------------------
+// --- Tool pill details (hover tooltip + click expander) ---------------------------
+// Everything here renders via textContent / the `title` property. The arguments arrive already
+// masked by browser-mcp.js (per-tool `redact` hooks); this side never sees raw args.
+
+// `{ref:"e12", button:"right"}` — compact one-line form of the masked arguments.
+function formatToolArgs(v, depth = 0) {
+  if (v === undefined || v === null) return String(v);
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v !== "object") return String(v);
+  if (depth > 3) return "…";
+  if (Array.isArray(v)) return `[${v.map((x) => formatToolArgs(x, depth + 1)).join(", ")}]`;
+  const parts = Object.entries(v)
+    .filter(([, x]) => x !== undefined)
+    .map(([k, x]) => `${/^[A-Za-z_$][\w$]*$/.test(k) ? k : JSON.stringify(k)}:${formatToolArgs(x, depth + 1)}`);
+  return `{${parts.join(", ")}}`;
+}
+
+function toolCommandLine(t) {
+  if (t.args == null) return `${t.verb} (參數未顯示)`;
+  const a = formatToolArgs(t.args);
+  return a === "{}" ? t.verb : `${t.verb} ${a}`;
+}
+
+function toolTooltip(t) {
+  const cmd = toolCommandLine(t);
+  const shortCmd = cmd.length > 200 ? cmd.slice(0, 200) + "…" : cmd;
+  if (t.phase === "start") return `${shortCmd}\n⏳ 執行中…`;
+  const mark = t.phase === "error" ? "✗" : "✓";
+  const ms = typeof t.ms === "number" ? ` · ${t.ms} ms` : "";
+  return `${shortCmd}\n${mark} ${t.summary || (t.phase === "error" ? "失敗" : "完成")}${ms}\n（點擊展開詳情）`;
+}
+
+// One expander per tool strip, shown under it; clicking the open pill again collapses it.
+function toggleToolDetail(s, pill) {
+  if (s.toolDetailPill === pill) {
+    if (s.toolDetail) s.toolDetail.remove();
+    s.toolDetail = null;
+    s.toolDetailPill = null;
+    pill.classList.remove("expanded");
+    return;
+  }
+  if (s.toolDetailPill) s.toolDetailPill.classList.remove("expanded");
+  s.toolDetailPill = pill;
+  pill.classList.add("expanded");
+  renderToolDetail(s, pill);
+}
+
+function renderToolDetail(s, pill) {
+  const t = pill.toolInfo;
+  if (!t) return;
+  if (!s.toolDetail) {
+    s.toolDetail = document.createElement("div");
+    s.toolDetail.className = "tool-detail";
+    s.toolStrip.after(s.toolDetail);
+  }
+  const d = s.toolDetail;
+  d.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "tool-detail-head";
+  const status = t.phase === "start" ? "⏳ 執行中" : t.phase === "error" ? "✗ 失敗" : "✓ 成功";
+  head.textContent = `${t.name} · ${status}${typeof t.ms === "number" ? ` · ${t.ms} ms` : ""}`;
+  const argsLabel = document.createElement("div");
+  argsLabel.className = "tool-detail-label";
+  argsLabel.textContent = "參數";
+  const argsPre = document.createElement("pre");
+  argsPre.textContent = t.args == null ? "(參數未顯示)" : JSON.stringify(t.args, null, 2);
+  d.append(head, argsLabel, argsPre);
+  if (t.phase !== "start") {
+    const resLabel = document.createElement("div");
+    resLabel.className = "tool-detail-label";
+    resLabel.textContent = "結果";
+    const resPre = document.createElement("pre");
+    resPre.textContent = t.preview || t.summary || "(無文字結果)";
+    d.append(resLabel, resPre);
+  }
+  maybeScroll();
+}
+
 function formatTime(timestamp) {
   const date = new Date(timestamp);
   const hours = String(date.getHours()).padStart(2, "0");
