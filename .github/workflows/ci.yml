@@ -1,0 +1,36 @@
+name: ci
+
+# Run the unit tests on every PR and on pushes to main, so a regression is caught before
+# merge — not first at release time (release.yml runs the same tests only on a tag push).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Parse every runtime script, including the ones no test imports (background.js, page/).
+      - name: Syntax check
+        run: |
+          set -euo pipefail
+          for f in *.js page/*.js; do node --check "$f"; done
+
+      - name: Test
+        run: node --test test/*.test.js
