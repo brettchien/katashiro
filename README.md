@@ -20,7 +20,7 @@ Under this system:
 
 ## 🌟 Key Features
 
-- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **18 DOM-semantic browser tools** (8 read + 10 write — `snapshot`, `read_dom`, `get_text`, `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`, `click`, `click_text`, `type`, `select_option`, `press_key`, `navigate`, `history`, `reload`, `new_tab`, `switch_tab`) — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`/`new_tab`/`switch_tab`) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **DOM-semantic browser tools** — reads such as `snapshot`, `read_dom`, `get_text`, `get_selection`, `screenshot`, `scroll`, `hover`, `highlight`, `tabs`, `wait_for`, and act-mode writes such as `click`, `type`, `fill_form`, `select_option`, `upload_file`, `press_key`, `navigate`, `history`, `reload`, `inject_css`, `new_tab`, `switch_tab` — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`/`new_tab`/`switch_tab`) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
 
 - **Rich Chat**: agent and user messages render as **markdown → DOMPurify-sanitized HTML** — GFM tables, **syntax-highlighted** code with one-click **copy**, hardened links. `stop`/retry a turn (ACP `session/cancel`), **chat history + ACP session resume** persisted per window (reopen the panel and the conversation — and the session — continue), and stick-to-bottom auto-scroll with a "jump to latest" pill. A **clear-screen** button (🧹) wipes the on-screen transcript and this window's persisted scrollback while **keeping each agent's ACP session** — the local view resets, the agents don't forget.
 
@@ -46,7 +46,7 @@ Under this system:
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
-- `test/`: `node --test` suites (4 files, 103 tests). No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
+- `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
 - `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
 
 ## 🔌 Serving an MCP server over reverse MCP-over-ACP
@@ -117,17 +117,22 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.screenshot` | read | — | `image/jpeg` at quality 70. JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the tunnel's per-frame cap. |
 | `katashiro.scroll` | read | `to`\|`direction`+`amount?`\|`ref`\|`selector` | Scrolls to reveal content (perception aid — works in read-only). Returns the updated snapshot. |
 | `katashiro.hover` | read | `ref`\|`selector` | Dispatches pointer events to reveal menus/tooltips. Returns the updated snapshot. |
+| `katashiro.highlight` | read | `ref`\|`selector`, `label?`, `durationMs?` \| `clear` | Outlines an element (with a short caption, prefixed `🤖 katashiro`) to point it out to the user. Drawn in katashiro's own closed shadow root — page elements are never modified — ignores the pointer, and expires (default 4 s, max 15 s). |
+| `katashiro.get_selection` | read | — | The text the user has selected, across frames and inside text fields, with the element it sits in. For "explain / translate this". |
 | `katashiro.tabs` | read | — | Lists **all** open tabs across every window (index, title, URL, active marker) — wider exposure than the active-tab-only tools, by design. The `[index]` is a live enumeration order, not a stable id. |
 | `katashiro.new_tab` | **write** | `url?`, `active?` | Opens a new tab and (default) switches to it so later tools act on it; `active: false` opens it in the background. Returns the new tab's index, plus the snapshot when it switched to a scriptable page. |
 | `katashiro.switch_tab` | **write** | `index`\|`url` | Activates an existing tab — by `index` (from a fresh `tabs`) or by `url` substring (more stable). Focuses the tab and its window; returns the now-active tab, plus its snapshot for a scriptable page. |
 | `katashiro.wait_for` | read | `selector`\|`text`, `timeout?` | Polls until the element/text appears (never a fixed sleep), then returns the snapshot. |
-| `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector` | Clicks the element; returns the updated snapshot. Stale-ref checked. |
+| `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector`, `button?` (`left`\|`right`), `doubleClick?` | Clicks the element; `button: "right"` fires `contextmenu` (the page's own menu), `doubleClick` emits two clicks + `dblclick`. Returns the updated snapshot. Stale-ref checked. |
 | `katashiro.type` | **write** | `ref`+`snapshotId`\|`selector`, `text` | Sets `value` via the native setter (React-safe) or `textContent`, fires `input`+`change`; returns the snapshot. |
 | `katashiro.select_option` | **write** | `ref`+`snapshotId`\|`selector`, `value`\|`label` | Selects a `<select>` option by value or visible label; fires `change`; returns the snapshot. |
+| `katashiro.fill_form` | **write** | `snapshotId?`, `fields[]` of `ref`\|`selector` + `value`\|`checked` | Fills up to 50 text fields / textareas / contenteditables / selects / checkboxes / radios in one call. Every field is checked first; one bad field fills nothing. Does not submit. Returns the snapshot. |
+| `katashiro.upload_file` | **write** | `ref`+`snapshotId`\|`selector`, `files[]` of `name` + `text`\|`base64`, `mimeType?` | Attaches agent-supplied files to an `<input type=file>` (hidden inputs included) and fires `input`+`change`; 5 MB total. Returns the snapshot. |
 | `katashiro.press_key` | **write** | `key`, `ref?`+`snapshotId?`\|`selector?` | Dispatches synthetic key events (fires page handlers — Enter/Escape/arrows — not trusted native input). Returns the snapshot. |
 | `katashiro.navigate` | **write** | `url` (absolute) | Navigates the tab, waits for load, returns the snapshot. |
 | `katashiro.history` | **write** | `direction` (`back`\|`forward`) | Goes back/forward in the tab's history; returns the snapshot. |
 | `katashiro.reload` | **write** | `bypassCache?` | Reloads the tab (hard reload if `bypassCache`); waits for load, returns the snapshot. |
+| `katashiro.inject_css` | **write** | `css` \| `clear` | Applies a stylesheet to every frame via `chrome.scripting.insertCSS` (visual only, gone on reload); `clear` removes what katashiro injected. Refuses anything that fetches — `url()`, `image-set()`, `@import`, `@font-face`, … — and CSS escapes, so a sheet cannot exfiltrate page data through attribute selectors. |
 
 ### Act mode — writes are off by default
 
@@ -192,7 +197,7 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 ### Run the tests
 
 ```bash
-node --test test/*.test.js   # 103 tests, no Chrome required (chrome.*/crypto/socket are mocked)
+node --test test/*.test.js   # no Chrome required (chrome.*/crypto/socket are mocked)
 ```
 
 ## 📚 Documentation

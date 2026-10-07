@@ -203,6 +203,29 @@
     "page), so katashiro can neither read nor act on it. Ask the user to switch to a normal " +
     "http(s) web page.";
 
+  // highlight: the caption is short by design (it labels, it does not explain), and the overlay
+  // always expires so a forgotten highlight cannot linger over the user's page.
+  const HIGHLIGHT_LABEL_MAX = 80;
+  const HIGHLIGHT_DEFAULT_MS = 4000;
+  const HIGHLIGHT_MAX_MS = 15000;
+  const SELECTION_MAX = 20000;
+  const FILL_FORM_MAX = 50;
+
+  // upload_file: decoded bytes across all files. The payload already crossed the ACP tunnel as
+  // base64 in the tool arguments, so this mostly keeps one call from wedging the page.
+  const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
+  // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
+  // `@import` / `src()` can leak page state to a remote server through attribute selectors (CSS
+  // exfiltration). Backslashes are refused outright because CSS escapes (`u\72l(`) would slip a
+  // fetching function past a plain-text check.
+  const CSS_MAX = 20000;
+  const CSS_FORBIDDEN = /url\s*\(|src\s*\(|image\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|@import|@font-face|@namespace|\\/i;
+
+  // Stylesheets inject_css has applied, per tab, so `clear` can remove exactly those. A sheet
+  // does not survive a navigation anyway; removing an already-gone one is a harmless no-op.
+  const injectedCss = new Map();
+
   /**
    * The single source of truth for the tools we serve: schema and implementation live in
    * the same entry, so `tools/list` and `tools/call` cannot drift apart — no advertising a
@@ -225,7 +248,9 @@
     "katashiro.click": {
       description:
         "Click an element in the active tab. Prefer `ref` from the most recent snapshot (pass its " +
-        "`snapshotId` too); `selector` is a fallback. Returns the updated snapshot — this return is " +
+        "`snapshotId` too); `selector` is a fallback. Set `button: 'right'` to open the page's own " +
+        "context menu, or `doubleClick: true` for a double-click (synthetic events — they fire page " +
+        "handlers, not the browser's native menu). Returns the updated snapshot — this return is " +
         "current, so do not call `snapshot` or screenshot again right after.",
       write: true,
       inputSchema: {
@@ -233,19 +258,25 @@
         properties: {
           ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
           snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
-          selector: { type: "string", description: "CSS selector fallback" }
+          selector: { type: "string", description: "CSS selector fallback" },
+          button: { type: "string", enum: ["left", "right"], description: "mouse button (default left); right fires contextmenu" },
+          doubleClick: { type: "boolean", description: "double-click instead of a single click (left button only)" }
         }
       },
-      /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string, button?: string, doubleClick?: boolean }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("click needs a ref (preferred) or a selector");
         if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-clicked");
+        const button = args.button || "left";
+        if (button !== "left" && button !== "right") return errText("click `button` must be 'left' or 'right'");
+        if (button === "right" && args.doubleClick) return errText("doubleClick is left-button only — drop `button: 'right'` or `doubleClick`");
+        const mode = button === "right" ? "right" : args.doubleClick ? "double" : "single";
         const { frameId, bare } = parseRef(args.ref);
         const target = { tabId: ctx.tab.id, frameIds: [frameId] };
         await injectWalker(ctx.chrome, target);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target,
-          func: (ref, snapshotId, sel) => {
+          func: (ref, snapshotId, sel, mode) => {
             let el, how;
             if (ref) {
               const r = window.__katashiroResolve(ref, snapshotId);
@@ -263,13 +294,37 @@
             if (!vis) return { ok: false, error: how + " is not visible" };
             if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
             el.scrollIntoView({ block: "center" });
-            el.click();
+            if (mode === "single") {
+              el.click();
+              return { ok: true, how };
+            }
+            // Synthetic sequences carry real coordinates (element centre) because menu / editor
+            // handlers commonly position themselves off clientX/clientY.
+            const box = el.getBoundingClientRect();
+            const at = { bubbles: true, cancelable: true, view: window, clientX: box.left + box.width / 2, clientY: box.top + box.height / 2 };
+            if (mode === "right") {
+              const r = { ...at, button: 2, buttons: 2 };
+              el.dispatchEvent(new PointerEvent("pointerdown", r));
+              el.dispatchEvent(new MouseEvent("mousedown", r));
+              el.dispatchEvent(new PointerEvent("pointerup", { ...r, buttons: 0 }));
+              el.dispatchEvent(new MouseEvent("mouseup", { ...r, buttons: 0 }));
+              el.dispatchEvent(new MouseEvent("contextmenu", r));
+              return { ok: true, how };
+            }
+            // double: two full clicks (detail 1, 2) then dblclick, as a real double-click emits.
+            for (const detail of [1, 2]) {
+              el.dispatchEvent(new MouseEvent("mousedown", { ...at, detail }));
+              el.dispatchEvent(new MouseEvent("mouseup", { ...at, detail }));
+              el.dispatchEvent(new MouseEvent("click", { ...at, detail }));
+            }
+            el.dispatchEvent(new MouseEvent("dblclick", { ...at, detail: 2 }));
             return { ok: true, how };
           },
-          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null]
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, mode]
         });
         if (!result.ok) return errText(result.error);
-        return okText(`clicked ${args.ref ? "ref " + args.ref : result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+        const verb = mode === "right" ? "right-clicked" : mode === "double" ? "double-clicked" : "clicked";
+        return okText(`${verb} ${args.ref ? "ref " + args.ref : result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
@@ -898,6 +953,141 @@
       }
     },
 
+    "katashiro.highlight": {
+      description:
+        "Point something out to the user: draw an outline (and optional short `label`) over an element " +
+        "in the active tab for a few seconds, e.g. 'this is the button I mean' or before a write so the " +
+        "user can see its target. Prefer `ref` from a snapshot; `selector` is a fallback. Pass " +
+        "`clear: true` to remove all highlights. Read-only: the overlay lives in katashiro's own shadow " +
+        "root, never touches the page's elements, ignores the pointer, and expires by itself.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" },
+          label: { type: "string", description: `short caption shown on the outline (max ${HIGHLIGHT_LABEL_MAX} chars)` },
+          durationMs: { type: "number", description: `how long it stays, ms (default ${HIGHLIGHT_DEFAULT_MS}, max ${HIGHLIGHT_MAX_MS})` },
+          clear: { type: "boolean", description: "remove every katashiro highlight instead of adding one" }
+        }
+      },
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string, label?: string, durationMs?: number, clear?: boolean }} args */
+      async call(args, ctx) {
+        if (args.clear) {
+          // Every frame: a ref highlight may live in a child frame the agent no longer remembers.
+          await ctx.chrome.scripting.executeScript({
+            target: { tabId: ctx.tab.id, allFrames: true },
+            func: () => {
+              const o = window.__katashiroOverlay;
+              if (o) { for (const t of o.timers) clearTimeout(t); o.host.remove(); window.__katashiroOverlay = null; }
+              return { ok: true };
+            }
+          });
+          return okText("cleared highlights");
+        }
+        if (!args.ref && !args.selector) return errText("highlight needs a ref (preferred) or a selector, or `clear: true`");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-highlighted");
+        const label = args.label == null ? "" : String(args.label).trim();
+        if (label.length > HIGHLIGHT_LABEL_MAX) return errText(`highlight label is ${label.length} chars; keep it to ${HIGHLIGHT_LABEL_MAX} or fewer`);
+        const ms = Math.min(Math.max(Number(args.durationMs) || HIGHLIGHT_DEFAULT_MS, 500), HIGHLIGHT_MAX_MS);
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel, label, ms) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
+            const vis = typeof el.checkVisibility === "function"
+              ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+              : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+            if (!vis) return { ok: false, error: how + " is not visible" };
+            el.scrollIntoView({ block: "center" });
+            // One host per frame, a closed shadow root inside it: page CSS cannot restyle the
+            // overlay and page script cannot reach into it. Created here, never on the page's nodes.
+            let o = window.__katashiroOverlay;
+            if (!o || !o.host.isConnected) {
+              const host = document.createElement("katashiro-overlay");
+              host.style.cssText = "all: initial; position: absolute; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647; pointer-events: none;";
+              const root = host.attachShadow({ mode: "closed" });
+              document.documentElement.appendChild(host);
+              o = window.__katashiroOverlay = { host, root, timers: [] };
+            }
+            // Document coordinates, so the box scrolls with the element.
+            const b = el.getBoundingClientRect();
+            const box = document.createElement("div");
+            box.style.cssText =
+              `position: absolute; left: ${b.left + window.scrollX - 3}px; top: ${b.top + window.scrollY - 3}px; ` +
+              `width: ${b.width + 6}px; height: ${b.height + 6}px; box-sizing: border-box; ` +
+              "border: 3px solid #f59e0b; border-radius: 4px; pointer-events: none;";
+            // The caption is attributed to katashiro so agent text can never pass as the site's own UI.
+            const cap = document.createElement("div");
+            cap.style.cssText =
+              "position: absolute; left: -3px; bottom: 100%; margin-bottom: 4px; max-width: 320px; padding: 2px 8px; " +
+              "background: #f59e0b; color: #111; font: 600 12px/1.5 system-ui, sans-serif; border-radius: 4px; " +
+              "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;";
+            cap.textContent = "🤖 katashiro" + (label ? " · " + label : "");
+            box.appendChild(cap);
+            o.root.appendChild(box);
+            o.timers.push(setTimeout(() => box.remove(), ms));
+            return { ok: true, how };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, label, ms]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`highlighted ${result.how} for ${ms}ms${label ? ` — "${label}"` : ""}`);
+      }
+    },
+
+    "katashiro.get_selection": {
+      description:
+        "Return the text the user has currently selected (highlighted) in the active tab — across " +
+        "frames and inside text fields — plus the element it sits in. Use it when the user says 'this', " +
+        "'the part I selected', 'explain / translate this'. Read-only. Empty when nothing is selected.",
+      inputSchema: { type: "object", properties: {} },
+      /** @param {object} _args (none) */
+      async call(_args, ctx) {
+        const results = await ctx.chrome.scripting.executeScript({
+          target: { tabId: ctx.tab.id, allFrames: true },
+          func: (max) => {
+            const describe = (n) => {
+              const el = n && (n.nodeType === 1 ? n : n.parentElement);
+              if (!el) return "";
+              const name = el.getAttribute("aria-label") || el.getAttribute("name") || "";
+              return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (name ? ` "${name}"` : "");
+            };
+            // window.getSelection() is blind to selections inside <input>/<textarea>; read those off
+            // the focused field's selection range instead. Never out of a password field.
+            const a = document.activeElement;
+            if (a && (a instanceof HTMLTextAreaElement || (a instanceof HTMLInputElement && a.type !== "password")) &&
+                typeof a.selectionStart === "number" && a.selectionEnd > a.selectionStart) {
+              return { text: a.value.slice(a.selectionStart, a.selectionEnd).slice(0, max), within: describe(a), url: location.href };
+            }
+            const s = window.getSelection();
+            const text = s ? s.toString() : "";
+            if (!text.trim()) return { text: "" };
+            const range = s.rangeCount ? s.getRangeAt(0) : null;
+            return { text: text.slice(0, max), within: describe(range && range.commonAncestorContainer), url: location.href };
+          },
+          args: [SELECTION_MAX]
+        });
+        const hits = (results || []).filter((r) => r && r.result && r.result.text);
+        if (!hits.length) return okText("(nothing is selected — ask the user to highlight the text they mean)");
+        return okText(hits.map((r) => {
+          const where = r.frameId === 0 ? "" : ` [frame f${r.frameId}: ${r.result.url}]`;
+          return `selection in ${r.result.within || "the page"}${where}:\n${r.result.text}`;
+        }).join("\n\n"));
+      }
+    },
+
     "katashiro.select_option": {
       description:
         "Select an option in a <select> dropdown in the active tab. Match by `value` or visible " +
@@ -960,6 +1150,227 @@
       }
     },
 
+    "katashiro.fill_form": {
+      description:
+        "Fill several form fields in one call instead of one `type` per field. Each entry names a field " +
+        "by `ref` (all refs from the same snapshot, given once as `snapshotId`) or `selector`, and gives " +
+        "`value` (text inputs, textareas, contenteditable, <select> by option value or label) or " +
+        "`checked` (checkboxes, radios). All fields are checked first; if any is missing, hidden, " +
+        "disabled or the wrong kind, NOTHING is filled. Does not submit. Returns the updated snapshot.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          snapshotId: { type: "number", description: "the snapshot the refs came from (stale check)" },
+          fields: {
+            type: "array",
+            description: `fields to fill, in order (max ${FILL_FORM_MAX})`,
+            items: {
+              type: "object",
+              properties: {
+                ref: { type: "string", description: "element ref from the snapshot" },
+                selector: { type: "string", description: "CSS selector fallback" },
+                value: { type: "string", description: "text to set, or the option value/label for a <select>" },
+                checked: { type: "boolean", description: "for a checkbox/radio: the state to leave it in" }
+              }
+            }
+          }
+        },
+        required: ["fields"]
+      },
+      /** @param {{ snapshotId?: number, fields: Array<{ ref?: string, selector?: string, value?: string, checked?: boolean }> }} args */
+      async call(args, ctx) {
+        const fields = Array.isArray(args.fields) ? args.fields : [];
+        if (!fields.length) return errText("fill_form needs a non-empty `fields` array");
+        if (fields.length > FILL_FORM_MAX) return errText(`fill_form takes at most ${FILL_FORM_MAX} fields per call`);
+        for (let i = 0; i < fields.length; i++) {
+          const f = fields[i] || {};
+          if (!f.ref && !f.selector) return errText(`field ${i} needs a ref (preferred) or a selector`);
+          if (f.value == null && typeof f.checked !== "boolean") return errText(`field ${i} needs a \`value\` or a boolean \`checked\``);
+        }
+        if (fields.some((f) => f.ref) && args.snapshotId == null) {
+          return errText("refs must carry their snapshotId (from the snapshot they came from) so a stale ref is caught, not silently mis-filled");
+        }
+        // Refs can live in different frames; each frame gets one script run with its own fields.
+        const byFrame = new Map();
+        fields.forEach((f, i) => {
+          const { frameId, bare } = parseRef(f.ref);
+          const entry = { i, ref: f.ref ? bare : null, label: f.ref || f.selector, selector: f.ref ? null : f.selector,
+                          value: f.value == null ? null : String(f.value), checked: typeof f.checked === "boolean" ? f.checked : null };
+          if (!byFrame.has(frameId)) byFrame.set(frameId, []);
+          byFrame.get(frameId).push(entry);
+        });
+        const run = async (apply) => {
+          for (const [frameId, entries] of byFrame) {
+            const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+            await injectWalker(ctx.chrome, target);
+            const [{ result }] = await ctx.chrome.scripting.executeScript({
+              target,
+              func: (entries, snapshotId, apply) => {
+                const plan = [];
+                for (const f of entries) {
+                  const how = `field ${f.i} (${f.label})`;
+                  let el;
+                  if (f.ref) {
+                    const r = window.__katashiroResolve(f.ref, snapshotId);
+                    if (!r.ok) return { ok: false, error: how + ": " + r.error };
+                    el = r.el;
+                  } else {
+                    el = document.querySelector(f.selector);
+                    if (!el) return { ok: false, error: how + ": no element for selector " + f.selector };
+                  }
+                  const vis = typeof el.checkVisibility === "function"
+                    ? el.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })
+                    : el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0;
+                  if (!vis) return { ok: false, error: how + " is not visible" };
+                  if (el.disabled || el.readOnly || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled or read-only" };
+                  const type = el instanceof HTMLInputElement ? el.type : "";
+                  if (type === "checkbox" || type === "radio") {
+                    if (f.checked == null) return { ok: false, error: how + " is a " + type + " — give `checked: true|false`, not a value" };
+                    if (type === "radio" && f.checked === false && el.checked) return { ok: false, error: how + " is a checked radio — a radio is cleared by checking another in its group" };
+                    plan.push({ el, kind: "toggle", want: f.checked });
+                  } else if (type === "file") {
+                    return { ok: false, error: how + " is a file input — use upload_file" };
+                  } else if (el instanceof HTMLSelectElement) {
+                    if (f.value == null) return { ok: false, error: how + " is a <select> — give `value` (option value or label)" };
+                    const opt = Array.from(el.options).find((o) => o.value === f.value) ||
+                                Array.from(el.options).find((o) => o.label === f.value || o.textContent.trim() === f.value);
+                    if (!opt) return { ok: false, error: how + ": no option matching " + JSON.stringify(f.value) };
+                    plan.push({ el, kind: "select", opt });
+                  } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable) {
+                    if (f.value == null) return { ok: false, error: how + " is a text field — give `value`" };
+                    plan.push({ el, kind: "text", text: f.value });
+                  } else {
+                    return { ok: false, error: how + " is not a form field (" + el.tagName.toLowerCase() + ")" };
+                  }
+                }
+                if (!apply) return { ok: true };
+                for (const p of plan) {
+                  if (p.kind === "toggle") {
+                    // A real click, so the page's own handlers (and React's) run and see the change.
+                    if (p.el.checked !== p.want) p.el.click();
+                    continue;
+                  }
+                  if (p.kind === "select") p.el.value = p.opt.value;
+                  else {
+                    p.el.focus();
+                    // Same React-safe native setter as `type`.
+                    const proto = p.el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype
+                                : p.el instanceof HTMLInputElement ? HTMLInputElement.prototype : null;
+                    const d = proto && Object.getOwnPropertyDescriptor(proto, "value");
+                    if (d && d.set) d.set.call(p.el, p.text);
+                    else p.el.textContent = p.text;
+                  }
+                  p.el.dispatchEvent(new Event("input", { bubbles: true }));
+                  p.el.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+                return { ok: true };
+              },
+              args: [entries, args.snapshotId ?? null, apply]
+            });
+            if (!result.ok) return result;
+          }
+          return { ok: true };
+        };
+        // Check every field in every frame before touching any, so a bad entry fills nothing.
+        const checked = await run(false);
+        if (!checked.ok) return errText(`${checked.error} — nothing was filled`);
+        const filled = await run(true);
+        if (!filled.ok) return errText(filled.error);
+        return okText(`filled ${fields.length} field${fields.length === 1 ? "" : "s"}: ${fields.map((f) => f.ref || f.selector).join(", ")}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.upload_file": {
+      description:
+        "Attach file(s) to an <input type=file> in the active tab, with content you supply: each file " +
+        "is a `name` plus either `text` (UTF-8) or `base64` (binary), and an optional `mimeType`. Works " +
+        "on file inputs a site hides behind a styled button. Fires input+change; does not submit. " +
+        `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e5" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback, e.g. input[type=file]" },
+          files: {
+            type: "array",
+            description: "files to attach (more than one only if the input accepts multiple)",
+            items: {
+              type: "object",
+              properties: {
+                name: { type: "string", description: "file name, e.g. report.csv" },
+                mimeType: { type: "string", description: "e.g. text/csv, image/png (default application/octet-stream)" },
+                text: { type: "string", description: "UTF-8 file content" },
+                base64: { type: "string", description: "binary file content, base64-encoded" }
+              },
+              required: ["name"]
+            }
+          }
+        },
+        required: ["files"]
+      },
+      /** @param {{ ref?: string, snapshotId?: number, selector?: string, files: Array<{ name: string, mimeType?: string, text?: string, base64?: string }> }} args */
+      async call(args, ctx) {
+        if (!args.ref && !args.selector) return errText("upload_file needs a ref (preferred) or a selector for the file input");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
+        const files = Array.isArray(args.files) ? args.files : [];
+        if (!files.length) return errText("upload_file needs a non-empty `files` array");
+        let total = 0;
+        for (let i = 0; i < files.length; i++) {
+          const f = files[i] || {};
+          if (!f.name || !String(f.name).trim()) return errText(`file ${i} needs a \`name\``);
+          if ((f.text == null) === (f.base64 == null)) return errText(`file ${i} needs exactly one of \`text\` or \`base64\``);
+          if (f.base64 != null && !/^[A-Za-z0-9+/]*={0,2}$/.test(String(f.base64).replace(/\s+/g, ""))) return errText(`file ${i} \`base64\` is not valid base64`);
+          total += f.text != null
+            ? new TextEncoder().encode(String(f.text)).length
+            : Math.floor(String(f.base64).replace(/\s+/g, "").replace(/=+$/, "").length * 3 / 4);
+        }
+        if (total > UPLOAD_MAX_BYTES) return errText(`files total ${total} bytes; upload_file is capped at ${UPLOAD_MAX_BYTES} bytes`);
+        const payload = files.map((f) => ({
+          name: String(f.name).trim(),
+          type: f.mimeType || "application/octet-stream",
+          text: f.text != null ? String(f.text) : null,
+          base64: f.base64 != null ? String(f.base64).replace(/\s+/g, "") : null
+        }));
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel, files) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            }
+            if (!(el instanceof HTMLInputElement) || el.type !== "file") return { ok: false, error: how + " is not an <input type=file>" };
+            // No visibility check: sites routinely hide the real input behind a styled label.
+            if (el.disabled) return { ok: false, error: how + " is disabled" };
+            if (files.length > 1 && !el.multiple) return { ok: false, error: how + " accepts a single file; got " + files.length };
+            const dt = new DataTransfer();
+            for (const f of files) {
+              const body = f.text != null ? f.text : Uint8Array.from(atob(f.base64), (c) => c.charCodeAt(0));
+              dt.items.add(new File([body], f.name, { type: f.type }));
+            }
+            el.files = dt.files;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, how };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, payload]
+        });
+        if (!result.ok) return errText(result.error);
+        return okText(`attached ${payload.map((f) => f.name).join(", ")} (${total} bytes) to ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
     "katashiro.reload": {
       description:
         "Reload the active tab. Set `bypassCache` for a hard reload that ignores the HTTP cache. " +
@@ -974,6 +1385,45 @@
         await ctx.chrome.tabs.reload(ctx.tab.id, { bypassCache: !!args.bypassCache });
         await waitForComplete(ctx.chrome, ctx.tab.id);
         return okText(`reloaded${args.bypassCache ? " (bypassing cache)" : ""}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.inject_css": {
+      description:
+        "Apply a CSS stylesheet to the active tab (all frames) — e.g. hide distracting banners, enlarge " +
+        "text, make a layout readable. Use `!important` to win over the site's rules. Pass `clear: true` " +
+        "to remove every stylesheet katashiro injected in this tab. Visual only and temporary: it " +
+        "changes no page data and is gone on reload. Sheets that fetch anything (`url()`, `@import`, " +
+        "`image-set()`, `@font-face`, …) and CSS escapes (`\\`) are refused.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          css: { type: "string", description: `the stylesheet text (max ${CSS_MAX} chars)` },
+          clear: { type: "boolean", description: "remove every stylesheet katashiro injected in this tab" }
+        }
+      },
+      /** @param {{ css?: string, clear?: boolean }} args */
+      async call(args, ctx) {
+        const tabId = ctx.tab.id;
+        if (args.clear) {
+          const sheets = injectedCss.get(tabId) || [];
+          for (const css of sheets) {
+            try { await ctx.chrome.scripting.removeCSS({ target: { tabId, allFrames: true }, css }); }
+            catch { /* the page navigated since; the sheet is already gone */ }
+          }
+          injectedCss.delete(tabId);
+          return okText(`removed ${sheets.length} injected stylesheet${sheets.length === 1 ? "" : "s"}`);
+        }
+        const css = args.css == null ? "" : String(args.css);
+        if (!css.trim()) return errText("inject_css needs `css` (or `clear: true`)");
+        if (css.length > CSS_MAX) return errText(`css is ${css.length} chars; inject_css is capped at ${CSS_MAX}`);
+        const bad = CSS_FORBIDDEN.exec(css);
+        if (bad) return errText(`css contains ${JSON.stringify(bad[0])} — inject_css refuses anything that fetches (url/src/image/image-set/@import/@font-face) and CSS escapes, so a stylesheet cannot leak page data`);
+        await ctx.chrome.scripting.insertCSS({ target: { tabId, allFrames: true }, css });
+        if (!injectedCss.has(tabId)) injectedCss.set(tabId, []);
+        injectedCss.get(tabId).push(css);
+        return okText(`injected ${css.length} chars of CSS (call inject_css with clear: true to undo; snapshot to see what is now visible)`);
       }
     }
   };
