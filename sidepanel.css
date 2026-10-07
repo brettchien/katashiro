@@ -663,6 +663,18 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   overflow: auto;
 }
 
+/* The agent's own tool calls (Bash, Edit, … via the gateway's tool_call updates): same pill,
+   indigo-tinted frame so they never read as browser tools; the text keeps the status colour. */
+.tool-pill.agent-tool,
+.tool-pill.agent-tool.done,
+.tool-pill.agent-tool.error {
+  border-color: rgba(129, 140, 248, 0.45);
+  background: rgba(79, 70, 229, 0.12);
+}
+.tool-pill.agent-tool.running { color: #a5b4fc; }
+/* Turn ended before the call reported back (cancel / disconnect): outcome unknown. */
+.tool-pill.stopped { color: var(--text-muted); border-style: dashed; }
+
 .timestamp {
   font-size: 9px;
   color: var(--text-muted);

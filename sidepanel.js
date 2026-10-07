@@ -357,6 +357,8 @@ class Conn {
       const u = msg.params.update;
       if (u.sessionUpdate === "agent_message_chunk" && u.content) {
         this.appendToStream(u.content.text || "");
+      } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+        this.renderAgentToolCall(u);                     // the agent's own tools (Bash, Edit, …)
       }
     }
   }
@@ -378,6 +380,7 @@ class Conn {
     if (!text) return;                                   // nothing sendable (all blank) — stay idle
     this.lastPrompt = text;                              // remember for retry (the whole batch)
     this.turnActive = true;
+    this.skippedToolCalls = new Set();                   // katashiro tool calls seen this turn
     updateStopButton();
     this.startStream();
 
@@ -549,14 +552,7 @@ class Conn {
   // arguments and a result excerpt underneath. `info.args` is already masked by browser-mcp.js.
   renderToolActivity(info) {
     if (!info || !info.name || !this.turnActive) return;   // only annotate an in-flight agent turn
-    if (!this.stream || !this.stream.bubble) this.startStream();
-    const s = this.stream;
-    if (!s.toolStrip) {
-      s.toolStrip = document.createElement("div");
-      s.toolStrip.className = "tool-activity";
-      s.contentEl.insertBefore(s.toolStrip, s.bubble);     // above the reply bubble
-      s.toolPills = {};
-    }
+    const s = this.ensureToolStrip();
     const verb = info.name.replace(/^[^.]*\./, "");        // drop the "katashiro." provider prefix
     let pill;
     if (info.phase === "start") {
@@ -568,7 +564,7 @@ class Conn {
       s.toolStrip.appendChild(pill);
       if (info.callId) s.toolPills[info.callId] = pill;
     } else {
-      pill = (info.callId && s.toolPills[info.callId]) || s.toolStrip.lastElementChild;
+      pill = info.callId && s.toolPills[info.callId];   // never guess: the last pill may be an agent pill
       if (!pill) return;
       const ok = info.phase !== "error";
       pill.className = `tool-pill ${ok ? "done" : "error"}`;
@@ -577,6 +573,51 @@ class Conn {
     pill.toolInfo = { ...info, verb };
     pill.title = toolTooltip(pill.toolInfo);               // property, not markup
     if (s.toolDetailPill === pill) renderToolDetail(s, pill); // refresh an open expander on settle
+    maybeScroll();
+  }
+
+  // The current turn's tool-activity strip (above the reply bubble), created on first use.
+  ensureToolStrip() {
+    if (!this.stream || !this.stream.bubble) this.startStream();
+    const s = this.stream;
+    if (!s.toolStrip) {
+      s.toolStrip = document.createElement("div");
+      s.toolStrip.className = "tool-activity";
+      s.contentEl.insertBefore(s.toolStrip, s.bubble);     // above the reply bubble
+      s.toolPills = {};
+      s.agentToolPills = new Map();                      // toolCallId → { el, info }
+    }
+    return s;
+  }
+
+  // The agent's OWN tool calls (Bash, Edit, …), forwarded by the gateway as ACP `tool_call` /
+  // `tool_call_update`. One pill per toolCallId: the first event usually carries a placeholder
+  // title ("Terminal") that a later update refines ("cargo test"), so updates rewrite the same
+  // pill. Titles arrive already masked by the gateway; here they are only truncated for layout.
+  renderAgentToolCall(update) {
+    if (!this.turnActive) return;                        // only annotate an in-flight agent turn
+    const known = this.stream && this.stream.agentToolPills;
+    const prev = (known && update && known.get(update.toolCallId)) || null;
+    if (prev && AgentTools.isBrowserToolCall(update)) {
+      // A placeholder title refined into a katashiro tool name: the browser pill covers it.
+      prev.el.remove();
+      known.delete(update.toolCallId);
+      if (this.skippedToolCalls) this.skippedToolCalls.add(update.toolCallId);
+      return;
+    }
+    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update, this.skippedToolCalls);
+    if (!next) return;                                   // not ours / unknown id with nothing to show
+    const s = this.ensureToolStrip();
+    let entry = s.agentToolPills.get(next.id);
+    if (!entry) {
+      entry = { el: document.createElement("span"), info: null };
+      s.toolStrip.appendChild(entry.el);
+      s.agentToolPills.set(next.id, entry);
+    }
+    entry.info = next;
+    entry.el.className = `tool-pill agent-tool ${next.state}`;
+    entry.el.textContent = `${next.label} ${next.icon}`;
+    entry.el.title = next.title;                         // property, not markup
     maybeScroll();
   }
 
@@ -593,6 +634,7 @@ class Conn {
     const s = this.stream;
     this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
     if (!s || !s.bubble) return;
+    settleRunningPills(s);
     const cancelled = stopReason === "cancelled";
     if (s.text === "") {
       // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect). If the user stopped
@@ -618,6 +660,16 @@ class Conn {
     recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
+  }
+}
+
+// A turn that ends (cancel, disconnect, error, or a completion we never received) leaves no pill
+// spinning: anything still ⏳ becomes a neutral ⏹ — not ✓/✗, since we never learned the outcome.
+function settleRunningPills(s) {
+  if (!s.toolStrip) return;
+  for (const pill of s.toolStrip.querySelectorAll(".tool-pill.running")) {
+    pill.classList.replace("running", "stopped");
+    pill.textContent = pill.textContent.replace(/⏳$/, AgentTools.ICON_OF.stopped);
   }
 }
 
