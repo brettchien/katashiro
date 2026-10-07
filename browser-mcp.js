@@ -337,12 +337,13 @@
   //    still hidden.
   //  - the tool's own `secrets(args)` declaration (fill_form values, typed text, URL queries…):
   //    these are scrubbed even as bare short tokens.
-  // No redact hook / masked args withheld ⇒ every raw scalar is hidden.
+  // No redact hook / masked args withheld ⇒ every raw scalar is hidden, and as sensitive: on the
+  // fail-closed path nothing tells us which values are safe, so short ones go bare too.
   function secretsFor(tool, raw, masked) {
     const out = new Map();                                 // value → sensitive (bare at any length)
     const add = (s, sensitive) => { if (s) out.set(s, out.get(s) || sensitive); };
     const shown = new Set(masked == null ? [] : scalarLeaves(masked));
-    for (const s of scalarLeaves(raw)) if (!shown.has(s)) add(s, false);
+    for (const s of scalarLeaves(raw)) if (!shown.has(s)) add(s, masked == null);
     if (masked != null && tool && typeof tool.secrets === "function") {
       try {
         for (const v of tool.secrets(raw || {}) || []) if (v != null) add(String(v), true);
@@ -390,18 +391,34 @@
     if (a.url != null) a.url = stripUrlQuery(a.url);
     return truncateStrings(a);
   }
+  // The whole query/fragment, plus each parameter value on its own (raw and percent-decoded):
+  // a page or error may echo just `abc123` rather than `token=abc123&x=1`.
   function secretUrl(args) {
     const s = String((args && args.url) || "");
     const i = s.search(/[?#]/);
-    return i < 0 ? [] : [s.slice(i + 1)];
+    if (i < 0) return [];
+    const tail = s.slice(i + 1);
+    const out = [tail];
+    for (const part of tail.split(/[?#&;]/)) {
+      const v = part.includes("=") ? part.slice(part.indexOf("=") + 1) : part;
+      if (!v) continue;
+      out.push(v);
+      try { out.push(decodeURIComponent(v.replace(/\+/g, " "))); } catch (_) { /* malformed %: raw form only */ }
+    }
+    return out;
   }
+
+  // Any URL a result mentions (tabs lists every open tab; snapshots and errors echo the page
+  // URL) is shown up to its path: the same rule navigate / new_tab apply to their arguments.
+  const URL_TAIL_RE = /\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>`]*)([?#])[^\s"'<>`)\]]*/gi;
+  const stripUrlQueries = (text) => text.replace(URL_TAIL_RE, (_, head, sep) => `${head}${sep}‹redacted›`);
 
   // One-line summary + bounded excerpt of a CallToolResult, for the UI.
   function describeResult(result, secrets) {
     const content = (result && Array.isArray(result.content)) ? result.content : [];
     const textBlock = content.find((b) => b && b.type === "text" && typeof b.text === "string");
     if (textBlock) {
-      const text = scrub(textBlock.text, secrets);
+      const text = stripUrlQueries(scrub(textBlock.text, secrets));
       const line = (text.split("\n").find((l) => l.trim()) || "").trim();
       return { summary: clip(line, SUMMARY_MAX), preview: clip(text, PREVIEW_MAX) };
     }

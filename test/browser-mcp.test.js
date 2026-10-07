@@ -1596,6 +1596,47 @@ test("navigate / new_tab: the URL's query and fragment never reach the UI", asyn
   assert.equal(BrowserMcp.TOOLS["katashiro.navigate"].redact({ url: "https://a/b" }).url, "https://a/b");
 });
 
+test("navigate: each query parameter value is a secret on its own, raw and decoded", () => {
+  const secrets = BrowserMcp.TOOLS["katashiro.navigate"].secrets({ url: "https://a/b?token=abc123&q=a%20b#frag" });
+  for (const v of ["token=abc123&q=a%20b#frag", "abc123", "a%20b", "a b", "frag"]) assert.ok(secrets.includes(v), v);
+});
+
+test("navigate: a page that echoes one parameter value alone does not leak it", async () => {
+  const { events } = await callViaTunnel(
+    "katashiro.navigate",
+    { url: "https://example.com/cb?token=sk-live-abc&x=1" },
+    { scriptResult: { ok: true, tree: "- heading \"welcome sk-live-abc\"" } }
+  );
+  assert.ok(!JSON.stringify(events).includes("sk-live-abc"), JSON.stringify(events));
+});
+
+test("result previews show any URL only up to its path (tabs lists every open tab)", async () => {
+  const { events } = await callViaTunnel("katashiro.tabs", {}, {
+    tabsList: [{ id: 42, windowId: 7, url: "https://mail.example/inbox?auth=sk-tab-secret#m1", title: "Inbox" }]
+  });
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("sk-tab-secret"), wire);
+  assert.ok(!wire.includes("#m1"), wire);
+  assert.match(events[1].preview, /https:\/\/mail\.example\/inbox\?‹redacted›/);
+});
+
+test("fail-closed (no redact hook): short values are scrubbed bare too", async () => {
+  const tools = {
+    "x.leaky": {
+      description: "custom registry tool without a redact hook",
+      inputSchema: { type: "object", properties: {} },
+      sessionScope: true,
+      async call() { return { content: [{ type: "text", text: "pin 42 accepted, not 1425" }] }; }
+    }
+  };
+  const s = BrowserMcp.createServer({ id: "srv-x", name: "x", tools });
+  const { deps: d } = deps();
+  const events = [];
+  d.onToolCall = (e) => events.push(e);
+  await s.handleMcpMessage("tools/call", { name: "x.leaky", arguments: { pin: "42" } }, d);
+  assert.equal(events[1].summary, "pin ‹redacted› accepted, not 1425");
+});
+
 test("short, non-sensitive args pass through the default redact unchanged", async () => {
   const { events } = await callViaTunnel(
     "katashiro.click",
