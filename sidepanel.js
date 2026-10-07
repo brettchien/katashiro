@@ -380,6 +380,7 @@ class Conn {
     if (!text) return;                                   // nothing sendable (all blank) — stay idle
     this.lastPrompt = text;                              // remember for retry (the whole batch)
     this.turnActive = true;
+    this.skippedToolCalls = new Set();                   // katashiro tool calls seen this turn
     updateStopButton();
     this.startStream();
 
@@ -601,9 +602,10 @@ class Conn {
       // A placeholder title refined into a katashiro tool name: the browser pill covers it.
       prev.el.remove();
       known.delete(update.toolCallId);
+      if (this.skippedToolCalls) this.skippedToolCalls.add(update.toolCallId);
       return;
     }
-    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update);
+    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update, this.skippedToolCalls);
     if (!next) return;                                   // not ours / unknown id with nothing to show
     const s = this.ensureToolStrip();
     let entry = s.agentToolPills.get(next.id);

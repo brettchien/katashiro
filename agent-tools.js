@@ -35,13 +35,19 @@
   // A katashiro browser tool reaching us as the agent's MCP call: the browser pill already
   // shows it (with details), so a second, agent-tool pill would double it. Matched on the MCP
   // tool name shape only — never a free substring, so a Bash command that merely mentions
-  // "katashiro" (`cd katashiro && …`) still gets its pill.
+  // "katashiro" (`cd katashiro && …`) still gets its pill. Two shapes:
+  //  - direct MCP: the tool name itself (`mcp__…katashiro…__click` / `katashiro.click`)
+  //  - via the OAB MCP Facade: the tool is `…__execute_capability` and the real
+  //    `katashiro.*` name rides in `rawInput.name`
   const BROWSER_TOOL_RE = /^(?:mcp__[^\s]*?katashiro[^\s]*?__|katashiro[._])\w/i;
+  const BROWSER_CAPABILITY_RE = /^katashiro[._]\w/i;
   function isBrowserToolCall(update) {
     const u = update || {};
     const meta = u._meta && u._meta.claudeCode;
     const names = [cleanTitle(u.title), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
-    return names.some((n) => BROWSER_TOOL_RE.test(n));
+    if (names.some((n) => BROWSER_TOOL_RE.test(n))) return true;
+    const capability = u.rawInput && typeof u.rawInput === "object" ? u.rawInput.name : null;
+    return typeof capability === "string" && BROWSER_CAPABILITY_RE.test(capability);
   }
 
   /**
@@ -50,18 +56,25 @@
    * @param {{id: string, title: string, label: string, state: string}|null} prev
    *   the pill already shown for this toolCallId in the current turn, or null
    * @param {object} update  `params.update` from the notification
+   * @param {Set<string>} [skipped]  this turn's toolCallIds already identified as katashiro
+   *   browser tools. Later updates for them often carry only a title or status (no rawInput, so
+   *   a Facade call no longer looks like one); remembering the id keeps them skipped.
    * @returns {{id: string, title: string, label: string, state: string, icon: string}|null}
    *   the pill's next state, or null when the update should be ignored (not a tool-call kind,
    *   no toolCallId, an update for a call we never saw that carries no title to show, or one of
    *   katashiro's own browser tools — see isBrowserToolCall).
    */
-  function applyToolCallUpdate(prev, update) {
+  function applyToolCallUpdate(prev, update, skipped) {
     const u = update || {};
     const kind = u.sessionUpdate;
     if (kind !== "tool_call" && kind !== "tool_call_update") return null;
     const id = typeof u.toolCallId === "string" ? u.toolCallId : "";
     if (!id) return null;
-    if (isBrowserToolCall(u)) return null;
+    if (skipped && skipped.has(id)) return null;
+    if (isBrowserToolCall(u)) {
+      if (skipped) skipped.add(id);
+      return null;
+    }
     const title = cleanTitle(u.title);
     // An update for an unknown call can only render if it brings a title of its own.
     if (!prev && kind === "tool_call_update" && !title) return null;

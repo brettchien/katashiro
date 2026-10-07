@@ -109,3 +109,24 @@ test("labels are cut by code point, never splitting an emoji into a lone surroga
 test("a stopped state has its own icon for pills a turn left unresolved", () => {
   assert.equal(AgentTools.ICON_OF.stopped, "⏹");
 });
+
+test("via the OAB MCP Facade: execute_capability with a katashiro.* rawInput.name is skipped", () => {
+  const facade = { sessionUpdate: "tool_call", toolCallId: "f", title: "mcp__oab__execute_capability",
+    rawInput: { name: "katashiro.click", arguments: { ref: "e1", snapshotId: 2 } } };
+  assert.equal(AgentTools.isBrowserToolCall(facade), true);
+  assert.equal(apply(null, facade), null);
+  // another capability through the same facade still gets its pill
+  const other = { ...facade, toolCallId: "g", rawInput: { name: "github.get_pr", arguments: {} } };
+  assert.ok(apply(null, other));
+});
+
+test("a skipped call stays skipped when later updates carry only a title / status", () => {
+  const skipped = new Set();
+  const first = { sessionUpdate: "tool_call", toolCallId: "f", title: "mcp__oab__execute_capability",
+    rawInput: { name: "katashiro.snapshot", arguments: {} } };
+  assert.equal(apply(null, first, skipped), null);
+  assert.ok(skipped.has("f"));
+  assert.equal(apply(null, { sessionUpdate: "tool_call_update", toolCallId: "f", title: "mcp__oab__execute_capability", status: "completed" }, skipped), null);
+  // an unrelated call in the same turn is unaffected
+  assert.ok(apply(null, { sessionUpdate: "tool_call", toolCallId: "b", title: "cargo test" }, skipped));
+});
