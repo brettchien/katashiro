@@ -356,8 +356,9 @@ test("tools/call fires onToolCall start→done with a shared callId on success",
   assert.equal(events[0].name, "katashiro.navigate");
   assert.equal(events[1].name, "katashiro.navigate");
   assert.equal(events[0].callId, events[1].callId, "start and settle share one callId");
-  // args are deliberately NOT part of the UI signal — verb + outcome only.
-  assert.equal("args" in events[0], false);
+  // args reach the UI only in their masked form (navigate: the default — strings clipped).
+  assert.deepEqual(events[0].args, { url: "https://example.com" });
+  assert.deepEqual(events[1].args, { url: "https://example.com" });
 });
 
 test("tools/call fires onToolCall start→error when the tool result isError", async () => {
@@ -1438,4 +1439,272 @@ test("the new write tools are refused with act mode off without touching the pag
     assert.match(res.content[0].text, /act mode is off/);
     assert.equal(calls.executeScript.length + calls.insertCSS.length, 0, name);
   }
+});
+
+// --- tool-call details for the UI: masking, summary, duration ----------------------
+//
+// The side panel's pill tooltip / expander render what `onToolCall` hands them, so every
+// assertion here is made against those events, driven through the same tunnel path the
+// gateway uses (mcp/connect → mcp/message tools/call → handleServerRequest).
+
+async function callViaTunnel(name, args, opts = {}) {
+  const bag = deps(opts);
+  const events = [];
+  bag.deps.onToolCall = (e) => events.push(e);
+  const state = {};
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: { acpId: null } }, bag.deps, state);
+  const connectionId = bag.sent[0].result.connectionId;
+  await BrowserMcp.handleServerRequest(
+    { id: 2, method: "mcp/message", params: { connectionId, method: "tools/call", params: { name, arguments: args } } },
+    bag.deps,
+    state
+  );
+  return { ...bag, events, reply: bag.sent[1] };
+}
+
+test("every registered tool declares a redact hook (no tool can skip masking)", () => {
+  for (const [name, def] of Object.entries(BrowserMcp.TOOLS)) {
+    assert.equal(typeof def.redact, "function", `${name} needs a redact(args) hook`);
+    // and it must tolerate empty / missing arguments
+    assert.doesNotThrow(() => def.redact({}), name);
+  }
+});
+
+test("fill_form: onToolCall never receives field values, only refs/selectors", async () => {
+  const secret = "hunter2-very-secret";
+  const { events, reply } = await callViaTunnel(
+    "katashiro.fill_form",
+    { snapshotId: 9, fields: [{ ref: "e1", value: secret }, { selector: "#pin", value: "4321" }, { ref: "e3", checked: true }] },
+    { scriptResult: { ok: true, tree: "- x" } }
+  );
+  assert.equal(reply.result.isError, undefined);
+  assert.deepEqual(events.map((e) => e.phase), ["start", "done"]);
+  assert.deepEqual(events[0].args, {
+    snapshotId: 9,
+    fields: [{ ref: "e1", value: "‹redacted›" }, { selector: "#pin", value: "‹redacted›" }, { ref: "e3", value: "‹redacted›" }]
+  });
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes(secret), "password value leaked to the UI");
+  assert.ok(!wire.includes("4321"), "pin value leaked to the UI");
+});
+
+test("fill_form: a value echoed back in an error is scrubbed from the summary/preview", async () => {
+  const secret = "card-4111111111111111";
+  const { events } = await callViaTunnel(
+    "katashiro.fill_form",
+    { fields: [{ selector: "#cc", value: secret }] },
+    { scriptResult: { ok: false, error: `field 0 (#cc): no option matching ${JSON.stringify(secret)}` } }
+  );
+  assert.equal(events[1].phase, "error");
+  assert.ok(!JSON.stringify(events).includes(secret));
+  assert.match(events[1].summary, /no option matching ‹redacted›/);
+});
+
+test("upload_file: onToolCall gets name/MIME/size, never the base64 or text content", async () => {
+  const b64 = Buffer.from("PRIVATE-BINARY-PAYLOAD-0123456789").toString("base64");
+  const text = "TOP SECRET FILE BODY";
+  const { events } = await callViaTunnel(
+    "katashiro.upload_file",
+    { selector: "#f", files: [{ name: "a.bin", mimeType: "application/x-thing", base64: b64 }, { name: "n.txt", text }] },
+    { scriptResult: { ok: true, how: "selector #f", tree: "- x" } }
+  );
+  assert.deepEqual(events.map((e) => e.phase), ["start", "done"]);
+  assert.deepEqual(events[0].args, {
+    selector: "#f",
+    files: [
+      { name: "a.bin", mimeType: "application/x-thing", size: 33 },
+      { name: "n.txt", mimeType: "application/octet-stream", size: 20 }
+    ]
+  });
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes(b64), "base64 content leaked to the UI");
+  assert.ok(!wire.includes(text), "text content leaked to the UI");
+});
+
+test("type / type_text: the UI sees only the typed text's length (it may be a password)", async () => {
+  for (const [name, args] of [
+    ["katashiro.type", { selector: "#q", text: "pw!" }],
+    ["katashiro.type_text", { description: "the box", text: "pw!" }]
+  ]) {
+    const { events } = await callViaTunnel(name, args, { scriptResult: { ok: true, how: "selector #q" } });
+    assert.equal(events[0].args.text, "‹3 chars›", name);
+  }
+});
+
+test("inject_css: long strings are clipped at 80 chars in the UI args", async () => {
+  const long = "x".repeat(200);
+  for (const [name, args, key] of [
+    ["katashiro.inject_css", { css: `a{content:"${long}"}` }, "css"]
+  ]) {
+    const { events } = await callViaTunnel(name, args, { scriptResult: { ok: true, how: "selector #q" } });
+    const shown = events[0].args[key];
+    assert.ok(shown.startsWith(args[key].slice(0, 80)), name);
+    assert.ok(shown.length < args[key].length, `${name} ${key} not clipped`);
+    assert.match(shown, /… \(\+\d+ chars\)$/, name);
+    assert.ok(!JSON.stringify(events).includes(args[key]), `${name} full ${key} leaked`);
+  }
+});
+
+// Leak regressions from the #40 review (Mira / Jellyfish): each case reproduced a secret
+// reaching the summary/preview through an error message that echoed it.
+async function fillFormError(fields, error) {
+  const { events } = await callViaTunnel("katashiro.fill_form", { snapshotId: 1, fields }, { scriptResult: { ok: false, error } });
+  assert.equal(events[1].phase, "error");
+  assert.doesNotMatch(events[1].summary, /snapshotId|needs/); // reached the page echo, not an arg check
+  return events;
+}
+
+test("fill_form leak: a secret containing another is redacted whole (longest first)", async () => {
+  const events = await fillFormError(
+    [{ ref: "e1", value: "brett" }, { ref: "e2", value: "brett-pw!" }],
+    'no option matching "brett-pw!" / brett-pw!'
+  );
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("-pw!"), wire);
+  assert.ok(!wire.includes("brett"), wire);
+});
+
+test("fill_form leak: a value that also appears in a selector is still hidden", async () => {
+  const events = await fillFormError([{ selector: "#pin", value: "pin" }], 'bad "pin" and pin');
+  assert.match(events[1].summary, /^bad ‹redacted› and ‹redacted›/);
+});
+
+test("fill_form leak: a numeric value is hidden like a string", async () => {
+  const events = await fillFormError([{ ref: "e1", value: 1234 }], "no option matching 1234");
+  assert.ok(!JSON.stringify(events).includes("1234"));
+});
+
+test("fill_form leak: a short value is redacted bare too, but only as a whole token", async () => {
+  const events = await fillFormError([{ ref: "e1", value: "42" }], 'got 42 and "42", not 1425 or e42');
+  assert.match(events[1].summary, /^got ‹redacted› and ‹redacted›, not 1425 or e42/);
+});
+
+test("fill_form: a <select> miss does not echo the value in its error", () => {
+  const src = BrowserMcp.TOOLS["katashiro.fill_form"].call.toString();
+  assert.match(src, /no option matching the given value/);
+  assert.doesNotMatch(src, /no option matching " \+ JSON\.stringify\(f\.value\)/);
+});
+
+test("navigate / new_tab: the URL's query and fragment never reach the UI", async () => {
+  const url = "https://example.com/cb?token=sk-live-abc#frag";
+  const { events } = await callViaTunnel("katashiro.navigate", { url });
+  assert.equal(events[0].args.url, "https://example.com/cb?‹redacted›");
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("sk-live-abc"), wire);
+  assert.ok(!wire.includes("#frag"), wire);
+  assert.equal(BrowserMcp.TOOLS["katashiro.new_tab"].redact({ url }).url, "https://example.com/cb?‹redacted›");
+  assert.equal(BrowserMcp.TOOLS["katashiro.navigate"].redact({ url: "https://a/b" }).url, "https://a/b");
+});
+
+test("navigate: each query parameter value is a secret on its own, raw and decoded", () => {
+  const secrets = BrowserMcp.TOOLS["katashiro.navigate"].secrets({ url: "https://a/b?token=abc123&q=a%20b#frag" });
+  for (const v of ["token=abc123&q=a%20b#frag", "abc123", "a%20b", "a b", "frag"]) assert.ok(secrets.includes(v), v);
+});
+
+test("navigate: short parameter values (page=2, lang=en) are not secrets on their own", async () => {
+  const secrets = BrowserMcp.TOOLS["katashiro.navigate"].secrets({ url: "https://a/list?page=2&lang=en" });
+  assert.deepEqual(secrets, ["page=2&lang=en"]);
+  const { events } = await callViaTunnel(
+    "katashiro.navigate",
+    { url: "https://a/list?page=2&lang=en" },
+    { scriptResult: { ok: true, tree: "- text \"page 2 of 9 (en)\"" } }
+  );
+  assert.match(events[1].preview, /page 2 of 9 \(en\)/);
+});
+
+test("navigate: a page that echoes one parameter value alone does not leak it", async () => {
+  const { events } = await callViaTunnel(
+    "katashiro.navigate",
+    { url: "https://example.com/cb?token=sk-live-abc&x=1" },
+    { scriptResult: { ok: true, tree: "- heading \"welcome sk-live-abc\"" } }
+  );
+  assert.ok(!JSON.stringify(events).includes("sk-live-abc"), JSON.stringify(events));
+});
+
+test("result previews show any URL only up to its path (tabs lists every open tab)", async () => {
+  const { events } = await callViaTunnel("katashiro.tabs", {}, {
+    tabsList: [{ id: 42, windowId: 7, url: "https://mail.example/inbox?auth=sk-tab-secret#m1", title: "Inbox" }]
+  });
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("sk-tab-secret"), wire);
+  assert.ok(!wire.includes("#m1"), wire);
+  assert.match(events[1].preview, /https:\/\/mail\.example\/inbox\?‹redacted›/);
+});
+
+test("fail-closed (no redact hook): short values are scrubbed bare too", async () => {
+  const tools = {
+    "x.leaky": {
+      description: "custom registry tool without a redact hook",
+      inputSchema: { type: "object", properties: {} },
+      sessionScope: true,
+      async call() { return { content: [{ type: "text", text: "pin 42 accepted, not 1425" }] }; }
+    }
+  };
+  const s = BrowserMcp.createServer({ id: "srv-x", name: "x", tools });
+  const { deps: d } = deps();
+  const events = [];
+  d.onToolCall = (e) => events.push(e);
+  await s.handleMcpMessage("tools/call", { name: "x.leaky", arguments: { pin: "42" } }, d);
+  assert.equal(events[1].summary, "pin ‹redacted› accepted, not 1425");
+});
+
+test("short, non-sensitive args pass through the default redact unchanged", async () => {
+  const { events } = await callViaTunnel(
+    "katashiro.click",
+    { ref: "e12", snapshotId: 3, button: "right" },
+    { scriptResult: { ok: true, how: "ref e12", tree: "- x" } }
+  );
+  assert.deepEqual(events[0].args, { ref: "e12", snapshotId: 3, button: "right" });
+});
+
+test("settle events carry a one-line summary, a ≤300-char preview, and ms", async () => {
+  const body = "line one of the page\n" + "y".repeat(5000);
+  const { events } = await callViaTunnel("katashiro.get_text", {}, { scriptResult: { ok: true, text: body } });
+  const done = events[1];
+  assert.equal(done.phase, "done");
+  assert.equal(typeof done.ms, "number");
+  assert.ok(done.ms >= 0);
+  assert.equal(done.summary, "line one of the page");
+  assert.ok(done.preview.startsWith("line one of the page\ny"));
+  assert.ok(done.summary.length <= 140);
+  assert.ok(done.preview.length <= 330, `preview is bounded (${done.preview.length})`);
+  assert.equal("ms" in events[0], false, "start carries no duration");
+});
+
+test("a refused write reports the refusal as the error summary", async () => {
+  const { events } = await callViaTunnel("katashiro.click", { selector: "#a" }, { actMode: false });
+  assert.equal(events[1].phase, "error");
+  assert.match(events[1].summary, /act mode is off/);
+  assert.equal(typeof events[1].ms, "number");
+});
+
+test("a restricted page reports the origin refusal as the error summary", async () => {
+  const { events } = await callViaTunnel("katashiro.get_text", {}, { tabUrl: "chrome://settings/" });
+  assert.equal(events[1].phase, "error");
+  assert.match(events[1].summary, /no grantable web origin/);
+});
+
+test("a tool without a redact hook fails closed: its args never reach the UI", async () => {
+  const tools = {
+    "x.leaky": {
+      description: "custom registry tool without a redact hook",
+      inputSchema: { type: "object", properties: {} },
+      sessionScope: true,
+      async call() { return { content: [{ type: "text", text: "ok" }] }; }
+    }
+  };
+  const s = BrowserMcp.createServer({ id: "srv-x", name: "x", tools });
+  const { deps: d } = deps();
+  const events = [];
+  d.onToolCall = (e) => events.push(e);
+  await s.handleMcpMessage("tools/call", { name: "x.leaky", arguments: { token: "sk-live-abc" } }, d);
+  assert.deepEqual(events.map((e) => e.phase), ["start", "done"]);
+  assert.equal(events[0].args, null);
+  assert.ok(!JSON.stringify(events).includes("sk-live-abc"));
+});
+
+test("an image result summarizes as MIME + size, not the base64", async () => {
+  const { events } = await callViaTunnel("katashiro.screenshot", {}, { dataUrl: "data:image/jpeg;base64,QUJDREVG" });
+  assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\)$/);
+  assert.ok(!JSON.stringify(events).includes("QUJDREVG"));
 });

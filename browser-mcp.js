@@ -48,6 +48,12 @@
    * @property {boolean} [sessionScope]  acts on the browser (tabs/windows), not the active page's
    *   DOM — so it skips the active-tab resolution + origin pre-flight and resolves its own targets.
    *   Its ctx has no `tab`.
+   * @property {(args: object) => object} redact  masks the arguments for the UI activity
+   *   signal (pill tooltip / expander). Required on every built-in tool (enforced by a test);
+   *   a tool without one has its arguments withheld from the UI entirely.
+   * @property {(args: object) => Array<*>} [secrets]  argument values that must not appear in
+   *   the UI's result summary/preview even as short bare tokens (passwords, typed text, URL
+   *   queries). Hidden-by-masking values are scrubbed regardless; this adds the sensitive ones.
    * @property {(args: object, ctx: ToolContext) => Promise<CallToolResult>} call
    */
 
@@ -226,6 +232,207 @@
   // does not survive a navigation anyway; removing an already-gone one is a harmless no-op.
   const injectedCss = new Map();
 
+  // --- Tool-call details for the UI (pill tooltip + expander) -------------------------------
+  //
+  // The side panel shows what each tool call did. Arguments can carry secrets (a password in
+  // fill_form, a whole file in upload_file), so every registry entry declares a `redact(args)`
+  // hook next to its definition and ONLY the hook's output leaves this module — the UI never
+  // receives raw arguments. A tool without a hook (e.g. a custom registry passed to
+  // createServer) fails closed: its arguments are withheld entirely (see maskArgs).
+  const DETAIL_STR_MAX = 80;     // per-string cap inside masked arguments
+  const SUMMARY_MAX = 120;       // one-line result summary (tooltip)
+  const PREVIEW_MAX = 300;       // result excerpt (expander)
+  const DETAIL_ARRAY_MAX = 20;   // items kept per array in masked arguments
+  const DETAIL_DEPTH_MAX = 4;
+  const REDACTED = "‹redacted›";
+
+  function clip(s, max) {
+    const str = String(s);
+    return str.length > max ? `${str.slice(0, max)}… (+${str.length - max} chars)` : str;
+  }
+
+  // Deep copy with every string clipped, arrays capped and nesting bounded — the shared
+  // default for tools whose arguments are not sensitive, only potentially long.
+  function truncateStrings(v, depth = 0) {
+    if (typeof v === "string") return clip(v, DETAIL_STR_MAX);
+    if (v == null || typeof v === "number" || typeof v === "boolean") return v;
+    if (depth >= DETAIL_DEPTH_MAX) return "…";
+    if (Array.isArray(v)) {
+      const out = v.slice(0, DETAIL_ARRAY_MAX).map((x) => truncateStrings(x, depth + 1));
+      if (v.length > DETAIL_ARRAY_MAX) out.push(`… (+${v.length - DETAIL_ARRAY_MAX} more)`);
+      return out;
+    }
+    if (typeof v === "object") {
+      const out = {};
+      for (const [k, x] of Object.entries(v)) out[k] = truncateStrings(x, depth + 1);
+      return out;
+    }
+    return undefined; // functions, symbols, bigint: not data
+  }
+
+  const redactDefault = (args) => truncateStrings(args || {});
+
+  // fill_form: which fields, never what went into them (values and checked states alike).
+  function redactFillForm(args) {
+    const a = args || {};
+    const fields = Array.isArray(a.fields) ? a.fields : [];
+    return truncateStrings({
+      snapshotId: a.snapshotId,
+      fields: fields.map((f) => {
+        const o = {};
+        if (f && f.ref != null) o.ref = f.ref;
+        if (f && f.selector != null) o.selector = f.selector;
+        if (f && (f.value != null || f.checked != null)) o.value = REDACTED;
+        return o;
+      })
+    });
+  }
+
+  // upload_file: file name, MIME type and size — never the content (text or base64).
+  function redactUploadFile(args) {
+    const a = args || {};
+    const files = Array.isArray(a.files) ? a.files : [];
+    const out = {};
+    if (a.ref != null) out.ref = a.ref;
+    if (a.snapshotId != null) out.snapshotId = a.snapshotId;
+    if (a.selector != null) out.selector = a.selector;
+    out.files = files.map((f) => {
+      const o = { name: f && f.name, mimeType: (f && f.mimeType) || "application/octet-stream" };
+      if (f && typeof f.base64 === "string") {
+        const b = f.base64.replace(/\s+/g, "");
+        o.size = Math.max(0, Math.floor((b.length * 3) / 4) - (b.endsWith("==") ? 2 : b.endsWith("=") ? 1 : 0));
+      } else if (f && typeof f.text === "string") {
+        o.size = new TextEncoder().encode(f.text).length;
+      }
+      return o;
+    });
+    return truncateStrings(out);
+  }
+
+  // The single gate between raw arguments and the UI. Missing or throwing hook ⇒ nothing.
+  function maskArgs(tool, args) {
+    if (!tool || typeof tool.redact !== "function") return null;
+    try {
+      // Re-clip whatever the hook returns, so a hook that forgets a long string stays bounded.
+      return truncateStrings(tool.redact(args || {}));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // String and number leaves of a value, stringified, depth-bounded. Booleans are left out: a
+  // checked state is one bit, and scrubbing "true"/"false" would hide nothing but shred text.
+  function scalarLeaves(v, out = [], depth = 0) {
+    if (depth > 8 || v == null) return out;
+    if (typeof v === "string" || typeof v === "number") out.push(String(v));
+    else if (typeof v === "object") for (const x of Object.values(v)) scalarLeaves(x, out, depth + 1);
+    return out;
+  }
+
+  // What the result path must not show. A tool's result or error text may echo an argument back
+  // (navigate: `navigated to <url>`), so these are scrubbed from the summary/preview too — the
+  // result path must not undo the arguments path. Two sources:
+  //  - every raw scalar the masked args do not show *as an exact leaf value* (clipped, redacted,
+  //    or cut by the depth cap). Exact, not substring: a value "pin" next to selector "#pin" is
+  //    still hidden.
+  //  - the tool's own `secrets(args)` declaration (fill_form values, typed text, URL queries…):
+  //    these are scrubbed even as bare short tokens.
+  // No redact hook / masked args withheld ⇒ every raw scalar is hidden, and as sensitive: on the
+  // fail-closed path nothing tells us which values are safe, so short ones go bare too.
+  function secretsFor(tool, raw, masked) {
+    const out = new Map();                                 // value → sensitive (bare at any length)
+    const add = (s, sensitive) => { if (s) out.set(s, out.get(s) || sensitive); };
+    const shown = new Set(masked == null ? [] : scalarLeaves(masked));
+    for (const s of scalarLeaves(raw)) if (!shown.has(s)) add(s, masked == null);
+    if (masked != null && tool && typeof tool.secrets === "function") {
+      try {
+        for (const v of tool.secrets(raw || {}) || []) if (v != null) add(String(v), true);
+      } catch (_) {
+        for (const s of scalarLeaves(raw)) add(s, true);   // fail closed
+      }
+    }
+    // Longest first: a secret that contains another must be replaced whole, not left as the
+    // remainder around its already-redacted substring ("brett" inside "brett-pw!").
+    return [...out].map(([s, sensitive]) => ({ s, sensitive })).sort((a, b) => b.s.length - a.s.length);
+  }
+
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  function scrub(text, secrets) {
+    let t = String(text);
+    for (const { s, sensitive } of secrets) {
+      // Quoted form at any length (JSON.stringify echoes). Bare form: plain substring when long
+      // enough not to shred unrelated words; a short declared secret (a 2–3 digit PIN) only as a
+      // whole token, so "42" goes but "1425" / "e42" stay.
+      t = t.split(JSON.stringify(s)).join(REDACTED);
+      if (s.length >= 4) t = t.split(s).join(REDACTED);
+      else if (sensitive) t = t.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(s)}(?![\\p{L}\\p{N}])`, "gu"), REDACTED);
+    }
+    return t;
+  }
+
+  // type / type_text: the text may be a password (the hook cannot see the target field's type,
+  // and a clip at 80 chars hides no password), so only its length is shown.
+  function redactTypedText(args) {
+    const a = { ...(args || {}) };
+    if (a.text != null) a.text = `‹${String(a.text).length} chars›`;
+    return truncateStrings(a);
+  }
+  const secretTypedText = (args) => [args && args.text];
+
+  // navigate / new_tab: scheme + host + path only — query and fragment often carry tokens.
+  function stripUrlQuery(url) {
+    const s = String(url);
+    const i = s.search(/[?#]/);
+    return i < 0 ? s : `${s.slice(0, i)}${s[i]}‹redacted›`;
+  }
+  function redactUrl(args) {
+    const a = { ...(args || {}) };
+    if (a.url != null) a.url = stripUrlQuery(a.url);
+    return truncateStrings(a);
+  }
+  // The whole query/fragment, plus each parameter value on its own (raw and percent-decoded):
+  // a page or error may echo just `abc123` rather than `token=abc123&x=1`. Values under 4 chars
+  // (`page=2`, `lang=en`) are skipped — they are not tokens, and as declared secrets they would
+  // redact every bare `2` / `en` in the preview. A URL echoed whole is still cut at its path.
+  function secretUrl(args) {
+    const s = String((args && args.url) || "");
+    const i = s.search(/[?#]/);
+    if (i < 0) return [];
+    const tail = s.slice(i + 1);
+    const out = [tail];
+    for (const part of tail.split(/[?#&;]/)) {
+      const v = part.includes("=") ? part.slice(part.indexOf("=") + 1) : part;
+      if (v.length < 4) continue;
+      out.push(v);
+      try { out.push(decodeURIComponent(v.replace(/\+/g, " "))); } catch (_) { /* malformed %: raw form only */ }
+    }
+    return out;
+  }
+
+  // Any URL a result mentions (tabs lists every open tab; snapshots and errors echo the page
+  // URL) is shown up to its path: the same rule navigate / new_tab apply to their arguments.
+  const URL_TAIL_RE = /\b([a-z][a-z0-9+.-]*:\/\/[^\s?#"'<>`]*)([?#])[^\s"'<>`)\]]*/gi;
+  const stripUrlQueries = (text) => text.replace(URL_TAIL_RE, (_, head, sep) => `${head}${sep}‹redacted›`);
+
+  // One-line summary + bounded excerpt of a CallToolResult, for the UI.
+  function describeResult(result, secrets) {
+    const content = (result && Array.isArray(result.content)) ? result.content : [];
+    const textBlock = content.find((b) => b && b.type === "text" && typeof b.text === "string");
+    if (textBlock) {
+      const text = stripUrlQueries(scrub(textBlock.text, secrets));
+      const line = (text.split("\n").find((l) => l.trim()) || "").trim();
+      return { summary: clip(line, SUMMARY_MAX), preview: clip(text, PREVIEW_MAX) };
+    }
+    const img = content.find((b) => b && b.type === "image");
+    if (img) {
+      const kb = Math.round(((String(img.data || "").length * 3) / 4) / 1024);
+      const s = `${img.mimeType || "image"} (${kb} KB)`;
+      return { summary: s, preview: s };
+    }
+    return { summary: "", preview: "" };
+  }
+
   /**
    * The single source of truth for the tools we serve: schema and implementation live in
    * the same entry, so `tools/list` and `tools/call` cannot drift apart — no advertising a
@@ -263,6 +470,7 @@
           doubleClick: { type: "boolean", description: "double-click instead of a single click (left button only)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, button?: string, doubleClick?: boolean }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("click needs a ref (preferred) or a selector");
@@ -342,6 +550,7 @@
         },
         required: ["description"]
       },
+      redact: redactDefault,
       /** @param {{ description?: string }} args */
       async call(args, ctx) {
         const desc = ((args && args.description) || "").trim();
@@ -382,6 +591,9 @@
         },
         required: ["description", "text"]
       },
+      // UI detail: the typed text's length only — it may be a password.
+      redact: redactTypedText,
+      secrets: secretTypedText,
       /** @param {{ description?: string, text?: string }} args */
       async call(args, ctx) {
         const desc = ((args && args.description) || "").trim();
@@ -419,6 +631,7 @@
         },
         required: ["question"]
       },
+      redact: redactDefault,
       /** @param {{ question?: string }} args */
       async call(args, ctx) {
         const question = ((args && args.question) || "").trim();
@@ -447,6 +660,7 @@
           selector: { type: "string", description: "optional CSS selector to scope the snapshot" }
         }
       },
+      redact: redactDefault,
       /** @param {{ selector?: string }} args */
       async call(args, ctx) {
         const [{ result }] = await ctx.chrome.scripting.executeScript({
@@ -470,6 +684,9 @@
         properties: { url: { type: "string", description: "absolute URL" } },
         required: ["url"]
       },
+      // UI detail: the URL without its query / fragment (tokens often ride there).
+      redact: redactUrl,
+      secrets: secretUrl,
       /** @param {{ url: string }} args */
       async call(args, ctx) {
         await ctx.chrome.tabs.update(ctx.tab.id, { url: args.url });
@@ -494,6 +711,9 @@
         },
         required: ["text"]
       },
+      // UI detail: the typed text's length only — it may be a password.
+      redact: redactTypedText,
+      secrets: secretTypedText,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, text: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("type needs a ref (preferred) or a selector");
@@ -547,6 +767,7 @@
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
         "read text or to confirm an action succeeded (action tools already return the new snapshot).",
       inputSchema: { type: "object", properties: {} },
+      redact: redactDefault,
       /** @param {object} _args (none) */
       async call(_args, ctx) {
         // JPEG, not PNG: a full-page PNG base64 runs several MB and blows past the ACP tunnel's
@@ -576,6 +797,7 @@
           selector: { type: "string", description: "optional CSS selector to scope the snapshot to that element's subtree (cheaper than a full-page re-snapshot)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ selector?: string }} args */
       async call(args, ctx) {
         return okText(await fullSnapshot(ctx.chrome, ctx.tab.id, false, args && args.selector));
@@ -595,6 +817,7 @@
           timeout: { type: "number", description: "ms, default 5000" }
         }
       },
+      redact: redactDefault,
       /** @param {{ selector?: string, text?: string, timeout?: number }} args */
       async call(args, ctx) {
         if (!args.selector && !args.text) return errText("wait_for needs a selector or text");
@@ -626,6 +849,7 @@
         type: "object",
         properties: { selector: { type: "string", description: "optional CSS selector to scope" } }
       },
+      redact: redactDefault,
       /** @param {{ selector?: string }} args */
       async call(args, ctx) {
         const [{ result }] = await ctx.chrome.scripting.executeScript({
@@ -658,6 +882,7 @@
           selector: { type: "string", description: "CSS selector to scroll into view (fallback)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ to?: string, direction?: string, amount?: number, ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
         if (!args.to && !args.direction && !args.ref && !args.selector) {
@@ -713,6 +938,7 @@
       // still works when the active tab is a chrome:// / blank page with no scriptable origin.
       sessionScope: true,
       inputSchema: { type: "object", properties: {} },
+      redact: redactDefault,
       /** @param {object} _args (none) */
       async call(_args, ctx) {
         // Deliberately lists ALL tabs (every window), not just the active one, so the agent can orient
@@ -740,6 +966,9 @@
           active: { type: "boolean", description: "switch to the new tab (default true)" }
         }
       },
+      // UI detail: the URL without its query / fragment (tokens often ride there).
+      redact: redactUrl,
+      secrets: secretUrl,
       /** @param {{ url?: string, active?: boolean }} args */
       async call(args, ctx) {
         const makeActive = args.active !== false;               // default true
@@ -777,6 +1006,7 @@
           url: { type: "string", description: "substring of the target tab's URL (alternative to index)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ index?: number, url?: string }} args */
       async call(args, ctx) {
         const all = await ctx.chrome.tabs.query({});
@@ -815,6 +1045,7 @@
         properties: { direction: { type: "string", enum: ["back", "forward"], description: "back or forward" } },
         required: ["direction"]
       },
+      redact: redactDefault,
       /** @param {{ direction: string }} args */
       async call(args, ctx) {
         if (args.direction !== "back" && args.direction !== "forward") return errText("history needs direction 'back' or 'forward'");
@@ -847,6 +1078,7 @@
         },
         required: ["key"]
       },
+      redact: redactDefault,
       /** @param {{ key: string, ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
         if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
@@ -914,6 +1146,7 @@
           selector: { type: "string", description: "CSS selector fallback" }
         }
       },
+      redact: redactDefault,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("hover needs a ref (preferred) or a selector");
@@ -971,6 +1204,7 @@
           clear: { type: "boolean", description: "remove every katashiro highlight instead of adding one" }
         }
       },
+      redact: redactDefault,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, label?: string, durationMs?: number, clear?: boolean }} args */
       async call(args, ctx) {
         if (args.clear) {
@@ -1053,6 +1287,7 @@
         "frames and inside text fields — plus the element it sits in. Use it when the user says 'this', " +
         "'the part I selected', 'explain / translate this'. Read-only. Empty when nothing is selected.",
       inputSchema: { type: "object", properties: {} },
+      redact: redactDefault,
       /** @param {object} _args (none) */
       async call(_args, ctx) {
         const results = await ctx.chrome.scripting.executeScript({
@@ -1103,6 +1338,7 @@
           label: { type: "string", description: "visible option text to select (if value unknown)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, value?: string, label?: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("select_option needs a ref (preferred) or a selector");
@@ -1178,6 +1414,9 @@
         },
         required: ["fields"]
       },
+      // UI detail: refs/selectors only — field values (passwords, PII) never leave this module.
+      redact: redactFillForm,
+      secrets: (args) => (Array.isArray(args.fields) ? args.fields : []).map((f) => f && f.value),
       /** @param {{ snapshotId?: number, fields: Array<{ ref?: string, selector?: string, value?: string, checked?: boolean }> }} args */
       async call(args, ctx) {
         const fields = Array.isArray(args.fields) ? args.fields : [];
@@ -1235,7 +1474,8 @@
                     if (f.value == null) return { ok: false, error: how + " is a <select> — give `value` (option value or label)" };
                     const opt = Array.from(el.options).find((o) => o.value === f.value) ||
                                 Array.from(el.options).find((o) => o.label === f.value || o.textContent.trim() === f.value);
-                    if (!opt) return { ok: false, error: how + ": no option matching " + JSON.stringify(f.value) };
+                    // Never echo the value: fill_form values are treated as secrets end to end.
+                    if (!opt) return { ok: false, error: how + ": no option matching the given value" };
                     plan.push({ el, kind: "select", opt });
                   } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable) {
                     if (f.value == null) return { ok: false, error: how + " is a text field — give `value`" };
@@ -1311,6 +1551,9 @@
         },
         required: ["files"]
       },
+      // UI detail: name / MIME / size only — file content (text or base64) never leaves this module.
+      redact: redactUploadFile,
+      secrets: (args) => (Array.isArray(args.files) ? args.files : []).flatMap((f) => (f ? [f.text, f.base64] : [])),
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, files: Array<{ name: string, mimeType?: string, text?: string, base64?: string }> }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("upload_file needs a ref (preferred) or a selector for the file input");
@@ -1380,6 +1623,7 @@
         type: "object",
         properties: { bypassCache: { type: "boolean", description: "hard reload, ignoring the HTTP cache" } }
       },
+      redact: redactDefault,
       /** @param {{ bypassCache?: boolean }} args */
       async call(args, ctx) {
         await ctx.chrome.tabs.reload(ctx.tab.id, { bypassCache: !!args.bypassCache });
@@ -1403,6 +1647,8 @@
           clear: { type: "boolean", description: "remove every stylesheet katashiro injected in this tab" }
         }
       },
+      // UI detail: the stylesheet is clipped at DETAIL_STR_MAX by the default.
+      redact: redactDefault,
       /** @param {{ css?: string, clear?: boolean }} args */
       async call(args, ctx) {
         const tabId = ctx.tab.id;
@@ -1601,22 +1847,31 @@
             // host permission, injected-script error) become MCP isError results — not protocol
             // errors — so the agent sees the failure and can adapt.
             //
-            // Surface a minimal activity signal to the UI: fire `onToolCall` with the tool name
-            // and outcome only — intentionally NOT the arguments — so the panel can show "these
-            // ran / did they succeed" without turning into a verbose command log.
+            // Surface an activity signal to the UI via `onToolCall`: name + phase, the MASKED
+            // arguments (the tool's own `redact` hook — raw args never leave this module), and on
+            // settle a one-line `summary`, a bounded `preview` of the result text, and `ms`.
             const callId = (deps.crypto && deps.crypto.randomUUID)
               ? deps.crypto.randomUUID()
               : `${Date.now()}-${params.name}`;
-            if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "start" });
+            const rawArgs = params.arguments || {};
+            const tool = Object.prototype.hasOwnProperty.call(tools, params.name) ? tools[params.name] : null;
+            const args = maskArgs(tool, rawArgs);
+            const secrets = deps.onToolCall ? secretsFor(tool, rawArgs, args) : [];
+            const started = Date.now();
+            if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "start", args });
+            const settle = (phase, result) => {
+              if (!deps.onToolCall) return;
+              const { summary, preview } = describeResult(result, secrets);
+              deps.onToolCall({ callId, name: params.name, phase, args, summary, preview, ms: Date.now() - started });
+            };
             try {
-              const result = await callBrowserTool(params.name, params.arguments || {}, deps, tools);
-              if (deps.onToolCall) {
-                deps.onToolCall({ callId, name: params.name, phase: (result && result.isError) ? "error" : "done" });
-              }
+              const result = await callBrowserTool(params.name, rawArgs, deps, tools);
+              settle((result && result.isError) ? "error" : "done", result);
               return result;
             } catch (e) {
-              if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "error" });
-              return { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
+              const result = { content: [{ type: "text", text: `tool error: ${(e && e.message) || e}` }], isError: true };
+              settle("error", result);
+              return result;
             }
           }
           default: {

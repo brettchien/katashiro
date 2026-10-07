@@ -635,6 +635,33 @@ body {
   color: #f87171;
   border-color: rgba(248, 113, 113, 0.35);
 }
+button.tool-pill { cursor: pointer; }
+button.tool-pill:hover,
+.tool-pill.expanded { background: rgba(255, 255, 255, 0.09); }
+button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outline-offset: 1px; }
+
+/* Click-to-expand details of one tool call (masked args + result excerpt), under the strip. */
+.tool-detail {
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  user-select: text;
+}
+.tool-detail-head { color: var(--text-muted); margin-bottom: 3px; }
+.tool-detail-label { color: var(--text-muted); margin-top: 4px; }
+.tool-detail pre {
+  margin: 2px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
 
 .timestamp {
   font-size: 9px;
