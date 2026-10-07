@@ -1521,11 +1521,19 @@ test("upload_file: onToolCall gets name/MIME/size, never the base64 or text cont
   assert.ok(!wire.includes(text), "text content leaked to the UI");
 });
 
-test("type / type_text / inject_css: long strings are clipped at 80 chars in the UI args", async () => {
+test("type / type_text: the UI sees only the typed text's length (it may be a password)", async () => {
+  for (const [name, args] of [
+    ["katashiro.type", { selector: "#q", text: "pw!" }],
+    ["katashiro.type_text", { description: "the box", text: "pw!" }]
+  ]) {
+    const { events } = await callViaTunnel(name, args, { scriptResult: { ok: true, how: "selector #q" } });
+    assert.equal(events[0].args.text, "‹3 chars›", name);
+  }
+});
+
+test("inject_css: long strings are clipped at 80 chars in the UI args", async () => {
   const long = "x".repeat(200);
   for (const [name, args, key] of [
-    ["katashiro.type", { selector: "#q", text: long }, "text"],
-    ["katashiro.type_text", { description: "the box", text: long }, "text"],
     ["katashiro.inject_css", { css: `a{content:"${long}"}` }, "css"]
   ]) {
     const { events } = await callViaTunnel(name, args, { scriptResult: { ok: true, how: "selector #q" } });
@@ -1535,6 +1543,57 @@ test("type / type_text / inject_css: long strings are clipped at 80 chars in the
     assert.match(shown, /… \(\+\d+ chars\)$/, name);
     assert.ok(!JSON.stringify(events).includes(args[key]), `${name} full ${key} leaked`);
   }
+});
+
+// Leak regressions from the #40 review (Mira / Jellyfish): each case reproduced a secret
+// reaching the summary/preview through an error message that echoed it.
+async function fillFormError(fields, error) {
+  const { events } = await callViaTunnel("katashiro.fill_form", { snapshotId: 1, fields }, { scriptResult: { ok: false, error } });
+  assert.equal(events[1].phase, "error");
+  assert.doesNotMatch(events[1].summary, /snapshotId|needs/); // reached the page echo, not an arg check
+  return events;
+}
+
+test("fill_form leak: a secret containing another is redacted whole (longest first)", async () => {
+  const events = await fillFormError(
+    [{ ref: "e1", value: "brett" }, { ref: "e2", value: "brett-pw!" }],
+    'no option matching "brett-pw!" / brett-pw!'
+  );
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("-pw!"), wire);
+  assert.ok(!wire.includes("brett"), wire);
+});
+
+test("fill_form leak: a value that also appears in a selector is still hidden", async () => {
+  const events = await fillFormError([{ selector: "#pin", value: "pin" }], 'bad "pin" and pin');
+  assert.match(events[1].summary, /^bad ‹redacted› and ‹redacted›/);
+});
+
+test("fill_form leak: a numeric value is hidden like a string", async () => {
+  const events = await fillFormError([{ ref: "e1", value: 1234 }], "no option matching 1234");
+  assert.ok(!JSON.stringify(events).includes("1234"));
+});
+
+test("fill_form leak: a short value is redacted bare too, but only as a whole token", async () => {
+  const events = await fillFormError([{ ref: "e1", value: "42" }], 'got 42 and "42", not 1425 or e42');
+  assert.match(events[1].summary, /^got ‹redacted› and ‹redacted›, not 1425 or e42/);
+});
+
+test("fill_form: a <select> miss does not echo the value in its error", () => {
+  const src = BrowserMcp.TOOLS["katashiro.fill_form"].call.toString();
+  assert.match(src, /no option matching the given value/);
+  assert.doesNotMatch(src, /no option matching " \+ JSON\.stringify\(f\.value\)/);
+});
+
+test("navigate / new_tab: the URL's query and fragment never reach the UI", async () => {
+  const url = "https://example.com/cb?token=sk-live-abc#frag";
+  const { events } = await callViaTunnel("katashiro.navigate", { url });
+  assert.equal(events[0].args.url, "https://example.com/cb?‹redacted›");
+  const wire = JSON.stringify(events);
+  assert.ok(!wire.includes("sk-live-abc"), wire);
+  assert.ok(!wire.includes("#frag"), wire);
+  assert.equal(BrowserMcp.TOOLS["katashiro.new_tab"].redact({ url }).url, "https://example.com/cb?‹redacted›");
+  assert.equal(BrowserMcp.TOOLS["katashiro.navigate"].redact({ url: "https://a/b" }).url, "https://a/b");
 });
 
 test("short, non-sensitive args pass through the default redact unchanged", async () => {

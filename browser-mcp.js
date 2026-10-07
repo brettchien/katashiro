@@ -51,6 +51,9 @@
    * @property {(args: object) => object} redact  masks the arguments for the UI activity
    *   signal (pill tooltip / expander). Required on every built-in tool (enforced by a test);
    *   a tool without one has its arguments withheld from the UI entirely.
+   * @property {(args: object) => Array<*>} [secrets]  argument values that must not appear in
+   *   the UI's result summary/preview even as short bare tokens (passwords, typed text, URL
+   *   queries). Hidden-by-masking values are scrubbed regardless; this adds the sensitive ones.
    * @property {(args: object, ctx: ToolContext) => Promise<CallToolResult>} call
    */
 
@@ -317,29 +320,80 @@
     }
   }
 
-  // Every string in the raw arguments that the masked form does not show. A tool's result or
-  // error text may echo an argument back (fill_form: `no option matching "…"`), so these are
-  // scrubbed from the summary/preview too — the result path must not undo the arguments path.
-  function hiddenStrings(raw, masked) {
-    const shown = JSON.stringify(masked == null ? {} : masked);
-    const out = new Set();
-    (function walk(v, depth) {
-      if (depth > 8 || v == null) return;
-      if (typeof v === "string") { if (!shown.includes(v)) out.add(v); return; }
-      if (typeof v === "object") for (const x of Object.values(v)) walk(x, depth + 1);
-    })(raw, 0);
-    return [...out];
+  // String and number leaves of a value, stringified, depth-bounded. Booleans are left out: a
+  // checked state is one bit, and scrubbing "true"/"false" would hide nothing but shred text.
+  function scalarLeaves(v, out = [], depth = 0) {
+    if (depth > 8 || v == null) return out;
+    if (typeof v === "string" || typeof v === "number") out.push(String(v));
+    else if (typeof v === "object") for (const x of Object.values(v)) scalarLeaves(x, out, depth + 1);
+    return out;
   }
+
+  // What the result path must not show. A tool's result or error text may echo an argument back
+  // (navigate: `navigated to <url>`), so these are scrubbed from the summary/preview too — the
+  // result path must not undo the arguments path. Two sources:
+  //  - every raw scalar the masked args do not show *as an exact leaf value* (clipped, redacted,
+  //    or cut by the depth cap). Exact, not substring: a value "pin" next to selector "#pin" is
+  //    still hidden.
+  //  - the tool's own `secrets(args)` declaration (fill_form values, typed text, URL queries…):
+  //    these are scrubbed even as bare short tokens.
+  // No redact hook / masked args withheld ⇒ every raw scalar is hidden.
+  function secretsFor(tool, raw, masked) {
+    const out = new Map();                                 // value → sensitive (bare at any length)
+    const add = (s, sensitive) => { if (s) out.set(s, out.get(s) || sensitive); };
+    const shown = new Set(masked == null ? [] : scalarLeaves(masked));
+    for (const s of scalarLeaves(raw)) if (!shown.has(s)) add(s, false);
+    if (masked != null && tool && typeof tool.secrets === "function") {
+      try {
+        for (const v of tool.secrets(raw || {}) || []) if (v != null) add(String(v), true);
+      } catch (_) {
+        for (const s of scalarLeaves(raw)) add(s, true);   // fail closed
+      }
+    }
+    // Longest first: a secret that contains another must be replaced whole, not left as the
+    // remainder around its already-redacted substring ("brett" inside "brett-pw!").
+    return [...out].map(([s, sensitive]) => ({ s, sensitive })).sort((a, b) => b.s.length - a.s.length);
+  }
+
+  const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   function scrub(text, secrets) {
     let t = String(text);
-    for (const s of secrets) {
-      // Quoted form at any length (JSON.stringify echoes); bare form only when long enough not
-      // to shred unrelated words.
+    for (const { s, sensitive } of secrets) {
+      // Quoted form at any length (JSON.stringify echoes). Bare form: plain substring when long
+      // enough not to shred unrelated words; a short declared secret (a 2–3 digit PIN) only as a
+      // whole token, so "42" goes but "1425" / "e42" stay.
       t = t.split(JSON.stringify(s)).join(REDACTED);
       if (s.length >= 4) t = t.split(s).join(REDACTED);
+      else if (sensitive) t = t.replace(new RegExp(`(?<![\\p{L}\\p{N}])${escapeRe(s)}(?![\\p{L}\\p{N}])`, "gu"), REDACTED);
     }
     return t;
+  }
+
+  // type / type_text: the text may be a password (the hook cannot see the target field's type,
+  // and a clip at 80 chars hides no password), so only its length is shown.
+  function redactTypedText(args) {
+    const a = { ...(args || {}) };
+    if (a.text != null) a.text = `‹${String(a.text).length} chars›`;
+    return truncateStrings(a);
+  }
+  const secretTypedText = (args) => [args && args.text];
+
+  // navigate / new_tab: scheme + host + path only — query and fragment often carry tokens.
+  function stripUrlQuery(url) {
+    const s = String(url);
+    const i = s.search(/[?#]/);
+    return i < 0 ? s : `${s.slice(0, i)}${s[i]}‹redacted›`;
+  }
+  function redactUrl(args) {
+    const a = { ...(args || {}) };
+    if (a.url != null) a.url = stripUrlQuery(a.url);
+    return truncateStrings(a);
+  }
+  function secretUrl(args) {
+    const s = String((args && args.url) || "");
+    const i = s.search(/[?#]/);
+    return i < 0 ? [] : [s.slice(i + 1)];
   }
 
   // One-line summary + bounded excerpt of a CallToolResult, for the UI.
@@ -518,8 +572,9 @@
         },
         required: ["description", "text"]
       },
-      // UI detail: the typed text is clipped at DETAIL_STR_MAX by the default.
-      redact: redactDefault,
+      // UI detail: the typed text's length only — it may be a password.
+      redact: redactTypedText,
+      secrets: secretTypedText,
       /** @param {{ description?: string, text?: string }} args */
       async call(args, ctx) {
         const desc = ((args && args.description) || "").trim();
@@ -610,7 +665,9 @@
         properties: { url: { type: "string", description: "absolute URL" } },
         required: ["url"]
       },
-      redact: redactDefault,
+      // UI detail: the URL without its query / fragment (tokens often ride there).
+      redact: redactUrl,
+      secrets: secretUrl,
       /** @param {{ url: string }} args */
       async call(args, ctx) {
         await ctx.chrome.tabs.update(ctx.tab.id, { url: args.url });
@@ -635,8 +692,9 @@
         },
         required: ["text"]
       },
-      // UI detail: the typed text is clipped at DETAIL_STR_MAX by the default.
-      redact: redactDefault,
+      // UI detail: the typed text's length only — it may be a password.
+      redact: redactTypedText,
+      secrets: secretTypedText,
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, text: string }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("type needs a ref (preferred) or a selector");
@@ -889,7 +947,9 @@
           active: { type: "boolean", description: "switch to the new tab (default true)" }
         }
       },
-      redact: redactDefault,
+      // UI detail: the URL without its query / fragment (tokens often ride there).
+      redact: redactUrl,
+      secrets: secretUrl,
       /** @param {{ url?: string, active?: boolean }} args */
       async call(args, ctx) {
         const makeActive = args.active !== false;               // default true
@@ -1337,6 +1397,7 @@
       },
       // UI detail: refs/selectors only — field values (passwords, PII) never leave this module.
       redact: redactFillForm,
+      secrets: (args) => (Array.isArray(args.fields) ? args.fields : []).map((f) => f && f.value),
       /** @param {{ snapshotId?: number, fields: Array<{ ref?: string, selector?: string, value?: string, checked?: boolean }> }} args */
       async call(args, ctx) {
         const fields = Array.isArray(args.fields) ? args.fields : [];
@@ -1394,7 +1455,8 @@
                     if (f.value == null) return { ok: false, error: how + " is a <select> — give `value` (option value or label)" };
                     const opt = Array.from(el.options).find((o) => o.value === f.value) ||
                                 Array.from(el.options).find((o) => o.label === f.value || o.textContent.trim() === f.value);
-                    if (!opt) return { ok: false, error: how + ": no option matching " + JSON.stringify(f.value) };
+                    // Never echo the value: fill_form values are treated as secrets end to end.
+                    if (!opt) return { ok: false, error: how + ": no option matching the given value" };
                     plan.push({ el, kind: "select", opt });
                   } else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el.isContentEditable) {
                     if (f.value == null) return { ok: false, error: how + " is a text field — give `value`" };
@@ -1472,6 +1534,7 @@
       },
       // UI detail: name / MIME / size only — file content (text or base64) never leaves this module.
       redact: redactUploadFile,
+      secrets: (args) => (Array.isArray(args.files) ? args.files : []).flatMap((f) => (f ? [f.text, f.base64] : [])),
       /** @param {{ ref?: string, snapshotId?: number, selector?: string, files: Array<{ name: string, mimeType?: string, text?: string, base64?: string }> }} args */
       async call(args, ctx) {
         if (!args.ref && !args.selector) return errText("upload_file needs a ref (preferred) or a selector for the file input");
@@ -1772,8 +1835,9 @@
               ? deps.crypto.randomUUID()
               : `${Date.now()}-${params.name}`;
             const rawArgs = params.arguments || {};
-            const args = maskArgs(Object.prototype.hasOwnProperty.call(tools, params.name) ? tools[params.name] : null, rawArgs);
-            const secrets = deps.onToolCall ? hiddenStrings(rawArgs, args) : [];
+            const tool = Object.prototype.hasOwnProperty.call(tools, params.name) ? tools[params.name] : null;
+            const args = maskArgs(tool, rawArgs);
+            const secrets = deps.onToolCall ? secretsFor(tool, rawArgs, args) : [];
             const started = Date.now();
             if (deps.onToolCall) deps.onToolCall({ callId, name: params.name, phase: "start", args });
             const settle = (phase, result) => {
