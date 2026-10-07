@@ -1601,6 +1601,17 @@ test("navigate: each query parameter value is a secret on its own, raw and decod
   for (const v of ["token=abc123&q=a%20b#frag", "abc123", "a%20b", "a b", "frag"]) assert.ok(secrets.includes(v), v);
 });
 
+test("navigate: short parameter values (page=2, lang=en) are not secrets on their own", async () => {
+  const secrets = BrowserMcp.TOOLS["katashiro.navigate"].secrets({ url: "https://a/list?page=2&lang=en" });
+  assert.deepEqual(secrets, ["page=2&lang=en"]);
+  const { events } = await callViaTunnel(
+    "katashiro.navigate",
+    { url: "https://a/list?page=2&lang=en" },
+    { scriptResult: { ok: true, tree: "- text \"page 2 of 9 (en)\"" } }
+  );
+  assert.match(events[1].preview, /page 2 of 9 \(en\)/);
+});
+
 test("navigate: a page that echoes one parameter value alone does not leak it", async () => {
   const { events } = await callViaTunnel(
     "katashiro.navigate",

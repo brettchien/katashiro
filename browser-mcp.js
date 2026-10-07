@@ -392,7 +392,9 @@
     return truncateStrings(a);
   }
   // The whole query/fragment, plus each parameter value on its own (raw and percent-decoded):
-  // a page or error may echo just `abc123` rather than `token=abc123&x=1`.
+  // a page or error may echo just `abc123` rather than `token=abc123&x=1`. Values under 4 chars
+  // (`page=2`, `lang=en`) are skipped — they are not tokens, and as declared secrets they would
+  // redact every bare `2` / `en` in the preview. A URL echoed whole is still cut at its path.
   function secretUrl(args) {
     const s = String((args && args.url) || "");
     const i = s.search(/[?#]/);
@@ -401,7 +403,7 @@
     const out = [tail];
     for (const part of tail.split(/[?#&;]/)) {
       const v = part.includes("=") ? part.slice(part.indexOf("=") + 1) : part;
-      if (!v) continue;
+      if (v.length < 4) continue;
       out.push(v);
       try { out.push(decodeURIComponent(v.replace(/\+/g, " "))); } catch (_) { /* malformed %: raw form only */ }
     }
