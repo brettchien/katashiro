@@ -357,6 +357,8 @@ class Conn {
       const u = msg.params.update;
       if (u.sessionUpdate === "agent_message_chunk" && u.content) {
         this.appendToStream(u.content.text || "");
+      } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
+        this.renderAgentToolCall(u);                     // the agent's own tools (Bash, Edit, …)
       }
     }
   }
@@ -549,14 +551,7 @@ class Conn {
   // arguments and a result excerpt underneath. `info.args` is already masked by browser-mcp.js.
   renderToolActivity(info) {
     if (!info || !info.name || !this.turnActive) return;   // only annotate an in-flight agent turn
-    if (!this.stream || !this.stream.bubble) this.startStream();
-    const s = this.stream;
-    if (!s.toolStrip) {
-      s.toolStrip = document.createElement("div");
-      s.toolStrip.className = "tool-activity";
-      s.contentEl.insertBefore(s.toolStrip, s.bubble);     // above the reply bubble
-      s.toolPills = {};
-    }
+    const s = this.ensureToolStrip();
     const verb = info.name.replace(/^[^.]*\./, "");        // drop the "katashiro." provider prefix
     let pill;
     if (info.phase === "start") {
@@ -577,6 +572,44 @@ class Conn {
     pill.toolInfo = { ...info, verb };
     pill.title = toolTooltip(pill.toolInfo);               // property, not markup
     if (s.toolDetailPill === pill) renderToolDetail(s, pill); // refresh an open expander on settle
+    maybeScroll();
+  }
+
+  // The current turn's tool-activity strip (above the reply bubble), created on first use.
+  ensureToolStrip() {
+    if (!this.stream || !this.stream.bubble) this.startStream();
+    const s = this.stream;
+    if (!s.toolStrip) {
+      s.toolStrip = document.createElement("div");
+      s.toolStrip.className = "tool-activity";
+      s.contentEl.insertBefore(s.toolStrip, s.bubble);     // above the reply bubble
+      s.toolPills = {};
+      s.agentToolPills = new Map();                      // toolCallId → { el, info }
+    }
+    return s;
+  }
+
+  // The agent's OWN tool calls (Bash, Edit, …), forwarded by the gateway as ACP `tool_call` /
+  // `tool_call_update`. One pill per toolCallId: the first event usually carries a placeholder
+  // title ("Terminal") that a later update refines ("cargo test"), so updates rewrite the same
+  // pill. Titles arrive already masked by the gateway; here they are only truncated for layout.
+  renderAgentToolCall(update) {
+    if (!this.turnActive) return;                        // only annotate an in-flight agent turn
+    const known = this.stream && this.stream.agentToolPills;
+    const prev = (known && update && known.get(update.toolCallId)) || null;
+    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update);
+    if (!next) return;                                   // not ours / unknown id with nothing to show
+    const s = this.ensureToolStrip();
+    let entry = s.agentToolPills.get(next.id);
+    if (!entry) {
+      entry = { el: document.createElement("span"), info: null };
+      s.toolStrip.appendChild(entry.el);
+      s.agentToolPills.set(next.id, entry);
+    }
+    entry.info = next;
+    entry.el.className = `tool-pill agent-tool ${next.state}`;
+    entry.el.textContent = `${next.label} ${next.icon}`;
+    entry.el.title = next.title;                         // property, not markup
     maybeScroll();
   }
 
