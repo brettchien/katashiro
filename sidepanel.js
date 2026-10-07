@@ -563,7 +563,7 @@ class Conn {
       s.toolStrip.appendChild(pill);
       if (info.callId) s.toolPills[info.callId] = pill;
     } else {
-      pill = (info.callId && s.toolPills[info.callId]) || s.toolStrip.lastElementChild;
+      pill = info.callId && s.toolPills[info.callId];   // never guess: the last pill may be an agent pill
       if (!pill) return;
       const ok = info.phase !== "error";
       pill.className = `tool-pill ${ok ? "done" : "error"}`;
@@ -597,6 +597,12 @@ class Conn {
     if (!this.turnActive) return;                        // only annotate an in-flight agent turn
     const known = this.stream && this.stream.agentToolPills;
     const prev = (known && update && known.get(update.toolCallId)) || null;
+    if (prev && AgentTools.isBrowserToolCall(update)) {
+      // A placeholder title refined into a katashiro tool name: the browser pill covers it.
+      prev.el.remove();
+      known.delete(update.toolCallId);
+      return;
+    }
     const next = AgentTools.applyToolCallUpdate(prev && prev.info, update);
     if (!next) return;                                   // not ours / unknown id with nothing to show
     const s = this.ensureToolStrip();
@@ -626,6 +632,7 @@ class Conn {
     const s = this.stream;
     this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
     if (!s || !s.bubble) return;
+    settleRunningPills(s);
     const cancelled = stopReason === "cancelled";
     if (s.text === "") {
       // Drop a bubble the turn never wrote into (e.g. a mid-turn disconnect). If the user stopped
@@ -651,6 +658,16 @@ class Conn {
     recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
+  }
+}
+
+// A turn that ends (cancel, disconnect, error, or a completion we never received) leaves no pill
+// spinning: anything still ⏳ becomes a neutral ⏹ — not ✓/✗, since we never learned the outcome.
+function settleRunningPills(s) {
+  if (!s.toolStrip) return;
+  for (const pill of s.toolStrip.querySelectorAll(".tool-pill.running")) {
+    pill.classList.replace("running", "stopped");
+    pill.textContent = pill.textContent.replace(/⏳$/, AgentTools.ICON_OF.stopped);
   }
 }
 

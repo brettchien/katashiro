@@ -672,6 +672,8 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   background: rgba(79, 70, 229, 0.12);
 }
 .tool-pill.agent-tool.running { color: #a5b4fc; }
+/* Turn ended before the call reported back (cancel / disconnect): outcome unknown. */
+.tool-pill.stopped { color: var(--text-muted); border-style: dashed; }
 
 .timestamp {
   font-size: 9px;

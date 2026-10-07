@@ -75,3 +75,37 @@ test("an unknown status keeps the previous state; a fresh call with no title get
   const q = apply({ ...p, state: "done" }, { sessionUpdate: "tool_call_update", toolCallId: "t", status: "weird" });
   assert.equal(q.state, "done");
 });
+
+// --- review fixes (#41: Mira / Jellyfish) -------------------------------------------
+
+test("katashiro's own browser tools are skipped — the browser pill already shows them", () => {
+  for (const title of ["mcp__katashiro__katashiro_click", "mcp__openab-katashiro__snapshot", "katashiro.fill_form"]) {
+    assert.equal(apply(null, { sessionUpdate: "tool_call", toolCallId: "k", title }), null, title);
+  }
+  const viaMeta = { sessionUpdate: "tool_call", toolCallId: "k", title: "Tool", _meta: { claudeCode: { toolName: "mcp__katashiro__click" } } };
+  assert.equal(apply(null, viaMeta), null);
+  assert.equal(AgentTools.isBrowserToolCall({ title: "katashiro.click" }), true);
+});
+
+test("a Bash command that merely mentions katashiro still gets its pill", () => {
+  for (const title of ["cd katashiro && node --test", "grep -rn katashiro.click .", "mcp__github__get_pr"]) {
+    assert.ok(apply(null, { sessionUpdate: "tool_call", toolCallId: "b", title }), title);
+  }
+});
+
+test("the tooltip title is capped (a heredoc command can be kilobytes)", () => {
+  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "t", title: "x".repeat(5000) });
+  assert.equal(Array.from(p.title).length, AgentTools.TITLE_MAX);
+  assert.ok(p.title.endsWith("…"));
+});
+
+test("labels are cut by code point, never splitting an emoji into a lone surrogate", () => {
+  const title = "a".repeat(AgentTools.LABEL_MAX - 2) + "😀😀😀";
+  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "e", title });
+  assert.equal(p.label, "a".repeat(AgentTools.LABEL_MAX - 2) + "😀…");
+  assert.doesNotMatch(p.label, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+});
+
+test("a stopped state has its own icon for pills a turn left unresolved", () => {
+  assert.equal(AgentTools.ICON_OF.stopped, "⏹");
+});

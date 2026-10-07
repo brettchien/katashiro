@@ -15,17 +15,33 @@
   "use strict";
 
   const LABEL_MAX = 40;
+  const TITLE_MAX = 500;    // tooltip cap — a heredoc Bash command can run to kilobytes
 
   // ACP tool-call status → pill state (shared with the browser-tool pills' classes).
   const STATE_OF = { pending: "running", in_progress: "running", completed: "done", failed: "error" };
-  const ICON_OF = { running: "⏳", done: "✓", error: "✗" };
+  const ICON_OF = { running: "⏳", done: "✓", error: "✗", stopped: "⏹" };
 
   function cleanTitle(t) {
     return typeof t === "string" ? t.replace(/\s+/g, " ").trim() : "";
   }
 
-  function labelOf(title) {
-    return title.length > LABEL_MAX ? title.slice(0, LABEL_MAX - 1) + "…" : title;
+  // Cut by code point, not UTF-16 unit, so an emoji is never split into a lone surrogate.
+  function clipChars(s, max) {
+    const cps = Array.from(s);
+    return cps.length > max ? cps.slice(0, max - 1).join("") + "…" : s;
+  }
+  const labelOf = (title) => clipChars(title, LABEL_MAX);
+
+  // A katashiro browser tool reaching us as the agent's MCP call: the browser pill already
+  // shows it (with details), so a second, agent-tool pill would double it. Matched on the MCP
+  // tool name shape only — never a free substring, so a Bash command that merely mentions
+  // "katashiro" (`cd katashiro && …`) still gets its pill.
+  const BROWSER_TOOL_RE = /^(?:mcp__[^\s]*?katashiro[^\s]*?__|katashiro[._])\w/i;
+  function isBrowserToolCall(update) {
+    const u = update || {};
+    const meta = u._meta && u._meta.claudeCode;
+    const names = [cleanTitle(u.title), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
+    return names.some((n) => BROWSER_TOOL_RE.test(n));
   }
 
   /**
@@ -36,7 +52,8 @@
    * @param {object} update  `params.update` from the notification
    * @returns {{id: string, title: string, label: string, state: string, icon: string}|null}
    *   the pill's next state, or null when the update should be ignored (not a tool-call kind,
-   *   no toolCallId, or an update for a call we never saw that carries no title to show).
+   *   no toolCallId, an update for a call we never saw that carries no title to show, or one of
+   *   katashiro's own browser tools — see isBrowserToolCall).
    */
   function applyToolCallUpdate(prev, update) {
     const u = update || {};
@@ -44,16 +61,17 @@
     if (kind !== "tool_call" && kind !== "tool_call_update") return null;
     const id = typeof u.toolCallId === "string" ? u.toolCallId : "";
     if (!id) return null;
+    if (isBrowserToolCall(u)) return null;
     const title = cleanTitle(u.title);
     // An update for an unknown call can only render if it brings a title of its own.
     if (!prev && kind === "tool_call_update" && !title) return null;
 
     // A later title refines the placeholder ("Terminal" → "cargo test"); no title keeps the old.
-    const nextTitle = title || (prev && prev.title) || "tool";
+    const nextTitle = clipChars(title, TITLE_MAX) || (prev && prev.title) || "tool";
     // Unknown / absent status keeps the previous state; a fresh call starts as running.
     const state = STATE_OF[u.status] || (prev && prev.state) || "running";
     return { id, title: nextTitle, label: labelOf(nextTitle), state, icon: ICON_OF[state] };
   }
 
-  return { applyToolCallUpdate, LABEL_MAX };
+  return { applyToolCallUpdate, isBrowserToolCall, ICON_OF, LABEL_MAX, TITLE_MAX };
 });
