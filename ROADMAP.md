@@ -22,10 +22,11 @@ Every capability below is a variation on those two directions.
 > tunnel contract in the openab repo (`docs/mcp-over-acp-tunnel-contract.md`). This supersedes
 > the brittle Route A (fenced-JSON) idea.
 >
-> The **served tool surface is fifteen tools** — 8 read (`snapshot`, `read_dom`, `get_text`,
-> `screenshot`, `scroll`, `hover`, `tabs`, `wait_for`) and 7 write (`click`, `type`,
-> `select_option`, `press_key`, `navigate`, `history`, `reload`); the full table with params is in
-> the [README](README.md#the-tools-we-serve). Reads go through an **accessibility-tree snapshot
+> The **served tool surface** — read tools (`snapshot`, `read_dom`, `get_text`, `get_selection`,
+> `screenshot`, `scroll`, `hover`, `highlight`, `tabs`, `wait_for`, …) and act-mode write tools
+> (`click`, `type`, `fill_form`, `select_option`, `upload_file`, `press_key`, `navigate`,
+> `history`, `reload`, `inject_css`, …) — is tabulated with params in the
+> [README](README.md#the-tools-we-serve), the one place the list is kept. Reads go through an **accessibility-tree snapshot
 > with stable element refs** (cross-frame, stale-ref checked) rather than a raw `innerText` dump —
 > see `docs/adr/a11y-snapshot-and-element-refs.md`. Action tools return the post-action snapshot so
 > the agent rarely needs a follow-up read.
