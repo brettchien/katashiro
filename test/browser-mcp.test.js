@@ -2255,6 +2255,7 @@ test("split_tabs / unsplit_tabs are refused when act mode is off", async () => {
     assert.match(res.content[0].text, /act mode is off/, name);
   }
   assert.equal(calls.createSplit.length + calls.unsplit.length, 0);
+});
 
 // --- screenshot → paste_image / upload_file (imageId) ------------------------------------------
 
