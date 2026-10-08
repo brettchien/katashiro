@@ -311,16 +311,35 @@
 
   // Screenshots kept for paste_image / upload_file, so a capture can go into another page WITHOUT
   // the agent round-tripping the bytes (a model can look at an image block but cannot re-emit it
-  // as base64). In memory only, newest IMAGE_STORE_MAX, each for IMAGE_TTL_MS.
-  const IMAGE_STORE_MAX = 10;
+  // as base64). In memory only, the newest `storeMax` (Settings → 截圖), each for IMAGE_TTL_MS.
+  //
+  // Settings → 截圖 (user-tunable, clamped): `maxKB` caps one screenshot — a bigger capture is
+  // downscaled / re-encoded in the side panel (deps.reencodeImage) rather than captured again
+  // (captureVisibleTab is rate-limited to 2 calls/s); the ceiling stays well under the ACP
+  // tunnel's per-frame cap. `storeMax` is how many captures stay pasteable.
+  const SCREENSHOT_DEFAULTS = { maxKB: 500, storeMax: 10 };
+  const SCREENSHOT_LIMITS = { maxKB: [50, 1500], storeMax: [1, 50] };
+  function normalizeScreenshotConfig(raw) {
+    const r = raw && typeof raw === "object" ? raw : {};
+    const out = {};
+    for (const k of Object.keys(SCREENSHOT_DEFAULTS)) {
+      const [lo, hi] = SCREENSHOT_LIMITS[k];
+      const v = Number(r[k]);
+      out[k] = Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : SCREENSHOT_DEFAULTS[k];
+    }
+    return out;
+  }
+  const b64Bytes = (b64) => Math.floor(String(b64 || "").replace(/=+$/, "").length * 3 / 4);
   const IMAGE_TTL_MS = 15 * 60 * 1000;
   const capturedImages = new Map();                       // imageId -> { mimeType, data, at }
   let imageSeq = 0;
+  let imageStoreMax = SCREENSHOT_DEFAULTS.storeMax;       // last value from Settings
   function pruneImages(now = Date.now()) {
     for (const [id, img] of capturedImages) if (now - img.at > IMAGE_TTL_MS) capturedImages.delete(id);
-    while (capturedImages.size > IMAGE_STORE_MAX) capturedImages.delete(capturedImages.keys().next().value);
+    while (capturedImages.size > imageStoreMax) capturedImages.delete(capturedImages.keys().next().value);
   }
-  function storeImage(mimeType, data) {
+  function storeImage(mimeType, data, storeMax) {
+    if (storeMax != null) imageStoreMax = storeMax;
     const id = `img${++imageSeq}`;
     capturedImages.set(id, { mimeType, data, at: Date.now() });
     pruneImages();
@@ -881,12 +900,30 @@
           format: "jpeg",
           quality: 70
         });
-        const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
-        const imageId = storeImage("image/jpeg", base64);
+        const cfg = ctx.screenshot || normalizeScreenshotConfig(null);
+        let base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
+        const maxBytes = cfg.maxKB * 1024;
+        const original = b64Bytes(base64);
+        let sizeNote = "";
+        if (original > maxBytes && typeof ctx.reencodeImage === "function") {
+          // Shrink to the Settings cap: scale by the size ratio, then lower quality step by step.
+          const ratio = Math.sqrt(maxBytes / original);
+          for (const step of [{ scale: ratio, quality: 0.7 }, { scale: ratio * 0.85, quality: 0.55 }, { scale: ratio * 0.7, quality: 0.4 }]) {
+            try {
+              const out = await ctx.reencodeImage(base64, { scale: Math.min(1, step.scale), quality: step.quality });
+              if (out) base64 = out;
+            } catch (_) { break; }                         // keep what we have
+            if (b64Bytes(base64) <= maxBytes) break;
+          }
+          sizeNote = b64Bytes(base64) <= maxBytes
+            ? `, shrunk from ${Math.round(original / 1024)} KB to fit the ${cfg.maxKB} KB limit`
+            : `, still ${Math.round(b64Bytes(base64) / 1024)} KB — over the ${cfg.maxKB} KB limit`;
+        }
+        const imageId = storeImage("image/jpeg", base64, cfg.storeMax);
         return {
           content: [
             { type: "image", data: base64, mimeType: "image/jpeg" },
-            { type: "text", text: `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${IMAGE_STORE_MAX})` }
+            { type: "text", text: `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${cfg.storeMax}${sizeNote})` }
           ]
         };
       }
@@ -2481,7 +2518,7 @@
     // DOM, so they neither need nor are constrained by the current active tab's origin — a
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
@@ -2491,7 +2528,7 @@
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
     if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
-    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
+    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage };
     return withTabContext(await tool.call(args, ctx), tab);
   }
 
@@ -2695,5 +2732,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates };
+  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });

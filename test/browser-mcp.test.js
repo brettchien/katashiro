@@ -2348,3 +2348,55 @@ test("the image store keeps only the newest captures", async () => {
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /pushed out by newer ones/);
 });
+
+test("normalizeScreenshotConfig clamps to the Settings limits, defaults on junk", () => {
+  const n = BrowserMcp.normalizeScreenshotConfig;
+  assert.deepEqual(n(null), { maxKB: 500, storeMax: 10 });
+  assert.deepEqual(n({ maxKB: "800", storeMax: 3 }), { maxKB: 800, storeMax: 3 });
+  assert.deepEqual(n({ maxKB: 10, storeMax: 0 }), { maxKB: 50, storeMax: 1 });
+  assert.deepEqual(n({ maxKB: 99999, storeMax: 999 }), { maxKB: 1500, storeMax: 50 });
+  assert.deepEqual(n({ maxKB: "abc", storeMax: 2.6 }), { maxKB: 500, storeMax: 3 });
+});
+
+test("screenshot over the Settings size cap is shrunk via deps.reencodeImage", async () => {
+  const big = "A".repeat(4 * 1024 * 200);                              // ~600 KB decoded
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  d.screenshot = { maxKB: 100, storeMax: 10 };
+  const steps = [];
+  d.reencodeImage = async (b64, step) => { steps.push(step); return "B".repeat(steps.length === 1 ? 4 * 1024 * 30 : 8); };          // 90 KB decoded
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(steps.length, 1);                                       // first step already fits
+  assert.ok(steps[0].scale < 1 && steps[0].quality === 0.7);
+  assert.equal(res.content[0].data.length, 4 * 1024 * 30);
+  assert.match(res.content[1].text, /shrunk from 600 KB to fit the 100 KB limit/);
+});
+
+test("screenshot: still over the cap after every step says so; under the cap is untouched", async () => {
+  const big = "A".repeat(4 * 1024 * 200);
+  const over = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  over.deps.screenshot = { maxKB: 100, storeMax: 10 };
+  let n = 0;
+  over.deps.reencodeImage = async () => { n++; return "C".repeat(4 * 1024 * 150); };
+  const res = await call(over.deps, "katashiro.screenshot");
+  assert.equal(n, 3);
+  assert.match(res.content[1].text, /still 450 KB — over the 100 KB limit/);
+  const small = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  let called = false;
+  small.deps.reencodeImage = async () => { called = true; return "X"; };
+  const ok = await call(small.deps, "katashiro.screenshot");
+  assert.equal(called, false);
+  assert.equal(ok.content[0].data, "QUJD");
+});
+
+test("Settings storeMax controls how many captures stay pasteable", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  d.screenshot = { maxKB: 500, storeMax: 2 };
+  const a = (await shoot(d)).id;
+  const b = (await shoot(d)).id;
+  const c = (await shoot(d)).id;
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: a, selector: "#x" })).isError, true);   // evicted
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: b, selector: "#x" })).isError, undefined);
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: c, selector: "#x" })).isError, undefined);
+  d.screenshot = { maxKB: 500, storeMax: 10 };                         // restore the default for later tests
+  await shoot(d);
+});
