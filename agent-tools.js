@@ -32,6 +32,27 @@
   }
   const labelOf = (title) => clipChars(title, LABEL_MAX);
 
+  // Short, stable pill labels. The gateway forwards only toolCallId / title / status (ACP `kind`
+  // is dropped), and claude-agent-acp opens a shell call as "Terminal" then retitles it to the
+  // whole command — so the pill would grow into a command line. Instead the first recognisable
+  // title fixes a short label for the call's lifetime; the full (gateway-masked) title stays in
+  // the tooltip.
+  //  - "Terminal" placeholder, or _meta toolName "Bash" → "Bash"
+  //  - an MCP tool name `mcp__server__tool` → "server · tool"
+  // Anything else keeps the title as label (Read file, Edit path, …).
+  const PLACEHOLDER_LABELS = new Map([["terminal", "Bash"]]); // a Map: no prototype keys ("constructor")
+  const MCP_NAME_RE = /^mcp__(.+?)__(.+)$/;
+  function mcpLabel(name) {
+    const m = MCP_NAME_RE.exec(name || "");
+    return m ? `${m[1]} · ${m[2]}` : "";
+  }
+  function kindLabelFor(title, toolName) {
+    if (toolName === "Bash") return "Bash";
+    if (mcpLabel(toolName)) return mcpLabel(toolName);
+    if (PLACEHOLDER_LABELS.has(title.toLowerCase())) return PLACEHOLDER_LABELS.get(title.toLowerCase());
+    return mcpLabel(title);
+  }
+
   // A katashiro browser tool reaching us as the agent's MCP call: the browser pill already
   // shows it (with details), so a second, agent-tool pill would double it. Matched on the MCP
   // tool name shape only — never a free substring, so a Bash command that merely mentions
@@ -76,6 +97,8 @@
       return null;
     }
     const title = cleanTitle(u.title);
+    const meta = u._meta && u._meta.claudeCode;
+    const toolName = meta && typeof meta.toolName === "string" ? meta.toolName : "";
     // An update for an unknown call can only render if it brings a title of its own.
     if (!prev && kind === "tool_call_update" && !title) return null;
 
@@ -83,8 +106,13 @@
     const nextTitle = clipChars(title, TITLE_MAX) || (prev && prev.title) || "tool";
     // Unknown / absent status keeps the previous state; a fresh call starts as running.
     const state = STATE_OF[u.status] || (prev && prev.state) || "running";
-    return { id, title: nextTitle, label: labelOf(nextTitle), state, icon: ICON_OF[state] };
+    // Once fixed (from the first title / toolName that identifies the tool), the label holds even
+    // as later updates retitle the call to its full command.
+    const kindLabel = (prev && prev.kindLabel) || kindLabelFor(title, toolName);
+    return {
+      id, title: nextTitle, label: labelOf(kindLabel || nextTitle), kindLabel, state, icon: ICON_OF[state]
+    };
   }
 
-  return { applyToolCallUpdate, isBrowserToolCall, ICON_OF, LABEL_MAX, TITLE_MAX };
+  return { applyToolCallUpdate, isBrowserToolCall, mcpLabel, ICON_OF, LABEL_MAX, TITLE_MAX };
 });

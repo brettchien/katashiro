@@ -36,10 +36,9 @@ Every capability below is a variation on those two directions.
 >
 > Of the Phase 3 safety gates, **act mode is in place** (writes off by default), an
 > **audit log exists on the openab facade side** (`mcp.audit` records every tool call), and the
-> **origin allowlist is in place** — the extension can only see or touch origins the user has
-> granted at the Chrome level (optional host permissions), checked per call for reads and writes
-> alike. The gates still missing before high-blast-radius writes: **per-write confirm (raw
-> request), and a high-risk-origin blocklist.**
+> site access is **all sites**, narrowed only by Chrome's own extension Site access setting (the
+> per-origin allowlist was replaced). Per-write confirmation and a high-risk-origin blocklist are
+> **not planned** (owner decision) — see [the gate status](#safety-gates--status).
 
 ---
 
@@ -132,26 +131,32 @@ Two mechanisms:
   site's cookies, no CORS. Turns the extension into an authenticated
   computer-use agent.
 
-### Hard gates — none of this ships without all of them
+### Safety gates — status
+
+Originally all six were required before Phase 3; the owner has since decided which ones the
+extension carries (#2 replaced, #3 and #6 not planned).
 
 1. ✅ **Read-only by default**; writes require explicit **act mode**. *(Shipped: `write: true`
    in the tool registry, gated in `callBrowserTool` on `deps.actMode`, toggled in Settings.)*
-2. ✅ **Origin allowlist** — only origins the user has granted can be read or acted on. *(Shipped
-   via Chrome's native permission model: `<all_urls>` moved out of `host_permissions` into
-   `optional_host_permissions`; the user grants/revokes per-origin in Settings → 授權網域
-   (`chrome.permissions.request`/`remove`), and `callBrowserTool` refuses any tool — read or
-   write — whose active-tab origin fails `chrome.permissions.contains`.)*
-3. **Per-write confirmation showing the raw request** (method + URL + body), not
-   just the agent's natural-language intent.
+2. ↩️ **Origin allowlist** — *replaced (a166d01, 2026-09-20).* It shipped as
+   `optional_host_permissions` + a Settings → 授權網域 grant UI (449f9d6), then moved back to
+   `host_permissions: ["<all_urls>"]` ("all-sites access"). Per-site control is now Chrome's own
+   extension **Site access** setting: a page whose access the user withheld simply fails the
+   scripting call. Pages with no web origin (chrome://, Web Store, PDF, file://) are refused
+   up front with a clear message.
+3. ⏸️ **Per-write confirmation showing the raw request** — *not planned (owner decision,
+   2026-10-07).* Act mode (#1) is the write consent boundary.
 4. ✅ **No `eval` / no arbitrary JS / no arbitrary-URL fetch** — the served tools are a fixed
    allowlist with schema-validated params; there is no arbitrary-JS op.
 5. ✅ **Audit log** — the openab facade records every tool call (`mcp.audit: facade source
-   call … tool=katashiro.* … is_error=…`). *(Server-side; a client-side action log in the
-   Side Panel is still worth adding for the user's own visibility.)*
-6. **Blocklist high-risk origins** (banking, cloud consoles, GitHub org admin) by default.
+   call … tool=katashiro.* … is_error=…`). *(Server-side only; a client-side action log in the
+   Side Panel is not planned — owner decision, 2026-10-08. The side panel's tool pills show each
+   call as it happens.)*
+6. ⏸️ **Blocklist high-risk origins** (banking, cloud consoles, GitHub org admin) — *not planned
+   (owner decision, 2026-10-07).*
 
-**Exit criteria**: agent completes a real persistent task on an allowlisted site,
-every write approved by the user, with a full audit trail.
+**Exit criteria**: agent completes a real persistent task with act mode on, with a full
+server-side audit trail.
 
 ---
 
@@ -167,8 +172,9 @@ not a browser-runtime capability, and is not part of this extension.
 1. ✅ Phase 1 (read) — done via MCP-over-ACP (a11y snapshot + refs).
 2. ✅ Phase 2 (DOM write) — done via Route B (MCP-over-ACP), abandoned Route A.
 3. ✅ act mode (gate #1), no-eval (gate #4), server-side audit log (gate #5).
-4. ✅ Origin allowlist (gate #2) — via Chrome `optional_host_permissions` + a Settings 授權網域 UI.
-5. **Next — remaining Phase 3 write-safety gates**, in order:
-   - **Per-write confirm showing the raw request** (gate #3).
-   - **High-risk-origin blocklist** (gate #6).
-   Ship these before opening act mode on real, persistent, authenticated sites.
+4. ↩️ Origin allowlist (gate #2) — shipped, then replaced by all-sites access + Chrome's Site
+   access control (see gate #2).
+5. ⏸️ Gates #3 and #6 — not planned (owner decision).
+6. **Next — breadth of the browser surface**: tab management (tab groups, `tab_update`,
+   `reopen_tab`), shorter agent tool-pill labels, and a headless-Chrome E2E harness so changes
+   are checked in a real browser, not only under `node --test`.
