@@ -932,8 +932,8 @@
       description:
         "List all open browser tabs across every window (index, title, URL, and which is active). " +
         "Read-only. katashiro's other tools act on the active tab; the `[index]` shown is a live " +
-        "enumeration order (not a stable tab id) — pass it to `switch_tab` to change the active tab, " +
-        "or use `new_tab` to open one.",
+        "enumeration order (not a stable tab id) — pass it to `switch_tab` to change the active tab " +
+        "or `close_tab` to close one, or use `new_tab` to open one.",
       // sessionScope: the browsing context is a browser-level fact, not the active page's — so this
       // still works when the active tab is a chrome:// / blank page with no scriptable origin.
       sessionScope: true,
@@ -1034,6 +1034,57 @@
         const label = `switched to tab [${idx}] — ${target.title || "(untitled)"} — ${target.url || ""}`;
         if (pageOrigin(target.url)) return okText(`${label}\n\n${await snapshotAfter(ctx.chrome, target.id)}`);
         return okText(label);
+      }
+    },
+
+    "katashiro.close_tab": {
+      description:
+        "Close a browser tab. Identify it by `url` (the first tab whose URL contains this substring) or " +
+        "by `index` from a fresh `tabs` listing — prefer `url`: an index from a stale listing closes " +
+        "the wrong tab, irreversibly. Omit both to close the active tab. Refuses to close the last tab " +
+        "in its window. If the active tab is closed, the browser picks the next active " +
+        "tab — call `tabs` to see which before acting on the page. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "tab index from a fresh `tabs` listing" },
+          url: { type: "string", description: "substring of the target tab's URL (alternative to index)" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ index?: number, url?: string }} args */
+      async call(args, ctx) {
+        const all = await ctx.chrome.tabs.query({});
+        if (!all.length) return errText("no open tabs to close");
+        let target = null;
+        const needle = (args.url != null) ? String(args.url).trim() : "";
+        if (needle) {
+          target = all.find((t) => (t.url || "").includes(needle));
+          if (!target) return errText(`no open tab whose URL contains "${needle}" — call tabs to see what's open`);
+        } else if (Number.isInteger(args.index)) {
+          if (args.index < 0 || args.index >= all.length) {
+            return errText(`tab index ${args.index} is out of range (0..${all.length - 1}) — call tabs for the current list`);
+          }
+          target = all[args.index];
+        } else {
+          // No identifier: the active tab — same lookup the page-scoped tools use.
+          const [active] = await ctx.chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          if (!active) return errText("no active browser tab to close");
+          target = all.find((t) => t.id === active.id) || active;
+        }
+        // Closing a window's last tab closes that window (and with the last window, on some platforms,
+        // the browser). The side panel lives on a window, so if it is that window the panel and this
+        // session go with it — count per window, not across all windows.
+        if (all.filter((t) => t.windowId === target.windowId).length <= 1) {
+          return errText("refusing to close the last tab in its window — that would close the window " +
+            "(and the side panel if it is open there)");
+        }
+        const idx = all.findIndex((t) => t.id === target.id);
+        await ctx.chrome.tabs.remove(target.id);
+        return okText(`closed tab [${idx}] — ${target.title || "(untitled)"} — ${target.url || ""}\n` +
+          "(tab indexes have shifted — call tabs for the current list)");
       }
     },
 
