@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], tabsRemove: [], windowsUpdate: [], insertCSS: [], removeCSS: [], tabsGroup: [], tabsUngroup: [], tabsMove: [], tabsDuplicate: [], groupsUpdate: [], sessionsRestore: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], tabsRemove: [], windowsUpdate: [], insertCSS: [], removeCSS: [], tabsGroup: [], tabsUngroup: [], tabsMove: [], tabsDuplicate: [], groupsUpdate: [], sessionsRestore: [], createSplit: [], unsplit: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -38,6 +38,14 @@ function mockChrome(opts = {}) {
       ungroup: async (ids) => { calls.tabsUngroup.push(ids); },
       move: async (tabId, o) => { calls.tabsMove.push({ tabId, o }); },
       duplicate: async (tabId) => { calls.tabsDuplicate.push(tabId); return { id: 777 }; },
+      // Split View (Chrome 155+); opts.noSplit drops both methods. createSplit tags the listed tabs.
+      createSplit: opts.noSplit ? undefined : async (ids) => {
+        calls.createSplit.push(ids);
+        if (opts.splitThrows) throw new Error(opts.splitThrows);
+        for (const t of opts.tabsList || []) if (ids.includes(t.id)) t.splitViewId = 900;
+        return 900;
+      },
+      unsplit: opts.noSplit ? undefined : async (id) => { calls.unsplit.push(id); },
       goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
       goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       reload: async (tabId, o) => { calls.reload.push({ tabId, o }); },
@@ -163,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 32 DOM-semantic browser tools", async () => {
+test("tools/list returns the 34 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -190,6 +198,8 @@ test("tools/list returns the 32 DOM-semantic browser tools", async () => {
     "katashiro.group_tabs",
     "katashiro.ungroup_tabs",
     "katashiro.update_tab_group",
+    "katashiro.split_tabs",
+    "katashiro.unsplit_tabs",
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
@@ -750,11 +760,13 @@ test("exactly the mutating tools are marked write", () => {
     "katashiro.reload",
     "katashiro.reopen_tab",
     "katashiro.select_option",
+    "katashiro.split_tabs",
     "katashiro.switch_tab",
     "katashiro.tab_update",
     "katashiro.type",
     "katashiro.type_text",
     "katashiro.ungroup_tabs",
+    "katashiro.unsplit_tabs",
     "katashiro.update_tab_group",
     "katashiro.upload_file"
   ]);
@@ -2101,4 +2113,128 @@ test("every new tab write tool is refused when act mode is off", async () => {
     assert.match(res.content[0].text, /act mode is off/, name);
   }
   assert.equal(calls.tabsUpdate.length + calls.tabsGroup.length + calls.tabsUngroup.length + calls.groupsUpdate.length + calls.sessionsRestore.length, 0);
+});
+
+// --- Split View: split_tabs / unsplit_tabs / tabs tag -------------------------------------------
+
+// window 7: [0] A(idx0) [1] B(idx1) [2] C(idx2, pinned) ; window 8: [3] D
+const splitTabs = () => [
+  { id: 1, windowId: 7, index: 0, url: "https://a/", title: "A", active: true, groupId: -1, splitViewId: -1 },
+  { id: 2, windowId: 7, index: 1, url: "https://b/", title: "B", groupId: -1, splitViewId: -1 },
+  { id: 3, windowId: 7, index: 2, url: "https://c/", title: "C", groupId: -1, splitViewId: -1 },
+  { id: 4, windowId: 7, index: 3, url: "https://p/", title: "P", pinned: true, groupId: -1, splitViewId: -1 },
+  { id: 5, windowId: 8, index: 0, url: "https://d/", title: "D", groupId: -1, splitViewId: -1 }
+];
+
+test("tabs: a tab in a Split View carries a split <id> tag", async () => {
+  const list = splitTabs();
+  list[0].splitViewId = 31; list[1].splitViewId = 31;
+  const text = (await call(deps({ tabsList: list }).deps, "katashiro.tabs")).content[0].text;
+  assert.match(text, /\[0\] A — .*\(window 7 · split 31\)$/m);
+  assert.match(text, /\[1\] B — .*\(window 7 · split 31\)$/m);
+  assert.match(text, /\[2\] C — .*\(window 7\)$/m);
+});
+
+test("split_tabs: two adjacent tabs split in place, no move", async () => {
+  const { deps: d, calls } = deps({ tabsList: splitTabs() });
+  const res = await call(d, "katashiro.split_tabs", { tabs: [{ index: 0 }, { url: "https://b/" }] });
+  assert.equal(res.isError, undefined);
+  assert.equal(calls.tabsMove.length, 0);
+  assert.deepEqual(calls.createSplit, [[1, 2]]);
+  assert.match(res.content[0].text, /split tabs \[0, 1\] side by side \(split 900\)/);
+  assert.match(res.content[0].text, /act on the active pane/);
+});
+
+test("split_tabs: a non-adjacent second tab is moved right after the first", async () => {
+  const after = deps({ tabsList: splitTabs() });                          // C (idx 2) after A (idx 0)
+  await call(after.deps, "katashiro.split_tabs", { tabs: [{ index: 0 }, { index: 2 }] });
+  assert.deepEqual(after.calls.tabsMove, [{ tabId: 3, o: { index: 1 } }]);
+  assert.deepEqual(after.calls.createSplit, [[1, 3]]);
+  const before = deps({ tabsList: splitTabs() });                         // A (idx 0) before C (idx 2)
+  await call(before.deps, "katashiro.split_tabs", { tabs: [{ index: 2 }, { index: 0 }] });
+  // lifting A out shifts C to 1, so "right after C" is final index 2
+  assert.deepEqual(before.calls.tabsMove, [{ tabId: 1, o: { index: 2 } }]);
+});
+
+test("split_tabs: openUrl opens a new tab split with the given one, right by default, left on request", async () => {
+  const right = deps({ tabsList: splitTabs(), createdTab: { id: 60, splitViewId: 900 } });
+  const r = await call(right.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }], openUrl: "https://docs.example/x" });
+  assert.equal(r.isError, undefined);
+  assert.deepEqual(right.calls.tabsCreate, [{ url: "https://docs.example/x", splitWithTabId: 2 }]);
+  const left = deps({ tabsList: splitTabs(), createdTab: { id: 61, splitViewId: 900 } });
+  await call(left.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }], openUrl: "https://e/", side: "left" });
+  assert.deepEqual(left.calls.tabsCreate, [{ url: "https://e/", splitWithTabId: 2, index: 1 }]);
+  // no tab given → the active tab (mock active lookup returns id 42, which must be in the list)
+  const list = splitTabs(); list[0].id = 42;
+  const act = deps({ tabsList: list, createdTab: { id: 62, splitViewId: 900 } });
+  assert.equal((await call(act.deps, "katashiro.split_tabs", { openUrl: "https://f/" })).isError, undefined);
+  assert.equal(act.calls.tabsCreate[0].splitWithTabId, 42);
+});
+
+test("split_tabs: refuses mismatched window / pinned, an already-split tab, and bad shapes", async () => {
+  const { deps: d, calls } = deps({ tabsList: (() => { const l = splitTabs(); l[1].splitViewId = 7; return l; })() });
+  const cases = [
+    [{ tabs: [{ index: 0 }, { index: 4 }] }, /differ in window/],
+    [{ tabs: [{ index: 2 }, { index: 3 }] }, /differ in pinned state/],
+    [{ tabs: [{ index: 0 }, { index: 1 }] }, /already in split 7/],
+    [{ tabs: [{ index: 0 }, { index: 0 }] }, /two different tabs/],
+    [{ tabs: [{ index: 0 }] }, /pass two tabs/],
+    [{ tabs: [{ index: 0 }, { index: 2 }, { index: 3 }] }, /pass two tabs/],
+    [{ tabs: [{ index: 0 }, { index: 1 }], openUrl: "https://x/" }, /pass two tabs/],
+    [{ tabs: [{ index: 0 }, { index: 2 }], side: "left" }, /only applies with `openUrl`/],
+    [{ tabs: [{ index: 0 }], openUrl: "https://x/", side: "up" }, /must be "left" or "right"/],
+    [{ tabs: [{ index: 9 }, { index: 0 }] }, /out of range/]
+  ];
+  for (const [args, re] of cases) {
+    const res = await call(d, "katashiro.split_tabs", args);
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.match(res.content[0].text, re, JSON.stringify(args));
+  }
+  assert.equal(calls.createSplit.length + calls.tabsMove.length + calls.tabsCreate.length, 0);
+});
+
+test("split_tabs: Chrome errors surface; no Split View API is a clean error", async () => {
+  const thrown = await call(deps({ tabsList: splitTabs(), splitThrows: "Tabs must be adjacent." }).deps,
+    "katashiro.split_tabs", { tabs: [{ index: 0 }, { index: 1 }] });
+  assert.equal(thrown.isError, true);
+  assert.match(thrown.content[0].text, /could not create the split: Tabs must be adjacent/);
+  const old = deps({ tabsList: splitTabs(), noSplit: true });
+  const res = await call(old.deps, "katashiro.split_tabs", { tabs: [{ index: 0 }, { index: 1 }] });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /Chrome 155\+/);
+  assert.equal((await call(old.deps, "katashiro.unsplit_tabs", { index: 0 })).isError, true);
+});
+
+test("split_tabs: openUrl is masked like navigate's url in the UI details", () => {
+  const masked = BrowserMcp.TOOLS["katashiro.split_tabs"].redact({ openUrl: "https://x/cb?token=abcdef123", tabs: [{ index: 0 }] });
+  assert.equal(masked.openUrl, "https://x/cb?‹redacted›");
+  assert.deepEqual(masked.tabs, [{ index: 0 }]);
+  assert.ok(BrowserMcp.TOOLS["katashiro.split_tabs"].secrets({ openUrl: "https://x/cb?token=abcdef123" }).includes("abcdef123"));
+});
+
+test("unsplit_tabs: by splitViewId, by a member tab, by the active tab; errors when not split", async () => {
+  const list = splitTabs(); list[1].splitViewId = 31; list[2].splitViewId = 31; list[0].id = 42;
+  const { deps: d, calls } = deps({ tabsList: list });
+  const byId = await call(d, "katashiro.unsplit_tabs", { splitViewId: 31 });
+  assert.equal(byId.isError, undefined);
+  assert.match(byId.content[0].text, /unsplit split 31 — tabs \[1, 2\] are independent again/);
+  await call(d, "katashiro.unsplit_tabs", { url: "https://c/" });
+  assert.deepEqual(calls.unsplit, [31, 31]);
+  const notSplit = await call(d, "katashiro.unsplit_tabs", {});            // active tab (id 42) is not split
+  assert.equal(notSplit.isError, true);
+  assert.match(notSplit.content[0].text, /not in a Split View/);
+  for (const args of [{ splitViewId: 99 }, { splitViewId: -1 }, { splitViewId: "31" }]) {
+    assert.equal((await call(d, "katashiro.unsplit_tabs", args)).isError, true, JSON.stringify(args));
+  }
+  assert.equal(calls.unsplit.length, 2);
+});
+
+test("split_tabs / unsplit_tabs are refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false, tabsList: splitTabs() });
+  for (const [name, args] of [["katashiro.split_tabs", { tabs: [{ index: 0 }, { index: 1 }] }], ["katashiro.unsplit_tabs", { splitViewId: 31 }]]) {
+    const res = await call(d, name, args);
+    assert.equal(res.isError, true, name);
+    assert.match(res.content[0].text, /act mode is off/, name);
+  }
+  assert.equal(calls.createSplit.length + calls.unsplit.length, 0);
 });

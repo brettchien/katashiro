@@ -273,6 +273,17 @@
   }
   const groupLabel = (g, id) => (g ? `group ${g.id} "${g.title || ""}" ${g.color || ""}`.trim() : `group ${id}`);
   const TAB_GROUPS_UNAVAILABLE = "the tab group API is unavailable in this browser (needs Chrome 89+ and the tabGroups permission)";
+
+  // Split View (Chrome 140+ reads `tab.splitViewId`; 155+ adds tabs.createSplit / tabs.unsplit and
+  // tabs.create({ splitWithTabId })). Feature-detected, never version-sniffed. A split holds exactly
+  // two adjacent tabs of one window with the same pinned / group state; the left pane is the
+  // lower index. Pane width, orientation and swapping are not exposed to extensions.
+  const SPLIT_NONE = -1;                                 // chrome.tabs.SPLIT_VIEW_ID_NONE
+  const inSplit = (t) => t.splitViewId != null && t.splitViewId !== SPLIT_NONE;
+  const canSplit = (chrome) => typeof chrome.tabs.createSplit === "function";
+  const SPLIT_UNAVAILABLE = "Split View is not available to extensions in this browser (needs Chrome 155+)";
+  const SPLIT_ACTIVE_NOTE = "both panes are visible, but katashiro's page tools act on the active pane (the one " +
+    "last focused) — switch_tab to the pane you want first";
   const errMsg = (e) => String((e && e.message) || e);
 
   // highlight: the caption is short by design (it labels, it does not explain), and the overlay
@@ -997,7 +1008,8 @@
     "katashiro.tabs": {
       description:
         "List open browser tabs across every window: index, title, URL, which is active (*), and per " +
-        "tab its window, pinned / audible / muted / discarded state and tab group. Optional filters: " +
+        "tab its window, pinned / audible / muted / discarded state, tab group and Split View (`split <id>`; " +
+        "the two tabs of a split share the id, the lower index is the left pane). Optional filters: " +
         "`windowId`, `url` substring. Read-only. katashiro's other tools act on the active tab; the " +
         "`[index]` shown is a live enumeration order across all windows (not a stable tab id) and a " +
         "filtered list keeps it — pass it to `switch_tab`, `close_tab` or `tab_update`, or use " +
@@ -1034,6 +1046,7 @@
           if (t.mutedInfo && t.mutedInfo.muted) tags.push("muted");
           if (t.discarded) tags.push("discarded");
           if (t.groupId != null && t.groupId !== TAB_GROUP_NONE) tags.push(groupLabel(groups.get(t.groupId), t.groupId));
+          if (inSplit(t)) tags.push(`split ${t.splitViewId}`);
           lines.push(`${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}  (${tags.join(" · ")})`);
         });
         if (!lines.length) return okText(`(no tabs match the filter — ${tabs.length} open in total)`);
@@ -1464,6 +1477,134 @@
           return errText(`could not update group ${args.groupId}: ${errMsg(e)} — call tab_groups for the current ids`);
         }
         return okText(`updated ${groupLabel(g, args.groupId)}${g && g.collapsed ? " (collapsed)" : ""}`);
+      }
+    },
+
+    "katashiro.split_tabs": {
+      description:
+        "Show two tabs side by side in Chrome's Split View. Either pass two existing tabs in `tabs` " +
+        "(each {index} from a fresh `tabs` or {url} substring) — if they are not adjacent, the second " +
+        "is moved next to the first, so the first ends up on the left — or pass one tab (or none, for " +
+        "the active tab) plus `openUrl` to open a new tab split with it, on `side` \"right\" (default) " +
+        "or \"left\". Both tabs must be in the same window with the same pinned and tab-group state, and " +
+        "not already in a split. Afterwards " + SPLIT_ACTIVE_NOTE + ". Needs Chrome 155+. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          tabs: {
+            type: "array",
+            maxItems: 2,
+            description: "two existing tabs to split, or one tab to split with openUrl — each {index} or {url}",
+            items: { type: "object", properties: { index: { type: "number" }, url: { type: "string" } } }
+          },
+          openUrl: { type: "string", description: "open this URL in a new tab split with the given tab" },
+          side: { type: "string", enum: ["left", "right"], description: "where the new openUrl tab goes (default right)" }
+        }
+      },
+      // openUrl is masked like navigate's url (query / fragment often carry tokens); the tabs[].url
+      // entries are only substrings to find a tab, as in switch_tab / close_tab.
+      redact: (args) => {
+        const a = { ...(args || {}) };
+        if (a.openUrl != null) a.openUrl = stripUrlQuery(a.openUrl);
+        return truncateStrings(a);
+      },
+      secrets: (args) => secretUrl({ url: args && args.openUrl }),
+      /** @param {{ tabs?: Array<{index?: number, url?: string}>, openUrl?: string, side?: string }} args */
+      async call(args, ctx) {
+        if (!canSplit(ctx.chrome)) return errText(SPLIT_UNAVAILABLE);
+        const refs = args.tabs == null ? [] : args.tabs;
+        if (!Array.isArray(refs)) return errText("`tabs` must be a list of {index} or {url}");
+        const openUrl = args.openUrl != null ? String(args.openUrl).trim() : "";
+        if (args.side != null && args.side !== "left" && args.side !== "right") return errText("`side` must be \"left\" or \"right\"");
+        if (openUrl ? refs.length > 1 : refs.length !== 2) {
+          return errText("pass two tabs in `tabs`, or one tab (or none, for the active tab) plus `openUrl`");
+        }
+        if (!openUrl && args.side != null) return errText("`side` only applies with `openUrl`");
+        const all = await ctx.chrome.tabs.query({});
+        if (!all.length) return errText("no open tabs");
+        const picks = [];
+        for (const ref of (refs.length ? refs : [undefined])) {
+          const p = await pickTab(ctx.chrome, all, ref, refs.length === 0);
+          if (p.error) return errText(p.error);
+          picks.push(p);
+        }
+        for (const p of picks) {
+          if (inSplit(p.tab)) return errText(`tab [${p.index}] is already in split ${p.tab.splitViewId} — unsplit_tabs first`);
+        }
+        let splitViewId;
+        try {
+          if (openUrl) {
+            const base = picks[0].tab;
+            const props = { url: openUrl, splitWithTabId: base.id };
+            if (args.side === "left") props.index = base.index;  // the existing tab's index ⇒ left pane
+            const created = await ctx.chrome.tabs.create(props);
+            splitViewId = created && created.splitViewId;
+          } else {
+            const [a, b] = picks.map((p) => p.tab);
+            if (a.id === b.id) return errText("pick two different tabs");
+            const mismatch = [["windowId", "window"], ["pinned", "pinned state"], ["groupId", "tab group"]]
+              .filter(([k]) => (a[k] ?? null) !== (b[k] ?? null)).map(([, label]) => label);
+            if (mismatch.length) {
+              return errText(`tabs [${picks[0].index}] and [${picks[1].index}] differ in ${mismatch.join(", ")} — ` +
+                "a split needs both in the same window with the same pinned and tab-group state");
+            }
+            if (Math.abs(a.index - b.index) !== 1) {
+              // Final position right after `a`: if b sat before a, a shifts left once b is lifted out.
+              await ctx.chrome.tabs.move(b.id, { index: b.index < a.index ? a.index : a.index + 1 });
+            }
+            splitViewId = await ctx.chrome.tabs.createSplit([a.id, b.id]);
+          }
+        } catch (e) {
+          return errText(`could not create the split: ${errMsg(e)}`);
+        }
+        const after = await ctx.chrome.tabs.query({});
+        const members = after.map((t, i) => [t, i]).filter(([t]) => splitViewId != null && t.splitViewId === splitViewId);
+        const where = members.length ? `tabs [${members.map(([, i]) => i).join(", ")}]` : "the tabs";
+        return okText(`split ${where} side by side${splitViewId != null ? ` (split ${splitViewId})` : ""}\n` +
+          `(${SPLIT_ACTIVE_NOTE}; tab indexes may have shifted — call tabs for the current list)`);
+      }
+    },
+
+    "katashiro.unsplit_tabs": {
+      description:
+        "Undo a Split View: the two tabs become independent tabs again, keeping their order, window, " +
+        "pinned and group state. Identify the split by `splitViewId` (from `tabs`), or by either of its " +
+        "tabs ({index} / {url}); omit all for the active tab's split. Needs Chrome 155+. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          splitViewId: { type: "number", description: "split id from the tabs listing (`split <id>`)" },
+          index: { type: "number", description: "index of either tab in the split" },
+          url: { type: "string", description: "substring of either split tab's URL" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ splitViewId?: number, index?: number, url?: string }} args */
+      async call(args, ctx) {
+        if (typeof ctx.chrome.tabs.unsplit !== "function") return errText(SPLIT_UNAVAILABLE);
+        const all = await ctx.chrome.tabs.query({});
+        let id;
+        if (args.splitViewId != null) {
+          if (!Number.isInteger(args.splitViewId) || args.splitViewId === SPLIT_NONE) return errText("`splitViewId` must be a split id from tabs");
+          if (!all.some((t) => t.splitViewId === args.splitViewId)) return errText(`no split ${args.splitViewId} — call tabs for the current splits`);
+          id = args.splitViewId;
+        } else {
+          const p = await pickTab(ctx.chrome, all, args);
+          if (p.error) return errText(p.error);
+          if (!inSplit(p.tab)) return errText(`tab [${p.index}] is not in a Split View`);
+          id = p.tab.splitViewId;
+        }
+        const members = all.map((t, i) => [t, i]).filter(([t]) => t.splitViewId === id).map(([, i]) => i);
+        try {
+          await ctx.chrome.tabs.unsplit(id);
+        } catch (e) {
+          return errText(`could not unsplit split ${id}: ${errMsg(e)}`);
+        }
+        return okText(`unsplit split ${id} — tabs [${members.join(", ")}] are independent again`);
       }
     },
 
