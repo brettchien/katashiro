@@ -60,6 +60,8 @@ function mockChrome(opts = {}) {
         return { ...(g || { id, color: "grey", title: "" }), ...upd };
       }
     },
+    // permissions: present only when a test seeds opts.sessionsGranted (live grant after a revoke).
+    permissions: opts.sessionsGranted == null ? undefined : { contains: async () => opts.sessionsGranted },
     sessions: opts.noSessions ? undefined : {
       getRecentlyClosed: async () => opts.recentlyClosed || [],
       restore: async (sessionId) => {
@@ -1973,6 +1975,14 @@ test("reopen_tab: nothing to restore / no sessions API are clean errors", async 
   assert.equal(none.isError, true);
   assert.match(none.content[0].text, /sessions permission/);
   assert.match(none.content[0].text, /Katashiro settings/);   // tells the agent how the user turns it on
+  // Revoked in Settings: chrome.sessions may linger, but the live grant says no → same hint, no restore.
+  const revoked = deps({ sessionsGranted: false, recentlyClosed: [{ tab: { sessionId: "s" } }] });
+  const r = await call(revoked.deps, "katashiro.reopen_tab");
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /Katashiro settings/);
+  assert.equal(revoked.calls.sessionsRestore.length, 0);
+  const granted = deps({ sessionsGranted: true, recentlyClosed: [{ tab: { sessionId: "s" } }] });
+  assert.equal((await call(granted.deps, "katashiro.reopen_tab")).isError, undefined);
 });
 
 test("tab_groups: lists groups with their member tab indexes", async () => {

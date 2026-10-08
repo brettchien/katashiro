@@ -1197,7 +1197,14 @@
       /** @param {{ url?: string }} args */
       async call(args, ctx) {
         const sessions = ctx.chrome.sessions;
-        if (!sessions || typeof sessions.restore !== "function") {
+        // After a revoke the chrome.sessions object can linger and only throw on use — ask Chrome
+        // for the live grant so the agent gets the "ask the user" hint, not "nothing to reopen".
+        let granted = !!(sessions && typeof sessions.restore === "function");
+        const perms = ctx.chrome.permissions;
+        if (granted && perms && typeof perms.contains === "function") {
+          try { granted = await perms.contains({ permissions: ["sessions"] }); } catch { /* keep the API check */ }
+        }
+        if (!granted) {
           return errText("reopening tabs needs the optional sessions permission — ask the user to allow " +
             "\"重新開啟已關閉分頁\" in Katashiro settings");
         }
