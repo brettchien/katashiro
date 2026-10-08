@@ -9,7 +9,9 @@
     "storage",
     "scripting",
     "tabs",
-    "tabGroups",
+    "tabGroups"
+  ],
+  "optional_permissions": [
     "sessions"
   ],
   "host_permissions": [

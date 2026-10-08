@@ -239,7 +239,8 @@
     const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (!active) return { error: "no active browser tab" };
     const i = all.findIndex((t) => t.id === active.id);
-    return { tab: i >= 0 ? all[i] : active, index: i };
+    if (i < 0) return { error: "the active tab is not in the current tab list — call tabs and pass an index or url" };
+    return { tab: all[i], index: i };
   }
 
   // Several tabs (group_tabs / ungroup_tabs): each entry {index} or {url}. All-or-nothing — one bad
@@ -254,6 +255,15 @@
       picked.set(p.tab.id, p);
     }
     return { tabs: [...picked.values()] };
+  }
+
+  // Windows that moving `moving` (tabs) into window `targetWindowId` would leave with no tabs —
+  // Chrome then closes them, and the side panel with them if it is open there (cf. close_tab).
+  // targetWindowId null (unknown) ⇒ no source window may be emptied.
+  function windowsEmptiedByMove(all, moving, targetWindowId) {
+    const ids = new Set(moving.map((t) => t.id));
+    const sources = new Set(moving.map((t) => t.windowId).filter((w) => w !== targetWindowId));
+    return [...sources].filter((w) => all.every((t) => t.windowId !== w || ids.has(t.id)));
   }
 
   // Tab groups by id, or null when the tabGroups API is unavailable (permission / old Chrome).
@@ -1009,13 +1019,14 @@
         // across the browsing context. Wider exposure than every other tool (which touch only the
         // active tab): titles/URLs of unrelated tabs (mail, banking) reach the agent — accepted as
         // intentional because the agent is the user's own broker (review F1, decision b).
+        if (args.windowId != null && !Number.isInteger(args.windowId)) return errText("`windowId` must be a window id from the tabs listing");
         const tabs = await ctx.chrome.tabs.query({});
         if (!tabs.length) return okText("(no tabs)");
         const groups = (await groupsById(ctx.chrome)) || new Map();
         const needle = args.url != null ? String(args.url).trim() : "";
         const lines = [];
         tabs.forEach((t, i) => {                         // i is the global index — never renumbered
-          if (Number.isInteger(args.windowId) && t.windowId !== args.windowId) return;
+          if (args.windowId != null && t.windowId !== args.windowId) return;
           if (needle && !(t.url || "").includes(needle)) return;
           const tags = [`window ${t.windowId}`];
           if (t.pinned) tags.push("pinned");
@@ -1171,8 +1182,9 @@
       description:
         "Reopen a recently closed tab (the browser's Ctrl/Cmd+Shift+T) — e.g. to undo a mistaken " +
         "`close_tab`. Pass `url` (a substring) to pick the most recent closed tab whose URL contains " +
-        "it; omit it to reopen the most recently closed tab or window, whoever closed it. Returns " +
-        "the reopened tab's index. Gated by act mode.",
+        "it; omit it to reopen the most recently closed tab, whoever closed it. Never reopens a whole " +
+        "closed window. Needs the user to allow it in Katashiro settings (optional sessions " +
+        "permission). Returns the reopened tab's index. Gated by act mode.",
       write: true,
       sessionScope: true,
       inputSchema: {
@@ -1186,27 +1198,28 @@
       async call(args, ctx) {
         const sessions = ctx.chrome.sessions;
         if (!sessions || typeof sessions.restore !== "function") {
-          return errText("reopening tabs is unavailable in this browser (needs the sessions permission)");
+          return errText("reopening tabs needs the optional sessions permission — ask the user to allow " +
+            "\"重新開啟已關閉分頁\" in Katashiro settings");
         }
         const needle = args.url != null ? String(args.url).trim() : "";
         let restored;
         try {
-          if (needle) {
-            const recent = await sessions.getRecentlyClosed({ maxResults: 25 });
-            const hit = (recent || []).find((s) => s.tab && (s.tab.url || "").includes(needle));
-            if (!hit) return errText(`no recently closed tab whose URL contains "${needle}"`);
-            restored = await sessions.restore(hit.tab.sessionId);
-          } else {
-            restored = await sessions.restore();
+          // Always a single tab: a bare sessions.restore() would reopen a whole closed window when
+          // that is the most recent entry — dozens of tabs the agent did not ask for.
+          const recent = await sessions.getRecentlyClosed({ maxResults: 25 });
+          const hit = (recent || []).find((s) => s.tab && (!needle || (s.tab.url || "").includes(needle)));
+          if (!hit) {
+            return errText(needle ? `no recently closed tab whose URL contains "${needle}"` : "no recently closed tab to reopen");
           }
+          restored = await sessions.restore(hit.tab.sessionId);
         } catch (e) {
           return errText(`nothing to reopen: ${errMsg(e)}`);
         }
-        const tab = restored && (restored.tab || (restored.window && (restored.window.tabs || [])[0]));
+        const tab = restored && restored.tab;
         if (!tab) return errText("nothing was reopened — there may be no recently closed tab");
         const all = await ctx.chrome.tabs.query({});
         const idx = all.findIndex((t) => t.id === tab.id);
-        return okText(`reopened ${restored.window ? "a window — first " : ""}tab [${idx}] — ${tab.title || "(untitled)"} — ${tab.url || ""}\n` +
+        return okText(`reopened tab [${idx}] — ${tab.title || "(untitled)"} — ${tab.url || ""}\n` +
           "(tab indexes have shifted — call tabs for the current list)");
       }
     },
@@ -1335,6 +1348,20 @@
         const all = await ctx.chrome.tabs.query({});
         const picked = await pickTabs(ctx.chrome, all, args.tabs);
         if (picked.error) return errText(picked.error);
+        // Grouping moves tabs into the group's window (an existing group's, else the current window):
+        // refuse if that would empty another window, which Chrome would then close.
+        let targetWindowId = null;
+        if (args.groupId != null) {
+          const member = all.find((t) => t.groupId === args.groupId);
+          if (member) targetWindowId = member.windowId;
+        } else if (ctx.chrome.windows && typeof ctx.chrome.windows.getCurrent === "function") {
+          try { targetWindowId = (await ctx.chrome.windows.getCurrent()).id; } catch { /* unknown ⇒ strictest check */ }
+        }
+        const emptied = windowsEmptiedByMove(all, picked.tabs.map((p) => p.tab), targetWindowId);
+        if (emptied.length) {
+          return errText(`refusing to group: it would move every tab out of window ${emptied.join(", ")}, which closes that ` +
+            "window (and the side panel if it is open there) — leave at least one of its tabs out of the group");
+        }
         const opts = { tabIds: picked.tabs.map((p) => p.tab.id) };
         if (args.groupId != null) opts.groupId = args.groupId;
         let groupId;

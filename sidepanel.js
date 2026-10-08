@@ -1248,6 +1248,35 @@ function setActMode(on) {
   updateRoster(); // browser status monkeys reflect act mode (🐵 operational / 🙊 read-only)
 }
 
+// reopen_tab needs `sessions`, which is optional: together with `tabs` it also lets the extension
+// read other signed-in devices' history, far beyond undoing a close_tab. Chrome holds the grant (no
+// config key), and permissions.request needs a user gesture — hence a settings button, not a prompt
+// on the tool's first call.
+const SESSIONS_PERM = { permissions: ["sessions"] };
+const sessionsOnBtn = document.getElementById("sessions-on");
+const sessionsOffBtn = document.getElementById("sessions-off");
+const sessionsPermHintEl = document.getElementById("sessions-perm-hint");
+
+async function renderSessionsPerm() {
+  let on = false;
+  try { on = await chrome.permissions.contains(SESSIONS_PERM); } catch { /* treat as not granted */ }
+  if (sessionsOnBtn) sessionsOnBtn.classList.toggle("on", on);
+  if (sessionsOffBtn) sessionsOffBtn.classList.toggle("on", !on);
+  if (sessionsPermHintEl) {
+    sessionsPermHintEl.textContent = on
+      ? "Agent 可以用 reopen_tab 重開最近關閉的單一分頁。這個 Chrome 權限也能讀其他已登入裝置的瀏覽紀錄，katashiro 不會用到。"
+      : "reopen_tab 已停用。按「允許」時 Chrome 會跳出權限確認（讀取所有已登入裝置上的瀏覽紀錄）。";
+  }
+}
+
+if (sessionsOnBtn) sessionsOnBtn.addEventListener("click", () => {
+  chrome.permissions.request(SESSIONS_PERM).catch(() => false).then(renderSessionsPerm);
+});
+if (sessionsOffBtn) sessionsOffBtn.addEventListener("click", () => {
+  chrome.permissions.remove(SESSIONS_PERM).catch(() => false).then(renderSessionsPerm);
+});
+renderSessionsPerm();
+
 
 addAgentBtn.addEventListener("click", () => {
   const name = newAgentName.value.trim();

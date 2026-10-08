@@ -47,7 +47,8 @@ function mockChrome(opts = {}) {
       }
     },
     windows: {
-      update: async (windowId, o) => { calls.windowsUpdate.push({ windowId, o }); }
+      update: async (windowId, o) => { calls.windowsUpdate.push({ windowId, o }); },
+      getCurrent: async () => ({ id: opts.currentWindowId ?? 7 })
     },
     // tabGroups / sessions are optional APIs: opts.noTabGroups / opts.noSessions drop them.
     tabGroups: opts.noTabGroups ? undefined : {
@@ -1853,6 +1854,8 @@ const TABS3 = [
   { id: 42, windowId: 7, url: "https://mail.google.com/", title: "Mail", pinned: true, groupId: 300 },
   { id: 55, windowId: 8, url: "https://b.example/x", title: "B", audible: true, mutedInfo: { muted: true }, groupId: -1 }
 ];
+// TABS3 plus a second tab in window 8, so moving tab [2] out of window 8 does not empty it.
+const TABS4 = [...TABS3, { id: 56, windowId: 8, url: "https://c.example/", title: "C", groupId: -1 }];
 const GROUP300 = { id: 300, title: "work", color: "blue", collapsed: false, windowId: 7 };
 
 test("tabs: each line carries window / pinned / audible / muted / group tags", async () => {
@@ -1872,6 +1875,24 @@ test("tabs: a filtered list keeps the global index (never renumbers)", async () 
   assert.match(byUrl, /^  \[1\] Mail/);
   const none = (await call(d, "katashiro.tabs", { url: "nope" })).content[0].text;
   assert.match(none, /no tabs match the filter — 3 open in total/);
+});
+
+test("tabs: a non-integer windowId is an error, not a silent full listing", async () => {
+  const { deps: d } = deps({ tabsList: TABS3 });
+  for (const windowId of ["7", 7.5]) {
+    const res = await call(d, "katashiro.tabs", { windowId });
+    assert.equal(res.isError, true, String(windowId));
+    assert.match(res.content[0].text, /windowId/);
+  }
+});
+
+test("tab_update on the active tab: an active tab missing from the list is an error, never [-1]", async () => {
+  // The mock's active-tab lookup returns id 42; this list does not contain it.
+  const { deps: d, calls } = deps({ tabsList: [{ id: 41, windowId: 7, url: "https://a/" }] });
+  const res = await call(d, "katashiro.tab_update", { pinned: true });
+  assert.equal(res.isError, true);
+  assert.doesNotMatch(res.content[0].text, /\[-1\]/);
+  assert.equal(calls.tabsUpdate.length, 0);
 });
 
 test("tabs: works without the tabGroups API (group shown by id)", async () => {
@@ -1911,11 +1932,16 @@ test("tab_update: rejects empty or malformed changes before touching the browser
   assert.equal(calls.tabsUpdate.length + calls.tabsMove.length + calls.tabsDuplicate.length, 0);
 });
 
-test("reopen_tab: restores the most recent closed tab and reports its index", async () => {
-  const { deps: d, calls } = deps({ tabsList: [...TABS3, { id: 88, windowId: 7, url: "https://r/", title: "R" }] });
+test("reopen_tab: restores the most recent closed TAB (skipping closed windows) and reports its index", async () => {
+  const recentlyClosed = [
+    { window: { sessionId: "w1", tabs: [{}, {}, {}] } },       // a whole window — never restored
+    { tab: { sessionId: "s-r", url: "https://r/" } },
+    { tab: { sessionId: "s-old", url: "https://old/" } }
+  ];
+  const { deps: d, calls } = deps({ tabsList: [...TABS3, { id: 88, windowId: 7, url: "https://r/", title: "R" }], recentlyClosed });
   const res = await call(d, "katashiro.reopen_tab");
   assert.equal(res.isError, undefined);
-  assert.deepEqual(calls.sessionsRestore, [undefined]);
+  assert.deepEqual(calls.sessionsRestore, ["s-r"]);
   assert.match(res.content[0].text, /reopened tab \[3\] — R — https:\/\/r\//);
 });
 
@@ -1935,12 +1961,18 @@ test("reopen_tab: url picks that closed tab's session; no match is a clean error
 });
 
 test("reopen_tab: nothing to restore / no sessions API are clean errors", async () => {
-  const thrown = await call(deps({ restoreThrows: "There are no sessions to restore." }).deps, "katashiro.reopen_tab");
+  const thrown = await call(deps({ recentlyClosed: [{ tab: { sessionId: "s" } }], restoreThrows: "There are no sessions to restore." }).deps, "katashiro.reopen_tab");
   assert.equal(thrown.isError, true);
   assert.match(thrown.content[0].text, /nothing to reopen/);
+  const onlyWindows = deps({ recentlyClosed: [{ window: { sessionId: "w1", tabs: [] } }] });
+  const nothing = await call(onlyWindows.deps, "katashiro.reopen_tab");
+  assert.equal(nothing.isError, true);
+  assert.match(nothing.content[0].text, /no recently closed tab to reopen/);
+  assert.equal(onlyWindows.calls.sessionsRestore.length, 0);
   const none = await call(deps({ noSessions: true }).deps, "katashiro.reopen_tab");
   assert.equal(none.isError, true);
   assert.match(none.content[0].text, /sessions permission/);
+  assert.match(none.content[0].text, /Katashiro settings/);   // tells the agent how the user turns it on
 });
 
 test("tab_groups: lists groups with their member tab indexes", async () => {
@@ -1956,7 +1988,7 @@ test("tab_groups: lists groups with their member tab indexes", async () => {
 });
 
 test("group_tabs: new group from index + url, then title/color applied", async () => {
-  const { deps: d, calls } = deps({ tabsList: TABS3, anyGroup: true });
+  const { deps: d, calls } = deps({ tabsList: TABS4, anyGroup: true });
   const res = await call(d, "katashiro.group_tabs", { tabs: [{ index: 0 }, { url: "b.example" }, { index: 0 }], title: "research", color: "green" });
   assert.equal(res.isError, undefined);
   assert.deepEqual(calls.tabsGroup, [{ tabIds: [41, 55] }]);                // deduped
@@ -1965,12 +1997,31 @@ test("group_tabs: new group from index + url, then title/color applied", async (
 });
 
 test("group_tabs: add to an existing group without styling it", async () => {
-  const { deps: d, calls } = deps({ tabsList: TABS3, groups: [GROUP300] });
+  const { deps: d, calls } = deps({ tabsList: TABS4, groups: [GROUP300] });
   const res = await call(d, "katashiro.group_tabs", { tabs: [{ index: 2 }], groupId: 300 });
   assert.equal(res.isError, undefined);
   assert.deepEqual(calls.tabsGroup, [{ tabIds: [55], groupId: 300 }]);
   assert.equal(calls.groupsUpdate.length, 0);
   assert.match(res.content[0].text, /added tabs \[2\] to group 300/);
+});
+
+test("group_tabs: refuses to empty another window (it would close, side panel and all)", async () => {
+  // Window 8 holds only tab [2]. Moving it into the current window 7 (new group) or into group 300
+  // (window 7) empties window 8 → refused, nothing grouped.
+  const { deps: d, calls } = deps({ tabsList: TABS3, groups: [GROUP300] });
+  for (const args of [{ tabs: [{ index: 0 }, { index: 2 }] }, { tabs: [{ url: "b.example" }], groupId: 300 }]) {
+    const res = await call(d, "katashiro.group_tabs", args);
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.match(res.content[0].text, /move every tab out of window 8/);
+  }
+  assert.equal(calls.tabsGroup.length, 0);
+  // Grouping window 8's only tab into a new group IN window 8 moves nothing out — allowed.
+  const same = deps({ tabsList: TABS3, currentWindowId: 8 });
+  assert.equal((await call(same.deps, "katashiro.group_tabs", { tabs: [{ index: 2 }] })).isError, undefined);
+  assert.deepEqual(same.calls.tabsGroup, [{ tabIds: [55] }]);
+  // Grouping ALL of window 7's tabs inside window 7 is fine too (they stay put).
+  const own = deps({ tabsList: TABS3 });
+  assert.equal((await call(own.deps, "katashiro.group_tabs", { tabs: [{ index: 0 }, { index: 1 }] })).isError, undefined);
 });
 
 test("group_tabs: one bad reference groups nothing; bad color / groupId refused", async () => {
