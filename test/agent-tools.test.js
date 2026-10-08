@@ -6,9 +6,9 @@ const AgentTools = require("../agent-tools.js");
 const apply = AgentTools.applyToolCallUpdate;
 
 test("a tool_call opens a running pill with the title as label and tooltip", () => {
-  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Terminal", status: "pending" });
-  // "Terminal" is claude-agent-acp's shell placeholder: the pill shows a short, fixed "Bash".
-  assert.deepEqual(p, { id: "t1", title: "Terminal", label: "Bash", kindLabel: "Bash", state: "running", icon: "⏳" });
+  // The OpenAB gateway's shape since openab#6: title is the tool identity, never the command.
+  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Bash", kind: "execute", name: "Bash", status: "pending" });
+  assert.deepEqual(p, { id: "t1", title: "Bash", label: "Bash", labelRank: 3, state: "running", icon: "⏳" });
 });
 
 test("status maps pending/in_progress → ⏳, completed → ✓, failed → ✗", () => {
@@ -28,13 +28,15 @@ test("a tool_call without status starts running", () => {
   assert.equal(apply(null, { sessionUpdate: "tool_call", toolCallId: "t", title: "Edit" }).state, "running");
 });
 
-test("an update refines the placeholder title on the SAME id, keeping state when status is absent", () => {
-  const first = apply(null, { sessionUpdate: "tool_call", toolCallId: "t1", title: "Terminal", status: "in_progress" });
-  const refined = apply(first, { sessionUpdate: "tool_call_update", toolCallId: "t1", title: "cargo test" });
-  // the label stays "Bash"; the command goes to the tooltip (title)
-  assert.deepEqual(refined, { id: "t1", title: "cargo test", label: "Bash", kindLabel: "Bash", state: "running", icon: "⏳" });
+test("an update on the SAME id upgrades a kind-only label, keeping state when status is absent", () => {
+  // First event often has only the kind (core's title falls back to it); the name arrives later.
+  const first = apply(null, { sessionUpdate: "tool_call", toolCallId: "t1", title: "execute", kind: "execute", status: "in_progress" });
+  assert.equal(first.label, "execute");
+  const refined = apply(first, { sessionUpdate: "tool_call_update", toolCallId: "t1", title: "Bash", name: "Bash" });
+  assert.deepEqual(refined, { id: "t1", title: "Bash", label: "Bash", labelRank: 3, state: "running", icon: "⏳" });
   const done = apply(refined, { sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
-  assert.equal(done.title, "cargo test", "a title-less update keeps the refined title");
+  assert.equal(done.title, "Bash", "a title-less update keeps the title");
+  assert.equal(done.label, "Bash");
   assert.equal(done.state, "done");
 });
 
@@ -133,38 +135,42 @@ test("a skipped call stays skipped when later updates carry only a title / statu
   assert.ok(apply(null, { sessionUpdate: "tool_call", toolCallId: "b", title: "cargo test" }, skipped));
 });
 
-test("pill labels: a shell call stays \"Bash\" while its title grows into the command", () => {
-  const a = apply(null, { sessionUpdate: "tool_call", toolCallId: "b1", title: "Terminal", status: "pending" });
-  const long = "cd /tmp/kr && node --test test/*.test.js 2>&1 | grep -E '^ℹ (pass|fail)' | tr '\\n' ' '";
-  const b = apply(a, { sessionUpdate: "tool_call_update", toolCallId: "b1", title: long });
-  const c = apply(b, { sessionUpdate: "tool_call_update", toolCallId: "b1", status: "completed" });
-  assert.equal(b.label, "Bash");
-  assert.equal(b.title, long);                             // full command → tooltip
-  assert.deepEqual([c.label, c.state, c.icon], ["Bash", "done", "✓"]);
+test("pill labels: capability > name > title > kind > \"tool\"", () => {
+  const p = (u) => apply(null, { sessionUpdate: "tool_call", toolCallId: "x", ...u });
+  assert.equal(p({ title: "mcp__oab__execute_capability", name: "mcp__oab__execute_capability", _meta: { openab: { capability: "github.list_prs" } } }).label, "github.list_prs");
+  assert.equal(p({ title: "Edit", name: "Edit", kind: "edit" }).label, "Edit");
+  assert.equal(p({ title: "Read", kind: "read" }).label, "Read");
+  assert.equal(p({ kind: "fetch", title: "tool" }).label, "fetch");
+  const generic = p({ title: "tool" });
+  assert.deepEqual([generic.label, generic.labelRank], ["tool", 0]);
 });
 
-test("pill labels: _meta toolName Bash fixes the label even without the placeholder", () => {
-  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "b2", title: "git status", _meta: { claudeCode: { toolName: "Bash" } } });
-  assert.equal(p.label, "Bash");
-  assert.equal(p.title, "git status");
+test("pill labels: an MCP name mcp__server__tool shows as \"server · tool\"", () => {
+  const a = apply(null, { sessionUpdate: "tool_call", toolCallId: "m1", title: "mcp__oab__search_capabilities", name: "mcp__oab__search_capabilities" });
+  assert.equal(a.label, "oab · search_capabilities");
+  assert.equal(a.title, "mcp__oab__search_capabilities");                // full name stays in the tooltip
+  const b = apply(null, { sessionUpdate: "tool_call", toolCallId: "m2", title: "mcp__context7__get-library-docs" });
+  assert.equal(b.label, "context7 · get-library-docs");
+  assert.equal(AgentTools.mcpLabel("mcp__a__b__c"), "a · b__c");          // first __ splits server from tool
+  assert.equal(AgentTools.mcpLabel("Read"), "");
 });
 
-test("pill labels: mcp__server__tool shows as \"server · tool\"", () => {
-  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "m1", title: "mcp__oab__search_capabilities" });
-  assert.equal(p.label, "oab · search_capabilities");
-  assert.equal(p.title, "mcp__oab__search_capabilities");
-  const q = apply(null, { sessionUpdate: "tool_call", toolCallId: "m2", title: "fetch docs", _meta: { claudeCode: { toolName: "mcp__context7__get-library-docs" } } });
-  assert.equal(q.label, "context7 · get-library-docs");
-  assert.equal(AgentTools.mcpLabel("mcp__a__b__c"), "a · b__c");   // first __ splits server from tool
-  assert.equal(AgentTools.mcpLabel("Read file"), "");
+test("pill labels: a less specific later update never downgrades the label", () => {
+  const a = apply(null, { sessionUpdate: "tool_call", toolCallId: "d1", title: "Bash", name: "Bash", kind: "execute" });
+  const b = apply(a, { sessionUpdate: "tool_call_update", toolCallId: "d1", kind: "execute", status: "completed" });
+  assert.deepEqual([b.label, b.state], ["Bash", "done"]);
+  const c = apply(a, { sessionUpdate: "tool_call_update", toolCallId: "d1", title: "tool" });
+  assert.equal(c.label, "Bash");
 });
 
-test("pill labels: other titles keep the title as label; prototype names are not placeholders", () => {
-  assert.equal(apply(null, { sessionUpdate: "tool_call", toolCallId: "r1", title: "Read file" }).label, "Read file");
-  const p = apply(null, { sessionUpdate: "tool_call", toolCallId: "r2", title: "constructor" });
-  assert.equal(p.label, "constructor");
-  assert.equal(p.kindLabel, "");
-  // a placeholder-free call still refines its label with its title (pre-existing behaviour)
-  const q = apply(p, { sessionUpdate: "tool_call_update", toolCallId: "r2", title: "Edit sidepanel.js" });
-  assert.equal(q.label, "Edit sidepanel.js");
+test("a katashiro tool reaching us via the Facade capability (openab#6 shape) is skipped", () => {
+  const skipped = new Set();
+  const u = { sessionUpdate: "tool_call", toolCallId: "f1", title: "katashiro.click", name: "mcp__oab__execute_capability", _meta: { openab: { capability: "katashiro.click" } } };
+  assert.equal(AgentTools.isBrowserToolCall(u), true);
+  assert.equal(apply(null, u, skipped), null);
+  assert.ok(skipped.has("f1"));
+  // capability alone (title already generic) is enough
+  assert.equal(AgentTools.isBrowserToolCall({ title: "tool", _meta: { openab: { capability: "katashiro.snapshot" } } }), true);
+  // a capability that only mentions katashiro is not one
+  assert.equal(AgentTools.isBrowserToolCall({ title: "tool", _meta: { openab: { capability: "github.katashiro_issues" } } }), false);
 });
