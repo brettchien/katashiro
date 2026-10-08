@@ -1039,9 +1039,10 @@
 
     "katashiro.close_tab": {
       description:
-        "Close a browser tab. Identify it by `index` from a fresh `tabs` listing, or by `url` (the " +
-        "first tab whose URL contains this substring); omit both to close the active tab. Refuses to " +
-        "close the last remaining tab. If the active tab is closed, the browser picks the next active " +
+        "Close a browser tab. Identify it by `url` (the first tab whose URL contains this substring) or " +
+        "by `index` from a fresh `tabs` listing — prefer `url`: an index from a stale listing closes " +
+        "the wrong tab, irreversibly. Omit both to close the active tab. Refuses to close the last tab " +
+        "in its window. If the active tab is closed, the browser picks the next active " +
         "tab — call `tabs` to see which before acting on the page. Gated by act mode.",
       write: true,
       sessionScope: true,
@@ -1073,9 +1074,13 @@
           if (!active) return errText("no active browser tab to close");
           target = all.find((t) => t.id === active.id) || active;
         }
-        // Closing the last tab would close the window (and on some platforms the browser), taking
-        // the extension's side panel and this session with it.
-        if (all.length <= 1) return errText("refusing to close the last open tab — open another with new_tab first");
+        // Closing a window's last tab closes that window (and with the last window, on some platforms,
+        // the browser). The side panel lives on a window, so if it is that window the panel and this
+        // session go with it — count per window, not across all windows.
+        if (all.filter((t) => t.windowId === target.windowId).length <= 1) {
+          return errText("refusing to close the last tab in its window — that would close the window " +
+            "(and the side panel if it is open there)");
+        }
         const idx = all.findIndex((t) => t.id === target.id);
         await ctx.chrome.tabs.remove(target.id);
         return okText(`closed tab [${idx}] — ${target.title || "(untitled)"} — ${target.url || ""}\n` +

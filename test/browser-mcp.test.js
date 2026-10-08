@@ -328,7 +328,7 @@ test("katashiro.switch_tab with no index or url is a clean error", async () => {
 test("katashiro.close_tab by index removes that tab", async () => {
   const tabsList = [
     { id: 42, windowId: 7, url: "https://a/", title: "A" },
-    { id: 55, windowId: 8, url: "https://b/", title: "B" }
+    { id: 55, windowId: 7, url: "https://b/", title: "B" }
   ];
   const { deps: d, calls } = deps({ tabsList });
   const res = await BrowserMcp.handleMcpMessage(
@@ -382,7 +382,7 @@ test("katashiro.close_tab with an out-of-range index or unmatched url is a clean
   }
 });
 
-test("katashiro.close_tab refuses to close the last open tab", async () => {
+test("katashiro.close_tab refuses to close the only open tab", async () => {
   const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }] });
   const res = await BrowserMcp.handleMcpMessage(
     "tools/call",
@@ -390,7 +390,26 @@ test("katashiro.close_tab refuses to close the last open tab", async () => {
     d
   );
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /last open tab/);
+  assert.match(res.content[0].text, /last tab in its window/);
+  assert.equal(calls.tabsRemove.length, 0);
+});
+
+test("katashiro.close_tab refuses a window's last tab even when other windows have tabs", async () => {
+  // Closing the only tab in window 8 would close that window — and the side panel if it lives there
+  // — so the check counts tabs per window, not across all windows.
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a/" },
+    { id: 43, windowId: 7, url: "https://b/" },
+    { id: 55, windowId: 8, url: "https://c/" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  const res = await BrowserMcp.handleMcpMessage(
+    "tools/call",
+    { name: "katashiro.close_tab", arguments: { url: "https://c/" } },
+    d
+  );
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /last tab in its window/);
   assert.equal(calls.tabsRemove.length, 0);
 });
 
