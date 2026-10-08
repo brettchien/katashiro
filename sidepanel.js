@@ -268,6 +268,9 @@ class Conn {
     this.acpReady = false;
     this.alive = false;
     this.finalizeStream();
+    // Captures are page data: none outlive this agent being active. (A transient socket drop
+    // keeps them — the resumed session still holds their imageIds.)
+    if (this.mcpServer) this.mcpServer.clearImages();
   }
 
   // The WS handshake failed without ever opening. Probe the endpoint over plain HTTP (the

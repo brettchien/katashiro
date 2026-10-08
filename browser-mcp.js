@@ -331,23 +331,86 @@
   }
   const b64Bytes = (b64) => Math.floor(String(b64 || "").replace(/=+$/, "").length * 3 / 4);
   const IMAGE_TTL_MS = 15 * 60 * 1000;
-  const capturedImages = new Map();                       // imageId -> { mimeType, data, at }
-  let imageSeq = 0;
-  let imageStoreMax = SCREENSHOT_DEFAULTS.storeMax;       // last value from Settings
-  function pruneImages(now = Date.now()) {
-    for (const [id, img] of capturedImages) if (now - img.at > IMAGE_TTL_MS) capturedImages.delete(id);
-    while (capturedImages.size > imageStoreMax) capturedImages.delete(capturedImages.keys().next().value);
+  //
+  // Unlike injectedCss (cleanup bookkeeping), a capture is page DATA — possibly of a sensitive
+  // page — so the store is per server instance (each Conn mints its own server, so one agent can
+  // never reach another's captures), cleared when that Conn is torn down, and ids are random: a
+  // counter would be guessable and would restart at 1 when the panel reopens, silently mapping an
+  // id still in the agent's context onto a different capture.
+  function createImageStore() {
+    const images = new Map();                             // imageId -> { mimeType, data, at }
+    let storeMax = SCREENSHOT_DEFAULTS.storeMax;          // last value from Settings
+    function prune(now = Date.now()) {
+      for (const [id, img] of images) if (now - img.at > IMAGE_TTL_MS) images.delete(id);
+      while (images.size > storeMax) images.delete(images.keys().next().value);
+    }
+    return {
+      put(mimeType, data, max) {
+        if (max != null) storeMax = max;
+        const id = "img_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+        images.set(id, { mimeType, data, at: Date.now() });
+        prune();
+        return id;
+      },
+      get(id) {
+        prune();
+        return images.get(String(id || "")) || null;
+      },
+      clear() { images.clear(); }
+    };
   }
-  function storeImage(mimeType, data, storeMax) {
-    if (storeMax != null) imageStoreMax = storeMax;
-    const id = `img${++imageSeq}`;
-    capturedImages.set(id, { mimeType, data, at: Date.now() });
-    pruneImages();
-    return id;
-  }
-  function getImage(id) {
-    pruneImages();
-    return capturedImages.get(String(id || "")) || null;
+  // Only for callers that drive callBrowserTool without a server instance (none in the side panel).
+  const looseImages = createImageStore();
+
+  // paste_image's in-page half (runs via executeScript, so it must be self-contained). Returns
+  // { ok, how, handled } — `handled` is defaultPrevented, a hint only (see paste_image).
+  function pasteImageInPage(ref, snapshotId, sel, file, mode) {
+    let el, how;
+    if (ref) {
+      const r = window.__katashiroResolve(ref, snapshotId);
+      if (!r.ok) return { ok: false, error: r.error };
+      el = r.el; how = "ref " + ref;
+    } else if (sel) {
+      el = document.querySelector(sel);
+      if (!el) return { ok: false, error: "no element for selector: " + sel };
+      how = "selector " + sel;
+    } else {
+      el = document.activeElement;
+      if (!el || el === document.body) return { ok: false, error: "no element is focused — pass a ref or selector for the editor" };
+      how = "the focused element";
+    }
+    // Focus inside a frame shows up here as the <iframe> itself; an event dispatched on it never
+    // reaches the editor. Refs carry their frame, so that is the way in.
+    if (el.tagName === "IFRAME") return { ok: false, error: "the target is an iframe — take a snapshot and pass the editor's ref inside it (e.g. f3:e12)" };
+    if (typeof el.focus === "function") el.focus();
+    // A real Cmd/Ctrl+V goes to the focused element, and editors (ProseMirror checks the target is
+    // inside view.dom) ignore events from outside their editable root — so a ref on the editor's
+    // wrapper is aimed at the editable inside it.
+    let to = el;
+    const active = document.activeElement;
+    if (active && active !== el && el.contains(active)) to = active;
+    else if (!el.isContentEditable && el.tagName !== "TEXTAREA" && el.tagName !== "INPUT") {
+      const inner = el.querySelector('[contenteditable="true"], [contenteditable=""], textarea');
+      if (inner) { if (typeof inner.focus === "function") inner.focus(); to = inner; }
+    }
+    const dt = new DataTransfer();
+    dt.items.add(new File([Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0))], file.name, { type: file.type }));
+    const init = { bubbles: true, cancelable: true, composed: true };
+    if (mode === "drop") {
+      // Drop handlers locate the drop by its coordinates (ProseMirror: posAtCoords, and gives up
+      // without cancelling when that misses) — so drop on the target's on-screen centre, not 0,0.
+      if (typeof to.scrollIntoView === "function") to.scrollIntoView({ block: "center", inline: "center" });
+      const rect = to.getBoundingClientRect();
+      const at = { clientX: Math.round(rect.left + rect.width / 2), clientY: Math.round(rect.top + rect.height / 2) };
+      to.dispatchEvent(new DragEvent("dragenter", { ...init, ...at, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent("dragover", { ...init, ...at, dataTransfer: dt }));
+      const drop = new DragEvent("drop", { ...init, ...at, dataTransfer: dt });
+      to.dispatchEvent(drop);
+      return { ok: true, how, handled: drop.defaultPrevented };
+    }
+    const ev = new ClipboardEvent("paste", { ...init, clipboardData: dt });
+    to.dispatchEvent(ev);
+    return { ok: true, how, handled: ev.defaultPrevented };
   }
   const IMAGE_GONE = (id) => `no captured image "${id}" — it expired (${IMAGE_TTL_MS / 60000} min) or was pushed out by newer ones; take a new screenshot`;
 
@@ -919,7 +982,7 @@
             ? `, shrunk from ${Math.round(original / 1024)} KB to fit the ${cfg.maxKB} KB limit`
             : `, still ${Math.round(b64Bytes(base64) / 1024)} KB — over the ${cfg.maxKB} KB limit`;
         }
-        const imageId = storeImage("image/jpeg", base64, cfg.storeMax);
+        const imageId = ctx.images.put("image/jpeg", base64, cfg.storeMax);
         return {
           content: [
             { type: "image", data: base64, mimeType: "image/jpeg" },
@@ -2215,10 +2278,11 @@
             return errText(`file ${i} needs exactly one of \`text\`, \`base64\` or \`imageId\``);
           }
           if (f.imageId != null) {
-            const img = getImage(f.imageId);
+            const img = ctx.images.get(f.imageId);
             if (!img) return errText(IMAGE_GONE(f.imageId));
             const ext = img.mimeType === "image/png" ? "png" : "jpg";
-            f = { name: f.name || `screenshot-${f.imageId}.${ext}`, mimeType: f.mimeType || img.mimeType, base64: img.data };
+            // The capture's own type always wins: a `mimeType` here could only mislabel the bytes.
+            f = { name: f.name || `screenshot-${f.imageId}.${ext}`, mimeType: img.mimeType, base64: img.data };
           }
           resolved.push(f);
           if (!f.name || !String(f.name).trim()) return errText(`file ${i} needs a \`name\``);
@@ -2275,11 +2339,15 @@
       description:
         "Paste a screenshot (an `imageId` from `screenshot`) into an element of the active tab, as if " +
         "the user pressed Cmd/Ctrl+V with that image on the clipboard — e.g. into a Jira / Confluence " +
-        "description or comment editor, which then uploads it as an attachment. Target the editor by " +
-        "`ref` (+ `snapshotId`) or `selector`; omit both for the focused element. `mode: \"drop\"` " +
-        "drags the file onto the element instead (for drop zones). The events are synthetic: if the " +
-        "page does not handle them you get an error — then attach it with `upload_file` " +
-        "(`files: [{ imageId }]`) on the page's file input. Returns the updated snapshot. Gated by act mode.",
+        "description or comment editor, which then uploads it as an attachment. The editor must be " +
+        "editable first: a Jira description in view mode is not — `click` it to open the editor. Target " +
+        "the editor by `ref` (+ `snapshotId`) or `selector` (a wrapper is fine: the event goes to the " +
+        "editable inside it); omit both for the focused element (top frame only — for an editor inside " +
+        "an iframe pass its ref). `mode: \"drop\"` drags the file onto the element instead (for drop " +
+        "zones). The events are synthetic and whether the page took the image cannot be known for sure, " +
+        "so CHECK the returned snapshot before retrying: only if the image is not there, attach it with " +
+        "`upload_file` (`files: [{ imageId }]`) on the page's file input — retrying blindly can attach " +
+        "it twice. Gated by act mode.",
       write: true,
       inputSchema: {
         type: "object",
@@ -2298,7 +2366,7 @@
       async call(args, ctx) {
         if (args.mode != null && args.mode !== "paste" && args.mode !== "drop") return errText("`mode` must be \"paste\" or \"drop\"");
         if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
-        const img = getImage(args.imageId);
+        const img = ctx.images.get(args.imageId);
         if (!img) return errText(IMAGE_GONE(args.imageId));
         const bytes = Math.floor(img.data.replace(/=+$/, "").length * 3 / 4);
         if (bytes > UPLOAD_MAX_BYTES) return errText(`image is ${bytes} bytes; paste_image is capped at ${UPLOAD_MAX_BYTES} bytes`);
@@ -2310,50 +2378,22 @@
         await injectWalker(ctx.chrome, target);
         const [{ result }] = await ctx.chrome.scripting.executeScript({
           target,
-          func: (ref, snapshotId, sel, file, mode) => {
-            let el, how;
-            if (ref) {
-              const r = window.__katashiroResolve(ref, snapshotId);
-              if (!r.ok) return { ok: false, error: r.error };
-              el = r.el; how = "ref " + ref;
-            } else if (sel) {
-              el = document.querySelector(sel);
-              if (!el) return { ok: false, error: "no element for selector: " + sel };
-              how = "selector " + sel;
-            } else {
-              el = document.activeElement;
-              if (!el || el === document.body) return { ok: false, error: "no element is focused — pass a ref or selector for the editor" };
-              how = "the focused element";
-            }
-            if (typeof el.focus === "function") el.focus();
-            const dt = new DataTransfer();
-            dt.items.add(new File([Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0))], file.name, { type: file.type }));
-            const init = { bubbles: true, cancelable: true, composed: true };
-            let handled;
-            if (mode === "drop") {
-              el.dispatchEvent(new DragEvent("dragenter", { ...init, dataTransfer: dt }));
-              el.dispatchEvent(new DragEvent("dragover", { ...init, dataTransfer: dt }));
-              const drop = new DragEvent("drop", { ...init, dataTransfer: dt });
-              el.dispatchEvent(drop);
-              handled = drop.defaultPrevented;
-            } else {
-              const ev = new ClipboardEvent("paste", { ...init, clipboardData: dt });
-              el.dispatchEvent(ev);
-              handled = ev.defaultPrevented;
-            }
-            return { ok: true, how, handled };
-          },
+          func: pasteImageInPage,
           args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, { base64: img.data, name, type: img.mimeType }, mode]
         });
         if (!result.ok) return errText(result.error);
-        // An editor that takes the file cancels the event's default; nobody cancelling means no
-        // handler took it (a plain <textarea> cannot hold an image).
-        if (!result.handled) {
-          return errText(`${mode === "drop" ? "dropped" : "pasted"} ${name} on ${result.how}, but the page did not handle it — ` +
-            `try ${mode === "drop" ? "mode \"paste\"" : "mode \"drop\""}, another element, or upload_file with files: [{ imageId: "${args.imageId}" }] on its file input`);
-        }
-        return okText(`${mode === "drop" ? "dropped" : "pasted"} ${name} (${bytes} bytes) into ${result.how} — the page took it; ` +
-          `check the snapshot for the uploaded image\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+        // defaultPrevented is only a hint, both ways: an editor may take the file without
+        // cancelling (a document-level handler that uploads async), and one that cancels every
+        // paste (e.g. Lexical without a file plugin) may drop it. So never call it a success or a
+        // failure — always hand back the snapshot and make the agent look, rather than nudging it
+        // into an upload_file retry that would attach the image twice.
+        const did = `${mode === "drop" ? "dropped" : "pasted"} ${name} (${bytes} bytes) on ${result.how}`;
+        const note = result.handled
+          ? "a page handler processed the event (defaultPrevented) — confirm in the snapshot that the image arrived"
+          : "NOT confirmed — no page handler cancelled the event. Check the snapshot first: if the image is " +
+            `not there, try ${mode === "drop" ? "mode \"paste\"" : "mode \"drop\""}, another element, or upload_file with ` +
+            `files: [{ imageId: "${args.imageId}" }] on the page's file input`;
+        return okText(`${did} — ${note}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
@@ -2528,7 +2568,7 @@
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
     if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
-    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage };
+    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
     return withTabContext(await tool.call(args, ctx), tab);
   }
 
@@ -2556,11 +2596,15 @@
         Object.freeze({ name, description: t.description, inputSchema: t.inputSchema })
       )
     );
+    const images = createImageStore();                    // this instance's screenshots (see createImageStore)
 
     return {
       id: opts.id,
       name: opts.name,
       tools,
+
+      /** Drop every screenshot this instance holds — the side panel calls it when the Conn is torn down. */
+      clearImages() { images.clear(); },
 
       /** The `session/new` entry that declares this server to the gateway. */
       declaration() {
@@ -2608,7 +2652,7 @@
               deps.onToolCall({ callId, name: params.name, phase, args, summary, preview, ms: Date.now() - started });
             };
             try {
-              const result = await callBrowserTool(params.name, rawArgs, deps, tools);
+              const result = await callBrowserTool(params.name, rawArgs, { ...deps, images }, tools);
               settle((result && result.isError) ? "error" : "done", result);
               return result;
             } catch (e) {
