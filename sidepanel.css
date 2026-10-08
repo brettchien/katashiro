@@ -1251,3 +1251,9 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   padding: 4px 10px;
   line-height: 1.2;
 }
+
+/* Settings → 重新載入: armed (second click reloads) state */
+#reload-extension-btn.armed {
+  border-color: #d9534f;
+  color: #d9534f;
+}

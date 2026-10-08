@@ -804,6 +804,31 @@ async function loadBuildInfo() {
 }
 loadBuildInfo();
 
+// Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
+// exactly like chrome://extensions' reload button. It closes this panel and wipes
+// chrome.storage.session (scrollback + resumable ACP session ids); synced settings survive. Two
+// clicks within RELOAD_CONFIRM_MS, so a stray click cannot drop the conversation.
+const reloadExtensionBtn = document.getElementById("reload-extension-btn");
+const RELOAD_CONFIRM_MS = 4000;
+if (reloadExtensionBtn) {
+  const idleLabel = reloadExtensionBtn.textContent;
+  let armedTimer = null;
+  reloadExtensionBtn.addEventListener("click", () => {
+    if (!armedTimer) {
+      reloadExtensionBtn.textContent = "再按一次確認（對話紀錄會清掉）";
+      reloadExtensionBtn.classList.add("armed");
+      armedTimer = setTimeout(() => {
+        armedTimer = null;
+        reloadExtensionBtn.textContent = idleLabel;
+        reloadExtensionBtn.classList.remove("armed");
+      }, RELOAD_CONFIRM_MS);
+      return;
+    }
+    clearTimeout(armedTimer);
+    chrome.runtime.reload();
+  });
+}
+
 // Periodic re-render so purely time-based states stay current with no triggering event — chiefly
 // the tunnel segment aging from 活躍 back to 閒置 TUNNEL_FRESH_MS after the last mcp/message (§8.3).
 setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
