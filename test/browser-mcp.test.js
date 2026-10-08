@@ -2261,7 +2261,9 @@ test("split_tabs / unsplit_tabs are refused when act mode is off", async () => {
 const IMG_ID = /^img_[0-9a-f]{16}$/;
 const shoot = async (d) => {
   const res = await call(d, "katashiro.screenshot");
-  const id = /imageId: (\S+)/.exec(res.content[1].text)[1];
+  // the imageId note is a text block — the 2nd after the image, or the 1st when the image was too big to show
+  const note = res.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const id = /imageId: (img[-_][0-9a-f]{16})/.exec(note)[1];
   return { res, id };
 };
 const pasteInj = (calls) => calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5);
@@ -2520,5 +2522,36 @@ test("screenshot: an agent view still over 1 MB is not sent over the tunnel — 
   assert.equal(res.isError, undefined);
   assert.equal(res.content.some((b) => b.type === "image"), false);   // no image block at all
   assert.match(res.content[0].text, /imageId: img[-_][0-9a-f]{16}.*\n\(the image is 1500 KB — too large to show you/s);
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("screenshot: the agent-view cap is on base64 length (gateway 1 MiB frame), not decoded bytes", async () => {
+  // 983,040 base64 chars = 720 KB decoded: under "1 MB of bytes" but over the frame budget.
+  const view = "W".repeat(4 * 1024 * 240);
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${view}` });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(res.content.some((b) => b.type === "image"), false);
+  assert.match(res.content[0].text, /too large to show you over the connection/);
+  // just under the budget is still shown
+  const ok = deps({ dataUrl: `data:image/jpeg;base64,${"W".repeat(900 * 1024 - 4)}` });
+  ok.deps.screenshot = { maxKB: 4096, storeMax: 10 };
+  assert.equal((await call(ok.deps, "katashiro.screenshot")).content[0].type, "image");
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("upload_file: imageId captures have their own 20 MB total; agent base64 keeps the 5 MB cap", async () => {
+  const big = "Q".repeat(4 * 1024 * 1024);                            // 3 MB decoded each
+  const { deps: d, calls } = deps({ dataUrl: `data:image/jpeg;base64,${big}`, scriptResult: { ok: true, how: "selector input" } });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const a = (await shoot(d)).id;
+  const b = (await shoot(d)).id;
+  const res = await call(d, "katashiro.upload_file", { selector: "input", files: [{ imageId: a }, { imageId: b }] });
+  assert.equal(res.isError, undefined);                               // 6 MB of captures: allowed
+  assert.match(res.content[0].text, /\(6291456 bytes\)/);
+  const tooBig = await call(d, "katashiro.upload_file", { selector: "input", files: [{ name: "x.bin", base64: "A".repeat(8 * 1024 * 1024) }] });
+  assert.equal(tooBig.isError, true);                                 // 6 MB from the agent: refused
+  assert.match(tooBig.content[0].text, /capped at 5242880 bytes/);
+  assert.ok(calls.executeScript.length > 0);
   d.screenshot = { maxKB: 500, storeMax: 10 };
 });

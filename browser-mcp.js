@@ -297,6 +297,10 @@
   // upload_file: decoded bytes across all files. The payload already crossed the ACP tunnel as
   // base64 in the tool arguments, so this mostly keeps one call from wedging the page.
   const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+  // Stored screenshots (imageId) never cross the tunnel — the 5 MB above limits what the AGENT sends
+  // in text/base64. With a 4 MB per-capture Settings cap, two imageIds alone would exceed it, so
+  // imageId files get their own, wider total.
+  const UPLOAD_IMAGEID_MAX_BYTES = 20 * 1024 * 1024;
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
   // `@import` / `src()` can leak page state to a remote server through attribute selectors (CSS
@@ -322,9 +326,14 @@
   // The copy the AGENT sees is separate from the stored one: it crosses the ACP tunnel (per-frame
   // cap — a multi-MB image drops the WebSocket) and a model gains nothing past ~1568 px on the
   // long edge (Claude downscales larger images). So the stored copy may be up to maxKB (4 MB) for a
-  // sharp paste into Jira, while the agent gets a ≤1568 px re-encode, never above AGENT_IMAGE_MAX_BYTES.
+  // sharp paste into Jira, while the agent gets a ≤1568 px re-encode, never above AGENT_IMAGE_MAX_B64.
+  //
+  // The gateway closes the socket on any inbound frame over MAX_FRAME_BYTES = 1 MiB
+  // (openab acp_server.rs) — silently, no error — and that limit counts the whole JSON-RPC frame
+  // (base64 text + the mcp/message wrapping + the imageId note), not decoded bytes. So the check is
+  // on the base64 length, with ~100 KiB of headroom for the rest of the frame.
   const AGENT_IMAGE_MAX_EDGE = 1568;
-  const AGENT_IMAGE_MAX_BYTES = 1024 * 1024;
+  const AGENT_IMAGE_MAX_B64 = 900 * 1024;                // base64 chars, not bytes
   function normalizeScreenshotConfig(raw) {
     const r = raw && typeof raw === "object" ? raw : {};
     const out = {};
@@ -999,7 +1008,7 @@
         }
         const note = `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${cfg.storeMax}, ` +
           `stored ${Math.round(b64Bytes(base64) / 1024)} KB${sizeNote})`;
-        if (b64Bytes(view) > AGENT_IMAGE_MAX_BYTES) {
+        if (view.length > AGENT_IMAGE_MAX_B64) {
           // Too big to send through the tunnel safely: keep it pasteable, but do not show it.
           return okText(`${note}\n(the image is ${Math.round(b64Bytes(view) / 1024)} KB — too large to show you over the ` +
             `connection; it is stored and can still be pasted. Lower Settings → 截圖 to see it.)`);
@@ -2257,7 +2266,8 @@
         "is a `name` plus either `text` (UTF-8), `base64` (binary) or `imageId` (a screenshot taken " +
         "with `screenshot`; `name` optional), and an optional `mimeType`. Works " +
         "on file inputs a site hides behind a styled button. Fires input+change; does not submit. " +
-        `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
+        `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB for text/base64 you send; imageId screenshots ` +
+        `count separately, up to ${UPLOAD_IMAGEID_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
       write: true,
       inputSchema: {
         type: "object",
@@ -2291,7 +2301,8 @@
         if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
         const files = Array.isArray(args.files) ? args.files : [];
         if (!files.length) return errText("upload_file needs a non-empty `files` array");
-        let total = 0;
+        let total = 0;                                     // agent-supplied text/base64
+        let stored = 0;                                    // imageId (extension-held) captures
         const resolved = [];
         for (let i = 0; i < files.length; i++) {
           let f = files[i] || {};
@@ -2308,11 +2319,14 @@
           resolved.push(f);
           if (!f.name || !String(f.name).trim()) return errText(`file ${i} needs a \`name\``);
           if (f.base64 != null && !/^[A-Za-z0-9+/]*={0,2}$/.test(String(f.base64).replace(/\s+/g, ""))) return errText(`file ${i} \`base64\` is not valid base64`);
-          total += f.text != null
+          const size = f.text != null
             ? new TextEncoder().encode(String(f.text)).length
             : Math.floor(String(f.base64).replace(/\s+/g, "").replace(/=+$/, "").length * 3 / 4);
+          if (files[i] && files[i].imageId != null) stored += size; else total += size;
         }
         if (total > UPLOAD_MAX_BYTES) return errText(`files total ${total} bytes; upload_file is capped at ${UPLOAD_MAX_BYTES} bytes`);
+        if (stored > UPLOAD_IMAGEID_MAX_BYTES) return errText(`imageId files total ${stored} bytes; upload_file caps stored screenshots at ${UPLOAD_IMAGEID_MAX_BYTES} bytes`);
+        total += stored;                                   // reported size below covers everything
         const payload = resolved.map((f) => ({
           name: String(f.name).trim(),
           type: f.mimeType || "application/octet-stream",
