@@ -13,7 +13,7 @@ const BrowserMcp = require("../browser-mcp.js");
 
 // A mock chrome that records calls and returns a configurable executeScript result.
 function mockChrome(opts = {}) {
-  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], tabsRemove: [], windowsUpdate: [], insertCSS: [], removeCSS: [] };
+  const calls = { query: [], executeScript: [], tabsUpdate: [], captureVisibleTab: [], goBack: [], goForward: [], reload: [], tabsCreate: [], tabsRemove: [], windowsUpdate: [], insertCSS: [], removeCSS: [], tabsGroup: [], tabsUngroup: [], tabsMove: [], tabsDuplicate: [], groupsUpdate: [], sessionsRestore: [] };
   const chrome = {
     tabs: {
       query: async (q) => {
@@ -34,6 +34,10 @@ function mockChrome(opts = {}) {
         return opts.createdTab || { id: 99, windowId: 7, url: props.url };
       },
       remove: async (tabId) => { calls.tabsRemove.push(tabId); },
+      group: async (o) => { calls.tabsGroup.push(o); if (opts.groupThrows) throw new Error(opts.groupThrows); return o.groupId ?? 501; },
+      ungroup: async (ids) => { calls.tabsUngroup.push(ids); },
+      move: async (tabId, o) => { calls.tabsMove.push({ tabId, o }); },
+      duplicate: async (tabId) => { calls.tabsDuplicate.push(tabId); return { id: 777 }; },
       goBack: async (tabId) => { calls.goBack.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a previous page in history."); },
       goForward: async (tabId) => { calls.goForward.push(tabId); if (opts.historyThrows) throw new Error("Cannot find a next page in history."); },
       reload: async (tabId, o) => { calls.reload.push({ tabId, o }); },
@@ -44,6 +48,24 @@ function mockChrome(opts = {}) {
     },
     windows: {
       update: async (windowId, o) => { calls.windowsUpdate.push({ windowId, o }); }
+    },
+    // tabGroups / sessions are optional APIs: opts.noTabGroups / opts.noSessions drop them.
+    tabGroups: opts.noTabGroups ? undefined : {
+      query: async () => opts.groups || [],
+      update: async (id, upd) => {
+        calls.groupsUpdate.push({ id, upd });
+        const g = (opts.groups || []).find((x) => x.id === id);
+        if (!g && !opts.anyGroup) throw new Error(`No group with id: ${id}.`);
+        return { ...(g || { id, color: "grey", title: "" }), ...upd };
+      }
+    },
+    sessions: opts.noSessions ? undefined : {
+      getRecentlyClosed: async () => opts.recentlyClosed || [],
+      restore: async (sessionId) => {
+        calls.sessionsRestore.push(sessionId);
+        if (opts.restoreThrows) throw new Error(opts.restoreThrows);
+        return opts.restored || { tab: { id: 88, url: "https://r/", title: "R" } };
+      }
     },
     scripting: {
       executeScript: async (inj) => {
@@ -138,7 +160,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 26 DOM-semantic browser tools", async () => {
+test("tools/list returns the 32 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -159,6 +181,12 @@ test("tools/list returns the 26 DOM-semantic browser tools", async () => {
     "katashiro.new_tab",
     "katashiro.switch_tab",
     "katashiro.close_tab",
+    "katashiro.reopen_tab",
+    "katashiro.tab_update",
+    "katashiro.tab_groups",
+    "katashiro.group_tabs",
+    "katashiro.ungroup_tabs",
+    "katashiro.update_tab_group",
     "katashiro.history",
     "katashiro.press_key",
     "katashiro.hover",
@@ -710,16 +738,21 @@ test("exactly the mutating tools are marked write", () => {
     "katashiro.click_text",
     "katashiro.close_tab",
     "katashiro.fill_form",
+    "katashiro.group_tabs",
     "katashiro.history",
     "katashiro.inject_css",
     "katashiro.navigate",
     "katashiro.new_tab",
     "katashiro.press_key",
     "katashiro.reload",
+    "katashiro.reopen_tab",
     "katashiro.select_option",
     "katashiro.switch_tab",
+    "katashiro.tab_update",
     "katashiro.type",
     "katashiro.type_text",
+    "katashiro.ungroup_tabs",
+    "katashiro.update_tab_group",
     "katashiro.upload_file"
   ]);
 });
@@ -1810,4 +1843,201 @@ test("an image result summarizes as MIME + size, not the base64", async () => {
   const { events } = await callViaTunnel("katashiro.screenshot", {}, { dataUrl: "data:image/jpeg;base64,QUJDREVG" });
   assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\)$/);
   assert.ok(!JSON.stringify(events).includes("QUJDREVG"));
+});
+
+// --- tab management: tabs filters, tab_update, reopen_tab, tab groups -------------------------
+
+const call = (d, name, args = {}) => BrowserMcp.handleMcpMessage("tools/call", { name, arguments: args }, d);
+const TABS3 = [
+  { id: 41, windowId: 7, url: "https://a.example/", title: "A", active: true, groupId: -1 },
+  { id: 42, windowId: 7, url: "https://mail.google.com/", title: "Mail", pinned: true, groupId: 300 },
+  { id: 55, windowId: 8, url: "https://b.example/x", title: "B", audible: true, mutedInfo: { muted: true }, groupId: -1 }
+];
+const GROUP300 = { id: 300, title: "work", color: "blue", collapsed: false, windowId: 7 };
+
+test("tabs: each line carries window / pinned / audible / muted / group tags", async () => {
+  const { deps: d } = deps({ tabsList: TABS3, groups: [GROUP300] });
+  const text = (await call(d, "katashiro.tabs")).content[0].text;
+  assert.match(text, /^\* \[0\] A — https:\/\/a\.example\/  \(window 7\)$/m);
+  assert.match(text, /^  \[1\] Mail — https:\/\/mail\.google\.com\/  \(window 7 · pinned · group 300 "work" blue\)$/m);
+  assert.match(text, /^  \[2\] B — https:\/\/b\.example\/x  \(window 8 · audible · muted\)$/m);
+});
+
+test("tabs: a filtered list keeps the global index (never renumbers)", async () => {
+  const { deps: d } = deps({ tabsList: TABS3, groups: [GROUP300] });
+  const byWindow = (await call(d, "katashiro.tabs", { windowId: 8 })).content[0].text;
+  assert.match(byWindow, /\[2\] B/);
+  assert.doesNotMatch(byWindow, /\[0\]|\[1\]/);
+  const byUrl = (await call(d, "katashiro.tabs", { url: "mail.google" })).content[0].text;
+  assert.match(byUrl, /^  \[1\] Mail/);
+  const none = (await call(d, "katashiro.tabs", { url: "nope" })).content[0].text;
+  assert.match(none, /no tabs match the filter — 3 open in total/);
+});
+
+test("tabs: works without the tabGroups API (group shown by id)", async () => {
+  const { deps: d } = deps({ tabsList: TABS3, noTabGroups: true });
+  const text = (await call(d, "katashiro.tabs")).content[0].text;
+  assert.match(text, /\[1\] Mail — .*\(window 7 · pinned · group 300\)$/m);
+});
+
+test("tab_update: pin + mute by url, one tabs.update call", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3 });
+  const res = await call(d, "katashiro.tab_update", { url: "b.example", pinned: true, muted: false });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsUpdate, [{ tabId: 55, upd: { pinned: true, muted: false } }]);
+  assert.match(res.content[0].text, /tab \[2\] — B: pinned, unmuted/);
+});
+
+test("tab_update: moveTo and duplicate on the active tab", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3 });
+  // no index/url → the active tab (mock active lookup returns id 42)
+  const res = await call(d, "katashiro.tab_update", { moveTo: -1, duplicate: true });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsMove, [{ tabId: 42, o: { index: -1 } }]);
+  assert.deepEqual(calls.tabsDuplicate, [42]);
+  assert.match(res.content[0].text, /moved to the end of its window, duplicated/);
+  assert.match(res.content[0].text, /indexes have shifted/);
+});
+
+test("tab_update: rejects empty or malformed changes before touching the browser", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3 });
+  for (const args of [{}, { url: "a.example" }, { pinned: "yes" }, { moveTo: -2 }, { moveTo: 1.5 }, { duplicate: false }]) {
+    const res = await call(d, "katashiro.tab_update", args);
+    assert.equal(res.isError, true, JSON.stringify(args));
+  }
+  const bad = await call(d, "katashiro.tab_update", { index: 9, pinned: true });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /out of range/);
+  assert.equal(calls.tabsUpdate.length + calls.tabsMove.length + calls.tabsDuplicate.length, 0);
+});
+
+test("reopen_tab: restores the most recent closed tab and reports its index", async () => {
+  const { deps: d, calls } = deps({ tabsList: [...TABS3, { id: 88, windowId: 7, url: "https://r/", title: "R" }] });
+  const res = await call(d, "katashiro.reopen_tab");
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.sessionsRestore, [undefined]);
+  assert.match(res.content[0].text, /reopened tab \[3\] — R — https:\/\/r\//);
+});
+
+test("reopen_tab: url picks that closed tab's session; no match is a clean error", async () => {
+  const recentlyClosed = [
+    { window: { sessionId: "w1", tabs: [] } },
+    { tab: { sessionId: "s-old", url: "https://docs.example/" } },
+    { tab: { sessionId: "s-mail", url: "https://mail.google.com/" } }
+  ];
+  const { deps: d, calls } = deps({ tabsList: TABS3, recentlyClosed });
+  const ok = await call(d, "katashiro.reopen_tab", { url: "mail.google" });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls.sessionsRestore, ["s-mail"]);
+  const miss = await call(d, "katashiro.reopen_tab", { url: "nope" });
+  assert.equal(miss.isError, true);
+  assert.equal(calls.sessionsRestore.length, 1);
+});
+
+test("reopen_tab: nothing to restore / no sessions API are clean errors", async () => {
+  const thrown = await call(deps({ restoreThrows: "There are no sessions to restore." }).deps, "katashiro.reopen_tab");
+  assert.equal(thrown.isError, true);
+  assert.match(thrown.content[0].text, /nothing to reopen/);
+  const none = await call(deps({ noSessions: true }).deps, "katashiro.reopen_tab");
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /sessions permission/);
+});
+
+test("tab_groups: lists groups with their member tab indexes", async () => {
+  const groups = [GROUP300, { id: 301, title: "", color: "red", collapsed: true, windowId: 8 }];
+  const { deps: d } = deps({ tabsList: TABS3, groups });
+  const text = (await call(d, "katashiro.tab_groups")).content[0].text;
+  assert.match(text, /^group 300 "work" blue — window 7 — tabs \[1\]$/m);
+  assert.match(text, /^group 301 "" red \(collapsed\) — window 8 — tabs \[\]$/m);
+  assert.match((await call(deps({ groups: [] }).deps, "katashiro.tab_groups")).content[0].text, /no tab groups/);
+  const off = await call(deps({ noTabGroups: true }).deps, "katashiro.tab_groups");
+  assert.equal(off.isError, true);
+  assert.match(off.content[0].text, /tabGroups permission/);
+});
+
+test("group_tabs: new group from index + url, then title/color applied", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3, anyGroup: true });
+  const res = await call(d, "katashiro.group_tabs", { tabs: [{ index: 0 }, { url: "b.example" }, { index: 0 }], title: "research", color: "green" });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsGroup, [{ tabIds: [41, 55] }]);                // deduped
+  assert.deepEqual(calls.groupsUpdate, [{ id: 501, upd: { title: "research", color: "green" } }]);
+  assert.match(res.content[0].text, /grouped tabs \[0, 2\] into group 501 "research" \(green\)/);
+});
+
+test("group_tabs: add to an existing group without styling it", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3, groups: [GROUP300] });
+  const res = await call(d, "katashiro.group_tabs", { tabs: [{ index: 2 }], groupId: 300 });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsGroup, [{ tabIds: [55], groupId: 300 }]);
+  assert.equal(calls.groupsUpdate.length, 0);
+  assert.match(res.content[0].text, /added tabs \[2\] to group 300/);
+});
+
+test("group_tabs: one bad reference groups nothing; bad color / groupId refused", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3 });
+  for (const args of [
+    { tabs: [{ index: 0 }, { url: "missing" }] },
+    { tabs: [] },
+    { tabs: [{}] },
+    { tabs: [{ index: 0 }], color: "black" },
+    { tabs: [{ index: 0 }], groupId: "300" },
+    { tabs: Array.from({ length: 51 }, () => ({ index: 0 })) }
+  ]) {
+    const res = await call(d, "katashiro.group_tabs", args);
+    assert.equal(res.isError, true, JSON.stringify(args).slice(0, 80));
+  }
+  assert.equal(calls.tabsGroup.length, 0);
+});
+
+test("group_tabs: a Chrome error surfaces; styling without the tabGroups API is refused", async () => {
+  const thrown = await call(deps({ tabsList: TABS3, groupThrows: "Tabs cannot be grouped." }).deps, "katashiro.group_tabs", { tabs: [{ index: 0 }] });
+  assert.equal(thrown.isError, true);
+  assert.match(thrown.content[0].text, /could not group the tabs: Tabs cannot be grouped/);
+  const { deps: d, calls } = deps({ tabsList: TABS3, noTabGroups: true });
+  const res = await call(d, "katashiro.group_tabs", { tabs: [{ index: 0 }], title: "x" });
+  assert.equal(res.isError, true);
+  assert.equal(calls.tabsGroup.length, 0);
+  // grouping itself only needs chrome.tabs — still works without tabGroups
+  assert.equal((await call(d, "katashiro.group_tabs", { tabs: [{ index: 0 }] })).isError, undefined);
+});
+
+test("ungroup_tabs: only grouped tabs are passed to tabs.ungroup", async () => {
+  const { deps: d, calls } = deps({ tabsList: TABS3 });
+  const res = await call(d, "katashiro.ungroup_tabs", { tabs: [{ index: 0 }, { url: "mail.google" }] });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsUngroup, [[42]]);
+  assert.match(res.content[0].text, /removed tabs \[1\] from their groups/);
+  const noop = await call(d, "katashiro.ungroup_tabs", { tabs: [{ index: 2 }] });
+  assert.match(noop.content[0].text, /nothing to do/);
+  assert.equal(calls.tabsUngroup.length, 1);
+});
+
+test("update_tab_group: rename / recolor / collapse; unknown id and empty change are errors", async () => {
+  const { deps: d, calls } = deps({ groups: [GROUP300] });
+  const res = await call(d, "katashiro.update_tab_group", { groupId: 300, title: "done", collapsed: true });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.groupsUpdate, [{ id: 300, upd: { title: "done", collapsed: true } }]);
+  assert.match(res.content[0].text, /updated group 300 "done" blue \(collapsed\)/);
+  assert.equal((await call(d, "katashiro.update_tab_group", { groupId: 999, title: "x" })).isError, true);
+  assert.equal((await call(d, "katashiro.update_tab_group", { groupId: 300 })).isError, true);
+  assert.equal((await call(d, "katashiro.update_tab_group", { groupId: 300, color: "black" })).isError, true);
+  assert.equal((await call(d, "katashiro.update_tab_group", { groupId: 300, collapsed: "no" })).isError, true);
+  const off = await call(deps({ noTabGroups: true }).deps, "katashiro.update_tab_group", { groupId: 300, title: "x" });
+  assert.equal(off.isError, true);
+});
+
+test("every new tab write tool is refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false, tabsList: TABS3, groups: [GROUP300] });
+  for (const [name, args] of [
+    ["katashiro.tab_update", { index: 0, pinned: true }],
+    ["katashiro.reopen_tab", {}],
+    ["katashiro.group_tabs", { tabs: [{ index: 0 }] }],
+    ["katashiro.ungroup_tabs", { tabs: [{ index: 1 }] }],
+    ["katashiro.update_tab_group", { groupId: 300, title: "x" }]
+  ]) {
+    const res = await call(d, name, args);
+    assert.equal(res.isError, true, name);
+    assert.match(res.content[0].text, /act mode is off/, name);
+  }
+  assert.equal(calls.tabsUpdate.length + calls.tabsGroup.length + calls.tabsUngroup.length + calls.groupsUpdate.length + calls.sessionsRestore.length, 0);
 });

@@ -20,7 +20,7 @@ Under this system:
 
 ## 🌟 Key Features
 
-- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **DOM-semantic browser tools** — reads such as `snapshot`, `read_dom`, `get_text`, `get_selection`, `screenshot`, `scroll`, `hover`, `highlight`, `tabs`, `wait_for`, and act-mode writes such as `click`, `type`, `fill_form`, `select_option`, `upload_file`, `press_key`, `navigate`, `history`, `reload`, `inject_css`, `new_tab`, `switch_tab`, `close_tab` — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`/`new_tab`/`switch_tab`/`close_tab`) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
+- **Browser Control (MCP-over-ACP)**: the extension is an MCP server over the same `/acp` socket; the agent discovers and calls **DOM-semantic browser tools** — reads such as `snapshot`, `read_dom`, `get_text`, `get_selection`, `screenshot`, `scroll`, `hover`, `highlight`, `tabs`, `tab_groups`, `wait_for`, and act-mode writes such as `click`, `type`, `fill_form`, `select_option`, `upload_file`, `press_key`, `navigate`, `history`, `reload`, `inject_css`, `new_tab`, `switch_tab`, `close_tab`, `reopen_tab`, `tab_update`, `group_tabs`, `ungroup_tabs`, `update_tab_group` — most execute in the active tab via `chrome.scripting`; the tab-management tools (`tabs`, `new_tab`, `switch_tab`, `close_tab`, `reopen_tab`, `tab_update` and the tab-group tools) act on the browser's tab set. Perception is an accessibility-tree `snapshot` with stable element refs. Full surface in [the tool table](#the-tools-we-serve); roadmap in [ROADMAP](ROADMAP.md).
 
 - **Rich Chat**: agent and user messages render as **markdown → DOMPurify-sanitized HTML** — GFM tables, **syntax-highlighted** code with one-click **copy**, hardened links. `stop`/retry a turn (ACP `session/cancel`), **chat history + ACP session resume** persisted per window (reopen the panel and the conversation — and the session — continue), and stick-to-bottom auto-scroll with a "jump to latest" pill. A **clear-screen** button (🧹) wipes the on-screen transcript and this window's persisted scrollback while **keeping each agent's ACP session** — the local view resets, the agents don't forget.
 
@@ -103,7 +103,8 @@ Two conventions worth copying:
 
 Most tools act on the **active tab** (`tabs.query({ active: true, lastFocusedWindow: true })`);
 DOM work runs injected in the page via `chrome.scripting.executeScript`. The exception is the
-**tab-management** tools (`tabs`, `new_tab`, `switch_tab`, `close_tab`) — they operate on the browser's tab set,
+**tab-management** tools (`tabs`, `new_tab`, `switch_tab`, `close_tab`, `reopen_tab`, `tab_update`,
+`tab_groups`, `group_tabs`, `ungroup_tabs`, `update_tab_group`) — they operate on the browser's tab set,
 not a single page, so they don't require (and aren't blocked by) a scriptable active tab; opening
 or switching a tab is how the agent *changes* which tab is active. A tool that fails — selector
 matched nothing, no active tab — comes back as an MCP result with `isError: true`, not a protocol
@@ -123,10 +124,16 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.hover` | read | `ref`\|`selector` | Dispatches pointer events to reveal menus/tooltips. Returns the updated snapshot. |
 | `katashiro.highlight` | read | `ref`\|`selector`, `label?`, `durationMs?` \| `clear` | Outlines an element (with a short caption, prefixed `🤖 katashiro`) to point it out to the user. Drawn in katashiro's own closed shadow root — page elements are never modified — ignores the pointer, and expires (default 4 s, max 15 s). |
 | `katashiro.get_selection` | read | — | The text the user has selected, across frames and inside text fields, with the element it sits in. For "explain / translate this". |
-| `katashiro.tabs` | read | — | Lists **all** open tabs across every window (index, title, URL, active marker) — wider exposure than the active-tab-only tools, by design. The `[index]` is a live enumeration order, not a stable id. |
+| `katashiro.tabs` | read | `windowId?`, `url?` | Lists **all** open tabs across every window (index, title, URL, active marker, plus window / pinned / audible / muted / discarded / tab group) — wider exposure than the active-tab-only tools, by design. Optional filters by window or URL substring. The `[index]` is a live enumeration order across all windows, not a stable id; a filtered list keeps it. |
 | `katashiro.new_tab` | **write** | `url?`, `active?` | Opens a new tab and (default) switches to it so later tools act on it; `active: false` opens it in the background. Returns the new tab's index, plus the snapshot when it switched to a scriptable page. |
 | `katashiro.switch_tab` | **write** | `index`\|`url` | Activates an existing tab — by `index` (from a fresh `tabs`) or by `url` substring (more stable). Focuses the tab and its window; returns the now-active tab, plus its snapshot for a scriptable page. |
 | `katashiro.close_tab` | **write** | `index`\|`url`\|— | Closes a tab — by `url` substring (preferred), by `index` (from a fresh `tabs`), or the active tab when neither is given. Refuses to close the last tab in its window (that would close the window, and the side panel with it). Indexes shift afterwards; call `tabs` before acting again. |
+| `katashiro.reopen_tab` | **write** | `url?` | Reopens a recently closed tab (Ctrl/Cmd+Shift+T) — the most recent one, or the most recent whose URL contains `url`. Undoes a mistaken `close_tab`. Needs the `sessions` permission. |
+| `katashiro.tab_update` | **write** | `index`\|`url`\|—, `pinned?`, `muted?`, `moveTo?`, `duplicate?` | Pins/unpins, mutes/unmutes, moves (position within its window; `-1` = last) and/or duplicates one tab (the active tab when no `index`/`url`). |
+| `katashiro.tab_groups` | read | — | Lists tab groups: id, title, color, collapsed, window, member tab indexes. Needs the `tabGroups` permission. |
+| `katashiro.group_tabs` | **write** | `tabs[]` of `index`\|`url`, `groupId?`, `title?`, `color?` | Puts tabs into an existing group (`groupId`) or a new one, optionally naming / coloring it. One bad tab reference groups nothing. |
+| `katashiro.ungroup_tabs` | **write** | `tabs[]` of `index`\|`url` | Takes tabs out of their groups (an emptied group disappears). |
+| `katashiro.update_tab_group` | **write** | `groupId`, `title?`, `color?`, `collapsed?` | Renames, recolors, collapses or expands a group. |
 | `katashiro.wait_for` | read | `selector`\|`text`, `timeout?` | Polls until the element/text appears (never a fixed sleep), then returns the snapshot. |
 | `katashiro.click` | **write** | `ref`+`snapshotId`\|`selector`, `button?` (`left`\|`right`), `doubleClick?` | Clicks the element; `button: "right"` fires `contextmenu` (the page's own menu), `doubleClick` emits two clicks + `dblclick`. Returns the updated snapshot. Stale-ref checked. |
 | `katashiro.type` | **write** | `ref`+`snapshotId`\|`selector`, `text` | Sets `value` via the native setter (React-safe) or `textContent`, fires `input`+`change`; returns the snapshot. |
