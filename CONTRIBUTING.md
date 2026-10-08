@@ -27,6 +27,7 @@ bundler, no `node_modules`.
 | `browser-mcp.js` | The browser MCP server (tool registry + DOM tool bodies) served over the ACP tunnel |
 | `room-core.js`   | Pure multi-agent room logic — @mention routing, agent-to-agent relay, loop guard   |
 | `agent-tools.js` | Pure mapping of the agent's own `tool_call` / `tool_call_update` progress to tool-strip pills |
+| `composer.js`    | Pure pasted-image rules — paste classification, accepted types, per-turn size budget, prompt blocks |
 | `markdown.js`    | The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy/link hardening |
 | `page/a11y-walker.js` | Content script — a11y-tree snapshot + element-ref resolution injected into the page |
 | `vendor/`        | Prebuilt eval-free IIFE bundles (dom-accessibility-api, markdown-it, dompurify, highlight.js); see `vendor/BUILD.md` |
