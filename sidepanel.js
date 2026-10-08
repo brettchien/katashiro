@@ -93,8 +93,11 @@ class Conn {
     this.nextReqId = 1;
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
     this.promptQueue = [];
+    this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
     this.lastPrompt = null;                              // last turn's text, for retry
+    this.lastImages = [];                                // …and its images, so a retry re-sends them
+    this.canImage = false;                               // initialize → promptCapabilities.image
     this.mcpServer = null;                               // our type:acp MCP server instance
     // Router state: declared instances + connectionId → instance. A second client-side MCP
     // server would just be another entry in `servers`; the gateway tunnels to each separately.
@@ -290,7 +293,10 @@ class Conn {
       protocolVersion: ACP_PROTOCOL_VERSION,
       clientCapabilities: {},
     })
-      .then(() => {
+      .then((init) => {
+        // Only send image blocks to an agent that declares it takes them; the gateway answers
+        // `image: false` (and -32602 on an image block) until it supports them.
+        this.canImage = Composer.canImage(init);
         if (this.acpSessionId) {
           return this.acpRequest("session/resume", {
             sessionId: this.acpSessionId,
@@ -372,8 +378,9 @@ class Conn {
     }
   }
 
-  enqueue(text) {
+  enqueue(text, images) {
     this.promptQueue.push(text);
+    if (images && images.length) this.pendingImages.push(...images);
     this.flushQueue();
   }
 
@@ -386,8 +393,21 @@ class Conn {
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
     const text = RoomCore.batchPrompts(this.promptQueue.splice(0));
-    if (!text) return;                                   // nothing sendable (all blank) — stay idle
+    let images = [];
+    if (this.pendingImages.length && !this.canImage) {
+      const n = this.pendingImages.splice(0).length;
+      appendSystemMessage(`${this.name} 不支援圖片，${text ? "只送出文字" : "這則沒有送出"}（${n} 張圖片未送出）。`);
+    } else {
+      // Batched backlog may hold several messages' images: send what fits one frame's budget and
+      // leave the rest (plus an empty prompt to carry them) for the next turn.
+      while (this.pendingImages.length && (images.length === 0 || Composer.fitsBudget(images, this.pendingImages[0].data.length))) {
+        images.push(this.pendingImages.shift());
+      }
+      if (this.pendingImages.length) this.promptQueue.push("");
+    }
+    if (!text && images.length === 0) return;            // nothing sendable — stay idle
     this.lastPrompt = text;                              // remember for retry (the whole batch)
+    this.lastImages = images;
     this.turnActive = true;
     this.skippedToolCalls = new Set();                   // katashiro tool calls seen this turn
     updateStopButton();
@@ -395,7 +415,7 @@ class Conn {
 
     this.acpRequest("session/prompt", {
       sessionId: this.acpSessionId,
-      prompt: [{ type: "text", text }],
+      prompt: Composer.promptBlocks(text, images),
     }, ACP_PROMPT_TIMEOUT_MS)
       .then((res) => {
         this.turnActive = false;
@@ -416,6 +436,7 @@ class Conn {
           // never landed, so re-queue it — the onclose-scheduled reconnect flushes it on a fresh
           // session (ADR R3). Safe: a dead socket means the agent never received this turn.
           this.promptQueue.unshift(text);
+          this.pendingImages.unshift(...images);         // the images never landed either
           this.finalizeStream();
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
@@ -455,8 +476,9 @@ class Conn {
     // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
     // alongside the active one (review: Orca, the C2 race).
     if (this.agent.url !== activeAgentUrl) return;
-    if (!this.lastPrompt || this.turnActive) return;
-    this.promptQueue.push(this.lastPrompt);
+    if ((!this.lastPrompt && this.lastImages.length === 0) || this.turnActive) return;
+    this.promptQueue.push(this.lastPrompt || "");        // "" still carries an image-only turn
+    this.pendingImages.push(...this.lastImages);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }
@@ -1504,12 +1526,126 @@ function deleteAgent(i) {
   updateRoster();
 }
 
+// --- Pasted-image staging ----------------------------------------------------
+// Screenshots pasted into the composer are staged as ACP image content blocks and previewed
+// before send. Kept in memory only (never persisted to history) to avoid bloating storage.session.
+// Composer owns the rules (accepted types, paste classification, the per-turn size budget).
+const attachPreview = document.getElementById("attach-preview");
+const MAX_SOURCE_BYTES = 20 * 1024 * 1024;              // refuse to even decode beyond this
+let stagedImages = [];                                   // [{ mimeType, data(base64), dataUrl }]
+let stagingChain = Promise.resolve();                    // serialize pastes so the budget check holds
+let stagingPending = 0;                                  // pastes still encoding — send waits for them
+
+function updateSendEnabled() {
+  sendBtn.disabled = stagingPending > 0 || (messageInput.value.trim().length === 0 && stagedImages.length === 0);
+}
+
+function renderStagedPreviews() {
+  if (!attachPreview) return;
+  attachPreview.textContent = "";
+  stagedImages.forEach((img, i) => {
+    const thumb = document.createElement("div");
+    thumb.className = "attach-thumb";
+    const el = document.createElement("img");
+    el.src = img.dataUrl;                                // our own canvas/FileReader output, safe
+    el.alt = "pasted image";
+    const rm = document.createElement("button");
+    rm.className = "attach-remove";
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.title = "移除";
+    rm.addEventListener("click", () => { stagedImages.splice(i, 1); renderStagedPreviews(); updateSendEnabled(); });
+    thumb.append(el, rm);
+    attachPreview.appendChild(thumb);
+  });
+  attachPreview.hidden = stagedImages.length === 0;
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Fit one image into `budget` base64 chars: as-is if it is already small enough, else downscaled
+// to MAX_IMAGE_EDGE and re-encoded as JPEG at falling quality. null if it still does not fit.
+async function encodeForAgent(blob, budget) {
+  const bmp = await createImageBitmap(blob);
+  try {
+    const { width, height } = Composer.fitDimensions(bmp.width, bmp.height, Composer.MAX_IMAGE_EDGE);
+    if (width === bmp.width && height === bmp.height) {
+      const img = Composer.parseImageDataUrl(await blobToDataUrl(blob));
+      if (img && img.data.length <= budget) return img;
+    }
+    const canvas = new OffscreenCanvas(width, height);
+    const ctx2d = canvas.getContext("2d");
+    ctx2d.fillStyle = "#fff";                            // JPEG has no alpha — flatten onto white
+    ctx2d.fillRect(0, 0, width, height);
+    ctx2d.drawImage(bmp, 0, 0, width, height);
+    for (const quality of [0.85, 0.7, 0.5]) {
+      const img = Composer.parseImageDataUrl(await blobToDataUrl(await canvas.convertToBlob({ type: "image/jpeg", quality })));
+      if (img && img.data.length <= budget) return img;
+    }
+    return null;
+  } finally {
+    bmp.close();
+  }
+}
+
+async function stageImages(blobs) {
+  for (const blob of blobs) {
+    if (blob.size > MAX_SOURCE_BYTES) {
+      appendSystemMessage(`圖片太大（約 ${Math.round(blob.size / 1048576)}MB），未附加`);
+      continue;
+    }
+    const budget = Composer.MAX_TOTAL_IMAGE_B64 - Composer.stagedSize(stagedImages);
+    let img = null;
+    try {
+      img = budget > 0 ? await encodeForAgent(blob, budget) : null;
+    } catch {
+      appendSystemMessage("無法讀取這張圖片，未附加");
+      continue;
+    }
+    if (!img) {
+      appendSystemMessage("圖片超過單次傳送上限（所有圖片合計約 1MB，已縮小並壓縮過），未附加");
+      continue;
+    }
+    stagedImages.push({ ...img, dataUrl: `data:${img.mimeType};base64,${img.data}` });
+    renderStagedPreviews();
+    updateSendEnabled();
+  }
+}
+
 // --- Message input -----------------------------------------------------------
 messageInput.addEventListener("input", () => {
-  const text = messageInput.value.trim();
-  sendBtn.disabled = text.length === 0;
+  updateSendEnabled();
   messageInput.style.height = "auto";
   messageInput.style.height = (messageInput.scrollHeight - 2) + "px";
+});
+
+messageInput.addEventListener("paste", (e) => {
+  const items = Array.from((e.clipboardData && e.clipboardData.items) || []);
+  const plan = Composer.classifyPaste(items.map((it) => ({ kind: it.kind, type: it.type })));
+  if (plan.rejected.length) {
+    appendSystemMessage(`不支援的圖片格式（${plan.rejected.join("、")}），只接受 PNG / JPEG / GIF / WebP`);
+  }
+  if (plan.images.length === 0) return;                  // text (Office/Sheets copies too) — paste normally
+  e.preventDefault();                                    // don't also paste the image's path/text into the box
+  const active = room.find((c) => c.agent.url === activeAgentUrl);
+  if (active && active.acpReady && !active.canImage) {
+    appendSystemMessage(`${active.name} 不支援圖片，未附加`);
+    return;
+  }
+  const blobs = plan.images.map((i) => items[i].getAsFile()).filter(Boolean);
+  stagingPending++;
+  updateSendEnabled();
+  stagingChain = stagingChain
+    .then(() => stageImages(blobs))
+    .catch(() => appendSystemMessage("圖片處理失敗，未附加"))  // keep the chain alive for later pastes
+    .finally(() => { stagingPending--; updateSendEnabled(); });
 });
 
 messageInput.addEventListener("keydown", (e) => {
@@ -1550,19 +1686,26 @@ messagesList.addEventListener("click", (e) => {
 // gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
 function sendMessage() {
   const text = messageInput.value.trim();
-  if (!text) return;
+  const images = stagedImages.slice();                   // snapshot the staged attachments
+  if (stagingPending > 0) return;                        // Enter mid-encode: don't strand the image for the next message
+  if (!text && images.length === 0) return;
 
-  appendMessage({ senderId: myUserId, senderName: myUserName, text, timestamp: Date.now() });
+  appendMessage({
+    senderId: myUserId, senderName: myUserName, text, timestamp: Date.now(),
+    images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
+  });
 
   loopGuard.onHuman();
   const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(text);
+    if (c) c.enqueue(text, images);
   });
 
   messageInput.value = "";
   messageInput.style.height = "auto";
+  stagedImages = [];
+  renderStagedPreviews();
   sendBtn.disabled = true;
 }
 
@@ -1681,7 +1824,7 @@ function formatTime(timestamp) {
 // stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
 // handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
 // renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
-function appendMessage({ senderId, senderName, text, timestamp }) {
+function appendMessage({ senderId, senderName, text, timestamp, images }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -1705,7 +1848,16 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (text) renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (Array.isArray(images)) {
+    for (const src of images) {
+      const im = document.createElement("img");
+      im.className = "bubble-image";
+      im.src = src;                                     // our own FileReader data URL
+      im.alt = "image";
+      bubble.appendChild(im);
+    }
+  }
   content.appendChild(bubble);
 
   const ts = document.createElement("div");
@@ -1715,7 +1867,10 @@ function appendMessage({ senderId, senderName, text, timestamp }) {
 
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
-  recordMessage({ kind: isMe ? "sent" : "received", senderId, senderName, text, timestamp });
+  recordMessage({
+    kind: isMe ? "sent" : "received", senderId, senderName, timestamp,
+    text: Composer.historyText(text, Array.isArray(images) ? images.length : 0), // images are memory-only
+  });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.
   if (isMe) scrollToBottom(); else maybeScroll();
