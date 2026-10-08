@@ -12,9 +12,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
   # Only supersede stale PR runs; every push to main keeps its own result so a breaking
-  # merge can be pinpointed later.
+  # merge can be pinpointed later. main is grouped per sha because a group holds at most one
+  # pending run — a shared group would still cancel queued main runs on rapid merges.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
