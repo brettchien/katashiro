@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 34 DOM-semantic browser tools", async () => {
+test("tools/list returns the 35 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -208,6 +208,7 @@ test("tools/list returns the 34 DOM-semantic browser tools", async () => {
     "katashiro.select_option",
     "katashiro.fill_form",
     "katashiro.upload_file",
+    "katashiro.paste_image",
     "katashiro.reload",
     "katashiro.inject_css"
   ]);
@@ -756,6 +757,7 @@ test("exactly the mutating tools are marked write", () => {
     "katashiro.inject_css",
     "katashiro.navigate",
     "katashiro.new_tab",
+    "katashiro.paste_image",
     "katashiro.press_key",
     "katashiro.reload",
     "katashiro.reopen_tab",
@@ -1856,7 +1858,7 @@ test("a tool without a redact hook fails closed: its args never reach the UI", a
 
 test("an image result summarizes as MIME + size, not the base64", async () => {
   const { events } = await callViaTunnel("katashiro.screenshot", {}, { dataUrl: "data:image/jpeg;base64,QUJDREVG" });
-  assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\)$/);
+  assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\) — imageId: img\d+/);
   assert.ok(!JSON.stringify(events).includes("QUJDREVG"));
 });
 
@@ -2253,4 +2255,96 @@ test("split_tabs / unsplit_tabs are refused when act mode is off", async () => {
     assert.match(res.content[0].text, /act mode is off/, name);
   }
   assert.equal(calls.createSplit.length + calls.unsplit.length, 0);
+
+// --- screenshot → paste_image / upload_file (imageId) ------------------------------------------
+
+const shoot = async (d) => {
+  const res = await call(d, "katashiro.screenshot");
+  const id = /imageId: (img\d+)/.exec(res.content[1].text)[1];
+  return { res, id };
+};
+
+test("screenshot returns the image plus an imageId text block", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { res, id } = await shoot(d);
+  assert.equal(res.content[0].type, "image");
+  assert.equal(res.content[0].data, "QUJD");
+  assert.equal(res.content[1].type, "text");
+  assert.match(id, /^img\d+$/);
+  const again = await shoot(d);
+  assert.notEqual(again.id, id);                                      // each capture its own id
+});
+
+test("paste_image pastes the stored screenshot into a ref'd editor (bytes stay in the extension)", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "ref e5", handled: true } });
+  const { id } = await shoot(d);
+  const res = await call(d, "katashiro.paste_image", { imageId: id, ref: "e5", snapshotId: 1 });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, new RegExp(`pasted screenshot-${id}\\.jpg \\(3 bytes\\) into ref e5 — the page took it`));
+  const inj = calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5);
+  assert.deepEqual(inj.args, ["e5", 1, null, { base64: "QUJD", name: `screenshot-${id}.jpg`, type: "image/jpeg" }, "paste"]);
+});
+
+test("paste_image: mode drop + custom name; an unhandled event is an error pointing at upload_file", async () => {
+  const ok = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "selector .drop", handled: true } });
+  const a = await shoot(ok.deps);
+  const res = await call(ok.deps, "katashiro.paste_image", { imageId: a.id, selector: ".drop", mode: "drop", name: "chart.jpg" });
+  assert.match(res.content[0].text, /dropped chart\.jpg/);
+  assert.equal(ok.calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5).args[4], "drop");
+
+  const no = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "the focused element", handled: false } });
+  const b = await shoot(no.deps);
+  const miss = await call(no.deps, "katashiro.paste_image", { imageId: b.id });
+  assert.equal(miss.isError, true);
+  assert.match(miss.content[0].text, new RegExp(`did not handle it — try mode "drop".*upload_file with files: \\[\\{ imageId: "${b.id}" \\}\\]`));
+});
+
+test("paste_image: unknown imageId, bad mode, ref without snapshotId are refused before the page", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { id } = await shoot(d);
+  const before = calls.executeScript.length;
+  for (const [args, re] of [
+    [{ imageId: "img999999" }, /no captured image "img999999" — it expired/],
+    [{ imageId: id, mode: "copy" }, /must be "paste" or "drop"/],
+    [{ imageId: id, ref: "e1" }, /snapshotId/]
+  ]) {
+    const res = await call(d, "katashiro.paste_image", args);
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.match(res.content[0].text, re);
+  }
+  assert.equal(calls.executeScript.length, before);
+});
+
+test("paste_image is refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false, dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { id } = await shoot(d);                                       // screenshot is a read
+  const res = await call(d, "katashiro.paste_image", { imageId: id, selector: "#x" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /act mode is off/);
+  assert.equal(calls.executeScript.filter((x) => Array.isArray(x.args) && x.args.length === 5).length, 0);
+});
+
+test("upload_file accepts a screenshot imageId (default name + MIME from the capture)", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "selector input[type=file]" } });
+  const { id } = await shoot(d);
+  const res = await call(d, "katashiro.upload_file", { selector: "input[type=file]", files: [{ imageId: id }] });
+  assert.equal(res.isError, undefined);
+  const inj = calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 4 && Array.isArray(x.args[3]));
+  assert.deepEqual(inj.args[3], [{ name: `screenshot-${id}.jpg`, type: "image/jpeg", text: null, base64: "QUJD" }]);
+  // mixing sources in one file, or an unknown id, is refused
+  assert.equal((await call(d, "katashiro.upload_file", { selector: "x", files: [{ imageId: id, base64: "QUJD" }] })).isError, true);
+  const gone = await call(d, "katashiro.upload_file", { selector: "x", files: [{ imageId: "img0" }] });
+  assert.match(gone.content[0].text, /no captured image "img0"/);
+  // the UI details show the imageId, never content
+  const masked = BrowserMcp.TOOLS["katashiro.upload_file"].redact({ selector: "x", files: [{ imageId: id }] });
+  assert.equal(masked.files[0].imageId, id);
+});
+
+test("the image store keeps only the newest captures", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  const first = (await shoot(d)).id;
+  for (let i = 0; i < 10; i++) await shoot(d);                         // IMAGE_STORE_MAX = 10 newer ones
+  const res = await call(d, "katashiro.paste_image", { imageId: first, selector: "#x" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /pushed out by newer ones/);
 });

@@ -309,6 +309,29 @@
   // does not survive a navigation anyway; removing an already-gone one is a harmless no-op.
   const injectedCss = new Map();
 
+  // Screenshots kept for paste_image / upload_file, so a capture can go into another page WITHOUT
+  // the agent round-tripping the bytes (a model can look at an image block but cannot re-emit it
+  // as base64). In memory only, newest IMAGE_STORE_MAX, each for IMAGE_TTL_MS.
+  const IMAGE_STORE_MAX = 10;
+  const IMAGE_TTL_MS = 15 * 60 * 1000;
+  const capturedImages = new Map();                       // imageId -> { mimeType, data, at }
+  let imageSeq = 0;
+  function pruneImages(now = Date.now()) {
+    for (const [id, img] of capturedImages) if (now - img.at > IMAGE_TTL_MS) capturedImages.delete(id);
+    while (capturedImages.size > IMAGE_STORE_MAX) capturedImages.delete(capturedImages.keys().next().value);
+  }
+  function storeImage(mimeType, data) {
+    const id = `img${++imageSeq}`;
+    capturedImages.set(id, { mimeType, data, at: Date.now() });
+    pruneImages();
+    return id;
+  }
+  function getImage(id) {
+    pruneImages();
+    return capturedImages.get(String(id || "")) || null;
+  }
+  const IMAGE_GONE = (id) => `no captured image "${id}" — it expired (${IMAGE_TTL_MS / 60000} min) or was pushed out by newer ones; take a new screenshot`;
+
   // --- Tool-call details for the UI (pill tooltip + expander) -------------------------------
   //
   // The side panel shows what each tool call did. Arguments can carry secrets (a password in
@@ -375,6 +398,7 @@
     if (a.selector != null) out.selector = a.selector;
     out.files = files.map((f) => {
       const o = { name: f && f.name, mimeType: (f && f.mimeType) || "application/octet-stream" };
+      if (f && f.imageId != null) o.imageId = f.imageId;
       if (f && typeof f.base64 === "string") {
         const b = f.base64.replace(/\s+/g, "");
         o.size = Math.max(0, Math.floor((b.length * 3) / 4) - (b.endsWith("==") ? 2 : b.endsWith("=") ? 1 : 0));
@@ -496,17 +520,17 @@
   function describeResult(result, secrets) {
     const content = (result && Array.isArray(result.content)) ? result.content : [];
     const textBlock = content.find((b) => b && b.type === "text" && typeof b.text === "string");
+    const img = content.find((b) => b && b.type === "image");
+    // An image result (screenshot) summarizes as MIME + size — never the base64 — with any text
+    // block (the screenshot's imageId note) after it.
+    const imgLabel = img ? `${img.mimeType || "image"} (${Math.round(((String(img.data || "").length * 3) / 4) / 1024)} KB)` : "";
     if (textBlock) {
       const text = stripUrlQueries(scrub(textBlock.text, secrets));
       const line = (text.split("\n").find((l) => l.trim()) || "").trim();
+      if (img) return { summary: clip(`${imgLabel} — ${line}`, SUMMARY_MAX), preview: clip(`${imgLabel}\n${text}`, PREVIEW_MAX) };
       return { summary: clip(line, SUMMARY_MAX), preview: clip(text, PREVIEW_MAX) };
     }
-    const img = content.find((b) => b && b.type === "image");
-    if (img) {
-      const kb = Math.round(((String(img.data || "").length * 3) / 4) / 1024);
-      const s = `${img.mimeType || "image"} (${kb} KB)`;
-      return { summary: s, preview: s };
-    }
+    if (img) return { summary: imgLabel, preview: imgLabel };
     return { summary: "", preview: "" };
   }
 
@@ -842,7 +866,10 @@
       description:
         "Capture a screenshot (image) of the active tab. EXPENSIVE and slow to reason over — use " +
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
-        "read text or to confirm an action succeeded (action tools already return the new snapshot).",
+        "read text or to confirm an action succeeded (action tools already return the new snapshot). " +
+        "Also returns an `imageId`: pass it to `paste_image` (paste into an editor, e.g. a Jira " +
+        "description) or `upload_file` (`files: [{ imageId }]`) to put this screenshot into another " +
+        "page — the image stays in the extension, you never handle its bytes.",
       inputSchema: { type: "object", properties: {} },
       redact: redactDefault,
       /** @param {object} _args (none) */
@@ -855,7 +882,13 @@
           quality: 70
         });
         const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
-        return { content: [{ type: "image", data: base64, mimeType: "image/jpeg" }] };
+        const imageId = storeImage("image/jpeg", base64);
+        return {
+          content: [
+            { type: "image", data: base64, mimeType: "image/jpeg" },
+            { type: "text", text: `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${IMAGE_STORE_MAX})` }
+          ]
+        };
       }
     },
 
@@ -2100,7 +2133,8 @@
     "katashiro.upload_file": {
       description:
         "Attach file(s) to an <input type=file> in the active tab, with content you supply: each file " +
-        "is a `name` plus either `text` (UTF-8) or `base64` (binary), and an optional `mimeType`. Works " +
+        "is a `name` plus either `text` (UTF-8), `base64` (binary) or `imageId` (a screenshot taken " +
+        "with `screenshot`; `name` optional), and an optional `mimeType`. Works " +
         "on file inputs a site hides behind a styled button. Fires input+change; does not submit. " +
         `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
       write: true,
@@ -2119,9 +2153,9 @@
                 name: { type: "string", description: "file name, e.g. report.csv" },
                 mimeType: { type: "string", description: "e.g. text/csv, image/png (default application/octet-stream)" },
                 text: { type: "string", description: "UTF-8 file content" },
-                base64: { type: "string", description: "binary file content, base64-encoded" }
-              },
-              required: ["name"]
+                base64: { type: "string", description: "binary file content, base64-encoded" },
+                imageId: { type: "string", description: "a screenshot's imageId (instead of text/base64)" }
+              }
             }
           }
         },
@@ -2137,17 +2171,27 @@
         const files = Array.isArray(args.files) ? args.files : [];
         if (!files.length) return errText("upload_file needs a non-empty `files` array");
         let total = 0;
+        const resolved = [];
         for (let i = 0; i < files.length; i++) {
-          const f = files[i] || {};
+          let f = files[i] || {};
+          if ([f.text, f.base64, f.imageId].filter((v) => v != null).length !== 1) {
+            return errText(`file ${i} needs exactly one of \`text\`, \`base64\` or \`imageId\``);
+          }
+          if (f.imageId != null) {
+            const img = getImage(f.imageId);
+            if (!img) return errText(IMAGE_GONE(f.imageId));
+            const ext = img.mimeType === "image/png" ? "png" : "jpg";
+            f = { name: f.name || `screenshot-${f.imageId}.${ext}`, mimeType: f.mimeType || img.mimeType, base64: img.data };
+          }
+          resolved.push(f);
           if (!f.name || !String(f.name).trim()) return errText(`file ${i} needs a \`name\``);
-          if ((f.text == null) === (f.base64 == null)) return errText(`file ${i} needs exactly one of \`text\` or \`base64\``);
           if (f.base64 != null && !/^[A-Za-z0-9+/]*={0,2}$/.test(String(f.base64).replace(/\s+/g, ""))) return errText(`file ${i} \`base64\` is not valid base64`);
           total += f.text != null
             ? new TextEncoder().encode(String(f.text)).length
             : Math.floor(String(f.base64).replace(/\s+/g, "").replace(/=+$/, "").length * 3 / 4);
         }
         if (total > UPLOAD_MAX_BYTES) return errText(`files total ${total} bytes; upload_file is capped at ${UPLOAD_MAX_BYTES} bytes`);
-        const payload = files.map((f) => ({
+        const payload = resolved.map((f) => ({
           name: String(f.name).trim(),
           type: f.mimeType || "application/octet-stream",
           text: f.text != null ? String(f.text) : null,
@@ -2187,6 +2231,92 @@
         });
         if (!result.ok) return errText(result.error);
         return okText(`attached ${payload.map((f) => f.name).join(", ")} (${total} bytes) to ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.paste_image": {
+      description:
+        "Paste a screenshot (an `imageId` from `screenshot`) into an element of the active tab, as if " +
+        "the user pressed Cmd/Ctrl+V with that image on the clipboard — e.g. into a Jira / Confluence " +
+        "description or comment editor, which then uploads it as an attachment. Target the editor by " +
+        "`ref` (+ `snapshotId`) or `selector`; omit both for the focused element. `mode: \"drop\"` " +
+        "drags the file onto the element instead (for drop zones). The events are synthetic: if the " +
+        "page does not handle them you get an error — then attach it with `upload_file` " +
+        "(`files: [{ imageId }]`) on the page's file input. Returns the updated snapshot. Gated by act mode.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          imageId: { type: "string", description: "imageId returned by screenshot" },
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e12" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" },
+          mode: { type: "string", enum: ["paste", "drop"], description: "paste (default) or drop" },
+          name: { type: "string", description: "file name the page sees (default screenshot-<imageId>.jpg)" }
+        },
+        required: ["imageId"]
+      },
+      redact: redactDefault,
+      /** @param {{ imageId: string, ref?: string, snapshotId?: number, selector?: string, mode?: string, name?: string }} args */
+      async call(args, ctx) {
+        if (args.mode != null && args.mode !== "paste" && args.mode !== "drop") return errText("`mode` must be \"paste\" or \"drop\"");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
+        const img = getImage(args.imageId);
+        if (!img) return errText(IMAGE_GONE(args.imageId));
+        const bytes = Math.floor(img.data.replace(/=+$/, "").length * 3 / 4);
+        if (bytes > UPLOAD_MAX_BYTES) return errText(`image is ${bytes} bytes; paste_image is capped at ${UPLOAD_MAX_BYTES} bytes`);
+        const ext = img.mimeType === "image/png" ? "png" : "jpg";
+        const name = (args.name && String(args.name).trim()) || `screenshot-${args.imageId}.${ext}`;
+        const mode = args.mode || "paste";
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: (ref, snapshotId, sel, file, mode) => {
+            let el, how;
+            if (ref) {
+              const r = window.__katashiroResolve(ref, snapshotId);
+              if (!r.ok) return { ok: false, error: r.error };
+              el = r.el; how = "ref " + ref;
+            } else if (sel) {
+              el = document.querySelector(sel);
+              if (!el) return { ok: false, error: "no element for selector: " + sel };
+              how = "selector " + sel;
+            } else {
+              el = document.activeElement;
+              if (!el || el === document.body) return { ok: false, error: "no element is focused — pass a ref or selector for the editor" };
+              how = "the focused element";
+            }
+            if (typeof el.focus === "function") el.focus();
+            const dt = new DataTransfer();
+            dt.items.add(new File([Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0))], file.name, { type: file.type }));
+            const init = { bubbles: true, cancelable: true, composed: true };
+            let handled;
+            if (mode === "drop") {
+              el.dispatchEvent(new DragEvent("dragenter", { ...init, dataTransfer: dt }));
+              el.dispatchEvent(new DragEvent("dragover", { ...init, dataTransfer: dt }));
+              const drop = new DragEvent("drop", { ...init, dataTransfer: dt });
+              el.dispatchEvent(drop);
+              handled = drop.defaultPrevented;
+            } else {
+              const ev = new ClipboardEvent("paste", { ...init, clipboardData: dt });
+              el.dispatchEvent(ev);
+              handled = ev.defaultPrevented;
+            }
+            return { ok: true, how, handled };
+          },
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, { base64: img.data, name, type: img.mimeType }, mode]
+        });
+        if (!result.ok) return errText(result.error);
+        // An editor that takes the file cancels the event's default; nobody cancelling means no
+        // handler took it (a plain <textarea> cannot hold an image).
+        if (!result.handled) {
+          return errText(`${mode === "drop" ? "dropped" : "pasted"} ${name} on ${result.how}, but the page did not handle it — ` +
+            `try ${mode === "drop" ? "mode \"paste\"" : "mode \"drop\""}, another element, or upload_file with files: [{ imageId: "${args.imageId}" }] on its file input`);
+        }
+        return okText(`${mode === "drop" ? "dropped" : "pasted"} ${name} (${bytes} bytes) into ${result.how} — the page took it; ` +
+          `check the snapshot for the uploaded image\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
