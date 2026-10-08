@@ -1534,10 +1534,11 @@
           if (inSplit(p.tab)) return errText(`tab [${p.index}] is already in split ${p.tab.splitViewId} — unsplit_tabs first`);
         }
         let splitViewId;
+        let moved = "";
         try {
           if (openUrl) {
             const base = picks[0].tab;
-            const props = { url: openUrl, splitWithTabId: base.id };
+            const props = { url: openUrl, splitWithTabId: base.id, windowId: base.windowId };
             if (args.side === "left") props.index = base.index;  // the existing tab's index ⇒ left pane
             const created = await ctx.chrome.tabs.create(props);
             splitViewId = created && created.splitViewId;
@@ -1553,16 +1554,20 @@
             if (Math.abs(a.index - b.index) !== 1) {
               // Final position right after `a`: if b sat before a, a shifts left once b is lifted out.
               await ctx.chrome.tabs.move(b.id, { index: b.index < a.index ? a.index : a.index + 1 });
+              moved = ` (tab [${picks[1].index}] was already moved next to tab [${picks[0].index}] — call tabs for the current list)`;
             }
             splitViewId = await ctx.chrome.tabs.createSplit([a.id, b.id]);
           }
         } catch (e) {
-          return errText(`could not create the split: ${errMsg(e)}`);
+          return errText(`could not create the split: ${errMsg(e)}${moved}`);
         }
+        // createSplit / create may hand back no id, or SPLIT_NONE if the new tab isn't tagged yet —
+        // matching on that would list every unsplit tab as a member.
+        const known = splitViewId != null && splitViewId !== SPLIT_NONE;
         const after = await ctx.chrome.tabs.query({});
-        const members = after.map((t, i) => [t, i]).filter(([t]) => splitViewId != null && t.splitViewId === splitViewId);
+        const members = known ? after.map((t, i) => [t, i]).filter(([t]) => t.splitViewId === splitViewId) : [];
         const where = members.length ? `tabs [${members.map(([, i]) => i).join(", ")}]` : "the tabs";
-        return okText(`split ${where} side by side${splitViewId != null ? ` (split ${splitViewId})` : ""}\n` +
+        return okText(`split ${where} side by side${known ? ` (split ${splitViewId})` : ""}\n` +
           `(${SPLIT_ACTIVE_NOTE}; tab indexes may have shifted — call tabs for the current list)`);
       }
     },

@@ -2160,10 +2160,10 @@ test("split_tabs: openUrl opens a new tab split with the given one, right by def
   const right = deps({ tabsList: splitTabs(), createdTab: { id: 60, splitViewId: 900 } });
   const r = await call(right.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }], openUrl: "https://docs.example/x" });
   assert.equal(r.isError, undefined);
-  assert.deepEqual(right.calls.tabsCreate, [{ url: "https://docs.example/x", splitWithTabId: 2 }]);
+  assert.deepEqual(right.calls.tabsCreate, [{ url: "https://docs.example/x", splitWithTabId: 2, windowId: 7 }]);
   const left = deps({ tabsList: splitTabs(), createdTab: { id: 61, splitViewId: 900 } });
   await call(left.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }], openUrl: "https://e/", side: "left" });
-  assert.deepEqual(left.calls.tabsCreate, [{ url: "https://e/", splitWithTabId: 2, index: 1 }]);
+  assert.deepEqual(left.calls.tabsCreate, [{ url: "https://e/", splitWithTabId: 2, windowId: 7, index: 1 }]);
   // no tab given → the active tab (mock active lookup returns id 42, which must be in the list)
   const list = splitTabs(); list[0].id = 42;
   const act = deps({ tabsList: list, createdTab: { id: 62, splitViewId: 900 } });
@@ -2203,6 +2203,22 @@ test("split_tabs: Chrome errors surface; no Split View API is a clean error", as
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /Chrome 155\+/);
   assert.equal((await call(old.deps, "katashiro.unsplit_tabs", { index: 0 })).isError, true);
+});
+
+test("split_tabs: a new tab not yet tagged (splitViewId -1) does not list every unsplit tab", async () => {
+  const d = deps({ tabsList: splitTabs(), createdTab: { id: 63, splitViewId: -1 } });
+  const res = await call(d.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }], openUrl: "https://g/" });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, /^split the tabs side by side\n/);
+  assert.doesNotMatch(res.content[0].text, /split -1|\[0, /);
+});
+
+test("split_tabs: a move that went through is reported when createSplit then fails", async () => {
+  const d = deps({ tabsList: splitTabs(), splitThrows: "boom" });
+  const res = await call(d.deps, "katashiro.split_tabs", { tabs: [{ index: 0 }, { index: 2 }] });
+  assert.equal(res.isError, true);
+  assert.equal(d.calls.tabsMove.length, 1);
+  assert.match(res.content[0].text, /could not create the split: boom \(tab \[2\] was already moved next to tab \[0\]/);
 });
 
 test("split_tabs: openUrl is masked like navigate's url in the UI details", () => {
