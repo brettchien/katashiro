@@ -1534,9 +1534,10 @@ const attachPreview = document.getElementById("attach-preview");
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;              // refuse to even decode beyond this
 let stagedImages = [];                                   // [{ mimeType, data(base64), dataUrl }]
 let stagingChain = Promise.resolve();                    // serialize pastes so the budget check holds
+let stagingPending = 0;                                  // pastes still encoding — send waits for them
 
 function updateSendEnabled() {
-  sendBtn.disabled = messageInput.value.trim().length === 0 && stagedImages.length === 0;
+  sendBtn.disabled = stagingPending > 0 || (messageInput.value.trim().length === 0 && stagedImages.length === 0);
 }
 
 function renderStagedPreviews() {
@@ -1639,7 +1640,12 @@ messageInput.addEventListener("paste", (e) => {
     return;
   }
   const blobs = plan.images.map((i) => items[i].getAsFile()).filter(Boolean);
-  stagingChain = stagingChain.then(() => stageImages(blobs));
+  stagingPending++;
+  updateSendEnabled();
+  stagingChain = stagingChain
+    .then(() => stageImages(blobs))
+    .catch(() => appendSystemMessage("圖片處理失敗，未附加"))  // keep the chain alive for later pastes
+    .finally(() => { stagingPending--; updateSendEnabled(); });
 });
 
 messageInput.addEventListener("keydown", (e) => {
@@ -1681,6 +1687,7 @@ messagesList.addEventListener("click", (e) => {
 function sendMessage() {
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
+  if (stagingPending > 0) return;                        // Enter mid-encode: don't strand the image for the next message
   if (!text && images.length === 0) return;
 
   appendMessage({

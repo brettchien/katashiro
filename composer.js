@@ -30,13 +30,16 @@
   }
 
   // Decide what a paste carries, from its clipboard items ([{ kind, type }]).
-  // Office apps / Google Sheets put `text/plain` AND a rendered `image/png` preview on the
-  // clipboard — the user meant the text, so any `text/plain` makes this an ordinary text paste.
+  // Office apps / Google Sheets put `text/plain` + `text/html` AND a rendered `image/png` preview
+  // on the clipboard — the user meant the text, so that pair makes this an ordinary text paste.
+  // `text/plain` alone is not enough: a file copied in Finder/Explorer carries its file name as
+  // text/plain next to the file itself, and the user meant the image.
   // Returns { images: [item index…] to stage, rejected: [unsupported image mime…] }; the caller
   // preventDefault()s only when `images` is non-empty.
   function classifyPaste(items) {
     const list = Array.from(items || []);
-    if (list.some((it) => it && it.kind === "string" && it.type === "text/plain")) {
+    const hasString = (type) => list.some((it) => it && it.kind === "string" && it.type === type);
+    if (hasString("text/plain") && hasString("text/html")) {
       return { images: [], rejected: [] };
     }
     const images = [];

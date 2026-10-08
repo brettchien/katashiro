@@ -18,13 +18,23 @@ test("classifyPaste stages a plain screenshot paste", () => {
   assert.deepEqual(plan, { images: [0], rejected: [] });
 });
 
-test("classifyPaste leaves Office/Sheets copies (text/plain + image/png preview) as a text paste", () => {
+test("classifyPaste leaves Office/Sheets copies (text/plain + text/html + image/png preview) as a text paste", () => {
   const items = [
     { kind: "string", type: "text/plain" },
     { kind: "string", type: "text/html" },
     { kind: "file", type: "image/png" }
   ];
   assert.deepEqual(Composer.classifyPaste(items), { images: [], rejected: [] });
+});
+
+test("classifyPaste stages a file copied in Finder/Explorer (file name as text/plain + the file)", () => {
+  const items = [{ kind: "string", type: "text/plain" }, { kind: "file", type: "image/png" }];
+  assert.deepEqual(Composer.classifyPaste(items), { images: [1], rejected: [] });
+});
+
+test("classifyPaste stages a browser 'Copy image' (text/html <img> + the image, no text/plain)", () => {
+  const items = [{ kind: "string", type: "text/html" }, { kind: "file", type: "image/png" }];
+  assert.deepEqual(Composer.classifyPaste(items), { images: [1], rejected: [] });
 });
 
 test("classifyPaste stages only png/jpeg/gif/webp and reports other image types once", () => {
