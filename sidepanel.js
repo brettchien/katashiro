@@ -805,27 +805,20 @@ async function loadBuildInfo() {
 loadBuildInfo();
 
 // Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
-// exactly like chrome://extensions' reload button. It closes this panel and wipes
-// chrome.storage.session (scrollback + resumable ACP session ids); synced settings survive. Two
-// clicks within RELOAD_CONFIRM_MS, so a stray click cannot drop the conversation.
+// exactly like chrome://extensions' reload button. It closes the side panel in EVERY window and wipes
+// chrome.storage.session — every window's scrollback and resumable ACP session ids; synced settings
+// survive. Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a
+// short delay so the notification leaves before the page dies (pagehide's cancel is best effort).
 const reloadExtensionBtn = document.getElementById("reload-extension-btn");
-const RELOAD_CONFIRM_MS = 4000;
+const RELOAD_CANCEL_GRACE_MS = 150;
 if (reloadExtensionBtn) {
-  const idleLabel = reloadExtensionBtn.textContent;
-  let armedTimer = null;
   reloadExtensionBtn.addEventListener("click", () => {
-    if (!armedTimer) {
-      reloadExtensionBtn.textContent = "再按一次確認（對話紀錄會清掉）";
-      reloadExtensionBtn.classList.add("armed");
-      armedTimer = setTimeout(() => {
-        armedTimer = null;
-        reloadExtensionBtn.textContent = idleLabel;
-        reloadExtensionBtn.classList.remove("armed");
-      }, RELOAD_CONFIRM_MS);
-      return;
-    }
-    clearTimeout(armedTimer);
-    chrome.runtime.reload();
+    const busy = room.some((c) => c.turnActive);
+    const msg = "重新載入 Katashiro？\n\n所有視窗的側邊欄都會關掉，所有視窗的對話紀錄和 ACP session 都不會保留（設定會保留）。" +
+      (busy ? "\n\nagent 正在回覆，會被中斷。" : "");
+    if (!confirm(msg)) return;
+    room.forEach((c) => c.cancelTurn());             // no-op unless a turn is in flight on an open socket
+    setTimeout(() => chrome.runtime.reload(), busy ? RELOAD_CANCEL_GRACE_MS : 0);
   });
 }
 
