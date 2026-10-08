@@ -13,7 +13,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Only supersede stale PR runs; every push to main keeps its own result so a breaking
+  # merge can be pinpointed later.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -31,6 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in *.js page/*.js; do node --check "$f"; done
+          for f in scripts/*.sh; do bash -n "$f"; done
 
       - name: Test
         run: node --test test/*.test.js
