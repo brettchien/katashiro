@@ -197,6 +197,11 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 > **Updating:** after replacing the files (or pulling), click the extension's **↻ reload** on
 > `chrome://extensions/`, then **close and reopen the Side Panel** — the reload button alone does
 > not refresh an already-open panel.
+> Or use **Settings → 重新載入 Katashiro** in the panel (asks to confirm): it calls
+> `chrome.runtime.reload()`, which re-reads the unpacked folder from disk the same way, and closes
+> the side panel in **every window** — reopen it. Every window's chat scrollback and resumable ACP
+> sessions live in `chrome.storage.session`, which a reload clears; settings are kept. A reply in
+> progress is cancelled (`session/cancel`) first.
 
 > **Settings sync:** config lives in `chrome.storage.sync`, so it follows your Google account to
 > every Chrome with sync (Extensions) on. `manifest.json` pins the extension ID
