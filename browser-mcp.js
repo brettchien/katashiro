@@ -297,6 +297,10 @@
   // upload_file: decoded bytes across all files. The payload already crossed the ACP tunnel as
   // base64 in the tool arguments, so this mostly keeps one call from wedging the page.
   const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+  // Stored screenshots (imageId) never cross the tunnel — the 5 MB above limits what the AGENT sends
+  // in text/base64. With a 4 MB per-capture Settings cap, two imageIds alone would exceed it, so
+  // imageId files get their own, wider total.
+  const UPLOAD_IMAGEID_MAX_BYTES = 20 * 1024 * 1024;
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
   // `@import` / `src()` can leak page state to a remote server through attribute selectors (CSS
@@ -308,6 +312,122 @@
   // Stylesheets inject_css has applied, per tab, so `clear` can remove exactly those. A sheet
   // does not survive a navigation anyway; removing an already-gone one is a harmless no-op.
   const injectedCss = new Map();
+
+  // Screenshots kept for paste_image / upload_file, so a capture can go into another page WITHOUT
+  // the agent round-tripping the bytes (a model can look at an image block but cannot re-emit it
+  // as base64). In memory only, the newest `storeMax` (Settings → 截圖), each for IMAGE_TTL_MS.
+  //
+  // Settings → 截圖 (user-tunable, clamped): `maxKB` caps one screenshot — a bigger capture is
+  // downscaled / re-encoded in the side panel (deps.reencodeImage) rather than captured again
+  // (captureVisibleTab is rate-limited to 2 calls/s); the ceiling stays well under the ACP
+  // tunnel's per-frame cap. `storeMax` is how many captures stay pasteable.
+  const SCREENSHOT_DEFAULTS = { maxKB: 500, storeMax: 10 };
+  const SCREENSHOT_LIMITS = { maxKB: [50, 4096], storeMax: [1, 50] };
+  // The copy the AGENT sees is separate from the stored one: it crosses the ACP tunnel (per-frame
+  // cap — a multi-MB image drops the WebSocket) and a model gains nothing past ~1568 px on the
+  // long edge (Claude downscales larger images). So the stored copy may be up to maxKB (4 MB) for a
+  // sharp paste into Jira, while the agent gets a ≤1568 px re-encode, never above AGENT_IMAGE_MAX_B64.
+  //
+  // The gateway closes the socket on any inbound frame over MAX_FRAME_BYTES = 1 MiB
+  // (openab acp_server.rs) — silently, no error — and that limit counts the whole JSON-RPC frame
+  // (base64 text + the mcp/message wrapping + the imageId note), not decoded bytes. So the check is
+  // on the base64 length, with ~100 KiB of headroom for the rest of the frame.
+  const AGENT_IMAGE_MAX_EDGE = 1568;
+  const AGENT_IMAGE_MAX_B64 = 900 * 1024;                // base64 chars, not bytes
+  function normalizeScreenshotConfig(raw) {
+    const r = raw && typeof raw === "object" ? raw : {};
+    const out = {};
+    for (const k of Object.keys(SCREENSHOT_DEFAULTS)) {
+      const [lo, hi] = SCREENSHOT_LIMITS[k];
+      const v = Number(r[k]);
+      out[k] = Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : SCREENSHOT_DEFAULTS[k];
+    }
+    return out;
+  }
+  const b64Bytes = (b64) => Math.floor(String(b64 || "").replace(/=+$/, "").length * 3 / 4);
+  const IMAGE_TTL_MS = 15 * 60 * 1000;
+  //
+  // Unlike injectedCss (cleanup bookkeeping), a capture is page DATA — possibly of a sensitive
+  // page — so the store is per server instance (each Conn mints its own server, so one agent can
+  // never reach another's captures), cleared when that Conn is torn down, and ids are random: a
+  // counter would be guessable and would restart at 1 when the panel reopens, silently mapping an
+  // id still in the agent's context onto a different capture.
+  function createImageStore() {
+    const images = new Map();                             // imageId -> { mimeType, data, at }
+    let storeMax = SCREENSHOT_DEFAULTS.storeMax;          // last value from Settings
+    function prune(now = Date.now()) {
+      for (const [id, img] of images) if (now - img.at > IMAGE_TTL_MS) images.delete(id);
+      while (images.size > storeMax) images.delete(images.keys().next().value);
+    }
+    return {
+      put(mimeType, data, max) {
+        if (max != null) storeMax = max;
+        const id = "img_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+        images.set(id, { mimeType, data, at: Date.now() });
+        prune();
+        return id;
+      },
+      get(id) {
+        prune();
+        return images.get(String(id || "")) || null;
+      },
+      clear() { images.clear(); }
+    };
+  }
+  // Only for callers that drive callBrowserTool without a server instance (none in the side panel).
+  const looseImages = createImageStore();
+
+  // paste_image's in-page half (runs via executeScript, so it must be self-contained). Returns
+  // { ok, how, handled } — `handled` is defaultPrevented, a hint only (see paste_image).
+  function pasteImageInPage(ref, snapshotId, sel, file, mode) {
+    let el, how;
+    if (ref) {
+      const r = window.__katashiroResolve(ref, snapshotId);
+      if (!r.ok) return { ok: false, error: r.error };
+      el = r.el; how = "ref " + ref;
+    } else if (sel) {
+      el = document.querySelector(sel);
+      if (!el) return { ok: false, error: "no element for selector: " + sel };
+      how = "selector " + sel;
+    } else {
+      el = document.activeElement;
+      if (!el || el === document.body) return { ok: false, error: "no element is focused — pass a ref or selector for the editor" };
+      how = "the focused element";
+    }
+    // Focus inside a frame shows up here as the <iframe> itself; an event dispatched on it never
+    // reaches the editor. Refs carry their frame, so that is the way in.
+    if (el.tagName === "IFRAME") return { ok: false, error: "the target is an iframe — take a snapshot and pass the editor's ref inside it (e.g. f3:e12)" };
+    if (typeof el.focus === "function") el.focus();
+    // A real Cmd/Ctrl+V goes to the focused element, and editors (ProseMirror checks the target is
+    // inside view.dom) ignore events from outside their editable root — so a ref on the editor's
+    // wrapper is aimed at the editable inside it.
+    let to = el;
+    const active = document.activeElement;
+    if (active && active !== el && el.contains(active)) to = active;
+    else if (!el.isContentEditable && el.tagName !== "TEXTAREA" && el.tagName !== "INPUT") {
+      const inner = el.querySelector('[contenteditable="true"], [contenteditable=""], textarea');
+      if (inner) { if (typeof inner.focus === "function") inner.focus(); to = inner; }
+    }
+    const dt = new DataTransfer();
+    dt.items.add(new File([Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0))], file.name, { type: file.type }));
+    const init = { bubbles: true, cancelable: true, composed: true };
+    if (mode === "drop") {
+      // Drop handlers locate the drop by its coordinates (ProseMirror: posAtCoords, and gives up
+      // without cancelling when that misses) — so drop on the target's on-screen centre, not 0,0.
+      if (typeof to.scrollIntoView === "function") to.scrollIntoView({ block: "center", inline: "center" });
+      const rect = to.getBoundingClientRect();
+      const at = { clientX: Math.round(rect.left + rect.width / 2), clientY: Math.round(rect.top + rect.height / 2) };
+      to.dispatchEvent(new DragEvent("dragenter", { ...init, ...at, dataTransfer: dt }));
+      to.dispatchEvent(new DragEvent("dragover", { ...init, ...at, dataTransfer: dt }));
+      const drop = new DragEvent("drop", { ...init, ...at, dataTransfer: dt });
+      to.dispatchEvent(drop);
+      return { ok: true, how, handled: drop.defaultPrevented };
+    }
+    const ev = new ClipboardEvent("paste", { ...init, clipboardData: dt });
+    to.dispatchEvent(ev);
+    return { ok: true, how, handled: ev.defaultPrevented };
+  }
+  const IMAGE_GONE = (id) => `no captured image "${id}" — it expired (${IMAGE_TTL_MS / 60000} min) or was pushed out by newer ones; take a new screenshot`;
 
   // --- Tool-call details for the UI (pill tooltip + expander) -------------------------------
   //
@@ -375,6 +495,7 @@
     if (a.selector != null) out.selector = a.selector;
     out.files = files.map((f) => {
       const o = { name: f && f.name, mimeType: (f && f.mimeType) || "application/octet-stream" };
+      if (f && f.imageId != null) o.imageId = f.imageId;
       if (f && typeof f.base64 === "string") {
         const b = f.base64.replace(/\s+/g, "");
         o.size = Math.max(0, Math.floor((b.length * 3) / 4) - (b.endsWith("==") ? 2 : b.endsWith("=") ? 1 : 0));
@@ -496,17 +617,17 @@
   function describeResult(result, secrets) {
     const content = (result && Array.isArray(result.content)) ? result.content : [];
     const textBlock = content.find((b) => b && b.type === "text" && typeof b.text === "string");
+    const img = content.find((b) => b && b.type === "image");
+    // An image result (screenshot) summarizes as MIME + size — never the base64 — with any text
+    // block (the screenshot's imageId note) after it.
+    const imgLabel = img ? `${img.mimeType || "image"} (${Math.round(((String(img.data || "").length * 3) / 4) / 1024)} KB)` : "";
     if (textBlock) {
       const text = stripUrlQueries(scrub(textBlock.text, secrets));
       const line = (text.split("\n").find((l) => l.trim()) || "").trim();
+      if (img) return { summary: clip(`${imgLabel} — ${line}`, SUMMARY_MAX), preview: clip(`${imgLabel}\n${text}`, PREVIEW_MAX) };
       return { summary: clip(line, SUMMARY_MAX), preview: clip(text, PREVIEW_MAX) };
     }
-    const img = content.find((b) => b && b.type === "image");
-    if (img) {
-      const kb = Math.round(((String(img.data || "").length * 3) / 4) / 1024);
-      const s = `${img.mimeType || "image"} (${kb} KB)`;
-      return { summary: s, preview: s };
-    }
+    if (img) return { summary: imgLabel, preview: imgLabel };
     return { summary: "", preview: "" };
   }
 
@@ -842,7 +963,10 @@
       description:
         "Capture a screenshot (image) of the active tab. EXPENSIVE and slow to reason over — use " +
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
-        "read text or to confirm an action succeeded (action tools already return the new snapshot).",
+        "read text or to confirm an action succeeded (action tools already return the new snapshot). " +
+        "Also returns an `imageId`: pass it to `paste_image` (paste into an editor, e.g. a Jira " +
+        "description) or `upload_file` (`files: [{ imageId }]`) to put this screenshot into another " +
+        "page — the image stays in the extension, you never handle its bytes.",
       inputSchema: { type: "object", properties: {} },
       redact: redactDefault,
       /** @param {object} _args (none) */
@@ -854,8 +978,47 @@
           format: "jpeg",
           quality: 70
         });
-        const base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
-        return { content: [{ type: "image", data: base64, mimeType: "image/jpeg" }] };
+        const cfg = ctx.screenshot || normalizeScreenshotConfig(null);
+        let base64 = dataUrl.replace(/^data:image\/jpeg;base64,/, "");
+        const maxBytes = cfg.maxKB * 1024;
+        const original = b64Bytes(base64);
+        let sizeNote = "";
+        if (original > maxBytes && typeof ctx.reencodeImage === "function") {
+          // Shrink to the Settings cap: scale by the size ratio, then lower quality step by step.
+          const ratio = Math.sqrt(maxBytes / original);
+          for (const step of [{ scale: ratio, quality: 0.7 }, { scale: ratio * 0.85, quality: 0.55 }, { scale: ratio * 0.7, quality: 0.4 }]) {
+            try {
+              const out = await ctx.reencodeImage(base64, { scale: Math.min(1, step.scale), quality: step.quality });
+              if (out) base64 = out;
+            } catch (_) { break; }                         // keep what we have
+            if (b64Bytes(base64) <= maxBytes) break;
+          }
+          sizeNote = b64Bytes(base64) <= maxBytes
+            ? `, shrunk from ${Math.round(original / 1024)} KB to fit the ${cfg.maxKB} KB limit`
+            : `, still ${Math.round(b64Bytes(base64) / 1024)} KB — over the ${cfg.maxKB} KB limit`;
+        }
+        const imageId = ctx.images.put("image/jpeg", base64, cfg.storeMax);
+        // The agent's view: ≤ AGENT_IMAGE_MAX_EDGE px (the hook returns null when no downscale is needed).
+        let view = base64;
+        if (typeof ctx.reencodeImage === "function") {
+          try {
+            const small = await ctx.reencodeImage(base64, { scale: 1, quality: 0.7, maxEdge: AGENT_IMAGE_MAX_EDGE });
+            if (small) view = small;
+          } catch (_) { /* keep the stored copy */ }
+        }
+        const note = `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${cfg.storeMax}, ` +
+          `stored ${Math.round(b64Bytes(base64) / 1024)} KB${sizeNote})`;
+        if (view.length > AGENT_IMAGE_MAX_B64) {
+          // Too big to send through the tunnel safely: keep it pasteable, but do not show it.
+          return okText(`${note}\n(the image is ${Math.round(b64Bytes(view) / 1024)} KB — too large to show you over the ` +
+            `connection; it is stored and can still be pasted. Lower Settings → 截圖 to see it.)`);
+        }
+        return {
+          content: [
+            { type: "image", data: view, mimeType: "image/jpeg" },
+            { type: "text", text: note }
+          ]
+        };
       }
     },
 
@@ -2100,9 +2263,11 @@
     "katashiro.upload_file": {
       description:
         "Attach file(s) to an <input type=file> in the active tab, with content you supply: each file " +
-        "is a `name` plus either `text` (UTF-8) or `base64` (binary), and an optional `mimeType`. Works " +
+        "is a `name` plus either `text` (UTF-8), `base64` (binary) or `imageId` (a screenshot taken " +
+        "with `screenshot`; `name` optional), and an optional `mimeType`. Works " +
         "on file inputs a site hides behind a styled button. Fires input+change; does not submit. " +
-        `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
+        `Total size max ${UPLOAD_MAX_BYTES / 1024 / 1024} MB for text/base64 you send; imageId screenshots ` +
+        `count separately, up to ${UPLOAD_IMAGEID_MAX_BYTES / 1024 / 1024} MB. Returns the updated snapshot.`,
       write: true,
       inputSchema: {
         type: "object",
@@ -2119,9 +2284,9 @@
                 name: { type: "string", description: "file name, e.g. report.csv" },
                 mimeType: { type: "string", description: "e.g. text/csv, image/png (default application/octet-stream)" },
                 text: { type: "string", description: "UTF-8 file content" },
-                base64: { type: "string", description: "binary file content, base64-encoded" }
-              },
-              required: ["name"]
+                base64: { type: "string", description: "binary file content, base64-encoded" },
+                imageId: { type: "string", description: "a screenshot's imageId (instead of text/base64)" }
+              }
             }
           }
         },
@@ -2136,18 +2301,33 @@
         if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
         const files = Array.isArray(args.files) ? args.files : [];
         if (!files.length) return errText("upload_file needs a non-empty `files` array");
-        let total = 0;
+        let total = 0;                                     // agent-supplied text/base64
+        let stored = 0;                                    // imageId (extension-held) captures
+        const resolved = [];
         for (let i = 0; i < files.length; i++) {
-          const f = files[i] || {};
+          let f = files[i] || {};
+          if ([f.text, f.base64, f.imageId].filter((v) => v != null).length !== 1) {
+            return errText(`file ${i} needs exactly one of \`text\`, \`base64\` or \`imageId\``);
+          }
+          if (f.imageId != null) {
+            const img = ctx.images.get(f.imageId);
+            if (!img) return errText(IMAGE_GONE(f.imageId));
+            const ext = img.mimeType === "image/png" ? "png" : "jpg";
+            // The capture's own type always wins: a `mimeType` here could only mislabel the bytes.
+            f = { name: f.name || `screenshot-${f.imageId}.${ext}`, mimeType: img.mimeType, base64: img.data };
+          }
+          resolved.push(f);
           if (!f.name || !String(f.name).trim()) return errText(`file ${i} needs a \`name\``);
-          if ((f.text == null) === (f.base64 == null)) return errText(`file ${i} needs exactly one of \`text\` or \`base64\``);
           if (f.base64 != null && !/^[A-Za-z0-9+/]*={0,2}$/.test(String(f.base64).replace(/\s+/g, ""))) return errText(`file ${i} \`base64\` is not valid base64`);
-          total += f.text != null
+          const size = f.text != null
             ? new TextEncoder().encode(String(f.text)).length
             : Math.floor(String(f.base64).replace(/\s+/g, "").replace(/=+$/, "").length * 3 / 4);
+          if (files[i] && files[i].imageId != null) stored += size; else total += size;
         }
         if (total > UPLOAD_MAX_BYTES) return errText(`files total ${total} bytes; upload_file is capped at ${UPLOAD_MAX_BYTES} bytes`);
-        const payload = files.map((f) => ({
+        if (stored > UPLOAD_IMAGEID_MAX_BYTES) return errText(`imageId files total ${stored} bytes; upload_file caps stored screenshots at ${UPLOAD_IMAGEID_MAX_BYTES} bytes`);
+        total += stored;                                   // reported size below covers everything
+        const payload = resolved.map((f) => ({
           name: String(f.name).trim(),
           type: f.mimeType || "application/octet-stream",
           text: f.text != null ? String(f.text) : null,
@@ -2187,6 +2367,68 @@
         });
         if (!result.ok) return errText(result.error);
         return okText(`attached ${payload.map((f) => f.name).join(", ")} (${total} bytes) to ${result.how}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
+      }
+    },
+
+    "katashiro.paste_image": {
+      description:
+        "Paste a screenshot (an `imageId` from `screenshot`) into an element of the active tab, as if " +
+        "the user pressed Cmd/Ctrl+V with that image on the clipboard — e.g. into a Jira / Confluence " +
+        "description or comment editor, which then uploads it as an attachment. The editor must be " +
+        "editable first: a Jira description in view mode is not — `click` it to open the editor. Target " +
+        "the editor by `ref` (+ `snapshotId`) or `selector` (a wrapper is fine: the event goes to the " +
+        "editable inside it); omit both for the focused element (top frame only — for an editor inside " +
+        "an iframe pass its ref). `mode: \"drop\"` drags the file onto the element instead (for drop " +
+        "zones). The events are synthetic and whether the page took the image cannot be known for sure, " +
+        "so CHECK the returned snapshot before retrying: only if the image is not there, attach it with " +
+        "`upload_file` (`files: [{ imageId }]`) on the page's file input — retrying blindly can attach " +
+        "it twice. Gated by act mode.",
+      write: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          imageId: { type: "string", description: "imageId returned by screenshot" },
+          ref: { type: "string", description: "element ref from a snapshot, e.g. e12" },
+          snapshotId: { type: "number", description: "the snapshot the ref came from (stale check)" },
+          selector: { type: "string", description: "CSS selector fallback" },
+          mode: { type: "string", enum: ["paste", "drop"], description: "paste (default) or drop" },
+          name: { type: "string", description: "file name the page sees (default screenshot-<imageId>.jpg)" }
+        },
+        required: ["imageId"]
+      },
+      redact: redactDefault,
+      /** @param {{ imageId: string, ref?: string, snapshotId?: number, selector?: string, mode?: string, name?: string }} args */
+      async call(args, ctx) {
+        if (args.mode != null && args.mode !== "paste" && args.mode !== "drop") return errText("`mode` must be \"paste\" or \"drop\"");
+        if (args.ref && args.snapshotId == null) return errText("a ref must carry its snapshotId (from the snapshot it came from) so a stale ref is caught, not silently mis-targeted");
+        const img = ctx.images.get(args.imageId);
+        if (!img) return errText(IMAGE_GONE(args.imageId));
+        const bytes = Math.floor(img.data.replace(/=+$/, "").length * 3 / 4);
+        if (bytes > UPLOAD_MAX_BYTES) return errText(`image is ${bytes} bytes; paste_image is capped at ${UPLOAD_MAX_BYTES} bytes`);
+        const ext = img.mimeType === "image/png" ? "png" : "jpg";
+        const name = (args.name && String(args.name).trim()) || `screenshot-${args.imageId}.${ext}`;
+        const mode = args.mode || "paste";
+        const { frameId, bare } = parseRef(args.ref);
+        const target = { tabId: ctx.tab.id, frameIds: [frameId] };
+        await injectWalker(ctx.chrome, target);
+        const [{ result }] = await ctx.chrome.scripting.executeScript({
+          target,
+          func: pasteImageInPage,
+          args: [args.ref ? bare : null, args.snapshotId ?? null, args.selector || null, { base64: img.data, name, type: img.mimeType }, mode]
+        });
+        if (!result.ok) return errText(result.error);
+        // defaultPrevented is only a hint, both ways: an editor may take the file without
+        // cancelling (a document-level handler that uploads async), and one that cancels every
+        // paste (e.g. Lexical without a file plugin) may drop it. So never call it a success or a
+        // failure — always hand back the snapshot and make the agent look, rather than nudging it
+        // into an upload_file retry that would attach the image twice.
+        const did = `${mode === "drop" ? "dropped" : "pasted"} ${name} (${bytes} bytes) on ${result.how}`;
+        const note = result.handled
+          ? "a page handler processed the event (defaultPrevented) — confirm in the snapshot that the image arrived"
+          : "NOT confirmed — no page handler cancelled the event. Check the snapshot first: if the image is " +
+            `not there, try ${mode === "drop" ? "mode \"paste\"" : "mode \"drop\""}, another element, or upload_file with ` +
+            `files: [{ imageId: "${args.imageId}" }] on the page's file input`;
+        return okText(`${did} — ${note}\n\n${await snapshotAfter(ctx.chrome, ctx.tab.id)}`);
       }
     },
 
@@ -2351,7 +2593,7 @@
     // DOM, so they neither need nor are constrained by the current active tab's origin — a
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
@@ -2361,7 +2603,7 @@
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
     if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
-    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken };
+    const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
     return withTabContext(await tool.call(args, ctx), tab);
   }
 
@@ -2389,11 +2631,15 @@
         Object.freeze({ name, description: t.description, inputSchema: t.inputSchema })
       )
     );
+    const images = createImageStore();                    // this instance's screenshots (see createImageStore)
 
     return {
       id: opts.id,
       name: opts.name,
       tools,
+
+      /** Drop every screenshot this instance holds — the side panel calls it when the Conn is torn down. */
+      clearImages() { images.clear(); },
 
       /** The `session/new` entry that declares this server to the gateway. */
       declaration() {
@@ -2441,7 +2687,7 @@
               deps.onToolCall({ callId, name: params.name, phase, args, summary, preview, ms: Date.now() - started });
             };
             try {
-              const result = await callBrowserTool(params.name, rawArgs, deps, tools);
+              const result = await callBrowserTool(params.name, rawArgs, { ...deps, images }, tools);
               settle((result && result.isError) ? "error" : "done", result);
               return result;
             } catch (e) {
@@ -2565,5 +2811,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates };
+  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });

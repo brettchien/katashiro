@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 34 DOM-semantic browser tools", async () => {
+test("tools/list returns the 35 DOM-semantic browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -208,6 +208,7 @@ test("tools/list returns the 34 DOM-semantic browser tools", async () => {
     "katashiro.select_option",
     "katashiro.fill_form",
     "katashiro.upload_file",
+    "katashiro.paste_image",
     "katashiro.reload",
     "katashiro.inject_css"
   ]);
@@ -756,6 +757,7 @@ test("exactly the mutating tools are marked write", () => {
     "katashiro.inject_css",
     "katashiro.navigate",
     "katashiro.new_tab",
+    "katashiro.paste_image",
     "katashiro.press_key",
     "katashiro.reload",
     "katashiro.reopen_tab",
@@ -1856,7 +1858,7 @@ test("a tool without a redact hook fails closed: its args never reach the UI", a
 
 test("an image result summarizes as MIME + size, not the base64", async () => {
   const { events } = await callViaTunnel("katashiro.screenshot", {}, { dataUrl: "data:image/jpeg;base64,QUJDREVG" });
-  assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\)$/);
+  assert.match(events[1].summary, /^image\/jpeg \(\d+ KB\) — imageId: img_[0-9a-f]{16}/);
   assert.ok(!JSON.stringify(events).includes("QUJDREVG"));
 });
 
@@ -2253,4 +2255,304 @@ test("split_tabs / unsplit_tabs are refused when act mode is off", async () => {
     assert.match(res.content[0].text, /act mode is off/, name);
   }
   assert.equal(calls.createSplit.length + calls.unsplit.length, 0);
+});
+
+// --- screenshot → paste_image / upload_file (imageId) ------------------------------------------
+
+const IMG_ID = /^img_[0-9a-f]{16}$/;
+const shoot = async (d) => {
+  const res = await call(d, "katashiro.screenshot");
+  // the imageId note is a text block — the 2nd after the image, or the 1st when the image was too big to show
+  const note = res.content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  const id = /imageId: (img[-_][0-9a-f]{16})/.exec(note)[1];
+  return { res, id };
+};
+const pasteInj = (calls) => calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5);
+
+test("screenshot returns the image plus a random, never-reused imageId", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { res, id } = await shoot(d);
+  assert.equal(res.content[0].type, "image");
+  assert.equal(res.content[0].data, "QUJD");
+  assert.equal(res.content[1].type, "text");
+  assert.match(id, IMG_ID);
+  const ids = new Set([id]);
+  for (let i = 0; i < 20; i++) ids.add((await shoot(d)).id);
+  assert.equal(ids.size, 21);                                          // no counter: nothing to guess, nothing to collide
+});
+
+test("each server instance has its own image store; clearImages empties it", async () => {
+  const a = BrowserMcp.createServer({ id: "srv-a", name: "katashiro" });
+  const b = BrowserMcp.createServer({ id: "srv-b", name: "katashiro" });
+  const bag = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  const callOn = (s, name, args) => s.handleMcpMessage("tools/call", { name, arguments: args || {} }, bag.deps);
+  const id = /imageId: (\S+)/.exec((await callOn(a, "katashiro.screenshot")).content[1].text)[1];
+  assert.equal((await callOn(a, "katashiro.paste_image", { imageId: id, selector: "#x" })).isError, undefined);
+  const other = await callOn(b, "katashiro.paste_image", { imageId: id, selector: "#x" });   // another agent's Conn
+  assert.equal(other.isError, true);
+  assert.match(other.content[0].text, /no captured image/);
+  a.clearImages();                                                     // the Conn was torn down
+  assert.equal((await callOn(a, "katashiro.paste_image", { imageId: id, selector: "#x" })).isError, true);
+});
+
+test("paste_image pastes the stored screenshot into a ref'd editor (bytes stay in the extension)", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "ref e5", handled: true } });
+  const { id } = await shoot(d);
+  const res = await call(d, "katashiro.paste_image", { imageId: id, ref: "e5", snapshotId: 1 });
+  assert.equal(res.isError, undefined);
+  assert.match(res.content[0].text, new RegExp(`pasted screenshot-${id}\\.jpg \\(3 bytes\\) on ref e5 — a page handler processed the event \\(defaultPrevented\\) — confirm in the snapshot`));
+  assert.deepEqual(pasteInj(calls).args, ["e5", 1, null, { base64: "QUJD", name: `screenshot-${id}.jpg`, type: "image/jpeg" }, "paste"]);
+});
+
+test("paste_image: an un-cancelled event is NOT confirmed — not an error, and it hands back the snapshot to check first", async () => {
+  const ok = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "selector .drop", handled: true } });
+  const a = await shoot(ok.deps);
+  const res = await call(ok.deps, "katashiro.paste_image", { imageId: a.id, selector: ".drop", mode: "drop", name: "chart.jpg" });
+  assert.match(res.content[0].text, /dropped chart\.jpg/);
+  assert.equal(pasteInj(ok.calls).args[4], "drop");
+
+  const no = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "the focused element", handled: false } });
+  const b = await shoot(no.deps);
+  const miss = await call(no.deps, "katashiro.paste_image", { imageId: b.id });
+  assert.equal(miss.isError, undefined);                               // a document-level handler may have taken it async
+  assert.match(miss.content[0].text, new RegExp(`NOT confirmed.*Check the snapshot first: if the image is not there, try mode "drop".*upload_file with files: \\[\\{ imageId: "${b.id}" \\}\\]`));
+  assert.match(miss.content[0].text, /# snapshot/);
+});
+
+test("paste_image: unknown imageId, bad mode, ref without snapshotId are refused before the page", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { id } = await shoot(d);
+  const before = calls.executeScript.length;
+  for (const [args, re] of [
+    [{ imageId: "img_0000000000000000" }, /no captured image "img_0000000000000000" — it expired/],
+    [{ imageId: id, mode: "copy" }, /must be "paste" or "drop"/],
+    [{ imageId: id, ref: "e1" }, /snapshotId/]
+  ]) {
+    const res = await call(d, "katashiro.paste_image", args);
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.match(res.content[0].text, re);
+  }
+  assert.equal(calls.executeScript.length, before);
+});
+
+test("paste_image is refused when act mode is off", async () => {
+  const { deps: d, calls } = deps({ actMode: false, dataUrl: "data:image/jpeg;base64,QUJD" });
+  const { id } = await shoot(d);                                       // screenshot is a read
+  const res = await call(d, "katashiro.paste_image", { imageId: id, selector: "#x" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /act mode is off/);
+  assert.equal(pasteInj(calls), undefined);
+});
+
+// The in-page half, run against a minimal DOM stand-in (the suite has no DOM dependency).
+function fakePage({ rect = { left: 100, top: 40, width: 200, height: 80 }, prevent = true } = {}) {
+  const seen = [];
+  class Ev { constructor(type, init) { Object.assign(this, init); this.type = type; this.defaultPrevented = false; } }
+  const node = (tagName, extra = {}) => {
+    const n = {
+      tagName, isContentEditable: false, children: [], focused: 0,
+      focus() { n.focused++; page.document.activeElement = n; },
+      contains(o) { return o === n || n.children.some((c) => c.contains(o)); },
+      querySelector() { return n.children.find((c) => c.isContentEditable || c.tagName === "TEXTAREA") || null; },
+      getBoundingClientRect: () => rect,
+      dispatchEvent(e) { seen.push({ on: n, e }); if (prevent && e.type !== "dragenter") e.defaultPrevented = true; return true; },
+      ...extra
+    };
+    return n;
+  };
+  const page = {
+    seen, node,
+    document: { activeElement: null, body: {}, querySelector: () => null },
+    window: {},
+    DataTransfer: class { constructor() { this.files = []; this.items = { add: (f) => this.files.push(f) }; } },
+    File: class { constructor(parts, name, opts) { this.name = name; this.type = opts.type; this.size = parts[0].length; } },
+    DragEvent: class extends Ev {},
+    ClipboardEvent: class extends Ev {}
+  };
+  return page;
+}
+async function runPasteInPage(page, args) {
+  const keys = ["document", "window", "DataTransfer", "File", "DragEvent", "ClipboardEvent"];
+  const saved = keys.map((k) => Object.getOwnPropertyDescriptor(globalThis, k));
+  keys.forEach((k) => Object.defineProperty(globalThis, k, { value: page[k], configurable: true, writable: true }));
+  try {
+    const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+    const { id } = await shoot(d);
+    await call(d, "katashiro.paste_image", { imageId: id, ...args });
+    const inj = pasteInj(calls);
+    return inj.func(...inj.args);
+  } finally {
+    keys.forEach((k, i) => (saved[i] ? Object.defineProperty(globalThis, k, saved[i]) : delete globalThis[k]));
+  }
+}
+
+test("paste_image drop carries the target's on-screen centre, not 0,0", async () => {
+  const page = fakePage();
+  const zone = page.node("DIV");
+  page.document.querySelector = () => zone;
+  const r = await runPasteInPage(page, { selector: ".zone", mode: "drop" });
+  assert.deepEqual(r, { ok: true, how: "selector .zone", handled: true });
+  assert.deepEqual(page.seen.map((s) => s.e.type), ["dragenter", "dragover", "drop"]);
+  for (const { e } of page.seen) assert.deepEqual([e.clientX, e.clientY], [200, 80]);
+  assert.equal(page.seen[2].e.dataTransfer.files[0].type, "image/jpeg");
+});
+
+test("paste_image aims at the editable inside a wrapper ref, and reports handled from defaultPrevented", async () => {
+  const page = fakePage({ prevent: false });
+  const editable = page.node("DIV", { isContentEditable: true });
+  const wrapper = page.node("DIV");
+  wrapper.children.push(editable);
+  page.window.__katashiroResolve = () => ({ ok: true, el: wrapper });
+  const r = await runPasteInPage(page, { ref: "e7", snapshotId: 3 });
+  assert.equal(r.handled, false);
+  assert.equal(page.seen.length, 1);
+  assert.equal(page.seen[0].on, editable);                            // not the wrapper ProseMirror would ignore
+  assert.equal(page.seen[0].e.type, "paste");
+  assert.equal(page.seen[0].e.clipboardData.files[0].name.endsWith(".jpg"), true);
+  assert.ok(editable.focused > 0);
+});
+
+test("paste_image refuses a focused iframe instead of dispatching into nothing", async () => {
+  const page = fakePage();
+  page.document.activeElement = page.node("IFRAME");
+  const r = await runPasteInPage(page, {});
+  assert.equal(r.ok, false);
+  assert.match(r.error, /iframe — take a snapshot and pass the editor's ref/);
+  assert.equal(page.seen.length, 0);
+});
+
+test("upload_file accepts a screenshot imageId (name + MIME always from the capture)", async () => {
+  const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "selector input[type=file]" } });
+  const { id } = await shoot(d);
+  const res = await call(d, "katashiro.upload_file", { selector: "input[type=file]", files: [{ imageId: id, mimeType: "image/png" }] });
+  assert.equal(res.isError, undefined);
+  const inj = calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 4 && Array.isArray(x.args[3]));
+  assert.deepEqual(inj.args[3], [{ name: `screenshot-${id}.jpg`, type: "image/jpeg", text: null, base64: "QUJD" }]);   // JPEG bytes stay labelled JPEG
+  // mixing sources in one file, or an unknown id, is refused
+  assert.equal((await call(d, "katashiro.upload_file", { selector: "x", files: [{ imageId: id, base64: "QUJD" }] })).isError, true);
+  const gone = await call(d, "katashiro.upload_file", { selector: "x", files: [{ imageId: "img_0" }] });
+  assert.match(gone.content[0].text, /no captured image "img_0"/);
+  // the UI details show the imageId, never content
+  const masked = BrowserMcp.TOOLS["katashiro.upload_file"].redact({ selector: "x", files: [{ imageId: id }] });
+  assert.equal(masked.files[0].imageId, id);
+});
+
+test("the image store keeps only the newest captures", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  const first = (await shoot(d)).id;
+  for (let i = 0; i < 10; i++) await shoot(d);                         // storeMax (default 10) newer ones
+  const res = await call(d, "katashiro.paste_image", { imageId: first, selector: "#x" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /pushed out by newer ones/);
+});
+
+test("normalizeScreenshotConfig clamps to the Settings limits, defaults on junk", () => {
+  const n = BrowserMcp.normalizeScreenshotConfig;
+  assert.deepEqual(n(null), { maxKB: 500, storeMax: 10 });
+  assert.deepEqual(n({ maxKB: "800", storeMax: 3 }), { maxKB: 800, storeMax: 3 });
+  assert.deepEqual(n({ maxKB: 10, storeMax: 0 }), { maxKB: 50, storeMax: 1 });
+  assert.deepEqual(n({ maxKB: 99999, storeMax: 999 }), { maxKB: 4096, storeMax: 50 });
+  assert.deepEqual(n({ maxKB: "abc", storeMax: 2.6 }), { maxKB: 500, storeMax: 3 });
+});
+
+test("screenshot over the Settings size cap is shrunk via deps.reencodeImage", async () => {
+  const big = "A".repeat(4 * 1024 * 200);                              // ~600 KB decoded
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  d.screenshot = { maxKB: 100, storeMax: 10 };
+  const steps = [];
+  d.reencodeImage = async (b64, step) => { if (step.maxEdge) return null; steps.push(step); return "B".repeat(steps.length === 1 ? 4 * 1024 * 30 : 8); };          // 90 KB decoded; maxEdge = the agent-view pass
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(steps.length, 1);                                       // first step already fits
+  assert.ok(steps[0].scale < 1 && steps[0].quality === 0.7);
+  assert.equal(res.content[0].data.length, 4 * 1024 * 30);
+  assert.match(res.content[1].text, /shrunk from 600 KB to fit the 100 KB limit/);
+});
+
+test("screenshot: still over the cap after every step says so; under the cap is untouched", async () => {
+  const big = "A".repeat(4 * 1024 * 200);
+  const over = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  over.deps.screenshot = { maxKB: 100, storeMax: 10 };
+  let n = 0;
+  over.deps.reencodeImage = async (b64, step) => { if (step.maxEdge) return null; n++; return "C".repeat(4 * 1024 * 150); };
+  const res = await call(over.deps, "katashiro.screenshot");
+  assert.equal(n, 3);
+  assert.match(res.content[1].text, /still 450 KB — over the 100 KB limit/);
+  const small = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  let called = false;
+  small.deps.reencodeImage = async (b64, step) => { if (!step.maxEdge) called = true; return null; };
+  const ok = await call(small.deps, "katashiro.screenshot");
+  assert.equal(called, false);
+  assert.equal(ok.content[0].data, "QUJD");
+});
+
+test("Settings storeMax controls how many captures stay pasteable", async () => {
+  const { deps: d } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  d.screenshot = { maxKB: 500, storeMax: 2 };
+  const a = (await shoot(d)).id;
+  const b = (await shoot(d)).id;
+  const c = (await shoot(d)).id;
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: a, selector: "#x" })).isError, true);   // evicted
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: b, selector: "#x" })).isError, undefined);
+  assert.equal((await call(d, "katashiro.paste_image", { imageId: c, selector: "#x" })).isError, undefined);
+  d.screenshot = { maxKB: 500, storeMax: 10 };                         // restore the default for later tests
+  await shoot(d);
+});
+
+test("screenshot: the agent sees a ≤1568 px copy, the stored (pasteable) copy keeps its size", async () => {
+  const stored = "S".repeat(4 * 1024 * 400);                          // ~1.2 MB decoded, under a 4096 KB cap
+  const { deps: d, calls } = deps({ dataUrl: `data:image/jpeg;base64,${stored}`, scriptResult: { ok: true, how: "x", handled: true } });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const seen = [];
+  d.reencodeImage = async (b64, step) => { seen.push(step); return step.maxEdge ? "V".repeat(4 * 1024 * 60) : null; };
+  const res = await call(d, "katashiro.screenshot");
+  assert.deepEqual(seen, [{ scale: 1, quality: 0.7, maxEdge: 1568 }]);     // under the cap: only the agent-view pass
+  assert.equal(res.content[0].data.length, 4 * 1024 * 60);              // agent got the small copy
+  assert.match(res.content[1].text, /stored 1200 KB/);
+  const id = /imageId: (img[-_][0-9a-f]{16})/.exec(res.content[1].text)[1];
+  await call(d, "katashiro.paste_image", { imageId: id, selector: "#x" });
+  const inj = calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5);
+  assert.equal(inj.args[3].base64.length, stored.length);               // paste uses the full stored copy
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("screenshot: an agent view still over 1 MB is not sent over the tunnel — text + imageId only", async () => {
+  const big = "Z".repeat(4 * 1024 * 500);                             // 1.5 MB decoded, no reencode hook
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(res.isError, undefined);
+  assert.equal(res.content.some((b) => b.type === "image"), false);   // no image block at all
+  assert.match(res.content[0].text, /imageId: img[-_][0-9a-f]{16}.*\n\(the image is 1500 KB — too large to show you/s);
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("screenshot: the agent-view cap is on base64 length (gateway 1 MiB frame), not decoded bytes", async () => {
+  // 983,040 base64 chars = 720 KB decoded: under "1 MB of bytes" but over the frame budget.
+  const view = "W".repeat(4 * 1024 * 240);
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${view}` });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(res.content.some((b) => b.type === "image"), false);
+  assert.match(res.content[0].text, /too large to show you over the connection/);
+  // just under the budget is still shown
+  const ok = deps({ dataUrl: `data:image/jpeg;base64,${"W".repeat(900 * 1024 - 4)}` });
+  ok.deps.screenshot = { maxKB: 4096, storeMax: 10 };
+  assert.equal((await call(ok.deps, "katashiro.screenshot")).content[0].type, "image");
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("upload_file: imageId captures have their own 20 MB total; agent base64 keeps the 5 MB cap", async () => {
+  const big = "Q".repeat(4 * 1024 * 1024);                            // 3 MB decoded each
+  const { deps: d, calls } = deps({ dataUrl: `data:image/jpeg;base64,${big}`, scriptResult: { ok: true, how: "selector input" } });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const a = (await shoot(d)).id;
+  const b = (await shoot(d)).id;
+  const res = await call(d, "katashiro.upload_file", { selector: "input", files: [{ imageId: a }, { imageId: b }] });
+  assert.equal(res.isError, undefined);                               // 6 MB of captures: allowed
+  assert.match(res.content[0].text, /\(6291456 bytes\)/);
+  const tooBig = await call(d, "katashiro.upload_file", { selector: "input", files: [{ name: "x.bin", base64: "A".repeat(8 * 1024 * 1024) }] });
+  assert.equal(tooBig.isError, true);                                 // 6 MB from the agent: refused
+  assert.match(tooBig.content[0].text, /capped at 5242880 bytes/);
+  assert.ok(calls.executeScript.length > 0);
+  d.screenshot = { maxKB: 500, storeMax: 10 };
 });

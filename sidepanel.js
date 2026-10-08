@@ -31,6 +31,8 @@ let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 // API. Empty = grounding disabled. Persisted with the rest of config in chrome.storage.sync and
 // passed into the browser tool layer so it can verify actions / disambiguate elements / detect page state.
 let jevToken = "";
+// Settings → 截圖: per-screenshot size cap + how many captures stay pasteable (browser-mcp clamps).
+let screenshotConfig = BrowserMcp.normalizeScreenshotConfig(null);
 
 // Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
 // and click/type/navigate are refused. Kept separate from roomConfig — that one is about who
@@ -147,6 +149,10 @@ class Conn {
       // Jev grounding token (BYO-key), same read-fresh rationale. Empty ⇒ grounding off:
       // browser-mcp appends no verification signal, behaviour is exactly as before.
       jevToken,
+      // Settings → 截圖, read fresh like actMode. reencodeImage shrinks an over-cap capture here
+      // (the panel has a canvas; browser-mcp.js stays DOM-free).
+      screenshot: screenshotConfig,
+      reencodeImage: reencodeJpeg,
     };
   }
 
@@ -262,6 +268,9 @@ class Conn {
     this.acpReady = false;
     this.alive = false;
     this.finalizeStream();
+    // Captures are page data: none outlive this agent being active. (A transient socket drop
+    // keeps them — the resumed session still holds their imageIds.)
+    if (this.mcpServer) this.mcpServer.clearImages();
   }
 
   // The WS handshake failed without ever opening. Probe the endpoint over plain HTTP (the
@@ -787,7 +796,7 @@ setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 // Session ids + scrollback stay in storage.session (per-window, ephemeral — never synced).
 // NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
 // ws://localhost) may need adjusting on another machine.
-const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken"];
+const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken", "screenshotConfig"];
 function pickConfig(o) {
   const out = {};
   for (const k of CONFIG_KEYS) if (k in o) out[k] = o[k];
@@ -877,6 +886,7 @@ function applyConfig(r) {
   // is the one you fall back into.
   actMode = r.actMode === true;
   jevToken = (r.jevToken || "").trim();
+  screenshotConfig = BrowserMcp.normalizeScreenshotConfig(r.screenshotConfig);
 }
 
 // --- Startup -----------------------------------------------------------------
@@ -919,6 +929,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       renderActMode();
       renderAgentList();
       if (jevTokenInput) jevTokenInput.value = jevToken;
+      renderScreenshotConfig();
     }
     renderSyncBadge();
     appendSystemMessage("已從 Google 帳號同步還原設定。");
@@ -928,7 +939,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 function persist() {
   userEdited = true;
   runningOnDefaults = false;           // whatever is in memory now is intentional, not a placeholder
-  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken };
+  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken, screenshotConfig };
   chrome.storage.sync.set(cfg, () => {
     if (chrome.runtime.lastError) {
       // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
@@ -1128,6 +1139,7 @@ settingsBtn.addEventListener("click", () => {
   renderActMode();
   renderAgentList();
   if (jevTokenInput) jevTokenInput.value = jevToken;
+  renderScreenshotConfig();
   switchView("settings");
 });
 
@@ -1175,6 +1187,44 @@ if (jevTokenInput) {
     jevTokenInput.value = jevToken;
     persist();
   });
+}
+
+// Settings → 截圖. Clamped on save (browser-mcp's limits), and the inputs show the clamped value.
+const screenshotMaxKbInput = document.getElementById("screenshot-max-kb");
+const screenshotStoreMaxInput = document.getElementById("screenshot-store-max");
+function renderScreenshotConfig() {
+  if (screenshotMaxKbInput) screenshotMaxKbInput.value = String(screenshotConfig.maxKB);
+  if (screenshotStoreMaxInput) screenshotStoreMaxInput.value = String(screenshotConfig.storeMax);
+}
+[screenshotMaxKbInput, screenshotStoreMaxInput].forEach((input) => {
+  if (!input) return;
+  input.addEventListener("change", () => {
+    screenshotConfig = BrowserMcp.normalizeScreenshotConfig({
+      maxKB: screenshotMaxKbInput && screenshotMaxKbInput.value,
+      storeMax: screenshotStoreMaxInput && screenshotStoreMaxInput.value,
+    });
+    renderScreenshotConfig();
+    persist();
+  });
+});
+
+// Shrink a JPEG screenshot (base64): scale by `scale`, and further so the long edge is at most
+// `maxEdge` when given; then re-encode. Runs in the panel (OffscreenCanvas). Returns base64, or null
+// when nothing would change (scale ≥ 1 and already within maxEdge).
+async function reencodeJpeg(base64, { scale = 1, quality, maxEdge }) {
+  const raw = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const bmp = await createImageBitmap(new Blob([raw], { type: "image/jpeg" }));
+  const k = Math.min(scale, maxEdge ? maxEdge / Math.max(bmp.width, bmp.height) : 1);
+  if (k >= 1 && maxEdge) { bmp.close(); return null; }
+  const w = Math.max(1, Math.round(bmp.width * k));
+  const h = Math.max(1, Math.round(bmp.height * k));
+  const canvas = new OffscreenCanvas(w, h);
+  canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+  bmp.close();
+  const out = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < out.length; i += 0x8000) bin += String.fromCharCode.apply(null, out.subarray(i, i + 0x8000));
+  return btoa(bin);
 }
 
 // A 👁 toggle that reveals/masks a password input — lets the user verify a pasted token
