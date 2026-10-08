@@ -1052,6 +1052,7 @@
           url: { type: "string", description: "substring of the target tab's URL (alternative to index)" }
         }
       },
+      redact: redactDefault,
       /** @param {{ index?: number, url?: string }} args */
       async call(args, ctx) {
         const all = await ctx.chrome.tabs.query({});
