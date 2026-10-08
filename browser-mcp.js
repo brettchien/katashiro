@@ -209,6 +209,72 @@
     "page), so katashiro can neither read nor act on it. Ask the user to switch to a normal " +
     "http(s) web page.";
 
+  // --- Tab management (tabs / tab_groups / group_tabs / ungroup_tabs / update_tab_group /
+  // tab_update / reopen_tab) -------------------------------------------------------------------
+  // Every tab tool speaks ONE index: a tab's position in chrome.tabs.query({}) across all windows,
+  // the order `tabs` lists them in. A filtered listing keeps that index — it never renumbers — so
+  // an index read from it is still valid for switch_tab / close_tab / tab_update.
+  const TAB_GROUP_COLORS = ["grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
+  const TAB_GROUP_NONE = -1;                             // chrome.tabGroups.TAB_GROUP_ID_NONE
+  const TAB_REFS_MAX = 50;
+  const TAB_GROUP_TITLE_MAX = 100;
+
+  // One tab by `url` substring | `index` | (neither, when allowed) the active tab.
+  // Returns { tab, index } or { error }.
+  async function pickTab(chrome, all, ref, allowActive = true) {
+    const r = ref || {};
+    const needle = r.url != null ? String(r.url).trim() : "";
+    if (needle) {
+      const i = all.findIndex((t) => (t.url || "").includes(needle));
+      if (i < 0) return { error: `no open tab whose URL contains "${needle}" — call tabs to see what's open` };
+      return { tab: all[i], index: i };
+    }
+    if (r.index != null) {
+      if (!Number.isInteger(r.index) || r.index < 0 || r.index >= all.length) {
+        return { error: `tab index ${r.index} is out of range (0..${all.length - 1}) — call tabs for the current list` };
+      }
+      return { tab: all[r.index], index: r.index };
+    }
+    if (!allowActive) return { error: "identify each tab by `index` (from tabs) or a `url` substring" };
+    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    if (!active) return { error: "no active browser tab" };
+    const i = all.findIndex((t) => t.id === active.id);
+    if (i < 0) return { error: "the active tab is not in the current tab list — call tabs and pass an index or url" };
+    return { tab: all[i], index: i };
+  }
+
+  // Several tabs (group_tabs / ungroup_tabs): each entry {index} or {url}. All-or-nothing — one bad
+  // reference fails the call before anything moves. Duplicates collapse.
+  async function pickTabs(chrome, all, refs) {
+    if (!Array.isArray(refs) || refs.length === 0) return { error: "`tabs` must list at least one tab, each {index} or {url}" };
+    if (refs.length > TAB_REFS_MAX) return { error: `at most ${TAB_REFS_MAX} tabs per call` };
+    const picked = new Map();
+    for (const ref of refs) {
+      const p = await pickTab(chrome, all, ref, false);
+      if (p.error) return p;
+      picked.set(p.tab.id, p);
+    }
+    return { tabs: [...picked.values()] };
+  }
+
+  // Windows that moving `moving` (tabs) into window `targetWindowId` would leave with no tabs —
+  // Chrome then closes them, and the side panel with them if it is open there (cf. close_tab).
+  // targetWindowId null (unknown) ⇒ no source window may be emptied.
+  function windowsEmptiedByMove(all, moving, targetWindowId) {
+    const ids = new Set(moving.map((t) => t.id));
+    const sources = new Set(moving.map((t) => t.windowId).filter((w) => w !== targetWindowId));
+    return [...sources].filter((w) => all.every((t) => t.windowId !== w || ids.has(t.id)));
+  }
+
+  // Tab groups by id, or null when the tabGroups API is unavailable (permission / old Chrome).
+  async function groupsById(chrome) {
+    if (!chrome.tabGroups || typeof chrome.tabGroups.query !== "function") return null;
+    try { return new Map((await chrome.tabGroups.query({})).map((g) => [g.id, g])); } catch { return null; }
+  }
+  const groupLabel = (g, id) => (g ? `group ${g.id} "${g.title || ""}" ${g.color || ""}`.trim() : `group ${id}`);
+  const TAB_GROUPS_UNAVAILABLE = "the tab group API is unavailable in this browser (needs Chrome 89+ and the tabGroups permission)";
+  const errMsg = (e) => String((e && e.message) || e);
+
   // highlight: the caption is short by design (it labels, it does not explain), and the overlay
   // always expires so a forgotten highlight cannot linger over the user's page.
   const HIGHLIGHT_LABEL_MAX = 80;
@@ -930,24 +996,48 @@
 
     "katashiro.tabs": {
       description:
-        "List all open browser tabs across every window (index, title, URL, and which is active). " +
-        "Read-only. katashiro's other tools act on the active tab; the `[index]` shown is a live " +
-        "enumeration order (not a stable tab id) — pass it to `switch_tab` to change the active tab " +
-        "or `close_tab` to close one, or use `new_tab` to open one.",
+        "List open browser tabs across every window: index, title, URL, which is active (*), and per " +
+        "tab its window, pinned / audible / muted / discarded state and tab group. Optional filters: " +
+        "`windowId`, `url` substring. Read-only. katashiro's other tools act on the active tab; the " +
+        "`[index]` shown is a live enumeration order across all windows (not a stable tab id) and a " +
+        "filtered list keeps it — pass it to `switch_tab`, `close_tab` or `tab_update`, or use " +
+        "`new_tab` to open one.",
       // sessionScope: the browsing context is a browser-level fact, not the active page's — so this
       // still works when the active tab is a chrome:// / blank page with no scriptable origin.
       sessionScope: true,
-      inputSchema: { type: "object", properties: {} },
+      inputSchema: {
+        type: "object",
+        properties: {
+          windowId: { type: "number", description: "only list tabs in this window" },
+          url: { type: "string", description: "only list tabs whose URL contains this substring" }
+        }
+      },
       redact: redactDefault,
-      /** @param {object} _args (none) */
-      async call(_args, ctx) {
+      /** @param {{ windowId?: number, url?: string }} args */
+      async call(args, ctx) {
         // Deliberately lists ALL tabs (every window), not just the active one, so the agent can orient
         // across the browsing context. Wider exposure than every other tool (which touch only the
         // active tab): titles/URLs of unrelated tabs (mail, banking) reach the agent — accepted as
         // intentional because the agent is the user's own broker (review F1, decision b).
+        if (args.windowId != null && !Number.isInteger(args.windowId)) return errText("`windowId` must be a window id from the tabs listing");
         const tabs = await ctx.chrome.tabs.query({});
         if (!tabs.length) return okText("(no tabs)");
-        return okText(tabs.map((t, i) => `${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}`).join("\n"));
+        const groups = (await groupsById(ctx.chrome)) || new Map();
+        const needle = args.url != null ? String(args.url).trim() : "";
+        const lines = [];
+        tabs.forEach((t, i) => {                         // i is the global index — never renumbered
+          if (args.windowId != null && t.windowId !== args.windowId) return;
+          if (needle && !(t.url || "").includes(needle)) return;
+          const tags = [`window ${t.windowId}`];
+          if (t.pinned) tags.push("pinned");
+          if (t.audible) tags.push("audible");
+          if (t.mutedInfo && t.mutedInfo.muted) tags.push("muted");
+          if (t.discarded) tags.push("discarded");
+          if (t.groupId != null && t.groupId !== TAB_GROUP_NONE) tags.push(groupLabel(groups.get(t.groupId), t.groupId));
+          lines.push(`${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}  (${tags.join(" · ")})`);
+        });
+        if (!lines.length) return okText(`(no tabs match the filter — ${tabs.length} open in total)`);
+        return okText(lines.join("\n"));
       }
     },
 
@@ -1041,7 +1131,7 @@
       description:
         "Close a browser tab. Identify it by `url` (the first tab whose URL contains this substring) or " +
         "by `index` from a fresh `tabs` listing — prefer `url`: an index from a stale listing closes " +
-        "the wrong tab, irreversibly. Omit both to close the active tab. Refuses to close the last tab " +
+        "the wrong tab (`reopen_tab` can undo it). Omit both to close the active tab. Refuses to close the last tab " +
         "in its window. If the active tab is closed, the browser picks the next active " +
         "tab — call `tabs` to see which before acting on the page. Gated by act mode.",
       write: true,
@@ -1085,6 +1175,295 @@
         await ctx.chrome.tabs.remove(target.id);
         return okText(`closed tab [${idx}] — ${target.title || "(untitled)"} — ${target.url || ""}\n` +
           "(tab indexes have shifted — call tabs for the current list)");
+      }
+    },
+
+    "katashiro.reopen_tab": {
+      description:
+        "Reopen a recently closed tab (the browser's Ctrl/Cmd+Shift+T) — e.g. to undo a mistaken " +
+        "`close_tab`. Pass `url` (a substring) to pick the most recent closed tab whose URL contains " +
+        "it; omit it to reopen the most recently closed tab, whoever closed it. Never reopens a whole " +
+        "closed window. Needs the user to allow it in Katashiro settings (optional sessions " +
+        "permission). Returns the reopened tab's index. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "substring of the closed tab's URL (default: the most recent)" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ url?: string }} args */
+      async call(args, ctx) {
+        const sessions = ctx.chrome.sessions;
+        // After a revoke the chrome.sessions object can linger and only throw on use — ask Chrome
+        // for the live grant so the agent gets the "ask the user" hint, not "nothing to reopen".
+        let granted = !!(sessions && typeof sessions.restore === "function");
+        const perms = ctx.chrome.permissions;
+        if (granted && perms && typeof perms.contains === "function") {
+          try { granted = await perms.contains({ permissions: ["sessions"] }); } catch { /* keep the API check */ }
+        }
+        if (!granted) {
+          return errText("reopening tabs needs the optional sessions permission — ask the user to allow " +
+            "\"重新開啟已關閉分頁\" in Katashiro settings");
+        }
+        const needle = args.url != null ? String(args.url).trim() : "";
+        let restored;
+        try {
+          // Always a single tab: a bare sessions.restore() would reopen a whole closed window when
+          // that is the most recent entry — dozens of tabs the agent did not ask for.
+          const recent = await sessions.getRecentlyClosed({ maxResults: 25 });
+          const hit = (recent || []).find((s) => s.tab && (!needle || (s.tab.url || "").includes(needle)));
+          if (!hit) {
+            return errText(needle ? `no recently closed tab whose URL contains "${needle}"` : "no recently closed tab to reopen");
+          }
+          restored = await sessions.restore(hit.tab.sessionId);
+        } catch (e) {
+          return errText(`nothing to reopen: ${errMsg(e)}`);
+        }
+        const tab = restored && restored.tab;
+        if (!tab) return errText("nothing was reopened — there may be no recently closed tab");
+        const all = await ctx.chrome.tabs.query({});
+        const idx = all.findIndex((t) => t.id === tab.id);
+        return okText(`reopened tab [${idx}] — ${tab.title || "(untitled)"} — ${tab.url || ""}\n` +
+          "(tab indexes have shifted — call tabs for the current list)");
+      }
+    },
+
+    "katashiro.tab_update": {
+      description:
+        "Change one tab: `pinned` (pin/unpin), `muted` (mute/unmute), `moveTo` (new position within " +
+        "its window; 0 = first, -1 = last) and/or `duplicate` (open a copy next to it). Identify it by " +
+        "`url` substring (preferred) or `index` from a fresh `tabs` listing; omit both for the " +
+        "active tab. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          index: { type: "number", description: "tab index from a fresh `tabs` listing" },
+          url: { type: "string", description: "substring of the target tab's URL (alternative to index)" },
+          pinned: { type: "boolean", description: "pin (true) or unpin (false)" },
+          muted: { type: "boolean", description: "mute (true) or unmute (false)" },
+          moveTo: { type: "number", description: "new position within the tab's window (0 = first, -1 = last)" },
+          duplicate: { type: "boolean", description: "open a copy of the tab next to it" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ index?: number, url?: string, pinned?: boolean, muted?: boolean, moveTo?: number, duplicate?: boolean }} args */
+      async call(args, ctx) {
+        for (const k of ["pinned", "muted", "duplicate"]) {
+          if (args[k] != null && typeof args[k] !== "boolean") return errText(`\`${k}\` must be true or false`);
+        }
+        if (args.moveTo != null && !(Number.isInteger(args.moveTo) && args.moveTo >= -1)) {
+          return errText("`moveTo` must be a position within the window: 0, 1, … or -1 for last");
+        }
+        if (args.pinned == null && args.muted == null && args.moveTo == null && !args.duplicate) {
+          return errText("nothing to change — pass pinned, muted, moveTo and/or duplicate: true");
+        }
+        const all = await ctx.chrome.tabs.query({});
+        if (!all.length) return errText("no open tabs");
+        const p = await pickTab(ctx.chrome, all, args);
+        if (p.error) return errText(p.error);
+        const done = [];
+        try {
+          const upd = {};
+          if (args.pinned != null) upd.pinned = args.pinned;
+          if (args.muted != null) upd.muted = args.muted;
+          if (Object.keys(upd).length) {
+            await ctx.chrome.tabs.update(p.tab.id, upd);
+            if (upd.pinned != null) done.push(upd.pinned ? "pinned" : "unpinned");
+            if (upd.muted != null) done.push(upd.muted ? "muted" : "unmuted");
+          }
+          if (args.moveTo != null) {
+            await ctx.chrome.tabs.move(p.tab.id, { index: args.moveTo });
+            done.push(args.moveTo === -1 ? "moved to the end of its window" : `moved to position ${args.moveTo} in its window`);
+          }
+          if (args.duplicate) {
+            await ctx.chrome.tabs.duplicate(p.tab.id);
+            done.push("duplicated");
+          }
+        } catch (e) {
+          const partial = done.length ? ` (already applied: ${done.join(", ")})` : "";
+          return errText(`could not update tab [${p.index}]: ${errMsg(e)}${partial}`);
+        }
+        return okText(`tab [${p.index}] — ${p.tab.title || "(untitled)"}: ${done.join(", ")}` +
+          (args.moveTo != null || args.duplicate ? "\n(tab indexes have shifted — call tabs for the current list)" : ""));
+      }
+    },
+
+    "katashiro.tab_groups": {
+      description:
+        "List tab groups across every window: id, title, color, collapsed state, window, and the " +
+        "`[index]` of each member tab (the same index `tabs` shows). Read-only.",
+      sessionScope: true,
+      inputSchema: { type: "object", properties: {} },
+      redact: redactDefault,
+      /** @param {object} _args (none) */
+      async call(_args, ctx) {
+        const groups = await groupsById(ctx.chrome);
+        if (!groups) return errText(TAB_GROUPS_UNAVAILABLE);
+        if (!groups.size) return okText("(no tab groups)");
+        const tabs = await ctx.chrome.tabs.query({});
+        const members = new Map();
+        tabs.forEach((t, i) => {
+          if (!groups.has(t.groupId)) return;
+          if (!members.has(t.groupId)) members.set(t.groupId, []);
+          members.get(t.groupId).push(i);
+        });
+        return okText([...groups.values()].map((g) =>
+          `${groupLabel(g, g.id)}${g.collapsed ? " (collapsed)" : ""} — window ${g.windowId} — tabs [${(members.get(g.id) || []).join(", ")}]`
+        ).join("\n"));
+      }
+    },
+
+    "katashiro.group_tabs": {
+      description:
+        "Put tabs into a tab group. `tabs` lists them, each {index} (from a fresh `tabs`) or {url} " +
+        "substring. Pass `groupId` (from `tab_groups`) to add them to an existing group; omit it to " +
+        "create a new group. Optional `title` and `color` name the group. Tabs from another window " +
+        "move into the group's window. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        required: ["tabs"],
+        properties: {
+          tabs: {
+            type: "array",
+            maxItems: TAB_REFS_MAX,
+            description: "tabs to group — each {index} or {url}",
+            items: { type: "object", properties: { index: { type: "number" }, url: { type: "string" } } }
+          },
+          groupId: { type: "number", description: "existing group to add to (from tab_groups); omit for a new group" },
+          title: { type: "string", description: "group title" },
+          color: { type: "string", enum: TAB_GROUP_COLORS, description: "group color" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ tabs: Array<{index?: number, url?: string}>, groupId?: number, title?: string, color?: string }} args */
+      async call(args, ctx) {
+        if (args.color != null && !TAB_GROUP_COLORS.includes(args.color)) {
+          return errText(`color must be one of: ${TAB_GROUP_COLORS.join(", ")}`);
+        }
+        if (args.groupId != null && !Number.isInteger(args.groupId)) return errText("`groupId` must be a group id from tab_groups");
+        const styled = args.title != null || args.color != null;
+        if (styled && !(ctx.chrome.tabGroups && typeof ctx.chrome.tabGroups.update === "function")) {
+          return errText(TAB_GROUPS_UNAVAILABLE);
+        }
+        const all = await ctx.chrome.tabs.query({});
+        const picked = await pickTabs(ctx.chrome, all, args.tabs);
+        if (picked.error) return errText(picked.error);
+        // Grouping moves tabs into the group's window (an existing group's, else the current window):
+        // refuse if that would empty another window, which Chrome would then close.
+        let targetWindowId = null;
+        if (args.groupId != null) {
+          const member = all.find((t) => t.groupId === args.groupId);
+          if (member) targetWindowId = member.windowId;
+        } else if (ctx.chrome.windows && typeof ctx.chrome.windows.getCurrent === "function") {
+          try { targetWindowId = (await ctx.chrome.windows.getCurrent()).id; } catch { /* unknown ⇒ strictest check */ }
+        }
+        const emptied = windowsEmptiedByMove(all, picked.tabs.map((p) => p.tab), targetWindowId);
+        if (emptied.length) {
+          return errText(`refusing to group: it would move every tab out of window ${emptied.join(", ")}, which closes that ` +
+            "window (and the side panel if it is open there) — leave at least one of its tabs out of the group");
+        }
+        const opts = { tabIds: picked.tabs.map((p) => p.tab.id) };
+        if (args.groupId != null) opts.groupId = args.groupId;
+        let groupId;
+        try {
+          groupId = await ctx.chrome.tabs.group(opts);
+        } catch (e) {
+          return errText(`could not group the tabs: ${errMsg(e)}`);
+        }
+        const upd = {};
+        if (args.title != null) upd.title = String(args.title).slice(0, TAB_GROUP_TITLE_MAX);
+        if (args.color != null) upd.color = args.color;
+        if (styled) {
+          try { await ctx.chrome.tabGroups.update(groupId, upd); } catch (e) {
+            return errText(`grouped the tabs into group ${groupId}, but could not set its title/color: ${errMsg(e)}`);
+          }
+        }
+        return okText(`${args.groupId != null ? "added" : "grouped"} tabs [${picked.tabs.map((p) => p.index).join(", ")}] ` +
+          `${args.groupId != null ? "to" : "into"} group ${groupId}` +
+          (upd.title != null ? ` "${upd.title}"` : "") + (upd.color ? ` (${upd.color})` : "") +
+          "\n(tabs may have moved — call tabs for the current list)");
+      }
+    },
+
+    "katashiro.ungroup_tabs": {
+      description:
+        "Take tabs out of their tab groups (a group with no tabs left disappears). `tabs` lists them, " +
+        "each {index} (from a fresh `tabs`) or {url} substring. Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        required: ["tabs"],
+        properties: {
+          tabs: {
+            type: "array",
+            maxItems: TAB_REFS_MAX,
+            description: "tabs to ungroup — each {index} or {url}",
+            items: { type: "object", properties: { index: { type: "number" }, url: { type: "string" } } }
+          }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ tabs: Array<{index?: number, url?: string}> }} args */
+      async call(args, ctx) {
+        const all = await ctx.chrome.tabs.query({});
+        const picked = await pickTabs(ctx.chrome, all, args.tabs);
+        if (picked.error) return errText(picked.error);
+        const grouped = picked.tabs.filter((p) => p.tab.groupId != null && p.tab.groupId !== TAB_GROUP_NONE);
+        if (!grouped.length) return okText("none of those tabs is in a group — nothing to do");
+        try {
+          await ctx.chrome.tabs.ungroup(grouped.map((p) => p.tab.id));
+        } catch (e) {
+          return errText(`could not ungroup the tabs: ${errMsg(e)}`);
+        }
+        return okText(`removed tabs [${grouped.map((p) => p.index).join(", ")}] from their groups` +
+          "\n(tabs may have moved — call tabs for the current list)");
+      }
+    },
+
+    "katashiro.update_tab_group": {
+      description:
+        "Rename, recolor, collapse or expand a tab group by `groupId` (from `tab_groups`). Gated by act mode.",
+      write: true,
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        required: ["groupId"],
+        properties: {
+          groupId: { type: "number", description: "group id from tab_groups" },
+          title: { type: "string", description: "new title" },
+          color: { type: "string", enum: TAB_GROUP_COLORS, description: "new color" },
+          collapsed: { type: "boolean", description: "collapse (true) or expand (false)" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ groupId: number, title?: string, color?: string, collapsed?: boolean }} args */
+      async call(args, ctx) {
+        if (!(ctx.chrome.tabGroups && typeof ctx.chrome.tabGroups.update === "function")) return errText(TAB_GROUPS_UNAVAILABLE);
+        if (!Number.isInteger(args.groupId)) return errText("`groupId` must be a group id from tab_groups");
+        if (args.color != null && !TAB_GROUP_COLORS.includes(args.color)) {
+          return errText(`color must be one of: ${TAB_GROUP_COLORS.join(", ")}`);
+        }
+        if (args.collapsed != null && typeof args.collapsed !== "boolean") return errText("`collapsed` must be true or false");
+        const upd = {};
+        if (args.title != null) upd.title = String(args.title).slice(0, TAB_GROUP_TITLE_MAX);
+        if (args.color != null) upd.color = args.color;
+        if (args.collapsed != null) upd.collapsed = args.collapsed;
+        if (!Object.keys(upd).length) return errText("nothing to change — pass title, color and/or collapsed");
+        let g;
+        try {
+          g = await ctx.chrome.tabGroups.update(args.groupId, upd);
+        } catch (e) {
+          return errText(`could not update group ${args.groupId}: ${errMsg(e)} — call tab_groups for the current ids`);
+        }
+        return okText(`updated ${groupLabel(g, args.groupId)}${g && g.collapsed ? " (collapsed)" : ""}`);
       }
     },
 

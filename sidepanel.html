@@ -106,6 +106,16 @@
             <span class="mode-hint" id="act-mode-hint"></span>
           </div>
 
+          <!-- Optional sessions permission (reopen_tab) — Chrome holds the state -->
+          <div class="input-group">
+            <label>重新開啟已關閉分頁（reopen_tab）</label>
+            <div id="sessions-perm-toggle" class="mode-toggle">
+              <button id="sessions-off" class="mode-btn">關閉</button>
+              <button id="sessions-on" class="mode-btn">允許</button>
+            </div>
+            <span class="mode-hint" id="sessions-perm-hint"></span>
+          </div>
+
           <!-- Jev grounding (optional, BYO-key): OpenRouter token for the Jev decisions API -->
           <div class="input-group">
             <label for="jev-token-input">Jev grounding（選填）</label>

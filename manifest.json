@@ -8,7 +8,11 @@
     "sidePanel",
     "storage",
     "scripting",
-    "tabs"
+    "tabs",
+    "tabGroups"
+  ],
+  "optional_permissions": [
+    "sessions"
   ],
   "host_permissions": [
     "<all_urls>"
