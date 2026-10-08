@@ -2448,7 +2448,7 @@ test("normalizeScreenshotConfig clamps to the Settings limits, defaults on junk"
   assert.deepEqual(n(null), { maxKB: 500, storeMax: 10 });
   assert.deepEqual(n({ maxKB: "800", storeMax: 3 }), { maxKB: 800, storeMax: 3 });
   assert.deepEqual(n({ maxKB: 10, storeMax: 0 }), { maxKB: 50, storeMax: 1 });
-  assert.deepEqual(n({ maxKB: 99999, storeMax: 999 }), { maxKB: 1500, storeMax: 50 });
+  assert.deepEqual(n({ maxKB: 99999, storeMax: 999 }), { maxKB: 4096, storeMax: 50 });
   assert.deepEqual(n({ maxKB: "abc", storeMax: 2.6 }), { maxKB: 500, storeMax: 3 });
 });
 
@@ -2457,7 +2457,7 @@ test("screenshot over the Settings size cap is shrunk via deps.reencodeImage", a
   const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
   d.screenshot = { maxKB: 100, storeMax: 10 };
   const steps = [];
-  d.reencodeImage = async (b64, step) => { steps.push(step); return "B".repeat(steps.length === 1 ? 4 * 1024 * 30 : 8); };          // 90 KB decoded
+  d.reencodeImage = async (b64, step) => { if (step.maxEdge) return null; steps.push(step); return "B".repeat(steps.length === 1 ? 4 * 1024 * 30 : 8); };          // 90 KB decoded; maxEdge = the agent-view pass
   const res = await call(d, "katashiro.screenshot");
   assert.equal(steps.length, 1);                                       // first step already fits
   assert.ok(steps[0].scale < 1 && steps[0].quality === 0.7);
@@ -2470,13 +2470,13 @@ test("screenshot: still over the cap after every step says so; under the cap is 
   const over = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
   over.deps.screenshot = { maxKB: 100, storeMax: 10 };
   let n = 0;
-  over.deps.reencodeImage = async () => { n++; return "C".repeat(4 * 1024 * 150); };
+  over.deps.reencodeImage = async (b64, step) => { if (step.maxEdge) return null; n++; return "C".repeat(4 * 1024 * 150); };
   const res = await call(over.deps, "katashiro.screenshot");
   assert.equal(n, 3);
   assert.match(res.content[1].text, /still 450 KB — over the 100 KB limit/);
   const small = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
   let called = false;
-  small.deps.reencodeImage = async () => { called = true; return "X"; };
+  small.deps.reencodeImage = async (b64, step) => { if (!step.maxEdge) called = true; return null; };
   const ok = await call(small.deps, "katashiro.screenshot");
   assert.equal(called, false);
   assert.equal(ok.content[0].data, "QUJD");
@@ -2493,4 +2493,32 @@ test("Settings storeMax controls how many captures stay pasteable", async () => 
   assert.equal((await call(d, "katashiro.paste_image", { imageId: c, selector: "#x" })).isError, undefined);
   d.screenshot = { maxKB: 500, storeMax: 10 };                         // restore the default for later tests
   await shoot(d);
+});
+
+test("screenshot: the agent sees a ≤1568 px copy, the stored (pasteable) copy keeps its size", async () => {
+  const stored = "S".repeat(4 * 1024 * 400);                          // ~1.2 MB decoded, under a 4096 KB cap
+  const { deps: d, calls } = deps({ dataUrl: `data:image/jpeg;base64,${stored}`, scriptResult: { ok: true, how: "x", handled: true } });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const seen = [];
+  d.reencodeImage = async (b64, step) => { seen.push(step); return step.maxEdge ? "V".repeat(4 * 1024 * 60) : null; };
+  const res = await call(d, "katashiro.screenshot");
+  assert.deepEqual(seen, [{ scale: 1, quality: 0.7, maxEdge: 1568 }]);     // under the cap: only the agent-view pass
+  assert.equal(res.content[0].data.length, 4 * 1024 * 60);              // agent got the small copy
+  assert.match(res.content[1].text, /stored 1200 KB/);
+  const id = /imageId: (img[-_][0-9a-f]{16})/.exec(res.content[1].text)[1];
+  await call(d, "katashiro.paste_image", { imageId: id, selector: "#x" });
+  const inj = calls.executeScript.find((x) => Array.isArray(x.args) && x.args.length === 5);
+  assert.equal(inj.args[3].base64.length, stored.length);               // paste uses the full stored copy
+  d.screenshot = { maxKB: 500, storeMax: 10 };
+});
+
+test("screenshot: an agent view still over 1 MB is not sent over the tunnel — text + imageId only", async () => {
+  const big = "Z".repeat(4 * 1024 * 500);                             // 1.5 MB decoded, no reencode hook
+  const { deps: d } = deps({ dataUrl: `data:image/jpeg;base64,${big}` });
+  d.screenshot = { maxKB: 4096, storeMax: 10 };
+  const res = await call(d, "katashiro.screenshot");
+  assert.equal(res.isError, undefined);
+  assert.equal(res.content.some((b) => b.type === "image"), false);   // no image block at all
+  assert.match(res.content[0].text, /imageId: img[-_][0-9a-f]{16}.*\n\(the image is 1500 KB — too large to show you/s);
+  d.screenshot = { maxKB: 500, storeMax: 10 };
 });

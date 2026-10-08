@@ -1208,13 +1208,16 @@ function renderScreenshotConfig() {
   });
 });
 
-// Shrink a JPEG screenshot (base64) for the Settings size cap: scale, then re-encode. Runs in the
-// panel (OffscreenCanvas); returns base64 or null.
-async function reencodeJpeg(base64, { scale, quality }) {
+// Shrink a JPEG screenshot (base64): scale by `scale`, and further so the long edge is at most
+// `maxEdge` when given; then re-encode. Runs in the panel (OffscreenCanvas). Returns base64, or null
+// when nothing would change (scale ≥ 1 and already within maxEdge).
+async function reencodeJpeg(base64, { scale = 1, quality, maxEdge }) {
   const raw = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
   const bmp = await createImageBitmap(new Blob([raw], { type: "image/jpeg" }));
-  const w = Math.max(1, Math.round(bmp.width * scale));
-  const h = Math.max(1, Math.round(bmp.height * scale));
+  const k = Math.min(scale, maxEdge ? maxEdge / Math.max(bmp.width, bmp.height) : 1);
+  if (k >= 1 && maxEdge) { bmp.close(); return null; }
+  const w = Math.max(1, Math.round(bmp.width * k));
+  const h = Math.max(1, Math.round(bmp.height * k));
   const canvas = new OffscreenCanvas(w, h);
   canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
   bmp.close();

@@ -318,7 +318,13 @@
   // (captureVisibleTab is rate-limited to 2 calls/s); the ceiling stays well under the ACP
   // tunnel's per-frame cap. `storeMax` is how many captures stay pasteable.
   const SCREENSHOT_DEFAULTS = { maxKB: 500, storeMax: 10 };
-  const SCREENSHOT_LIMITS = { maxKB: [50, 1500], storeMax: [1, 50] };
+  const SCREENSHOT_LIMITS = { maxKB: [50, 4096], storeMax: [1, 50] };
+  // The copy the AGENT sees is separate from the stored one: it crosses the ACP tunnel (per-frame
+  // cap — a multi-MB image drops the WebSocket) and a model gains nothing past ~1568 px on the
+  // long edge (Claude downscales larger images). So the stored copy may be up to maxKB (4 MB) for a
+  // sharp paste into Jira, while the agent gets a ≤1568 px re-encode, never above AGENT_IMAGE_MAX_BYTES.
+  const AGENT_IMAGE_MAX_EDGE = 1568;
+  const AGENT_IMAGE_MAX_BYTES = 1024 * 1024;
   function normalizeScreenshotConfig(raw) {
     const r = raw && typeof raw === "object" ? raw : {};
     const out = {};
@@ -983,10 +989,25 @@
             : `, still ${Math.round(b64Bytes(base64) / 1024)} KB — over the ${cfg.maxKB} KB limit`;
         }
         const imageId = ctx.images.put("image/jpeg", base64, cfg.storeMax);
+        // The agent's view: ≤ AGENT_IMAGE_MAX_EDGE px (the hook returns null when no downscale is needed).
+        let view = base64;
+        if (typeof ctx.reencodeImage === "function") {
+          try {
+            const small = await ctx.reencodeImage(base64, { scale: 1, quality: 0.7, maxEdge: AGENT_IMAGE_MAX_EDGE });
+            if (small) view = small;
+          } catch (_) { /* keep the stored copy */ }
+        }
+        const note = `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${cfg.storeMax}, ` +
+          `stored ${Math.round(b64Bytes(base64) / 1024)} KB${sizeNote})`;
+        if (b64Bytes(view) > AGENT_IMAGE_MAX_BYTES) {
+          // Too big to send through the tunnel safely: keep it pasteable, but do not show it.
+          return okText(`${note}\n(the image is ${Math.round(b64Bytes(view) / 1024)} KB — too large to show you over the ` +
+            `connection; it is stored and can still be pasted. Lower Settings → 截圖 to see it.)`);
+        }
         return {
           content: [
-            { type: "image", data: base64, mimeType: "image/jpeg" },
-            { type: "text", text: `imageId: ${imageId} — for paste_image / upload_file (kept ${IMAGE_TTL_MS / 60000} min, newest ${cfg.storeMax}${sizeNote})` }
+            { type: "image", data: view, mimeType: "image/jpeg" },
+            { type: "text", text: note }
           ]
         };
       }
