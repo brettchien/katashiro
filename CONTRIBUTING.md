@@ -93,3 +93,5 @@ chore: bump manifest version to 1.1.0
 - The PR title should itself be a Conventional Commit line.
 - Describe what changed and how you verified it (which page / agent you tested against).
 - Ensure the extension loads without console errors before requesting review.
+- CI (`.github/workflows/ci.yml`) syntax-checks every runtime script and runs
+  `node --test test/*.test.js` on each PR; run the same locally before pushing.
