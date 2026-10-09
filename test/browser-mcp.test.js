@@ -2556,3 +2556,94 @@ test("upload_file: imageId captures have their own 20 MB total; agent base64 kee
   assert.ok(calls.executeScript.length > 0);
   d.screenshot = { maxKB: 500, storeMax: 10 };
 });
+
+// --- live-test follow-ups (2026-10-09) ---------------------------------------
+
+test("a tab still loading (pendingUrl only) is found by url — switch_tab / close_tab / tabs", async () => {
+  const LOADING = [...TABS3, { id: 60, windowId: 7, url: "", pendingUrl: "https://new.example/page", title: "", groupId: -1 }];
+  const sw = deps({ tabsList: LOADING });
+  assert.equal((await call(sw.deps, "katashiro.switch_tab", { url: "new.example" })).isError, undefined);
+  assert.equal(sw.calls.tabsUpdate.at(-1).tabId, 60);
+  const cl = deps({ tabsList: LOADING });
+  assert.equal((await call(cl.deps, "katashiro.close_tab", { url: "new.example" })).isError, undefined);
+  assert.deepEqual(cl.calls.tabsRemove, [60]);
+  const text = (await call(deps({ tabsList: LOADING }).deps, "katashiro.tabs", { url: "new.example" })).content[0].text;
+  assert.match(text, /^  \[3\] \(untitled\) — https:\/\/new\.example\/page  \(window 7 · loading\)$/m);
+});
+
+test("click focuses the clicked element's nearest focusable ancestor, as a real mousedown would", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector .ql-editor" } });
+  await call(d, "katashiro.click", { selector: ".ql-editor p" });
+  const inj = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[3] === "single");
+  let asked = null;
+  const editor = { focused: 0, focus(o) { this.focused++; this.opts = o; } };
+  const el = {
+    checkVisibility: () => true, getAttribute: () => null, scrollIntoView() {}, clicked: 0, click() { this.clicked++; },
+    closest(sel) { asked = sel; return editor; }
+  };
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: { querySelector: () => el, activeElement: null }, configurable: true, writable: true });
+  try {
+    assert.deepEqual(inj.func(...inj.args), { ok: true, how: "selector .ql-editor p" });
+  } finally {
+    saved ? Object.defineProperty(globalThis, "document", saved) : delete globalThis.document;
+  }
+  assert.match(asked, /\[contenteditable\]:not\(\[contenteditable="false"\]\)/);
+  assert.equal(editor.focused, 1);
+  assert.deepEqual(editor.opts, { preventScroll: true });
+  assert.equal(el.clicked, 1);
+});
+
+test("click leaves focus alone on non-editable targets (toolbar button, listbox option)", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector .toolbar button.bold" } });
+  await call(d, "katashiro.click", { selector: ".toolbar button.bold" });
+  const inj = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[3] === "single");
+  // closest() honours the selector list: the button sits in a [tabindex="-1"] listbox-ish wrapper.
+  const button = { focused: 0, focus() { this.focused++; } };
+  const wrapper = { focused: 0, focus() { this.focused++; } };
+  const el = {
+    checkVisibility: () => true, getAttribute: () => null, scrollIntoView() {}, clicked: 0, click() { this.clicked++; },
+    closest(sel) {
+      const parts = sel.split(",").map((p) => p.trim());
+      if (parts.includes("button")) return button;
+      if (parts.includes("[tabindex]")) return wrapper;
+      return null;
+    }
+  };
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: { querySelector: () => el, activeElement: null }, configurable: true, writable: true });
+  try {
+    assert.deepEqual(inj.func(...inj.args), { ok: true, how: "selector .toolbar button.bold" });
+  } finally {
+    saved ? Object.defineProperty(globalThis, "document", saved) : delete globalThis.document;
+  }
+  assert.equal(button.focused, 0);
+  assert.equal(wrapper.focused, 0);
+  assert.equal(el.clicked, 1);
+});
+
+test("paste_image's wrapper lookup also finds contenteditable=plaintext-only", async () => {
+  const page = fakePage({ prevent: false });
+  const editable = page.node("DIV", { isContentEditable: true });
+  const wrapper = page.node("DIV");
+  let sel = null;
+  wrapper.querySelector = (s) => { sel = s; return editable; };
+  page.window.__katashiroResolve = () => ({ ok: true, el: wrapper });
+  await runPasteInPage(page, { ref: "e7", snapshotId: 3 });
+  assert.match(sel, /\[contenteditable="plaintext-only"\]/);
+  assert.equal(page.seen[0].on, editable);
+});
+
+test("setImageStoreMax trims an instance's held screenshots immediately (newest kept)", async () => {
+  const s = BrowserMcp.createServer({ id: "srv", name: "katashiro" });
+  const bag = deps({ dataUrl: "data:image/jpeg;base64,QUJD", scriptResult: { ok: true, how: "x", handled: true } });
+  const callOn = (name, args) => s.handleMcpMessage("tools/call", { name, arguments: args || {} }, bag.deps);
+  const ids = [];
+  for (let i = 0; i < 3; i++) ids.push(/imageId: (\S+)/.exec((await callOn("katashiro.screenshot")).content[1].text)[1]);
+  s.setImageStoreMax(1);
+  const gone = await callOn("katashiro.paste_image", { imageId: ids[0], selector: "#x" });
+  assert.equal(gone.isError, true);
+  assert.match(gone.content[0].text, /no captured image/);
+  assert.equal((await callOn("katashiro.paste_image", { imageId: ids[1], selector: "#x" })).isError, true);
+  assert.equal((await callOn("katashiro.paste_image", { imageId: ids[2], selector: "#x" })).isError, undefined);
+});
