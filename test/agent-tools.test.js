@@ -174,3 +174,16 @@ test("a katashiro tool reaching us via the Facade capability (openab#6 shape) is
   // a capability that only mentions katashiro is not one
   assert.equal(AgentTools.isBrowserToolCall({ title: "tool", _meta: { openab: { capability: "github.katashiro_issues" } } }), false);
 });
+
+test("the tool name is read from _meta.openab.name, with a top-level name as the fallback", () => {
+  // Current gateways: ACP `ToolCall` has no `name` field, so it rides in `_meta.openab`.
+  const meta = apply(null, { sessionUpdate: "tool_call", toolCallId: "t1", title: "tool", kind: "other", _meta: { openab: { name: "mcp__grafana__query" } } });
+  assert.equal(meta.label, "grafana · query");
+  assert.equal(meta.labelRank, 3);
+  // Older gateways sent it top-level.
+  const top = apply(null, { sessionUpdate: "tool_call", toolCallId: "t2", title: "tool", name: "Bash" });
+  assert.equal(top.label, "Bash");
+  // Both present: _meta wins.
+  const both = apply(null, { sessionUpdate: "tool_call", toolCallId: "t3", title: "tool", name: "Old", _meta: { openab: { name: "New" } } });
+  assert.equal(both.label, "New");
+});
