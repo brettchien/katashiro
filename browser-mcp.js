@@ -219,13 +219,17 @@
   const TAB_REFS_MAX = 50;
   const TAB_GROUP_TITLE_MAX = 100;
 
+  // A tab still loading (new_tab with active:false, navigate) has no committed `url` yet — only
+  // `pendingUrl` — so a url lookup right after opening it checks both.
+  const tabUrlHas = (t, needle) => (t.url || "").includes(needle) || (t.pendingUrl || "").includes(needle);
+
   // One tab by `url` substring | `index` | (neither, when allowed) the active tab.
   // Returns { tab, index } or { error }.
   async function pickTab(chrome, all, ref, allowActive = true) {
     const r = ref || {};
     const needle = r.url != null ? String(r.url).trim() : "";
     if (needle) {
-      const i = all.findIndex((t) => (t.url || "").includes(needle));
+      const i = all.findIndex((t) => tabUrlHas(t, needle));
       if (i < 0) return { error: `no open tab whose URL contains "${needle}" — call tabs to see what's open` };
       return { tab: all[i], index: i };
     }
@@ -371,10 +375,17 @@
         prune();
         return images.get(String(id || "")) || null;
       },
+      // Settings → 截圖 lowered: apply now, not at the next capture (the extra ones are page data).
+      setMax(max) {
+        const v = normalizeScreenshotConfig({ storeMax: max }).storeMax;
+        storeMax = v;
+        prune();
+      },
       clear() { images.clear(); }
     };
   }
-  // Only for callers that drive callBrowserTool without a server instance (none in the side panel).
+  // Only for tests and other callers that drive callBrowserTool without a server instance — the
+  // side panel always goes through createServer, so every agent gets its own store.
   const looseImages = createImageStore();
 
   // paste_image's in-page half (runs via executeScript, so it must be self-contained). Returns
@@ -405,7 +416,7 @@
     const active = document.activeElement;
     if (active && active !== el && el.contains(active)) to = active;
     else if (!el.isContentEditable && el.tagName !== "TEXTAREA" && el.tagName !== "INPUT") {
-      const inner = el.querySelector('[contenteditable="true"], [contenteditable=""], textarea');
+      const inner = el.querySelector('[contenteditable="true"], [contenteditable=""], [contenteditable="plaintext-only"], textarea');
       if (inner) { if (typeof inner.focus === "function") inner.focus(); to = inner; }
     }
     const dt = new DataTransfer();
@@ -700,6 +711,13 @@
             if (!vis) return { ok: false, error: how + " is not visible" };
             if (el.disabled || el.getAttribute("aria-disabled") === "true") return { ok: false, error: how + " is disabled" };
             el.scrollIntoView({ block: "center" });
+            // A real mousedown moves focus to the nearest focusable ancestor; synthetic events do
+            // not — so an editor clicked into would stay unfocused (and paste_image without a ref
+            // would find nothing to paste into). Focus it the way the browser would.
+            const focusable = el.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]:not([contenteditable="false"])');
+            if (focusable && focusable !== document.activeElement && typeof focusable.focus === "function") {
+              focusable.focus({ preventScroll: true });
+            }
             if (mode === "single") {
               el.click();
               return { ok: true, how };
@@ -1202,7 +1220,7 @@
         const lines = [];
         tabs.forEach((t, i) => {                         // i is the global index — never renumbered
           if (args.windowId != null && t.windowId !== args.windowId) return;
-          if (needle && !(t.url || "").includes(needle)) return;
+          if (needle && !tabUrlHas(t, needle)) return;
           const tags = [`window ${t.windowId}`];
           if (t.pinned) tags.push("pinned");
           if (t.audible) tags.push("audible");
@@ -1210,7 +1228,9 @@
           if (t.discarded) tags.push("discarded");
           if (t.groupId != null && t.groupId !== TAB_GROUP_NONE) tags.push(groupLabel(groups.get(t.groupId), t.groupId));
           if (inSplit(t)) tags.push(`split ${t.splitViewId}`);
-          lines.push(`${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${t.url || ""}  (${tags.join(" · ")})`);
+          const loading = t.pendingUrl && t.pendingUrl !== t.url;
+          if (loading) tags.push("loading");
+          lines.push(`${t.active ? "*" : " "} [${i}] ${t.title || "(untitled)"} — ${(loading ? t.pendingUrl : t.url) || ""}  (${tags.join(" · ")})`);
         });
         if (!lines.length) return okText(`(no tabs match the filter — ${tabs.length} open in total)`);
         return okText(lines.join("\n"));
@@ -1280,7 +1300,7 @@
         let target = null;
         const needle = (args.url != null) ? String(args.url).trim() : "";
         if (needle) {
-          target = all.find((t) => (t.url || "").includes(needle));
+          target = all.find((t) => tabUrlHas(t, needle));
           if (!target) return errText(`no open tab whose URL contains "${needle}" — call tabs to see what's open`);
         } else if (Number.isInteger(args.index)) {
           if (args.index < 0 || args.index >= all.length) {
@@ -1327,7 +1347,7 @@
         let target = null;
         const needle = (args.url != null) ? String(args.url).trim() : "";
         if (needle) {
-          target = all.find((t) => (t.url || "").includes(needle));
+          target = all.find((t) => tabUrlHas(t, needle));
           if (!target) return errText(`no open tab whose URL contains "${needle}" — call tabs to see what's open`);
         } else if (Number.isInteger(args.index)) {
           if (args.index < 0 || args.index >= all.length) {
@@ -2640,6 +2660,9 @@
 
       /** Drop every screenshot this instance holds — the side panel calls it when the Conn is torn down. */
       clearImages() { images.clear(); },
+
+      /** Settings → 截圖 storeMax changed: trim this instance's store right away. */
+      setImageStoreMax(max) { images.setMax(max); },
 
       /** The `session/new` entry that declares this server to the gateway. */
       declaration() {

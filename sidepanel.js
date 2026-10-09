@@ -1244,6 +1244,8 @@ function renderScreenshotConfig() {
       storeMax: screenshotStoreMaxInput && screenshotStoreMaxInput.value,
     });
     renderScreenshotConfig();
+    // A lower storeMax trims what each agent already holds now, not at its next capture.
+    room.forEach((c) => { if (c.mcpServer) c.mcpServer.setImageStoreMax(screenshotConfig.storeMax); });
     persist();
   });
 });
