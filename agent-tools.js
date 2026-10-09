@@ -35,8 +35,8 @@
   // Short, stable pill labels from the gateway's tool identity. Since openab#6 the gateway never
   // forwards the agent's free-text title (a command line could carry secrets): `title` is a
   // tool-name-shaped identity (core picks capability → name → kind, else "tool"), alongside
-  // `kind` (ACP ToolKind), `name` and `_meta.openab.capability` — each re-checked gateway-side to
-  // the shape `[A-Za-z0-9_.:/-]{1,128}`. The label takes the most specific one present:
+  // `kind` (ACP ToolKind), `_meta.openab.name` and `_meta.openab.capability` — each re-checked
+  // gateway-side to the shape `[A-Za-z0-9_.:/-]{1,128}`. The label takes the most specific one present:
   // capability > name > title > kind > "tool". An MCP name `mcp__server__tool` shows as
   // "server · tool". The first event often carries only `kind`, so a later, more specific update
   // upgrades the label — but never downgrades it.
@@ -51,7 +51,9 @@
   function identityOf(u) {
     const capability = str(u._meta && u._meta.openab && u._meta.openab.capability);
     if (capability) return { label: shortName(capability), rank: 4 };
-    const name = str(u.name);
+    // `_meta.openab.name` is where the gateway sends it (ACP `ToolCall` has no `name` field); a
+    // top-level `name` is what older gateways sent, still read so either works.
+    const name = str(u._meta && u._meta.openab && u._meta.openab.name) || str(u.name);
     if (name) return { label: shortName(name), rank: 3 };
     const title = cleanTitle(u.title);
     if (title && title !== "tool") return { label: shortName(title), rank: 2 };
@@ -68,13 +70,14 @@
   //  - via the OAB MCP Facade: the tool is `…__execute_capability` and the real
   //    `katashiro.*` name rides in `_meta.openab.capability` (the OpenAB gateway since openab#6)
   //    or `rawInput.name` (a gateway that forwards the raw ACP update)
-  // `name` / `_meta.claudeCode.toolName` are checked for the same reason: whichever the gateway sends.
+  // `_meta.openab.name` / `name` (older gateways) / `_meta.claudeCode.toolName` are checked for
+  // the same reason: whichever the gateway sends.
   const BROWSER_TOOL_RE = /^(?:mcp__[^\s]*?katashiro[^\s]*?__|katashiro[._])\w/i;
   const BROWSER_CAPABILITY_RE = /^katashiro[._]\w/i;
   function isBrowserToolCall(update) {
     const u = update || {};
     const meta = u._meta && u._meta.claudeCode;
-    const names = [cleanTitle(u.title), str(u.name), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
+    const names = [cleanTitle(u.title), str(u._meta && u._meta.openab && u._meta.openab.name), str(u.name), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
     if (names.some((n) => BROWSER_TOOL_RE.test(n))) return true;
     if (BROWSER_CAPABILITY_RE.test(str(u._meta && u._meta.openab && u._meta.openab.capability))) return true;
     const capability = u.rawInput && typeof u.rawInput === "object" ? u.rawInput.name : null;
