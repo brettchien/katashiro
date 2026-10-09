@@ -187,3 +187,9 @@ test("the tool name is read from _meta.openab.name, with a top-level name as the
   const both = apply(null, { sessionUpdate: "tool_call", toolCallId: "t3", title: "tool", name: "Old", _meta: { openab: { name: "New" } } });
   assert.equal(both.label, "New");
 });
+
+test("a direct katashiro MCP call is skipped when its name rides only in _meta.openab.name", () => {
+  assert.equal(AgentTools.isBrowserToolCall({ title: "tool", kind: "other", _meta: { openab: { name: "mcp__katashiro__click" } } }), true);
+  assert.equal(AgentTools.isBrowserToolCall({ title: "tool", name: "mcp__katashiro__click" }), true);
+  assert.equal(AgentTools.isBrowserToolCall({ title: "tool", _meta: { openab: { name: "mcp__grafana__query" } } }), false);
+});

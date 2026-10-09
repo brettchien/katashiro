@@ -70,13 +70,14 @@
   //  - via the OAB MCP Facade: the tool is `…__execute_capability` and the real
   //    `katashiro.*` name rides in `_meta.openab.capability` (the OpenAB gateway since openab#6)
   //    or `rawInput.name` (a gateway that forwards the raw ACP update)
-  // `name` / `_meta.claudeCode.toolName` are checked for the same reason: whichever the gateway sends.
+  // `_meta.openab.name` / `name` (older gateways) / `_meta.claudeCode.toolName` are checked for
+  // the same reason: whichever the gateway sends.
   const BROWSER_TOOL_RE = /^(?:mcp__[^\s]*?katashiro[^\s]*?__|katashiro[._])\w/i;
   const BROWSER_CAPABILITY_RE = /^katashiro[._]\w/i;
   function isBrowserToolCall(update) {
     const u = update || {};
     const meta = u._meta && u._meta.claudeCode;
-    const names = [cleanTitle(u.title), str(u.name), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
+    const names = [cleanTitle(u.title), str(u._meta && u._meta.openab && u._meta.openab.name), str(u.name), meta && typeof meta.toolName === "string" ? meta.toolName : ""];
     if (names.some((n) => BROWSER_TOOL_RE.test(n))) return true;
     if (BROWSER_CAPABILITY_RE.test(str(u._meta && u._meta.openab && u._meta.openab.capability))) return true;
     const capability = u.rawInput && typeof u.rawInput === "object" ? u.rawInput.name : null;
