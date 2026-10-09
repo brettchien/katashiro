@@ -713,8 +713,10 @@
             el.scrollIntoView({ block: "center" });
             // A real mousedown moves focus to the nearest focusable ancestor; synthetic events do
             // not — so an editor clicked into would stay unfocused (and paste_image without a ref
-            // would find nothing to paste into). Focus it the way the browser would.
-            const focusable = el.closest('input, textarea, select, button, a[href], [tabindex], [contenteditable]:not([contenteditable="false"])');
+            // would find nothing to paste into). Focus only editable targets: buttons/options/menu
+            // items are left alone, because pages that preventDefault() their mousedown (rich-editor
+            // toolbars, combobox listboxes) rely on focus staying where it is.
+            const focusable = el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
             if (focusable && focusable !== document.activeElement && typeof focusable.focus === "function") {
               focusable.focus({ preventScroll: true });
             }

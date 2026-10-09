@@ -2594,6 +2594,34 @@ test("click focuses the clicked element's nearest focusable ancestor, as a real 
   assert.equal(el.clicked, 1);
 });
 
+test("click leaves focus alone on non-editable targets (toolbar button, listbox option)", async () => {
+  const { deps: d, calls } = deps({ scriptResult: { ok: true, how: "selector .toolbar button.bold" } });
+  await call(d, "katashiro.click", { selector: ".toolbar button.bold" });
+  const inj = calls.executeScript.find((c) => Array.isArray(c.args) && c.args[3] === "single");
+  // closest() honours the selector list: the button sits in a [tabindex="-1"] listbox-ish wrapper.
+  const button = { focused: 0, focus() { this.focused++; } };
+  const wrapper = { focused: 0, focus() { this.focused++; } };
+  const el = {
+    checkVisibility: () => true, getAttribute: () => null, scrollIntoView() {}, clicked: 0, click() { this.clicked++; },
+    closest(sel) {
+      const parts = sel.split(",").map((p) => p.trim());
+      if (parts.includes("button")) return button;
+      if (parts.includes("[tabindex]")) return wrapper;
+      return null;
+    }
+  };
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "document");
+  Object.defineProperty(globalThis, "document", { value: { querySelector: () => el, activeElement: null }, configurable: true, writable: true });
+  try {
+    assert.deepEqual(inj.func(...inj.args), { ok: true, how: "selector .toolbar button.bold" });
+  } finally {
+    saved ? Object.defineProperty(globalThis, "document", saved) : delete globalThis.document;
+  }
+  assert.equal(button.focused, 0);
+  assert.equal(wrapper.focused, 0);
+  assert.equal(el.clicked, 1);
+});
+
 test("paste_image's wrapper lookup also finds contenteditable=plaintext-only", async () => {
   const page = fakePage({ prevent: false });
   const editable = page.node("DIV", { isContentEditable: true });
