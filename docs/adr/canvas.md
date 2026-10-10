@@ -98,8 +98,8 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   window. Canvases stay together and out of the user's page tabs; the group collapses to one chip.
   This needs no tab UI of our own: drag, pin, close and Split View are Chrome's.
 - The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Clicking it focuses that
-  canvas's tab, or reopens it in the group if it was closed. A tab shows one canvas, with a version
-  picker. A new canvas from the agent opens a new tab in the group without stealing focus.
+  canvas's tab, or reopens it in the group if it was closed. A tab shows one canvas, always its latest
+  content (there is no version history, §3.5). A new canvas from the agent opens a new tab in the group without stealing focus.
 - **Split View beside a web page.** Katashiro's `split_tabs` requires both tabs to share window,
   pinned state and tab group (it checks this before `tabs.createSplit`, following Chrome's split
   rule; Chrome's own rejection has not been tested live). So "canvas beside this page" temporarily
@@ -114,7 +114,7 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 - **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
   column like GitHub's file view. Documents fill the viewport with modest side padding (~24 px);
   tables and code blocks take all the width they need, and slides scale to the tab. The host
-  header (title, version, Edit/Save, Send to agent, export) is one slim bar so the content keeps
+  header (title, revision, Edit/Save, Send to agent, Revert to agent's, export) is one slim bar so the content keeps
   the height too.
 - The panel never renders canvas content itself.
 - Where the data lives and how each party reaches it: §3.9.
@@ -145,7 +145,7 @@ worker can be suspended at any point):
 ### 3.2 Isolation — host page plus sandboxed frames
 
 ```
-canvas.html  (extension page — trusted chrome: title, versions, banner, export; NEVER agent HTML)
+canvas.html  (extension page — trusted chrome: title, revision, banner, export; NEVER agent HTML)
   ├─ <iframe src="canvas-frame.html#<nonce>">       (sandbox page: our engines + editors, no agent script)
   │     renders markdown / slides / image / chart / mermaid; hosts the phase 2 editors
   └─ <iframe src="canvas-html-frame.html#<nonce>">  (sandbox page, phase 2: agent HTML + inline script)
@@ -274,7 +274,7 @@ below is built around that.
 | Tool | Does |
 |---|---|
 | `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live; **`baseVersion` is then required** (no blind writes). |
-| `katashiro.canvas_read({id, version?})` | Returns content plus version history (author, time), including **user edits** |
+| `katashiro.canvas_read({id, diff?})` | Returns the latest content (including **user edits**) with `{version, author, at, agentVersion}`; `diff: true` returns only the diff from the agent's last write to now |
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
 
@@ -285,14 +285,21 @@ below is built around that.
 
 ### 3.5 Versions and concurrency (markdown editing in phase 1, slides in phase 2)
 
-- Each save is a version `{n, author: "agent" | "user", at, content}`.
+- **No version history (Brett, 2026-10-10, §6 Q7).** A canvas keeps exactly two contents: the
+  **latest** and the **agent's last write**. `version` is only a revision counter: every save adds
+  1 and records `{author: "agent" | "user", at}` for the latest; older contents are not kept, except
+  the agent's last write (`agentVersion` + its text). That one extra copy is what the Send-to-agent
+  diff (§3.7), the `stale` diff below and **Revert to agent's** (the header button that makes the
+  agent's last write the latest again, as a user save) need. History beyond that is the user's
+  choice: the folder mirror under git (§3.6).
 - **Optimistic concurrency, agent side.** An agent update carries `baseVersion` (required with
   `id`). If the canvas has moved on (the user edited it), the call is **rejected** with a
   structured error, not the whole document:
   `{error: "stale", currentVersion, author, diffFromBase}`. `currentVersion` is the latest version
   number, and `diffFromBase` is a unified diff from `baseVersion` to it. The agent can rebase on the
-  diff without re-reading up to 2 MB. If `baseVersion` has been evicted (§3.6), `diffFromBase` is
-  `null` and the agent calls `canvas_read`. A user's edit is never silently overwritten.
+  diff without re-reading up to 2 MB. The diff exists when `baseVersion` is the agent's last write
+  (the usual case: the agent wrote, then the user edited); otherwise `diffFromBase` is `null` and
+  the agent calls `canvas_read`. A user's edit is never silently overwritten.
 - **`canvas_patch` rebases itself.** All `find`s are matched against **one snapshot of the latest
   version**, not `baseVersion` and not each other's output. Each must match exactly once, and the
   matched ranges must not overlap. Then all replacements apply together; otherwise none do and the
@@ -301,10 +308,10 @@ below is built around that.
   the agent knows the user edited in between. The common case, "the user edited section A, the
   agent patches section B", does not conflict.
 - **User side: unsaved edits are never eaten.** If the user has unsaved changes when an agent
-  version arrives, the frame does not re-render. The host stores the agent's version and shows
+  version arrives, the frame does not re-render. The host stores the agent's write and shows
   *"Agent saved vN — view / keep editing"*. When the user then saves, their `save{baseVersion}` is
   stale, and the host opens a conflict view (their text beside the latest version) where they
-  choose: keep mine as a new version on top, or discard mine. If the editor is clean, the new
+  choose: keep mine (saved on top as the latest), or discard mine. If the editor is clean, the new
   version renders directly.
 - User edits reach the agent through `canvas_read`. Open question 4: should the next prompt also get
   a one-line note such as `[canvas "X" edited by user: v5 → v6]`? If so, metadata only, never the
@@ -353,40 +360,40 @@ below is built around that.
 
 ### 3.6 Storage and ownership
 
-- `chrome.storage.local` with the `unlimitedStorage` permission. **One key per version**, so a save
-  writes only the new version, not the whole history:
-  - `canvas:<conversationId>:index` — the conversation's canvases with title, kind, latest version
-    and byte size.
-  - `canvas:<id>:meta` — title, kind, `conversationId`, version list (`n`, author, time, bytes).
-  - `canvas:<id>:v<n>` — one version's content.
-- **The cap is a byte budget, not a count.** "50 canvases × 20 versions × 2 MB" would allow 2 GB.
-  The budget is 200 MB total (a setting; sizing below and §6 Q3). Over budget, the host drops the oldest versions first
-  (each canvas keeps its first and latest), then whole canvases, least recently opened first.
-- **Sizing.** Text is small: a long markdown document is ~20–100 KB per version, a slide deck's
-  markdown ~50–300 KB, so even 2 000 text versions stay under ~200 MB. **Images dominate**: one
-  5 MB image re-saved in 20 versions alone would be 100 MB. So images are stored **once, by content
-  hash** (`canvas:img:<sha256>`), and versions refer to them; a version that only changes text
-  costs only text. With that, 200 MB holds roughly 30 distinct full-size images
-  plus years of text. It is a setting, `chrome.storage.local` with `unlimitedStorage` sits on the
+- `chrome.storage.local` with the `unlimitedStorage` permission. Per canvas, at most two bodies:
+  - `canvas:<conversationId>:index` — the conversation's canvases with title, kind, version and
+    byte size.
+  - `canvas:<id>:meta` — title, kind, `conversationId`, `version`, author and time of the latest,
+    `agentVersion`, last opened.
+  - `canvas:<id>:latest` — the latest content.
+  - `canvas:<id>:agent` — the agent's last write, only while it differs from the latest.
+- **The cap is a byte budget** (200 MB, a setting; §6 Q3). With no history, a canvas costs at most
+  two copies of its text plus its images, so the budget is reached only by many canvases or many
+  images. Over budget, the host drops whole canvases, least recently opened first (never one open
+  in a tab), after asking once.
+- **Sizing.** Text is small: a long markdown document is ~20–100 KB, a slide deck's markdown
+  ~50–300 KB, so even 1 000 canvases of text stay under ~200 MB. **Images dominate**, so they are
+  stored **once, by content hash** (`canvas:img:<sha256>`), and contents refer to them; two copies
+  of a canvas, or two canvases, sharing an image store it once. 200 MB holds roughly 30 distinct
+  full-size images plus a great deal of text. It is a setting, `chrome.storage.local` with `unlimitedStorage` sits on the
   user's disk, and `getBytesInUse` is shown in Settings so the user sees what it costs.
-- **Two writers, one lock.** The panel writes agent versions and a canvas tab writes user versions,
+- **Two writers, one lock.** The panel writes agent saves and a canvas tab writes user saves,
   and `chrome.storage` has no transactions: two read-check-write sequences can both pass the
   `baseVersion` check and the later one overwrites `meta` or the index, which would break §3.5 at
   the bottom. So every read → check → write on a canvas runs inside
   `navigator.locks.request('canvas:<id>', …)` (Web Locks are shared by all pages of the extension
   origin), and index updates and eviction take `canvas:index`. A single writer would avoid locks,
   but canvas tabs must still save while the panel is closed (§3.9).
-- **Images: no stored reference counts.** Without transactions, a crash between "write version" and
+- **Images: no stored reference counts.** Without transactions, a crash between "write content" and
   "increment count" leaves the count wrong: too low deletes a live image, too high keeps it
   forever. Instead:
-  - **Write order:** `canvas:img:<hash>` first, then the version that references it.
-  - **Eviction is mark-and-sweep** under the `canvas:index` lock: scan every `meta`'s version list
-    for image hashes, delete images nobody references, and skip images written in the last 10
-    minutes (a version referencing them may still be on its way).
-  - **Count real bytes freed.** Dropping a version frees its text, and an image only once nothing
-    references it. The eviction loop counts what was actually freed, so it never drops version
-    after version without making room. If the remaining images are referenced only by first or
-    latest versions (which are kept), it goes straight to dropping whole canvases.
+  - **Write order:** `canvas:img:<hash>` first, then the content that references it.
+  - **Sweep** under the `canvas:index` lock (after a save that replaces content, and before
+    eviction): scan every canvas's `latest` and `agent` for image hashes, delete images nobody
+    references, and skip images written in the last 10 minutes (content referencing them may still
+    be on its way).
+  - **Count real bytes freed.** Dropping a canvas frees its text, and an image only once nothing
+    else references it; eviction counts what was actually freed.
   - `storage.session` (incognito) is a separate area with its own hashes and dedup.
   - **`imageId` is copied in.** A screenshot passed by `imageId` is copied into `canvas:img:` at
     write time, not referenced in `show_image`'s temporary store, which is cleared.
@@ -394,9 +401,9 @@ below is built around that.
   migration. Until it lands, the window's conversation owns its canvases.
 - **Incognito** uses `storage.session`, mirroring the chat history (#54). Its ~10 MB quota is
   **shared with that chat history**, so the canvas budget is the quota minus what the history
-  already uses (`getBytesInUse`), with the same eviction. If the new version alone does not fit,
+  already uses (`getBytesInUse`), with the same eviction. If the new content alone does not fit,
   the tool call fails with `{error: "quota"}` and the card says so; nothing is half-written.
-- If `chrome.storage.local` becomes slow at this size, move version bodies to IndexedDB on the
+- If `chrome.storage.local` becomes slow at this size, move content bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
 
 **Local folder mirror (Brett, 2026-10-10).** `chrome.storage.local` lives only in this Chrome
@@ -417,12 +424,12 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
     .katashiro/<canvasId>.json    # id, kind, title, file path, hash + mtime last written
   ```
   Slugs come from titles (sanitized, deduplicated with a suffix); a rename moves the file.
-- **Write-through (phase 1):** after every stored version (agent or user), the latest content is
-  written to its file. The folder holds the **latest** content only; version history stays in
-  storage (or in git, if the user commits the folder).
+- **Write-through (phase 1):** after every save (agent or user), the latest content is written to
+  its file. With no version history in Katashiro (§3.5), **committing the folder to git is how the
+  user keeps history**.
 - **Read-back (phase 2):** when a canvas tab opens or regains focus, and before `canvas_read`, the
   file's hash is compared with the one last written. If it changed outside Katashiro (edited in an
-  editor, `git pull`), it is imported as a user version (`author: "user"`, `source: "file"`); if
+  editor, `git pull`), it is imported as a user save (`author: "user"`, `source: "file"`); if
   the canvas also changed in storage since, the §3.5 conflict view opens. A deleted file marks the
   canvas *file missing*; it never deletes the canvas.
 - **Permission:** a grant lasts for the browser session. After a restart Chrome may ask again
@@ -435,8 +442,10 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
 
 ### 3.7 Chat integration
 
-- The card sits in the agent's turn. Clicking it opens the canvas at the version that turn created.
-- **Reply-to** (#61) may quote a canvas version, rendering `↩ 📄 title v3`.
+- The card sits in the agent's turn, `📄 <title> · v<N>`, N being the revision that turn wrote.
+  Clicking it opens the canvas (always the latest); if it has moved on, the header says *"updated
+  since v<N>"*.
+- **Reply-to** (#61) may quote a canvas, rendering `↩ 📄 title v3` (the revision it was at).
 - `chat_history` records `[canvas "title" v3]` placeholders, not the content (as with images).
 - **"Send to agent" button (Brett, 2026-10-10; §6 Q4).** User edits are **not** announced
   automatically. The agent reads them itself with `canvas_read` when it needs to (its tool
@@ -444,9 +453,9 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
   agent** button posts one chat message, through the panel, as the user:
   `[canvas "X" v5 → v7, edited by user]` plus a unified diff from the last version the agent wrote,
   capped at 20 KB (beyond that, the line says so and the agent calls `canvas_read`), plus an
-  optional note the user types. It is enabled only when there are saved user versions the agent has
+  optional note the user types. It is enabled only when there are saved user edits the agent has
   not been sent, and only for `canvas-frame.html` canvases (never on behalf of the `html` frame).
-  **The diff is computed by the host from storage** (last agent version → latest saved version);
+  **The diff is computed by the host from storage** (agent's last write → latest);
   the frame never supplies diff text.
 - **Ideas adopted from Anthropic's artifacts** `[Artifacts]`:
   - **Edit with agent on a selection** (phase 2): highlight text in the canvas, click *Ask agent*,
@@ -521,7 +530,7 @@ flowchart TB
     SP["Side panel<br/>ACP socket + browser MCP server<br/>runs canvas_* tools"]
     ST[("chrome.storage.local<br/>working copy of canvases")]
     FS[("Local folder (optional)<br/>.md + assets, latest only")]
-    CV["canvas.html tab<br/>header, versions, Edit/Save,<br/>Send to agent"]
+    CV["canvas.html tab<br/>header, Edit/Save, Revert,<br/>Send to agent"]
     FR["canvas-frame.html<br/>sandbox iframe: render + editor<br/>no storage, no network"]
     WEB["Web pages"]
   end
@@ -562,7 +571,7 @@ sequenceDiagram
   A->>O: canvas_read(id)
   O->>P: tunnel: tools/call
   P->>S: read latest
-  P-->>A: v2 + history
+  P-->>A: v2 (+ diff from agent's v1)
   Note over C: user clicks Send to agent
   C->>P: post user message (diff v1→v2)
   P->>O: session/prompt
@@ -597,10 +606,10 @@ sequenceDiagram
 ## Consequences
 
 ### Positive
-- Long and structured output gets a full-width, persistent, versioned home, and the chat stays short.
+- Long and structured output gets a full-width, persistent home, and the chat stays short.
 - Diagrams and charts render in Brett's Chrome. The agent container needs no browser.
 - Agent-authored script is possible (phase 2) without touching the token-holding origin.
-- One model (versioned canvas plus card) serves documents, slides, charts and diagrams.
+- One model (canvas plus card) serves documents, slides, charts and diagrams.
 
 ### Negative / tradeoffs
 - Vendor weight: Milkdown crepe 2.7 MB minified (phase 1), reveal.js ~120 KB + CSS/themes, Chart.js
@@ -611,7 +620,8 @@ sequenceDiagram
 - The sandbox does not stop a frame from navigating itself. That takes a load gate, link
   interception and per-frame message allow-lists (§3.2), and the `html` kind still cannot be made
   leak-proof.
-- Version storage can grow quickly for big slide decks. Caps are needed, and old versions are lost.
+- No history inside Katashiro: besides the latest, only the agent's last write can be restored.
+  Anything older needs the folder mirror under git (§3.6).
 - pptx in either direction is lossy and must be described honestly in the UI.
 
 ### Neutral
@@ -627,7 +637,7 @@ sequenceDiagram
   That needs infra, network egress and auth, and the content leaves the machine. Rejected; the MV3
   sandbox gives the same isolation offline.
 - **`data:` URL in a new tab.** Chrome restricts top-level `data:` navigation, a `data:` page has no
-  channel back for versions/edits, and its CSP is not ours to set. Rejected.
+  channel back for saves/edits, and its CSP is not ours to set. Rejected.
 - **Offscreen document.** Not visible, and it has `chrome.*` access. Wrong tool.
 - **Render on the server and send images** (mmdc, headless Chrome in the agent). Heavy (a browser in
   every agent container, and not covered by state backup), static, and not editable. Kept only as
@@ -643,7 +653,7 @@ sequenceDiagram
 ## 5. Scope and non-goals
 
 - **Phase 1 scope:** canvas tabs in a per-conversation tab group (with the Split View rule, §3.1),
-  sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, versions,
+  sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, revision counter + agent's last write,
   card, PDF via print, and **Milkdown editing of `markdown` canvases** with the §3.5 concurrency.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
@@ -659,7 +669,7 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    *Recommended: phase 2 stops at `chart` (and `mermaid` in phase 3). If `html` is built later, it
    ships only with §3.2 in full (own frame, refused `save`/`selection`, load gate, the stated
    WebRTC/navigation leak), behind a setting that is off by default.*
-3. **Caps:** is a 200 MB byte budget right (§3.6)?
+3. **Caps:** is a 200 MB byte budget right (§3.6)? With no history it is mostly an image budget.
 4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
    **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
    `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
@@ -667,9 +677,8 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
 6. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
    folder mirror (§3.6), not a cloud sync.
-7. **Versions:** keep full version history (current draft), keep only the latest plus the agent's
-   last write (enough for the Send-to-agent diff and one "revert to agent's version"), or no
-   versions at all (a revision number for concurrency only)? Under discussion with Brett.
+7. ~~**Versions:** full history, latest + agent's last write, or none?~~ **Decided (Brett,
+   2026-10-10):** latest + the agent's last write, with a revision counter (§3.5, §3.6).
 
 ---
 
