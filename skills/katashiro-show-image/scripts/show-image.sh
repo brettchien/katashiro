@@ -39,17 +39,20 @@ size=$(wc -c < "$file" | tr -d ' ')
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# The bearer token goes in a 0600 header file read by curl (-H @file, curl ≥ 7.55), never on the
+# command line, where any process on the host could read it from ps.
+( umask 077; printf 'Authorization: Bearer %s\n' "$OPENAB_SESSION_TOKEN" > "$tmp/auth" )
 
 post() {  # post <body-file> [mcp-session-id] → response body on stdout, headers in $tmp/headers
   if [ -n "${2:-}" ]; then
     curl -sS -m 60 "$FACADE" -X POST \
       -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-      -H "Authorization: Bearer ${OPENAB_SESSION_TOKEN}" -H "Mcp-Session-Id: $2" \
+      -H @"$tmp/auth" -H "Mcp-Session-Id: $2" \
       -D "$tmp/headers" --data-binary @"$1"
   else
     curl -sS -m 60 "$FACADE" -X POST \
       -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-      -H "Authorization: Bearer ${OPENAB_SESSION_TOKEN}" \
+      -H @"$tmp/auth" \
       -D "$tmp/headers" --data-binary @"$1"
   fi
 }
@@ -60,7 +63,7 @@ post "$tmp/init.json" >/dev/null || { echo "error: cannot reach the OpenAB facad
 sid=$(grep -i '^mcp-session-id:' "$tmp/headers" | sed 's/^[^:]*: *//' | tr -d '\r')
 [ -n "$sid" ] || { echo "error: facade handshake failed (no Mcp-Session-Id)" >&2; exit 1; }
 echo '{"jsonrpc":"2.0","method":"notifications/initialized"}' > "$tmp/inited.json"
-post "$tmp/inited.json" "$sid" >/dev/null
+post "$tmp/inited.json" "$sid" >/dev/null || { echo "error: facade handshake failed (notifications/initialized)" >&2; exit 1; }
 
 # 2) katashiro.show_image — the base64 goes file → jq → body file, never onto a command line
 base64 < "$file" | tr -d '\n' > "$tmp/b64"
@@ -68,7 +71,7 @@ jq -n --rawfile data "$tmp/b64" --arg mime "$mime" --arg caption "$caption" '
   {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"execute_capability",arguments:{
     name:"katashiro.show_image",
     arguments:({data:$data, mimeType:$mime} + (if $caption == "" then {} else {caption:$caption} end))}}}' > "$tmp/call.json"
-post "$tmp/call.json" "$sid" > "$tmp/resp"
+post "$tmp/call.json" "$sid" > "$tmp/resp" || { echo "error: the show_image call to the facade failed" >&2; exit 1; }
 
 # 3) Result: the SSE "data:" line (or plain JSON) → JSON-RPC → the capability's text
 grep '^data:' "$tmp/resp" | sed 's/^data: *//' | grep -v '^$' | tail -n 1 > "$tmp/rpc.json" || true

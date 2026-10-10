@@ -670,6 +670,13 @@ class Conn {
   // inside the in-flight turn — between the tool strip and the reply bubble — or, between turns,
   // as a standalone message from this agent. Memory-only like pasted images; history gets a marker.
   async showImage({ dataUrl, caption }) {
+    // Memory cap (#60): shown images live in the DOM as data: URLs (≤ 5 MB each, ×4/3 as base64).
+    if (this.turnActive && this.stream && (this.stream.imageCount || 0) >= SHOW_IMAGE_PER_TURN) {
+      throw Object.assign(new Error(`at most ${SHOW_IMAGE_PER_TURN} images per reply`), { code: "cap" });
+    }
+    if (shownImageChars + dataUrl.length > SHOW_IMAGE_SESSION_CHARS) {
+      throw Object.assign(new Error("this panel already holds ~50 MB of shown images; ask the user to reload the panel"), { code: "cap" });
+    }
     let src = dataUrl;                                   // a data: URL browser-mcp.js built from validated base64
     let im = new Image();
     im.src = src;
@@ -707,8 +714,14 @@ class Conn {
       s.imageCount = (s.imageCount || 0) + 1;
       maybeScroll();
     } else {
-      appendMessage({ senderId: this.id, senderName: this.name, text: caption, images: [src] });
+      // Between turns: its own message (so history keeps the "image not saved" marker), rendered
+      // like the in-turn figure (#60): click to open, caption as text — not markdown.
+      appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src] });
+      const row = messagesList.lastElementChild;
+      const placed = row && row.querySelector(".bubble-image");
+      if (placed) placed.replaceWith(fig);
     }
+    shownImageChars += src.length;
     return { width: im.naturalWidth, height: im.naturalHeight };
   }
 
@@ -2118,6 +2131,9 @@ function canvasCard({ id, version, title }) {
 }
 
 // --- show_image helpers ---------------------------------------------------------
+const SHOW_IMAGE_PER_TURN = 10;                          // #60 memory cap
+const SHOW_IMAGE_SESSION_CHARS = 50 * 1024 * 1024 * 4 / 3; // ~50 MB of images, as data: URL chars
+let shownImageChars = 0;
 const SVG_RASTER_MAX_EDGE = 4096;                       // px, after the 2× scale
 const SVG_DEFAULT_SIZE = { width: 1200, height: 800 };  // an SVG with no intrinsic size
 

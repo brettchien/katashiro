@@ -3074,3 +3074,11 @@ test("katashiro.canvas_open: over budget with no room returns a quota JSON error
   assert.equal(r.isError, true);
   assert.equal(JSON.parse(r.content[0].text).error, "quota");
 });
+
+test("katashiro.show_image: a panel memory cap is reported as such, not as a decode failure (#60)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withShowImage(d, () => { throw Object.assign(new Error("at most 10 images per reply"), { code: "cap" }); });
+  const res = await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /^show_image refused: at most 10 images per reply/);
+});

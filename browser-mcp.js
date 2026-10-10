@@ -2667,6 +2667,7 @@
         try {
           dims = await ctx.showImage({ dataUrl: `data:${mimeType};base64,${data}`, caption });
         } catch (e) {
+          if (e && e.code === "cap") return errText(`show_image refused: ${e.message}`);
           return errText(`could not display the image — it does not decode as ${mimeType}`);
         }
         const size = dims && dims.width ? `${dims.width}×${dims.height} ` : "";
