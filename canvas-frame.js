@@ -243,6 +243,8 @@
       let normalized;
       if (m.kind === "markdown" && typeof m.normalizeText === "string") {
         try { normalized = CanvasCore.cleanEditorMarkdown(await normalize(m.normalizeText)); } catch (_) { /* stays unnormalized */ }
+        // #86: never store a normalization that lost an image; the agent's text stays as written.
+        if (normalized !== undefined && CanvasCore.losesImages(m.normalizeText, normalized)) normalized = undefined;
       }
       post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
     }, (err) => post({ type: "error", msg: String((err && err.message) || err) }));
