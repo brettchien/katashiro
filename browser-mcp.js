@@ -2824,8 +2824,9 @@
         "ready or failed, a decision is needed. Do not use it for routine progress or for a reply " +
         "the user is already watching. Clicking the notification focuses the browser window that " +
         "hosts this panel. `title` ≤ 80 chars, `message` ≤ 300 chars. At most one per 10 s per " +
-        "window, and repeating the previous title+message is refused for 60 s. A success means the browser " +
-        "accepted it, not that the user saw it — OS settings (notifications off, Focus) can hide it.",
+        "window, and repeating the previous title+message is refused for 60 s. A success means " +
+        "the browser accepted it, not that the user saw it — OS settings (notifications off, Focus) " +
+        "can hide it.",
       // Not a page write: it does not act with the user's site authority, so act mode does not
       // gate it. sessionScope: it needs no active tab.
       sessionScope: true,
@@ -2861,7 +2862,8 @@
         }
         // Claim the slot before awaiting: parallel calls in one turn would otherwise all pass the
         // check above before any of them recorded itself. A failed create gives the slot back.
-        lastNotify.set(windowKey, { at: now, key });
+        const mine = { at: now, key };
+        lastNotify.set(windowKey, mine);
         // The id prefix carries the panel's window so its onClicked handler focuses the right window
         // (every open panel hears every click; each only claims its own).
         const id = `${NOTIFY_ID_PREFIX}${windowKey}:${now}-${++notifySeq}`;
@@ -2873,8 +2875,12 @@
             message
           });
         } catch (e) {
-          if (last) lastNotify.set(windowKey, last);
-          else lastNotify.delete(windowKey);
+          // Give the slot back only if it is still ours: if create hung past the cooldown, a later
+          // call may have claimed it since, and restoring `last` would overwrite that call (#57).
+          if (lastNotify.get(windowKey) === mine) {
+            if (last) lastNotify.set(windowKey, last);
+            else lastNotify.delete(windowKey);
+          }
           throw e;
         }
         return okText(`notification sent: ${title ? `${title} — ` : ""}${message}`);

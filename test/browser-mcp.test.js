@@ -3082,3 +3082,30 @@ test("katashiro.show_image: a panel memory cap is reported as such, not as a dec
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /^show_image refused: at most 10 images per reply/);
 });
+
+test("katashiro.notify: a failed create gives the slot back only if no later call took it (#57)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  let clock = 1_000_000;
+  d.now = () => clock;
+  d.windowId = 4242;                                   // its own window key: lastNotify is module-level
+  let releaseA;
+  const created = [];
+  d.chrome.notifications = {
+    create: (id) => {
+      created.push(id);
+      if (created.length === 1) return new Promise((_r, rej) => { releaseA = () => rej(new Error("A failed")); });
+      return Promise.resolve(id);
+    },
+  };
+  const a = callTool(d, "katashiro.notify", { message: "A" });          // claims the slot, then hangs
+  await new Promise((r) => setTimeout(r, 0));
+  clock += 11_000;                                                       // past the 10 s cooldown
+  const c = await callTool(d, "katashiro.notify", { message: "C" });    // claims the slot, succeeds
+  assert.equal(c.isError, undefined, JSON.stringify(c));
+  releaseA();
+  const ra = await a;
+  assert.equal(ra.isError, true);
+  clock += 1_000;                                                        // C was 1 s ago
+  const repeat = await callTool(d, "katashiro.notify", { message: "C" });
+  assert.match(repeat.content[0].text, /same notification as the previous one/);   // C's slot survived A's rollback
+});
