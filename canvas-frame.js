@@ -112,6 +112,18 @@
   }
   document.addEventListener("keydown", (e) => {
     if (editing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); requestSave(); }
+    // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless one of the
+    // editor's own popups is open (slash menu, link or selection toolbar), which Esc closes first.
+    // This also matches a table's row/column handle while the pointer rests on the table, so Esc
+    // does nothing there; move the pointer off the table and it works.
+    // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
+    // so text typed just before Esc would otherwise be dropped without asking.
+    if (editing && e.key === "Escape" && !e.defaultPrevented && !e.isComposing &&
+      !editorRoot.querySelector('[data-show="true"]')) {
+      e.preventDefault();
+      editing.dirty = editorText(editing.crepe) !== editing.baseline;
+      post({ type: "escape", dirty: editing.dirty });
+    }
   });
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
