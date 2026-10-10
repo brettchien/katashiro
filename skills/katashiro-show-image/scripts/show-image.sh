@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # show-image.sh — show an image file to the user in their Katashiro side panel.
 #
-#   show-image.sh <file.png|jpg|jpeg|gif|webp> [caption]
+#   show-image.sh <file.png|jpg|jpeg|gif|webp|svg> [caption]
 #
 # Calls katashiro.show_image through the OpenAB MCP facade with this session's
 # $OPENAB_SESSION_TOKEN, so the bytes go shell → facade → ACP tunnel → Katashiro and never pass
@@ -30,7 +30,8 @@ case "$lower" in
   *.jpg|*.jpeg) mime=image/jpeg ;;
   *.gif) mime=image/gif ;;
   *.webp) mime=image/webp ;;
-  *) echo "error: unsupported type (png/jpg/jpeg/gif/webp): $file" >&2; exit 2 ;;
+  *.svg) mime=image/svg+xml ;;
+  *) echo "error: unsupported type (png/jpg/jpeg/gif/webp/svg): $file" >&2; exit 2 ;;
 esac
 
 size=$(wc -c < "$file" | tr -d ' ')

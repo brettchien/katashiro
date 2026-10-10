@@ -311,7 +311,8 @@
   // pass through the model) — same 5 MB decoded cap as upload_file. `imageId` stays local.
   const SHOW_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
   const SHOW_IMAGE_CAPTION_MAX = 200;
-  const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  // SVG is accepted: the panel rasterizes it to PNG (or, failing that, only ever shows it as an <img>).
+  const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
   // `@import` / `src()` can leak page state to a remote server through attribute selectors (CSS
@@ -2583,7 +2584,8 @@
         "Show an image to the USER in the side panel chat (they see it; you get only a one-line " +
         "confirmation). Give exactly one source: `imageId` — a capture from `screenshot` (e.g. " +
         "'here is that background tab'), no bytes sent; or `data` — base64 (or a data: URL) of a " +
-        "png/jpeg/gif/webp ≤ 5 MB with `mimeType`, e.g. a chart or diagram you rendered. Do NOT " +
+        "png/jpeg/gif/webp/svg ≤ 5 MB with `mimeType`, e.g. a chart or diagram you rendered (SVG is " +
+        "rasterized for display). Do NOT " +
         "emit large base64 yourself: send `data` from a shell helper that posts to the facade. " +
         "Optional `caption` (≤ 200 chars) is shown under the image. Not a page action, so act mode " +
         "does not gate it.",

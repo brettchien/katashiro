@@ -2919,7 +2919,7 @@ test("katashiro.show_image validates its inputs and reports undecodable images",
     {},                                                             // no source
     { imageId: "x", data: PNG_1PX, mimeType: "image/png" },          // both
     { data: PNG_1PX },                                              // raw base64 without mimeType
-    { data: PNG_1PX, mimeType: "image/svg+xml" },                   // not an allowed type
+    { data: PNG_1PX, mimeType: "image/bmp" },                       // not an allowed type
     { data: "not base64!!", mimeType: "image/png" },
     { data: big, mimeType: "image/png" },                            // over 5 MB
     { data: PNG_1PX, mimeType: "image/png", caption: "c".repeat(201) }
@@ -2934,4 +2934,13 @@ test("katashiro.show_image validates its inputs and reports undecodable images",
   assert.match(res.content[0].text, /does not decode/);
   delete d.showImage;
   assert.match((await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png" })).content[0].text, /not available/);
+});
+
+test("katashiro.show_image accepts SVG (the panel rasterizes it)", async () => {
+  const { deps: d } = deps();
+  const shown = withShowImage(d);
+  const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>').toString("base64");
+  const res = await callTool(d, "katashiro.show_image", { data: svg, mimeType: "image/svg+xml" });
+  assert.equal(res.isError, undefined, JSON.stringify(res));
+  assert.equal(shown[0].dataUrl, `data:image/svg+xml;base64,${svg}`);
 });

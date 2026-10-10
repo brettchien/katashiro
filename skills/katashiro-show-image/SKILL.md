@@ -30,7 +30,7 @@ browser.
 ## 2. An image file on your machine → the script
 
 ```bash
-<skill-dir>/scripts/show-image.sh <file.png|jpg|jpeg|gif|webp> ["optional caption"]
+<skill-dir>/scripts/show-image.sh <file.png|jpg|jpeg|gif|webp|svg> ["optional caption"]
 ```
 
 The script does the MCP handshake with the local OpenAB facade (`127.0.0.1:8848`, override with
@@ -38,8 +38,10 @@ The script does the MCP handshake with the local OpenAB facade (`127.0.0.1:8848`
 You only see one line back, e.g. `shown to the user: 1200×800 image/png (84 KB) — "build graph"`.
 
 - Limit: **5 MB** per image. Shrink or re-export larger files first.
-- Types: png, jpeg, gif, webp. For an SVG (e.g. mermaid `mmdc` output), export PNG instead
-  (`mmdc -i x.mmd -o x.png`).
+- Types: png, jpeg, gif, webp, svg. An SVG (e.g. mermaid `mmdc` output) is rasterized to PNG by
+  the panel; if Chrome refuses to rasterize it (some `foreignObject` SVGs), it is still shown, and
+  enlarges inside the panel instead of a new tab. Exporting PNG (`mmdc -i x.mmd -o x.png`) is
+  always the safest choice.
 - `caption` ≤ 200 characters, shown under the image.
 
 ## Errors
