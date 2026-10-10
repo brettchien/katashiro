@@ -1,0 +1,15 @@
+import hljs from "highlight.js/lib/core";
+import L_javascript from "highlight.js/lib/languages/javascript"; hljs.registerLanguage("javascript", L_javascript);
+import L_typescript from "highlight.js/lib/languages/typescript"; hljs.registerLanguage("typescript", L_typescript);
+import L_python from "highlight.js/lib/languages/python"; hljs.registerLanguage("python", L_python);
+import L_rust from "highlight.js/lib/languages/rust"; hljs.registerLanguage("rust", L_rust);
+import L_go from "highlight.js/lib/languages/go"; hljs.registerLanguage("go", L_go);
+import L_bash from "highlight.js/lib/languages/bash"; hljs.registerLanguage("bash", L_bash);
+import L_shell from "highlight.js/lib/languages/shell"; hljs.registerLanguage("shell", L_shell);
+import L_json from "highlight.js/lib/languages/json"; hljs.registerLanguage("json", L_json);
+import L_yaml from "highlight.js/lib/languages/yaml"; hljs.registerLanguage("yaml", L_yaml);
+import L_xml from "highlight.js/lib/languages/xml"; hljs.registerLanguage("xml", L_xml);
+import L_css from "highlight.js/lib/languages/css"; hljs.registerLanguage("css", L_css);
+import L_sql from "highlight.js/lib/languages/sql"; hljs.registerLanguage("sql", L_sql);
+import L_diff from "highlight.js/lib/languages/diff"; hljs.registerLanguage("diff", L_diff);
+globalThis.hljs=hljs;

@@ -34,17 +34,8 @@ message markdown → HTML, `DOMPurify` sanitizes it. Both exposed as browser glo
 periodically, so a frozen bundle accrues latent XSS. Pin exact versions, watch cure53 / GHSA
 advisories, and rebuild — not "vendor once and forget".
 
-- Source: `markdown-it@15.0.0` (MIT), `dompurify@3.4.12` (MPL-2.0 OR Apache-2.0), zero-`eval` both.
-- Rebuild:
-  ```sh
-  mkdir build && cd build && npm init -y && npm i markdown-it@15 dompurify@3
-  printf 'import m from "markdown-it";globalThis.markdownit=m;\n' > entry-md.js
-  printf 'import d from "dompurify";globalThis.DOMPurify=d;\n'    > entry-dp.js
-  npx esbuild entry-md.js --bundle --format=iife --minify --legal-comments=none \
-    --outfile=../vendor/markdown-it.iife.js
-  npx esbuild entry-dp.js --bundle --format=iife --minify --legal-comments=none \
-    --outfile=../vendor/dompurify.iife.js
-  ```
+- Source: `markdown-it@15.0.2` (MIT), `dompurify@3.4.16` (MPL-2.0 OR Apache-2.0), zero-`eval` both.
+- Rebuild: `scripts/vendor-build/build.sh` (see [Reproducible rebuild](#reproducible-rebuild) below).
 - Verified: eval-free (grep → 0); `renderMarkdown` renders GFM tables and strips
   `<script>` / `javascript:` / `onerror` (jsdom smoke test).
 
@@ -54,15 +45,35 @@ Syntax highlighting for fenced code blocks (ADR §3.4), run inside markdown-it's
 Exposed as the global `hljs`. **Curated language subset** — ~a dozen common languages, not all ~190
 — to keep the bundle small.
 
-- Source: `highlight.js@11.11.1` (BSD-3-Clause), core + registered languages:
+- Source: `highlight.js@11.12.0` (BSD-3-Clause), core + registered languages:
   `javascript, typescript, python, rust, go, bash, shell, json, yaml, xml, css, sql, diff`.
-- Rebuild:
-  ```sh
-  cd build && npm i highlight.js@11
-  # entry-hljs.js: import core + each language, hljs.registerLanguage(...), globalThis.hljs = hljs
-  npx esbuild entry-hljs.js --bundle --format=iife --minify --legal-comments=none \
-    --outfile=../vendor/highlight.iife.js
-  ```
+- Rebuild: `scripts/vendor-build/build.sh` — the language list is `scripts/vendor-build/entry-hljs.js`.
   (Token colors live in `sidepanel.css` — a self-hosted GitHub-dark-ish `.hljs-*` subset, no CDN.)
 - Verified: eval-free (grep → 0); `hljs.listLanguages()` = the 13 registered above; `hljs.highlight`
   emits `<span class="hljs-…">` tokens.
+
+## Reproducible rebuild
+
+The markdown-it / DOMPurify / highlight.js bundles are built from pinned inputs in
+`scripts/vendor-build/` (outside `vendor/`, so they don't ship in the release zip): the three entry
+files, a `package.json` with exact versions (esbuild included), and a `package-lock.json` that also
+pins the transitive deps (`entities`, `linkify-it`, `mdurl`, `punycode.js`, `uc.micro`).
+
+```sh
+scripts/vendor-build/build.sh   # npm ci + esbuild, then prints the sha256 of each bundle
+```
+
+The output should be byte-identical to what is committed:
+
+```
+d15f9d734865458b907a5b7307b145f00f810a7963b6e0ad89d9d0972a2c6fb6  markdown-it.iife.js
+c087a84ef0542bc645e3bcac407ffb55ff6c08558c6798dcf1448739dc1fe406  dompurify.iife.js
+add316e5136c3ed131ab6dbe99bdd05195f236462093f017426fc439eab64713  highlight.iife.js
+```
+
+To bump a version: edit `package.json`, run `npm i --package-lock-only` there, run `build.sh`, and update
+the hashes above.
+
+**Keep `"type": "module"`.** With `"type": "commonjs"` (which newer `npm init -y` writes), esbuild treats
+the ESM entry files as needing lazy-init wrappers (`__esm`). The bundle still behaves the same, but it's
+a few hundred bytes larger and its hash no longer matches.
