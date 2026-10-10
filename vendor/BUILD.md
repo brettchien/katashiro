@@ -34,10 +34,10 @@ message markdown → HTML, `DOMPurify` sanitizes it. Both exposed as browser glo
 periodically, so a frozen bundle accrues latent XSS. Pin exact versions, watch cure53 / GHSA
 advisories, and rebuild — not "vendor once and forget".
 
-- Source: `markdown-it@15.0.0` (MIT), `dompurify@3.4.12` (MPL-2.0 OR Apache-2.0), zero-`eval` both.
+- Source: `markdown-it@15.0.2` (MIT), `dompurify@3.4.16` (MPL-2.0 OR Apache-2.0), zero-`eval` both.
 - Rebuild:
   ```sh
-  mkdir build && cd build && npm init -y && npm i markdown-it@15 dompurify@3
+  mkdir build && cd build && npm init -y && npm i markdown-it@15.0.2 dompurify@3.4.16
   printf 'import m from "markdown-it";globalThis.markdownit=m;\n' > entry-md.js
   printf 'import d from "dompurify";globalThis.DOMPurify=d;\n'    > entry-dp.js
   npx esbuild entry-md.js --bundle --format=iife --minify --legal-comments=none \
@@ -54,11 +54,11 @@ Syntax highlighting for fenced code blocks (ADR §3.4), run inside markdown-it's
 Exposed as the global `hljs`. **Curated language subset** — ~a dozen common languages, not all ~190
 — to keep the bundle small.
 
-- Source: `highlight.js@11.11.1` (BSD-3-Clause), core + registered languages:
+- Source: `highlight.js@11.12.0` (BSD-3-Clause), core + registered languages:
   `javascript, typescript, python, rust, go, bash, shell, json, yaml, xml, css, sql, diff`.
 - Rebuild:
   ```sh
-  cd build && npm i highlight.js@11
+  cd build && npm i highlight.js@11.12.0
   # entry-hljs.js: import core + each language, hljs.registerLanguage(...), globalThis.hljs = hljs
   npx esbuild entry-hljs.js --bundle --format=iife --minify --legal-comments=none \
     --outfile=../vendor/highlight.iife.js
