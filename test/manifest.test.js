@@ -32,3 +32,7 @@ test("sessions is an optional permission (reopen_tab), never a required one", ()
   assert.ok(!manifest.permissions.includes("sessions"));
   assert.ok((manifest.optional_permissions || []).includes("sessions"));
 });
+
+test("notifications is a required permission (katashiro.notify)", () => {
+  assert.ok(manifest.permissions.includes("notifications"));
+});

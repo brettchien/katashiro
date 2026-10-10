@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 35 DOM-semantic browser tools", async () => {
+test("tools/list returns the 37 browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -210,7 +210,9 @@ test("tools/list returns the 35 DOM-semantic browser tools", async () => {
     "katashiro.upload_file",
     "katashiro.paste_image",
     "katashiro.reload",
-    "katashiro.inject_css"
+    "katashiro.inject_css",
+    "katashiro.chat_history",
+    "katashiro.notify"
   ]);
   // every tool carries a JSON-Schema inputSchema
   for (const t of res.tools) assert.equal(t.inputSchema.type, "object");
@@ -2646,4 +2648,98 @@ test("setImageStoreMax trims an instance's held screenshots immediately (newest 
   assert.match(gone.content[0].text, /no captured image/);
   assert.equal((await callOn("katashiro.paste_image", { imageId: ids[1], selector: "#x" })).isError, true);
   assert.equal((await callOn("katashiro.paste_image", { imageId: ids[2], selector: "#x" })).isError, undefined);
+});
+
+// --- chat_history / notify --------------------------------------------------
+
+function callTool(d, name, args) {
+  return BrowserMcp.handleMcpMessage("tools/call", { name, arguments: args || {} }, d);
+}
+
+const HISTORY = [
+  { kind: "sent", senderId: "me", senderName: "Brett", text: "is the build done?", timestamp: Date.UTC(2026, 9, 10, 7, 0, 0) },
+  { kind: "received", senderId: "a1", senderName: "Orca", text: "x".repeat(50), timestamp: Date.UTC(2026, 9, 10, 7, 1, 0) },
+  { kind: "error", senderName: "Orca", text: "turn failed", timestamp: Date.UTC(2026, 9, 10, 7, 2, 0) }
+];
+
+test("katashiro.chat_history returns the transcript oldest first, numbered, with roles", async () => {
+  const { deps: d } = deps({ actMode: false });                 // read-only: works with act mode off
+  d.chatHistory = () => HISTORY;
+  const res = await callTool(d, "katashiro.chat_history");
+  assert.equal(res.isError, undefined);
+  const text = res.content[0].text;
+  assert.match(text, /^3 of 3 messages/);
+  assert.match(text, /#1 2026-10-10T07:00:00\.000Z Brett \(user\): is the build done\?/);
+  assert.match(text, /#2 2026-10-10T07:01:00\.000Z Orca: x{50}/);
+  assert.match(text, /#3 2026-10-10T07:02:00\.000Z \[error\] Orca: turn failed/);
+  assert.ok(text.indexOf("#1 ") < text.indexOf("#3 "));
+});
+
+test("katashiro.chat_history: limit keeps the most recent N, maxChars truncates per message", async () => {
+  const { deps: d } = deps();
+  d.chatHistory = () => HISTORY;
+  const res = await callTool(d, "katashiro.chat_history", { limit: 2, maxChars: 10 });
+  const text = res.content[0].text;
+  assert.match(text, /^2 of 3 messages/);
+  assert.doesNotMatch(text, /#1 /);                             // global numbering is kept
+  assert.match(text, /#2 .* Orca: x{10}… \[40 more chars\]/);
+  assert.match(text, /#3 /);
+});
+
+test("katashiro.chat_history works with a chrome:// active tab (sessionScope)", async () => {
+  const { deps: d } = deps({ tabUrl: "chrome://newtab/" });
+  d.chatHistory = () => HISTORY;
+  const res = await callTool(d, "katashiro.chat_history");
+  assert.equal(res.isError, undefined);
+});
+
+test("katashiro.chat_history: empty, missing host, and bad args are clean results", async () => {
+  const { deps: d } = deps();
+  d.chatHistory = () => [];
+  assert.match((await callTool(d, "katashiro.chat_history")).content[0].text, /no chat history/);
+  for (const bad of [{ limit: 0 }, { limit: 201 }, { limit: 1.5 }, { maxChars: 0 }, { maxChars: 20001 }]) {
+    const res = await callTool(d, "katashiro.chat_history", bad);
+    assert.equal(res.isError, true, JSON.stringify(bad));
+  }
+  delete d.chatHistory;
+  const res = await callTool(d, "katashiro.chat_history");
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /not available/);
+});
+
+function withNotifications(d) {
+  const created = [];
+  d.chrome.notifications = { create: async (id, o) => { created.push({ id, o }); return id; } };
+  return created;
+}
+
+test("katashiro.notify creates a basic notification tagged with the panel's window", async () => {
+  const { deps: d } = deps({ actMode: false });                 // not a page write: no act-mode gate
+  const created = withNotifications(d);
+  d.windowId = 7;
+  const res = await callTool(d, "katashiro.notify", { title: "Build", message: "images ready" });
+  assert.equal(res.isError, undefined);
+  assert.equal(created.length, 1);
+  assert.ok(created[0].id.startsWith(`${BrowserMcp.NOTIFY_ID_PREFIX}7:`));
+  assert.deepEqual(created[0].o, { type: "basic", iconUrl: "icon128.png", title: "Build", message: "images ready" });
+  assert.match(res.content[0].text, /notification shown: Build — images ready/);
+});
+
+test("katashiro.notify defaults the title and validates its inputs", async () => {
+  const { deps: d } = deps();
+  const created = withNotifications(d);
+  await callTool(d, "katashiro.notify", { message: "hi" });
+  assert.equal(created[0].o.title, "Katashiro");
+  for (const bad of [{}, { message: "  " }, { message: "m".repeat(301) }, { message: "ok", title: "t".repeat(81) }]) {
+    const res = await callTool(d, "katashiro.notify", bad);
+    assert.equal(res.isError, true, JSON.stringify(bad));
+  }
+  assert.equal(created.length, 1);
+});
+
+test("katashiro.notify without the notifications API is a clean error", async () => {
+  const { deps: d } = deps();
+  const res = await callTool(d, "katashiro.notify", { message: "hi" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /notifications/);
 });

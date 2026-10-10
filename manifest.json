@@ -9,7 +9,8 @@
     "storage",
     "scripting",
     "tabs",
-    "tabGroups"
+    "tabGroups",
+    "notifications"
   ],
   "optional_permissions": [
     "sessions"
