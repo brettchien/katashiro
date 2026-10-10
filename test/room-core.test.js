@@ -502,3 +502,10 @@ test("needsReplyHint: two framed messages, or one reply — not a single plain o
   assert.equal(RoomCore.needsReplyHint(['<message from="k04">\nhi\n</message>']), false);
   assert.match(RoomCore.REPLY_HINT, /↩ <its time>/);
 });
+
+test("replyParts: no markers → the whole text; bare markers are dropped", () => {
+  assert.deepEqual(RoomCore.replyParts("plain\nreply"), [{ replyTo: null, text: "plain\nreply" }]);
+  assert.deepEqual(RoomCore.replyParts("↩ 2026-10-10T16:05:12+08:00\nA\n↩ 2026-10-10T16:07:30+08:00\n"),
+    [{ replyTo: "2026-10-10T16:05:12+08:00", text: "A" }]);
+  assert.deepEqual(RoomCore.replyParts("↩ 2026-10-10T16:05:12+08:00\n"), [{ replyTo: null, text: "↩ 2026-10-10T16:05:12+08:00\n" }]);
+});

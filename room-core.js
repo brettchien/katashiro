@@ -416,6 +416,14 @@
     return segs.map((s) => ({ replyTo: s.replyTo, text: s.lines.join("\n").trim() }));
   }
 
+  // How a finished agent reply is shown: one part per "↩" segment, or the whole text as one part when
+  // it has no markers. Parts with no text (a bare marker) are dropped — never an empty bubble.
+  function replyParts(text) {
+    const segs = splitReplySegments(text).filter((s) => s.text);
+    if (!segs.some((s) => s.replyTo)) return [{ replyTo: null, text: String(text == null ? "" : text) }];
+    return segs;
+  }
+
   // A batch the agent may want to answer piecewise — two or more user messages, or a reply — gets a
   // one-line note on the marker convention, so any agent can use it without a skill.
   const HEADER_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) [^\]\n]*\]/;
@@ -429,6 +437,7 @@
 
   return {
     splitReplySegments,
+    replyParts,
     uiTime,
     sameSecond,
     needsReplyHint,

@@ -442,7 +442,8 @@ class Conn {
     // the next round — Discord-style — instead of dribbling out over N turns.
     const batch = this.promptQueue.splice(0);
     let text = RoomCore.batchPrompts(batch);
-    if (text && RoomCore.needsReplyHint(batch)) text += `\n\n${RoomCore.REPLY_HINT}`;
+    // (A retried batch already carries the note — don't stack a second one.)
+    if (text && RoomCore.needsReplyHint(batch) && !text.endsWith(RoomCore.REPLY_HINT)) text += `\n\n${RoomCore.REPLY_HINT}`;
     let images = [];
     if (this.pendingImages.length && !this.canImage) {
       const n = this.pendingImages.splice(0).length;
@@ -788,8 +789,7 @@ class Conn {
     // turn's bubble, each later part is its own row — every part quoting (clickable) the message it
     // answers, with its own id, ↩ button and history record, so a reload replays them split too.
     const doneAt = Date.now();
-    const parts = RoomCore.splitReplySegments(s.text);
-    const split = parts.some((p) => p.replyTo) ? parts : [{ replyTo: null, text: s.text }];
+    const split = RoomCore.replyParts(s.text);
     const first = split[0];
     const firstReply = first.replyTo ? replyTargetFor(first.replyTo) : null;
     renderMarkdownInto(s.bubble, first.text);
@@ -1876,8 +1876,9 @@ messagesList.addEventListener("click", (e) => {
 });
 
 // Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
-// cascade — a human message always breaks any agent↔agent loop. User text goes verbatim (the
-// gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
+// cascade — a human message always breaks any agent↔agent loop. User text is sent under a
+// [time user (↩ quoted)] header (RoomCore.framePrompt; the gateway adds its own sender_context on
+// top); agent→agent relay stays <message from>-wrapped. @mention routing reads the raw text.
 function sendMessage() {
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
@@ -2131,13 +2132,17 @@ function attachReplyButton(contentEl, target) {
 
 // The newest recorded message sent in the second this ISO stamp names, as a reply target.
 function findMessageByTime(stamp) {
+  // Agents almost always answer the USER, so when several messages share that second prefer the
+  // user's; otherwise the newest match.
+  let fallback = null;
   for (let i = historyMessages.length - 1; i >= 0; i--) {
     const m = historyMessages[i];
-    if (m && Number.isFinite(m.timestamp) && m.kind !== "error" && RoomCore.sameSecond(stamp, m.timestamp)) {
-      return { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
-    }
+    if (!m || !Number.isFinite(m.timestamp) || m.kind === "error" || !RoomCore.sameSecond(stamp, m.timestamp)) continue;
+    const t = { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
+    if (m.kind === "sent") return t;
+    if (!fallback) fallback = t;
   }
-  return null;
+  return fallback;
 }
 
 // The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
