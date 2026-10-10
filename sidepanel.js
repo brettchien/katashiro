@@ -2131,8 +2131,14 @@ async function gotoCanvasSlide(id, slide) {
   await openCanvasTab(id, { active: true });
   const deadline = Date.now() + 6000;
   while (Date.now() < deadline) {
+    // Each send is bounded by what is left of the deadline: a listener that returned true but never
+    // answers must not hold the tool call (Jellyfish #79).
+    let timer;
+    const timeout = new Promise((res) => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())); });
     let r;
-    try { r = await chrome.runtime.sendMessage({ type: "katashiro-canvas-goto", id, slide }); } catch (_) { r = undefined; }
+    try { r = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-canvas-goto", id, slide }), timeout]); }
+    catch (_) { r = undefined; }
+    clearTimeout(timer);
     if (r) return r;
     await new Promise((res) => setTimeout(res, 300));
   }

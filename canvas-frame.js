@@ -214,13 +214,14 @@
     if (m.type === "requestSave") { requestSave(); return; }
     if (m.type === "goto") {
       // canvas_goto: a slide number only (1-based), clamped to the deck.
-      if (!revealReady || !Number.isInteger(m.slide)) return;
+      // Always answers (slide or error) so the host's pending goto never waits on us.
+      if (!revealReady || !Number.isInteger(m.slide)) { post({ type: "error", msg: "goto: the slides are not shown" }); return; }
       revealReady.then(() => {
         const total = Reveal.getTotalSlides();
         const n = Math.min(Math.max(m.slide, 1), total);
         Reveal.slide(n - 1);
         post({ type: "slide", index: n, total });
-      });
+      }).catch((e) => post({ type: "error", msg: `goto: ${(e && e.message) || e}` }));
       return;
     }
     if (m.type === "leaveEdit") { stopEdit(); return; }
