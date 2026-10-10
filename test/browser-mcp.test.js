@@ -2670,11 +2670,12 @@ test("katashiro.chat_history returns the transcript oldest first, numbered, with
   const res = await callTool(d, "katashiro.chat_history");
   assert.equal(res.isError, undefined);
   const text = res.content[0].text;
-  assert.match(text, /^3 of 3 messages \(oldest first; times are ISO 8601, the user's local time\)/);
+  assert.match(text, /^3 of 3 messages, oldest first\. Each starts with a \[time sender\] line/);
   const L = (i) => BrowserMcp.localStamp(HISTORY[i].timestamp);
-  assert.ok(text.includes(`${L(0)} user: is the build done?`));
-  assert.ok(text.includes(`${L(1)} Orca: ${"x".repeat(50)}`));
-  assert.ok(text.includes(`${L(2)} [error] Orca: turn failed`));
+  assert.ok(text.includes(`[${L(0)} user]\nis the build done?`));
+  assert.ok(text.includes(`[${L(1)} Orca]\n${"x".repeat(50)}`));
+  assert.ok(text.includes(`[${L(2)} Orca error]\nturn failed`));
+  assert.ok(text.includes("\n\n["));                                  // messages separated by a blank line
   assert.ok(text.indexOf(L(0)) < text.indexOf(L(2)));
   assert.doesNotMatch(text, /#\d+ /);                          // no #N counters (they read like PR numbers)
 });
@@ -2686,8 +2687,8 @@ test("katashiro.chat_history: limit keeps the most recent N, maxChars truncates 
   const text = res.content[0].text;
   assert.match(text, /^2 of 3 messages/);
   assert.ok(!text.includes("is the build done"));               // the oldest one is left out
-  assert.match(text, / Orca: x{10}… \[40 more chars\]/);
-  assert.match(text, /\[error\] Orca: turn faile… \[1 more chars\]/);
+  assert.match(text, / Orca\]\nx{10}… \[40 more chars\]/);
+  assert.match(text, / Orca error\]\nturn faile… \[1 more chars\]/);
 });
 
 test("katashiro.chat_history works with a chrome:// active tab (sessionScope)", async () => {
@@ -2962,5 +2963,5 @@ test("katashiro.chat_history marks a reply with the time and sender it answers",
       replyTo: { id: "c_x:" + orig, senderName: "orca", timestamp: orig, text: "沒辦法直接知道" } }
   ];
   const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
-  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000)} user ↩ ${BrowserMcp.localStamp(orig)} orca: 所以要加 sha`), text);
+  assert.ok(text.includes(`[${BrowserMcp.localStamp(orig + 110000)} user ↩ ${BrowserMcp.localStamp(orig)} orca]\n所以要加 sha`), text);
 });
