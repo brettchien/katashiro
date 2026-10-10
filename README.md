@@ -201,9 +201,14 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 > not refresh an already-open panel.
 > Or use **Settings → 重新載入 Katashiro** in the panel (asks to confirm): it calls
 > `chrome.runtime.reload()`, which re-reads the unpacked folder from disk the same way, and closes
-> the side panel in **every window** — reopen it. Every window's chat scrollback and resumable ACP
-> sessions live in `chrome.storage.session`, which a reload clears; settings are kept. A reply in
-> progress is cancelled (`session/cancel`) first.
+> the side panel in **every window** — reopen it. Each window's chat scrollback and resumable ACP
+> sessions live in `chrome.storage.local`, so they survive the reload (and a browser restart's
+> stale windows are pruned on the next panel open); settings are kept too. A reply in progress is
+> cancelled (`session/cancel`) first. The scrollback is stored on disk in your Chrome profile
+> (never synced); 🧹 clears only this window's copy — another window's scrollback is deleted once
+> that window is closed, on the next panel open. Incognito windows (if you allow Katashiro in
+> incognito) never write the scrollback to disk: it stays in `chrome.storage.session` and is lost on
+> reload or when the browser closes.
 
 > **Settings sync:** config lives in `chrome.storage.sync`, so it follows your Google account to
 > every Chrome with sync (Extensions) on. `manifest.json` pins the extension ID
