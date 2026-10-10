@@ -207,6 +207,32 @@ test("budget: when even evicting everything allowed is not enough, it fails with
   assert.equal(asked.length, 0);
 });
 
+test("budget: a storage override (≥ 1 MB) replaces 200 MB, read on every check; junk is ignored", async () => {
+  const asked = [];
+  const { s, storage } = store({ confirmEvict: async (i) => { asked.push(i); return true; } });
+  const K = CanvasStore.BUDGET_OVERRIDE_KEY, MB = 1024 * 1024;
+  assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
+  await storage.set({ [K]: 1000 });                   // under the 1 MB floor → ignored
+  assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
+  await storage.set({ [K]: "2097152" });              // not a number → ignored
+  assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
+  await storage.set({ [K]: MB });
+  assert.equal((await s.usage()).budget, MB);
+  await s.agentWrite({ conversationId: "c", title: "A", content: "a".repeat(600 * 1024) });
+  await s.agentWrite({ conversationId: "c", title: "B", content: "b".repeat(600 * 1024) });   // 1.2 MB > 1 MB
+  assert.equal(asked.length, 1);
+  assert.equal((await s.usage()).count, 1);
+  await storage.remove(K);                            // back to 200 MB, no reload
+  await s.agentWrite({ conversationId: "c", title: "C", content: "c".repeat(600 * 1024) });
+  assert.equal(asked.length, 1);
+});
+
+test("budget: an explicit budgetBytes wins over the storage override", async () => {
+  const { s, storage } = store({ budgetBytes: 10 });
+  await storage.set({ [CanvasStore.BUDGET_OVERRIDE_KEY]: 5 * 1024 * 1024 });
+  assert.equal((await s.usage()).budget, 10);
+});
+
 test("budget: a canvas opened while the confirmation was up is kept", async () => {
   const open = new Set();
   let a;

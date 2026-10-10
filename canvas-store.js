@@ -134,7 +134,8 @@
    * @param {(name: string, fn: () => Promise<any>) => Promise<any>} deps.lock
    * @param {() => number} [deps.now]
    * @param {() => string} [deps.randomHex]  12 hex chars for a new id
-   * @param {number} [deps.budgetBytes]  total canvas bytes allowed (default 200 MB, §3.6)
+   * @param {number} [deps.budgetBytes]  total canvas bytes allowed (default: the BUDGET_OVERRIDE_KEY
+   *   value in storage if set, else 200 MB, §3.6)
    * @param {(id: string) => Promise<boolean>} [deps.isOpen]  is this canvas open in a tab (never evicted)
    * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
    *        asked once when a write would go over budget; true = remove `evict` and write
@@ -157,7 +158,13 @@
     const storage = deps.storage;
     const lock = deps.lock;
     const now = deps.now || (() => Date.now());
-    const budgetBytes = deps.budgetBytes || BUDGET_BYTES;
+    // The budget: fixed by the caller (tests), else a test override in storage (read on every check,
+    // so setting or removing it needs no reload), else 200 MB.
+    async function budget() {
+      if (deps.budgetBytes) return deps.budgetBytes;
+      const v = ((await storage.get(BUDGET_OVERRIDE_KEY)) || {})[BUDGET_OVERRIDE_KEY];
+      return Number.isFinite(v) && v >= BUDGET_OVERRIDE_MIN ? Math.floor(v) : BUDGET_BYTES;
+    }
     const isOpen = deps.isOpen || (async () => false);
     const confirmEvict = deps.confirmEvict || (async () => false);
     const randomHex = deps.randomHex || (() => {
@@ -250,7 +257,7 @@
 
     async function usage() {
       const metas = await allMetas();
-      return { total: metas.reduce((n, m) => n + footprint(m), 0), count: metas.length };
+      return { total: metas.reduce((n, m) => n + footprint(m), 0), count: metas.length, budget: await budget() };
     }
 
     // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
@@ -261,6 +268,7 @@
       const total = metas.reduce((n, m) => n + footprint(m), 0);
       const mine = metas.find((m) => m.id === keepId);
       const own = mine ? footprint(mine) : 0;
+      const budgetBytes = await budget();
       const over = total - own + addBytes - budgetBytes;
       if (over <= 0) return;
       const candidates = metas
@@ -491,6 +499,11 @@
   }
 
   const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
+  // Testing the eviction without filling 200 MB: from the side panel's DevTools console,
+  //   chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })
+  // and chrome.storage.local.remove("canvas:budgetBytes") to go back. Values under 1 MB are ignored.
+  const BUDGET_OVERRIDE_KEY = "canvas:budgetBytes";
+  const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
-  return { createCanvasStore, unifiedDiff, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, unifiedDiff, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

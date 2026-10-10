@@ -402,7 +402,7 @@ below is built around that.
     `agentVersion`, last opened.
   - `canvas:<id>:latest` — the latest content.
   - `canvas:<id>:agent` — the agent's last write, only while it differs from the latest.
-- **The cap is a byte budget** (200 MB, a setting; §6 Q3). With no history, a canvas costs at most
+- **The cap is a byte budget** (200 MB, §6 Q3; a `canvas:budgetBytes` storage override exists for testing, see TESTING.md). With no history, a canvas costs at most
   two copies of its text plus its images, so the budget is reached only by many canvases or many
   images. Over budget, the host drops whole canvases, least recently opened first (never one open
   in a tab), after asking once. **The question is asked in the panel** (the agent's write arrives
