@@ -236,6 +236,13 @@ below is built around that.
   the user types. The host therefore shows a permanent banner on every canvas, *"Agent-generated
   content — Katashiro never asks for passwords or keys here"*, and the `html` kind sits behind a
   setting the user can turn off (§6 Q2; on by default per Brett).
+  **With `html` on by default, this exfiltration channel is open by default.** What the agent puts
+  into an `html` canvas, and what the user types into that frame, may leave the machine; that is
+  accepted with Brett's Q2 decision. It also means `canvas_open({kind:"html"})` is a way to send
+  data out **without act mode**: an agent steered by prompt injection on a page it read could put
+  context from other tabs into an `html` canvas that navigates to `evil.com?d=…` or uses a STUN
+  server, where doing the same through the browser tools would need act mode. §6 Q8 asks how to
+  close that bypass.
 
 ### 3.3 Content kinds, in phases
 
@@ -281,7 +288,9 @@ below is built around that.
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
 - Large payloads use a shell helper that posts to the facade (the `show_image` skill pattern), so
   the content does not pass through model output twice.
-- Not gated by act mode: like `show_image`, it changes nothing on any web page.
+- Not gated by act mode, **except `kind: "html"`** (pending §6 Q8): like `show_image`, the other
+  kinds change nothing on any web page and have no way out of the sandbox (§3.2). `html` can send
+  data out (§3.2 residual risk), so it is not "harmless output" in the act-mode sense.
 
 ### 3.5 Versions and concurrency (markdown editing in phase 1, slides in phase 2)
 
@@ -757,6 +766,18 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    folder mirror (§3.6), not a cloud sync.
 7. ~~**Versions:** full history, latest + agent's last write, or none?~~ **Decided (Brett,
    2026-10-10):** latest + the agent's last write, with a revision counter (§3.5, §3.6).
+8. **`html` and act mode** (raised in review after Q2): with `html` on by default, an `html` canvas
+   is an exfiltration path that skips act mode (§3.2 residual risk). Both options keep `html` on
+   by default:
+   - **(a) Click to run.** An `html` canvas first renders **without script** (the frame loads in a
+     no-script mode: meta CSP `script-src 'self'`, agent HTML through DOMPurify so links, forms
+     and `<meta http-equiv=refresh>` cannot navigate). The host header has **Run scripts**; one
+     click reloads the frame in script mode for that canvas revision (a host-caused load, new
+     nonce, §3.2). A new revision needs a new click.
+   - **(b) Gate `html` by act mode.** `canvas_open`/`canvas_patch` with `kind:"html"` require act
+     mode, like the browser tools; the other kinds stay ungated.
+   *Recommended (Jellyfish, Orca): (a). It keeps working outside act mode, and every script run
+   is a deliberate user action on content the user can see first.*
 
 ---
 
