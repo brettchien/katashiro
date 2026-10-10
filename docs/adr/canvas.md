@@ -143,6 +143,9 @@ below is built around that.
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
     injection laundered into the user's voice.
+- **Not web-accessible.** `canvas.html`, `canvas-frame.html` and `canvas-html-frame.html` must never
+  be listed in `web_accessible_resources`. Otherwise any web page could frame or open
+  `canvas.html?id=…`, which adds a clickjacking surface and an entry point for guessing ids.
 - **Titles** come from the agent. The host renders them with `textContent` only, capped at 120
   characters.
 - **CSP, in two layers.** `content_security_policy.sandbox` is **one policy for every sandbox
