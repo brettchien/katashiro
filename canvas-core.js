@@ -12,6 +12,7 @@
   const URL_MAX = 2048;
   const COPY_MAX = 1024 * 1024;
   const TEXT_MAX = 2 * 1024 * 1024;           // a canvas's text cap (canvas-store CONTENT_MAX_BYTES)
+  const HIGHLIGHT_TEXT_MAX = 200;
 
   // What canvas-frame.html may send (§3.2 per-frame allow-list). MVP: no editor, so no save /
   // selection yet. Anything else is dropped.
@@ -34,18 +35,29 @@
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
+    // canvas_highlight (§3.10): the answer to highlight{reqId}. tag/text describe the block for the
+    // tool result (bounded; it is the agent's own content), error says why nothing was shown.
+    highlighted: (m) => Number.isInteger(m.reqId) && typeof m.ok === "boolean" &&
+      (m.tag === undefined || (typeof m.tag === "string" && m.tag.length <= 16)) &&
+      (m.text === undefined || (typeof m.text === "string" && m.text.length <= HIGHLIGHT_TEXT_MAX)) &&
+      (m.slide === undefined || (Number.isInteger(m.slide) && m.slide >= 1)) &&
+      (m.error === undefined || (typeof m.error === "string" && m.error.length <= ERROR_MAX)),
   };
+  // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
+  // state, no selection.
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
    * an allow-listed type with well-formed fields. Returns the message or null.
    */
-  function acceptFrameMessage(event, { frameWindow, nonce }) {
+  function acceptFrameMessage(event, { frameWindow, nonce, readOnly }) {
     if (!event || !frameWindow || event.source !== frameWindow) return null;
     const m = event.data;
     if (!m || typeof m !== "object" || typeof m.type !== "string") return null;
     if (!nonce || m.nonce !== nonce) return null;
     if (!Object.prototype.hasOwnProperty.call(FRAME_TYPES, m.type)) return null;
+    if (readOnly && READ_ONLY_REFUSED.has(m.type)) return null;
     if (!FRAME_TYPES[m.type](m)) return null;
     return m;
   }
@@ -195,6 +207,84 @@
     return out.join("\n");
   }
 
+  // --- Showing what changed (§3.10) ------------------------------------------------------------
+  // The frame turns its rendered DOM into one key per block (paragraph, heading, list item, table
+  // row, code block; one per slide for slides) and these pure functions decide what to glow.
+  const normText = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
+
+  // Above this many LCS cells (prev × next blocks left after trimming the common ends) every
+  // remaining block counts as changed: a 2 MB rewrite must not stall the frame.
+  const DIFF_CELLS_MAX = 1_000_000;
+
+  /**
+   * Block-level diff of two renders: `prev` and `next` are arrays of block keys.
+   * → { changed: indices into next (new or changed blocks), removedAt: indices into next before
+   *   which blocks were removed (next.length = at the end) }. A run of removed blocks facing a run
+   * of new ones is a change (the new ones glow, no marker); removed blocks with nothing in their
+   * place leave a marker.
+   */
+  function diffBlocks(prev, next) {
+    const a = Array.isArray(prev) ? prev : [];
+    const b = Array.isArray(next) ? next : [];
+    let lo = 0;
+    while (lo < a.length && lo < b.length && a[lo] === b[lo]) lo += 1;
+    let ea = a.length, eb = b.length;
+    while (ea > lo && eb > lo && a[ea - 1] === b[eb - 1]) { ea -= 1; eb -= 1; }
+    const n = ea - lo, m = eb - lo;
+    const changed = [];
+    const removedAt = [];
+    if (n === 0 && m === 0) return { changed, removedAt };
+    if (n === 0 || m === 0 || n * m > DIFF_CELLS_MAX) {
+      for (let j = lo; j < eb; j++) changed.push(j);
+      if (m === 0 || (n > m && n * m > DIFF_CELLS_MAX)) removedAt.push(eb);
+      return { changed, removedAt };
+    }
+    // LCS lengths of the suffixes, then walk forward collecting the gaps between matches.
+    const w = m + 1;
+    const L = new Uint32Array((n + 1) * w);
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        L[i * w + j] = a[lo + i] === b[lo + j] ? L[(i + 1) * w + j + 1] + 1 : Math.max(L[(i + 1) * w + j], L[i * w + j + 1]);
+      }
+    }
+    let i = 0, j = 0, gapDel = 0, gapIns = 0;
+    const closeGap = () => {
+      if (gapDel > 0 && gapIns === 0) removedAt.push(lo + j);
+      gapDel = 0; gapIns = 0;
+    };
+    while (i < n || j < m) {
+      if (i < n && j < m && a[lo + i] === b[lo + j]) { closeGap(); i += 1; j += 1; }
+      else if (j < m && (i >= n || L[i * w + j + 1] >= L[(i + 1) * w + j])) { changed.push(lo + j); gapIns += 1; j += 1; }
+      else { gapDel += 1; i += 1; }
+    }
+    closeGap();
+    return { changed, removedAt };
+  }
+
+  /**
+   * canvas_highlight anchoring (§3.10): `blocks` = [{ text, heading }] in document order (rendered
+   * text, what the user sees). `find` must be inside exactly one block; `heading` must equal one
+   * heading's text. Whitespace is collapsed on both sides; matching is case-sensitive.
+   * → { index } | { error }
+   */
+  const FIND_MAX = 500;
+  function matchBlock(blocks, { find, heading } = {}) {
+    const list = Array.isArray(blocks) ? blocks : [];
+    const byHeading = typeof heading === "string";
+    const want = normText(byHeading ? heading : find);
+    if (!want) return { error: byHeading ? "`heading` is empty" : "`find` is empty" };
+    if (want.length > FIND_MAX) return { error: `\`${byHeading ? "heading" : "find"}\` is ${want.length} characters; at most ${FIND_MAX}` };
+    const hits = [];
+    list.forEach((blk, i) => {
+      const t = normText(blk && blk.text);
+      if (byHeading ? (blk && blk.heading && t === want) : t.includes(want)) hits.push(i);
+    });
+    if (hits.length === 1) return { index: hits[0] };
+    const what = byHeading ? `no heading reads exactly ${JSON.stringify(want)}` : `no block contains ${JSON.stringify(want)}`;
+    if (!hits.length) return { error: what };
+    return { error: `${hits.length} ${byHeading ? "headings" : "blocks"} match ${JSON.stringify(want)}; give ${byHeading ? "`find` with text from the section instead" : "a longer `find`"}` };
+  }
+
   // --- Pushes into the prompt (§3.7: Send to agent, Send error) ---------------------------------
   // Layout: the user's note first, then a fixed host line, then the canvas data in a code fence
   // longer than any backtick run inside it, so the data cannot close the fence and forge text
@@ -236,5 +326,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

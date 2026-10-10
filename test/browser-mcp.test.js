@@ -217,6 +217,7 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.canvas_read",
     "katashiro.canvas_delete",
     "katashiro.canvas_goto",
+    "katashiro.canvas_highlight",
     "katashiro.canvas_list",
     "katashiro.chat_history",
     "katashiro.notify"
@@ -3225,4 +3226,53 @@ test("katashiro.canvas_goto: slides only, positive slide, reports what is shown"
   const busy = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 1 });
   assert.match(busy.content[0].text, /editing/);
   assert.deepEqual(calls, [["cv_000000000001", 2], ["cv_000000000001", 9]]);
+});
+
+test("katashiro.canvas_highlight: one text anchor, bounded label and duration, markdown/slides only", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d, { conversationId: "c_hl" });
+  let t = 1_000_000;
+  d.now = () => t;
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "# A\n\ntext" });
+  await callTool(d, "katashiro.canvas_open", { title: "Pic", kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
+  const calls = [];
+  d.canvas.highlight = async (id, req) => { calls.push([id, req]); return { ok: true, tag: "h1", text: "A" }; };
+  const ok = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", heading: "A", label: "start here", durationMs: 60000 });
+  assert.equal(ok.content[0].text, 'highlighted h1 "A" in "Doc" for 10s with the note "start here"');
+  assert.deepEqual(calls[0], ["cv_000000000001", { label: "start here", durationMs: 10000, heading: "A" }]);   // capped at 10 s
+  for (const [args, re] of [
+    [{ id: "cv_000000000001" }, /exactly one of/],
+    [{ id: "cv_000000000001", find: "a", heading: "A" }, /exactly one of/],
+    [{ id: "cv_000000000001", find: "  " }, /is empty/],
+    [{ id: "cv_000000000001", find: "x".repeat(501) }, /at most 500/],
+    [{ id: "cv_000000000001", find: "text", label: "l".repeat(81) }, /keep it to 80/],
+    [{ id: "cv_000000000002", find: "x" }, /is image; only markdown and slides/],
+    [{ id: "cv_000000000009", find: "x" }, /cv_000000000009/],
+  ]) {
+    t += 10_000;
+    const r = await callTool(d, "katashiro.canvas_highlight", args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.content[0].text, re);
+  }
+  assert.equal(calls.length, 1);                                // none of those reached the canvas tab
+  // Rate limit per canvas; a call that showed nothing gives its slot back.
+  t += 10_000;
+  await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  t += 500;
+  const fast = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  assert.match(fast.content[0].text, /rate limited/);
+  t += 2000;
+  d.canvas.highlight = async () => ({ ok: false, error: '2 blocks match "text"; give a longer `find`' });
+  const many = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  assert.match(many.content[0].text, /^canvas_highlight: 2 blocks match/);
+  d.canvas.highlight = async () => ({ ok: true, deferred: true, tag: "p", text: "text" });
+  const later = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  assert.match(later.content[0].text, /^not shown yet: the user is editing "Doc"; .*Agent wants to show you a section.* p "text"/);
+  t += 2000;
+  d.canvas.highlight = async () => ({ ok: true, tag: "li", text: "x".repeat(300), slide: 2 });
+  const long = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "x" });
+  assert.match(long.content[0].text, /^highlighted li on slide 2 "x{120}" in "Doc" for 4s$/);
+  t += 2000;
+  delete d.canvas.highlight;
+  assert.match((await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "x" })).content[0].text, /not available/);
 });

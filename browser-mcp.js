@@ -321,6 +321,12 @@
   const SHOW_IMAGE_CAPTION_MAX = 200;
   // SVG is accepted: the panel rasterizes it to PNG (or, failing that, only ever shows it as an <img>).
   const CANVAS_DIFF_MAX = 20000;           // chars of a diff put into a tool result
+  // canvas_highlight (§3.10): a text anchor, never a selector; the glow is capped at 10 s and each
+  // canvas takes one call per CANVAS_HIGHLIGHT_COOLDOWN_MS, so a looping agent cannot strobe it.
+  const CANVAS_FIND_MAX = 500;
+  const CANVAS_HIGHLIGHT_MAX_MS = 10000;
+  const CANVAS_HIGHLIGHT_COOLDOWN_MS = 1500;
+  const lastCanvasHighlight = new Map();   // canvas id → { at } of the last call that showed something
   const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
@@ -2875,6 +2881,72 @@
         const r = await c.gotoSlide(meta.id, args.slide);
         if (!r || !r.ok) return errText(`canvas_goto: ${(r && r.error) || "failed"}`);
         return okText(`showing slide ${r.index} of ${r.total} of "${meta.title}"${r.index !== args.slide ? ` (asked for ${args.slide}; the deck has ${r.total})` : ""}`);
+      }
+    },
+
+    "katashiro.canvas_highlight": {
+      description:
+        "Point the user at a part of a CANVAS while you explain it: scrolls to one block (paragraph, " +
+        "heading, list item, table row, code block; on slides it shows that slide) and glows it, with an " +
+        "optional short `label` shown as an \"Agent:\" note above it. Brings the canvas tab to the front. " +
+        "Anchor with exactly one of `find` (text that appears in exactly one block, as the user sees it " +
+        "rendered — not markdown syntax; ≤ " + CANVAS_FIND_MAX + " chars) or `heading` (a heading's " +
+        "rendered text, exactly). No match or several matches is an error: make `find` longer. If the " +
+        "user is editing the canvas, nothing moves; they are asked in the canvas header and the result " +
+        "says so. markdown and slides canvases only. Your own canvas_open writes glow by themselves.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id" },
+          find: { type: "string", description: `rendered text inside the one block to point at (≤ ${CANVAS_FIND_MAX} chars)` },
+          heading: { type: "string", description: "a heading's rendered text, exactly" },
+          label: { type: "string", description: `short note shown above the block (≤ ${HIGHLIGHT_LABEL_MAX} chars)` },
+          durationMs: { type: "number", description: `how long it glows, ms (default ${HIGHLIGHT_DEFAULT_MS}, max ${CANVAS_HIGHLIGHT_MAX_MS})` }
+        },
+        required: ["id"]
+      },
+      redact: redactDefault,
+      /** @param {{ id: string, find?: string, heading?: string, label?: string, durationMs?: number }} args */
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        const hasFind = args.find != null, hasHeading = args.heading != null;
+        if (hasFind === hasHeading) return errText("canvas_highlight: give exactly one of `find` or `heading`");
+        const anchor = String(hasFind ? args.find : args.heading);
+        if (!anchor.trim()) return errText(`canvas_highlight: \`${hasFind ? "find" : "heading"}\` is empty`);
+        if (anchor.length > CANVAS_FIND_MAX) return errText(`canvas_highlight: \`${hasFind ? "find" : "heading"}\` is ${anchor.length} chars; at most ${CANVAS_FIND_MAX}`);
+        const label = args.label == null ? "" : String(args.label).trim();
+        if (label.length > HIGHLIGHT_LABEL_MAX) return errText(`canvas_highlight: label is ${label.length} chars; keep it to ${HIGHLIGHT_LABEL_MAX} or fewer`);
+        const ms = Math.min(Math.max(Number(args.durationMs) || HIGHLIGHT_DEFAULT_MS, 500), CANVAS_HIGHLIGHT_MAX_MS);
+        let meta;
+        try { meta = await c.store.read({ conversationId: c.conversationId(), id: args.id }); }
+        catch (e) { return errText(`canvas_highlight: ${(e && e.message) || e}`); }
+        // §3.10: html canvases refuse it (agent code styles itself); images have no blocks.
+        if (meta.kind !== "markdown" && meta.kind !== "slides") return errText(`canvas_highlight: canvas "${meta.title}" is ${meta.kind}; only markdown and slides canvases can be highlighted`);
+        if (typeof c.highlight !== "function") return errText("canvas_highlight: not available in this host");
+        const now = typeof ctx.now === "function" ? ctx.now() : Date.now();
+        const last = lastCanvasHighlight.get(meta.id);
+        const age = last ? now - last.at : Infinity;
+        if (age >= 0 && age < CANVAS_HIGHLIGHT_COOLDOWN_MS) {
+          return errText(`canvas_highlight: rate limited — one highlight per ${CANVAS_HIGHLIGHT_COOLDOWN_MS / 1000}s per canvas; retry in ${Math.ceil((CANVAS_HIGHLIGHT_COOLDOWN_MS - age) / 1000)}s`);
+        }
+        // Claimed before awaiting (parallel calls); given back if nothing was shown (no match, no
+        // tab), so the agent can fix its anchor at once — unless a later call has claimed it since.
+        const mine = { at: now };
+        lastCanvasHighlight.set(meta.id, mine);
+        const req = { label, durationMs: ms };
+        if (hasFind) req.find = anchor; else req.heading = anchor;
+        let r;
+        try { r = await c.highlight(meta.id, req); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+        if (!r || !r.ok) {
+          if (lastCanvasHighlight.get(meta.id) === mine) { if (last) lastCanvasHighlight.set(meta.id, last); else lastCanvasHighlight.delete(meta.id); }
+          return errText(`canvas_highlight: ${(r && r.error) || "failed"}`);
+        }
+        // The block's text is canvas content the agent wrote (or the user edited): quoted, bounded.
+        const what = `${r.tag || "block"}${r.slide ? ` on slide ${r.slide}` : ""} ${JSON.stringify(String(r.text || "").slice(0, 120))}`;
+        if (r.deferred) return okText(`not shown yet: the user is editing "${meta.title}"; the canvas header asks "Agent wants to show you a section" and shows ${what} when they click`);
+        return okText(`highlighted ${what} in "${meta.title}" for ${ms / 1000}s${label ? ` with the note ${JSON.stringify(label)}` : ""}`);
       }
     },
 

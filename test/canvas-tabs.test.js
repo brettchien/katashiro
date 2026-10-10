@@ -106,3 +106,46 @@ test("planRestore: a tab that was ungrouped before goes back to ungrouped", () =
   const record = { movedToGroupId: 9, windowId: 7, returnGroupId: NONE, canvasGroup: false };
   assert.deepEqual(T.planRestore({ canvasTab: canvas({ groupId: 9 }), record, groups: [] }), { action: "ungroup" });
 });
+
+// --- Compare with agent's (§3.10) -----------------------------------------------------------------
+
+const cmpUrl = (id) => T.compareTabUrl(BASE, id);
+
+test("compare tab URL: view=agent, recognised per canvas id, never a canvas tab", () => {
+  assert.equal(cmpUrl("cv_000000000001"), `${BASE}?id=cv_000000000001&view=agent`);
+  const cmp = tab({ id: 11, url: cmpUrl("cv_000000000001") });
+  assert.equal(T.isCompareTabFor(cmp, BASE, "cv_000000000001"), true);
+  assert.equal(T.isCompareTabFor(cmp, BASE, "cv_000000000002"), false);
+  assert.equal(T.isCompareTabFor(canvas({}), BASE, "cv_000000000001"), false);              // the canvas itself
+  assert.equal(T.isCompareTabFor(tab({ url: "https://evil/canvas.html?id=cv_000000000001&view=agent" }), BASE, "cv_000000000001"), false);
+  assert.equal(T.isCompareTabFor(tab({ url: "", pendingUrl: cmpUrl("cv_000000000001") }), BASE, "cv_000000000001"), true);
+  assert.equal(T.classifyTab(cmp, BASE), "other");
+});
+
+test("planCompare: focus an existing compare split, else end the current split and open a new one", () => {
+  const c = canvas({});
+  assert.deepEqual(T.planCompare({ canvasTab: null, compareTab: null, canSplit: true }), { ok: false, reason: "the canvas tab is gone" });
+  assert.deepEqual(T.planCompare({ canvasTab: c, compareTab: null, canSplit: true }),
+    { ok: true, action: "open", closeOld: null, unsplit: null, split: true });
+  // Split beside a web page (§3.1): that split ends first.
+  assert.deepEqual(T.planCompare({ canvasTab: canvas({ splitViewId: 4 }), compareTab: null, canSplit: true }),
+    { ok: true, action: "open", closeOld: null, unsplit: 4, split: true });
+  // Already compared side by side: just focus.
+  const pair = tab({ id: 11, splitViewId: 4, url: cmpUrl("cv_000000000001") });
+  assert.deepEqual(T.planCompare({ canvasTab: canvas({ splitViewId: 4 }), compareTab: pair, canSplit: true }), { ok: true, action: "focus" });
+  // A stray compare tab (not split with it) is replaced.
+  const stray = tab({ id: 12, url: cmpUrl("cv_000000000001") });
+  assert.deepEqual(T.planCompare({ canvasTab: c, compareTab: stray, canSplit: true }),
+    { ok: true, action: "open", closeOld: 12, unsplit: null, split: true });
+  // Chrome < 155: a normal tab; an open one in the same window is focused.
+  assert.deepEqual(T.planCompare({ canvasTab: c, compareTab: null, canSplit: false }),
+    { ok: true, action: "open", closeOld: null, unsplit: null, split: false });
+  assert.deepEqual(T.planCompare({ canvasTab: c, compareTab: stray, canSplit: false }), { ok: true, action: "focus" });
+  assert.deepEqual(T.planCompare({ canvasTab: c, compareTab: { ...stray, windowId: 8 }, canSplit: false }),
+    { ok: true, action: "open", closeOld: 12, unsplit: null, split: false });
+});
+
+test("compareTabProps: right after the canvas tab, same window and pin; background only when it will be split", () => {
+  assert.deepEqual(T.compareTabProps(canvas({ pinned: true }), "u", true), { url: "u", windowId: 7, index: 6, pinned: true, active: false });
+  assert.deepEqual(T.compareTabProps(canvas({}), "u", false), { url: "u", windowId: 7, index: 6, pinned: false, active: true });
+});

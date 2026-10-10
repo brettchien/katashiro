@@ -214,6 +214,7 @@ class Conn {
         confirmDelete: ({ title, version, author }) => Promise.resolve(window.confirm(
           `${this.name} 要刪除畫布「${String(title).slice(0, 60)}」（v${version}${author === "user" ? "，含你的修改" : ""}）。\n\n允許嗎？這個動作無法復原。`)),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
+        highlight: (id, req) => highlightCanvasBlock(id, req),
       },
       windowId: panelWindowId,
     };
@@ -2202,6 +2203,12 @@ async function waitCanvasNormalized(id, version, raw) {
 // so retry for a few seconds. Returns { ok, index, total } or { ok:false, error }.
 async function gotoCanvasSlide(id, slide) {
   await openCanvasTab(id, { active: true });
+  return askCanvasTab({ type: "katashiro-canvas-goto", id, slide });
+}
+
+// Ask the canvas tab (runtime messaging; only canvas tabs of that id answer, never compare tabs),
+// retrying for a few seconds while a fresh tab starts listening.
+async function askCanvasTab(msg) {
   const deadline = Date.now() + 6000;
   while (Date.now() < deadline) {
     // Each send is bounded by what is left of the deadline: a listener that returned true but never
@@ -2209,13 +2216,30 @@ async function gotoCanvasSlide(id, slide) {
     let timer;
     const timeout = new Promise((res) => { timer = setTimeout(() => res(null), Math.max(0, deadline - Date.now())); });
     let r;
-    try { r = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-canvas-goto", id, slide }), timeout]); }
+    try { r = await Promise.race([chrome.runtime.sendMessage(msg), timeout]); }
     catch (_) { r = undefined; }
     clearTimeout(timer);
     if (r) return r;
     await new Promise((res) => setTimeout(res, 300));
   }
   return { ok: false, error: "the canvas tab did not answer in time" };
+}
+
+// canvas_highlight (§3.10): an open tab is asked first and brought to the front only once it has
+// shown the block — while the user edits it answers `deferred` and must not take focus. A canvas
+// not open in a tab is opened in front (nobody is editing it). Returns the canvas tab's answer.
+async function highlightCanvasBlock(id, req) {
+  const existing = await findCanvasTab(id);
+  if (!existing) await openCanvasTab(id, { active: true });
+  const r = await askCanvasTab({ type: "katashiro-canvas-highlight", id, ...req });
+  if (existing && r && r.ok && !r.deferred) {
+    try {
+      const tab = (await findCanvasTab(id)) || existing;
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch (_) { /* highlighted either way */ }
+  }
+  return r;
 }
 
 function canvasTabUrl(id) {
@@ -2350,6 +2374,77 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (r.pageTabId === tabId) canvasTabQueue(() => restoreCanvasTab(canvasTabId)).catch(() => {});
   }
 });
+
+// Compare with agent's (§3.10): the canvas tab asks; this panel opens the read-only compare tab
+// (canvas.html?id=…&view=agent) and splits it with the canvas tab. Only from that canvas tab itself
+// (Katashiro's canvas.html, the same id, not a compare tab, a content script or another page), and
+// only for this window's conversation (every open panel hears it).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-compare") return false;
+  let fromCanvasTab = false;
+  try {
+    const u = new URL(sender && sender.url);
+    fromCanvasTab = sender.id === chrome.runtime.id && !!sender.tab && u.origin === new URL(chrome.runtime.getURL("")).origin &&
+      u.pathname === "/canvas.html" && CanvasTabs.classifyTab(sender.tab, chrome.runtime.getURL("canvas.html")) === "canvas" &&
+      u.searchParams.get("id") === msg.id && !u.searchParams.get("view");
+  } catch (_) { /* no or bad url */ }
+  if (!fromCanvasTab) { sendResponse({ ok: false, error: "not from a Katashiro canvas tab" }); return false; }
+  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  canvasTabQueue(() => compareCanvasTab(sender.tab.id, msg.id))
+    .then((r) => sendResponse(r), (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+  return true;
+});
+
+// Under the canvas tab queue. Ends a split the canvas tab is in (and moves it back to its group
+// under the §3.1 rules), then opens the compare tab beside it in the canvas tab's group and splits
+// them. The earlier split is not restored afterwards. Never leaves a half-made compare tab behind
+// if the canvas tab closes mid-way. → { ok, note? } | { ok: false, error }
+async function compareCanvasTab(canvasTabId, id) {
+  const base = chrome.runtime.getURL("canvas.html");
+  let c = await getTab(canvasTabId);
+  const existing = (await chrome.tabs.query({})).find((t) => CanvasTabs.isCompareTabFor(t, base, id)) || null;
+  const plan = CanvasTabs.planCompare({ canvasTab: c, compareTab: existing, canSplit: canSplitTabs() });
+  if (!plan.ok) return { ok: false, error: plan.reason };
+  if (plan.action === "focus") {
+    await chrome.tabs.update(existing.id, { active: true });
+    return { ok: true };
+  }
+  if (plan.closeOld != null) { try { await chrome.tabs.remove(plan.closeOld); } catch (_) { /* already gone */ } }
+  if (plan.unsplit != null) {
+    try { await chrome.tabs.unsplit(plan.unsplit); } catch (e) { return { ok: false, error: `could not end the current Split View: ${(e && e.message) || e}` }; }
+    try { await restoreCanvasTab(canvasTabId); } catch (_) { /* stays where it is */ }
+    c = await getTab(canvasTabId);
+    if (!c) return { ok: false, error: "the canvas tab closed" };
+  }
+  const created = await chrome.tabs.create(CanvasTabs.compareTabProps(c, CanvasTabs.compareTabUrl(base, id), plan.split));
+  // Re-read after every await (§3.1); the compare tab follows the canvas tab's group.
+  const fresh = async () => [await getTab(canvasTabId), await getTab(created.id)];
+  let [cv, cmp] = await fresh();
+  if (!cv) { try { await chrome.tabs.remove(created.id); } catch (_) { /* gone */ } return { ok: false, error: "the canvas tab closed" }; }
+  if (!cmp) return { ok: false, error: "the compare tab closed" };
+  const g = CanvasTabs.groupOf(cv);
+  if (canGroupTabs() && CanvasTabs.groupOf(cmp) !== g) {
+    try {
+      if (g === CanvasTabs.TAB_GROUP_NONE) await chrome.tabs.ungroup([cmp.id]);
+      else await chrome.tabs.group({ groupId: g, tabIds: [cmp.id] });
+    } catch (_) { /* the split check below decides */ }
+    [cv, cmp] = await fresh();
+    if (!cv || !cmp) { if (cmp) { try { await chrome.tabs.remove(cmp.id); } catch (_) { /* gone */ } } return { ok: false, error: "a tab closed while opening the compare view" }; }
+  }
+  const asTab = async (why) => {
+    await chrome.tabs.update(cmp.id, { active: true });
+    return { ok: true, note: `比較畫面開在一般分頁：${why}` };
+  };
+  if (!plan.split) return asTab("這個瀏覽器沒有 Split View（需要 Chrome 155+）");
+  const blocked = CanvasTabs.splitBlocker(cv, cmp);
+  if (blocked) return asTab(blocked);
+  try {
+    await chrome.tabs.createSplit([cv.id, cmp.id]);
+  } catch (e) {
+    return asTab(`could not create the split: ${(e && e.message) || e}`);
+  }
+  return { ok: true };
+}
 
 // canvas_open(…, beside: "current"): Split View with the active tab of the panel's window.
 // Returns the note for the tool result — never throws (the canvas is saved either way).
