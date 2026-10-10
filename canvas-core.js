@@ -23,6 +23,8 @@
     // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
+    // Esc in the editor (Brett, 2026-10-11): asks the host to leave edit mode, like 結束編輯.
+    escape: () => true,
     // canvas_goto: the slide now shown (1-based) and the deck's length.
     // PDF export (§3.8): the frame finished its print() call.
     printed: () => true,
@@ -45,7 +47,7 @@
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed"]);
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed", "escape"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is

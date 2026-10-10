@@ -109,6 +109,10 @@
   }
   document.addEventListener("keydown", (e) => {
     if (editing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); requestSave(); }
+    // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless it is closing
+    // one of the editor's own popups (slash menu, link or block toolbar), which comes first.
+    if (editing && e.key === "Escape" && !e.defaultPrevented && !e.isComposing &&
+      !editorRoot.querySelector('[data-show="true"]')) { e.preventDefault(); post({ type: "escape" }); }
   });
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.

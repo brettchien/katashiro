@@ -456,10 +456,19 @@
 
   editBtn.addEventListener("click", enterEdit);
   saveBtn.addEventListener("click", () => toFrame({ type: "requestSave" }));
-  cancelBtn.addEventListener("click", () => {
+  function requestLeaveEdit() {
+    if (mode !== "edit") return;
     if (dirty && !window.confirm("放棄尚未儲存的修改？")) return;
     leaveEdit();
-  });
+  }
+  cancelBtn.addEventListener("click", requestLeaveEdit);
+  // The buttons show their shortcuts (Brett, 2026-10-11): Ctrl/⌘+S saves, Esc leaves edit mode.
+  {
+    const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
+    saveBtn.textContent = `💾 儲存 ${mac ? "⌘S" : "Ctrl+S"}`;
+    cancelBtn.textContent = "結束編輯 Esc";
+    cancelBtn.title = "結束編輯（Esc）";
+  }
   revertBtn.addEventListener("click", async () => {
     if (!current) return;
     // §3.5: "cannot be undone" unless the folder mirror holds the current text (then git can).
@@ -534,6 +543,7 @@
   }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
+    if (mode === "edit" && e.key === "Escape" && !e.isComposing && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
   });
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
 
@@ -567,6 +577,9 @@
         break;
       case "save":
         if (mode === "edit") saveFromEditor(m.content, m.baseVersion);
+        break;
+      case "escape":
+        requestLeaveEdit();
         break;
       case "dirty":
         dirty = m.dirty;

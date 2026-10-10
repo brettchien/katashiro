@@ -251,3 +251,8 @@ test("matchBlock: find inside exactly one block, heading exactly; whitespace col
   assert.match(C.matchBlock([{ text: "A", heading: true }, { text: "A", heading: true }], { heading: "A" }).error, /^2 headings match/);
   assert.match(C.matchBlock(null, { find: "x" }).error, /no block/);
 });
+
+test("acceptFrameMessage: escape (Esc in the editor) is allowed, but not from a read-only compare tab", () => {
+  assert.deepEqual(ok({ type: "escape", nonce: "n1" }), { type: "escape", nonce: "n1" });
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "escape", nonce: "n1" } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+});
