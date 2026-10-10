@@ -34,7 +34,7 @@ jobs:
         run: |
           set -euo pipefail
           for f in *.js page/*.js; do node --check "$f"; done
-          for f in scripts/*.sh; do bash -n "$f"; done
+          for f in scripts/*.sh skills/*/scripts/*.sh; do bash -n "$f"; done
 
       - name: Test
         run: node --test test/*.test.js

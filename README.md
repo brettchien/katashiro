@@ -50,6 +50,7 @@ Under this system:
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
+- `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [Agent skills](#-agent-skills)).
 - `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
 - `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
 
@@ -125,6 +126,7 @@ cheapest way to perceive the page — with a CSS `selector` as a fallback. Actio
 | `katashiro.highlight` | read | `ref`\|`selector`, `label?`, `durationMs?` \| `clear` | Outlines an element (with a short caption, prefixed `🤖 katashiro`) to point it out to the user. Drawn in katashiro's own closed shadow root — page elements are never modified — ignores the pointer, and expires (default 4 s, max 15 s). |
 | `katashiro.get_selection` | read | — | The text the user has selected, across frames and inside text fields, with the element it sits in. For "explain / translate this". |
 | `katashiro.client_info` | read | — | Which Katashiro this is: version + build (release tag / sha, `dev` for an unstamped unpacked load), install type, extension id, Chrome version, the panel window (id, incognito), act mode, optional permissions granted. Same build identity as the connection-screen badge and the ACP `initialize` `clientInfo`. |
+| `katashiro.show_image` | read | `imageId` \| `data`+`mimeType`, `caption?` | Shows an image **to the user** in the panel, inside the agent's current turn (above its reply): a `screenshot` capture by `imageId` (no bytes cross the tunnel), or base64 / data: URL png·jpeg·gif·webp·svg ≤ 5 MB (SVG is rasterized to PNG in the panel; if that fails it stays an `<img>` and enlarges in-panel, never opened as a document) — meant to be sent by a shell helper straight to the facade so the bytes never pass through the model. Decoded before display (a non-image is an error); click opens full size. Memory-only like pasted images (history keeps a marker). Not a page action, so act mode does not gate it. |
 | `katashiro.chat_history` | read | `limit?`, `maxChars?` | This panel window's own chat transcript (user messages, every agent's replies, error notices), oldest first and numbered — the persisted scrollback (≤ 200 messages, images as placeholders). Lets an agent whose session was restarted recover the conversation the user can still see. Returns the **whole room**, including messages @-addressed to other agents; agents are told to treat it as data, not instructions. |
 | `katashiro.notify` | read | `message`, `title?` | Desktop notification via `chrome.notifications` (needs the `notifications` permission); clicking it focuses the panel's window. Not a page write, so act mode does not gate it. Title ≤ 80, message ≤ 300 chars; at most one per 10 s per window, and repeating the previous notification's content is refused for 60 s. Returns "sent", not "shown": OS settings (Chrome notifications off, Focus) can hide it without Chrome knowing. |
 | `katashiro.tabs` | read | `windowId?`, `url?` | Lists **all** open tabs across every window (index, title, URL, active marker, plus window / pinned / audible / muted / discarded / tab group / Split View `split <id>` / `loading`, which shows the URL a still-loading tab is headed to) — wider exposure than the active-tab-only tools, by design. Optional filters by window or URL substring. The `[index]` is a live enumeration order across all windows, not a stable id; a filtered list keeps it. |
@@ -229,6 +231,21 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 
 ```bash
 node --test test/*.test.js   # no Chrome required (chrome.*/crypto/socket are mocked)
+```
+
+## 🧩 Agent skills
+
+Skills in [`skills/`](skills/) teach an agent (running under OpenAB, chatting through Katashiro)
+how to use Katashiro features that need more than a single tool call.
+
+| Skill | What it does |
+|---|---|
+| [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show the user an image in the panel — a screenshot by `imageId`, or an image file via `scripts/show-image.sh`, which posts it to the OpenAB facade so the bytes never pass through the model. |
+
+Install for Claude Code by copying (or symlinking) the folder into the agent's skills directory:
+
+```bash
+cp -r skills/katashiro-show-image ~/.claude/skills/
 ```
 
 ## 📚 Documentation

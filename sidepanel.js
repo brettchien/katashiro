@@ -199,6 +199,8 @@ class Conn {
       // window so the click handler below focuses the right one.
       chatHistory: () => historyMessages,
       clientInfo: clientInfoSnapshot,
+      // show_image renders into THIS agent's current turn (or as its own message between turns).
+      showImage: (img) => this.showImage(img),
       windowId: panelWindowId,
     };
   }
@@ -654,6 +656,52 @@ class Conn {
   }
 
   // The current turn's tool-activity strip (above the reply bubble), created on first use.
+  // katashiro.show_image: decode first (a non-image rejects, so the tool reports it), then show it
+  // inside the in-flight turn — between the tool strip and the reply bubble — or, between turns,
+  // as a standalone message from this agent. Memory-only like pasted images; history gets a marker.
+  async showImage({ dataUrl, caption }) {
+    let src = dataUrl;                                   // a data: URL browser-mcp.js built from validated base64
+    let im = new Image();
+    im.src = src;
+    await im.decode();
+    // SVG: rasterize to PNG (2×) through a canvas. As an <img> an SVG is sandboxed (no script, no
+    // fetches), but "open full size" would load it as a DOCUMENT; a PNG never runs anything. If the
+    // canvas is tainted (Chrome may refuse foreignObject SVGs, e.g. mermaid labels), keep the SVG in
+    // an <img> and enlarge it inside the panel instead of opening it as a page.
+    let svgOnly = false;
+    if (/^data:image\/svg\+xml[;,]/i.test(src)) {
+      try {
+        src = svgToPng(im);
+        im = new Image();
+        im.src = src;
+        await im.decode();
+      } catch (_) {
+        svgOnly = true;
+      }
+    }
+    im.className = "bubble-image agent-image";
+    im.alt = caption || "image";
+    im.addEventListener("click", () => (svgOnly ? openLightbox(src, caption) : openImageTab(src)));
+    const fig = document.createElement("figure");
+    fig.className = "agent-figure";
+    fig.appendChild(im);
+    if (caption) {
+      const cap = document.createElement("figcaption");
+      cap.textContent = caption;                         // textContent: agent-supplied text
+      fig.appendChild(cap);
+    }
+    if (this.turnActive) {
+      if (!this.stream || !this.stream.bubble) this.startStream();
+      const s = this.stream;
+      s.contentEl.insertBefore(fig, s.bubble);
+      s.imageCount = (s.imageCount || 0) + 1;
+      maybeScroll();
+    } else {
+      appendMessage({ senderId: this.id, senderName: this.name, text: caption, images: [src] });
+    }
+    return { width: im.naturalWidth, height: im.naturalHeight };
+  }
+
   ensureToolStrip() {
     if (!this.stream || !this.stream.bubble) this.startStream();
     const s = this.stream;
@@ -719,8 +767,9 @@ class Conn {
       // Exception: a turn that ran browser tools but emitted no text is a legitimate pure-action
       // turn — keep the row (and its tool-activity strip) so the user still sees what happened;
       // only the empty typing bubble is dropped.
-      if (s.toolStrip && s.toolStrip.childElementCount > 0) {
+      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount) {
         s.bubble.remove();
+        if (s.imageCount) recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText("", s.imageCount), timestamp: Date.now() });
         if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
         maybeScroll();
         return;
@@ -734,7 +783,7 @@ class Conn {
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
     renderMarkdownInto(s.bubble, s.text);
-    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
+    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText(s.text, s.imageCount || 0), timestamp: Date.now() });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
   }
@@ -1930,6 +1979,53 @@ function formatTime(timestamp) {
 // stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
 // handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
 // renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
+// --- show_image helpers ---------------------------------------------------------
+const SVG_RASTER_MAX_EDGE = 4096;                       // px, after the 2× scale
+const SVG_DEFAULT_SIZE = { width: 1200, height: 800 };  // an SVG with no intrinsic size
+
+// Draw a decoded SVG <img> onto a canvas at 2× and return a PNG data URL. Throws if the canvas is
+// tainted (toDataURL SecurityError) — the caller falls back to showing the SVG as an <img>.
+function svgToPng(img) {
+  const w0 = img.naturalWidth || SVG_DEFAULT_SIZE.width;
+  const h0 = img.naturalHeight || SVG_DEFAULT_SIZE.height;
+  const { width, height } = Composer.fitDimensions(w0 * 2, h0 * 2, SVG_RASTER_MAX_EDGE);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const g = canvas.getContext("2d");
+  g.fillStyle = "#ffffff";                              // SVGs are often transparent; the panel is dark
+  g.fillRect(0, 0, width, height);
+  g.drawImage(img, 0, 0, width, height);
+  return canvas.toDataURL("image/png");
+}
+
+// Full size in a new tab. Chrome refuses to open data: URLs at top level, so go through a blob: URL —
+// decoded by hand, since the CSP's connect-src does not allow fetch(data:). Raster images only.
+function openImageTab(dataUrl) {
+  const [head, b64] = dataUrl.split(",", 2);
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type: head.slice(5, head.indexOf(";")) }));
+  window.open(url, "_blank");
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+// Enlarge inside the panel (still an <img>, never a document) — used for an SVG we could not rasterize.
+function openLightbox(src, caption) {
+  const overlay = document.createElement("div");
+  overlay.className = "image-lightbox";
+  const big = document.createElement("img");
+  big.src = src;
+  big.alt = caption || "image";
+  overlay.appendChild(big);
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey); };
+  const onKey = (e) => { if (e.key === "Escape") close(); };
+  overlay.addEventListener("click", close);
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(overlay);
+}
+
 function appendMessage({ senderId, senderName, text, timestamp, images }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");

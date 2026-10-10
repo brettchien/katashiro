@@ -741,6 +741,39 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .attach-thumb .attach-remove:hover { background: rgba(0, 0, 0, 0.85); }
 
+/* An image the agent showed (katashiro.show_image), inside its turn above the reply. */
+.agent-figure {
+  margin: 4px 0;
+}
+.agent-figure .agent-image {
+  max-width: 100%;
+  max-height: 320px;
+  cursor: zoom-in;
+}
+.agent-figure figcaption {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
+/* show_image: an SVG enlarged inside the panel (kept as <img>). Click or Esc closes. */
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  cursor: zoom-out;
+}
+.image-lightbox img {
+  max-width: none;
+  width: 100%;
+  background: #ffffff;
+}
+
 /* Inline image(s) inside a chat bubble. */
 .bubble-image {
   max-width: 220px;
