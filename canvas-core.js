@@ -116,5 +116,28 @@
     return typeof s === "string" && IMAGE_DATA_URL_RE.test(s);
   }
 
-  return { splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  /**
+   * Milkdown writes an empty paragraph as a line with only "<br />" (to keep the blank line). The
+   * canvas renders markdown with html:false, so it would show as the literal text "<br />", and it
+   * piles up on every save. Treat such a line as a blank line: drop it (outside code fences) and
+   * collapse the run of blank lines it leaves. Idempotent.
+   */
+  function cleanEditorMarkdown(text) {
+    const lines = String(text == null ? "" : text).split("\n");
+    const out = [];
+    let fence = null;
+    for (const line of lines) {
+      const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (fence === null) fence = f[1];
+        else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
+      }
+      if (fence === null && /^\s*<br\s*\/?>\s*$/i.test(line)) continue;
+      if (fence === null && line.trim() === "" && out.length && out[out.length - 1].trim() === "") continue;
+      out.push(line);
+    }
+    return out.join("\n");
+  }
+
+  return { cleanEditorMarkdown, splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
