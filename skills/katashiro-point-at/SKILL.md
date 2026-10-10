@@ -19,12 +19,13 @@ heaviest. Pick the lightest that works.
 ## 1. One element on a page → `katashiro.highlight` (default)
 
 1. `katashiro.snapshot` (or the snapshot an action just returned) to get the element's `ref`.
-2. If it may be off-screen, `katashiro.scroll` with that `ref`.
-3. `katashiro.highlight` with `{ref, snapshotId, label, durationMs}`.
+2. `katashiro.highlight` with `{ref, snapshotId, label, durationMs}`. It checks the element is
+   visible and scrolls it to the center itself; no separate `scroll` needed.
 
 - Snapshots give `ref`s only to interactive elements. For a heading or paragraph, pass a CSS
-  `selector` instead (from `read_dom`), e.g. on GitHub markdown
-  `.markdown-heading:has(a[id^="user-content-310-"])`. `scroll` accepts the same selector.
+  `selector` instead. `read_dom` returns raw HTML, not selectors: read the markup and write a
+  selector from it (prefer an id or a stable class), e.g. on GitHub markdown
+  `.markdown-heading:has(a[id^="user-content-310-"])`.
 - `label`: a few words, max 80 characters ("Save button", "the 200 MB limit").
 - `durationMs`: default 4000, max 15000. Use longer while you explain in the same turn.
 - Read-only and harmless: the outline lives in Katashiro's own overlay, never changes the page,
@@ -46,22 +47,32 @@ keep emphasis while the user scrolls.
 }
 ```
 
-- Needs **CSS selectors**. Snapshot `ref`s are not selectors; get a stable selector from
-  `katashiro.read_dom` on the region.
+- Needs **CSS selectors**. Snapshot `ref`s are not selectors. Read the region's markup with
+  `katashiro.read_dom` (raw HTML) and write a selector from it (prefer an id or a stable class).
+- To dim the rest of a page, keep `opacity` at 0.3 or above so the content stays readable.
 - Use `!important` to win over the site's styles.
 - It is a **write** tool, gated by act mode. If act mode is off, fall back to `highlight`.
-- Refused: anything that fetches (`url()`, `@import`, `image-set()`, `@font-face`) and CSS escapes
-  (`\`). Use colors, outlines, shadows and opacity only.
+- Refused: anything that fetches (`url()`, `src()`, `image()`, `image-set()`, `cross-fade()`,
+  `element()`, `@import`, `@font-face`), `@namespace`, and CSS escapes (`\`). Use colors, outlines,
+  shadows and opacity only.
 - **Always clean up**: call `katashiro.inject_css` with `{clear: true}` when you are done or the
   user moves on, and tell the user it is temporary (it also disappears on reload).
+  - `clear` works on the **active tab** only. Clear **before** `switch_tab`, or the old tab keeps
+    the CSS.
+  - `clear` removes every sheet Katashiro injected into that tab, including styles the user asked
+    for earlier (e.g. a reading theme). If there are any, re-apply them after clearing, or tell
+    the user.
 - Never hide content the user needs, and never restyle a page to look like something it is not
   (fake banners, fake buttons). Emphasise; don't alter.
 
 ## 3. A part of a Katashiro canvas → `katashiro.canvas_highlight`
 
-For canvases (documents and slides the agent rendered; see the Katashiro canvas ADR), use
-`katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It scrolls the canvas
-to the block and glows it. You cannot inject CSS into a canvas: the effects are fixed (outline and
+For canvases (documents and slides the agent rendered; see the canvas ADR, `docs/adr/canvas.md`,
+PR #66), use `katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It
+scrolls the canvas to the block and glows it. `find` matches the block's **rendered text** (what
+the user sees, not the markdown source), at most 500 characters, and must match exactly one
+block; `heading` matches a heading's rendered text exactly. No match or several matches is an
+error. You cannot inject CSS into a canvas: the effects are fixed (outline and
 background only), and you only give a text anchor. `durationMs` is capped at 10 s and calls are
 rate-limited; it is refused on `html` canvases; while the user is editing, it does not scroll but
 asks the user ("Agent wants to show you a section"). Available once canvas phase 1 ships; check with `search_capabilities`.
