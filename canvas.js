@@ -190,6 +190,9 @@
     document.getElementById("conflict-latest").value = c.content;
     document.getElementById("conflict-latest-label").firstChild.textContent = `目前的版本 v${c.meta.version}（${c.meta.author === "agent" ? "agent" : "使用者"}）`;
     conflictEl.hidden = false;
+    // Take focus out of the editor frame: keys typed behind the overlay are not in pendingSave
+    // and would be lost when "keep mine" ends the edit.
+    document.getElementById("conflict-keep").focus();
   }
 
   document.getElementById("conflict-keep").addEventListener("click", async () => {
