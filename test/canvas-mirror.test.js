@@ -414,6 +414,55 @@ test("deleted on save (no tab check first) also stops; a file put back outside r
   assert.equal(await readText(env.dir, "c/plan.md"), "v3\n");
 });
 
+test("deleted, then renamed: still nothing written under the new title until rewrite", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  assert.equal((await env.mirror.sync(id, { check: true })).state, "deleted");
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Plan Renamed", content: "v2\n" });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.deepEqual(await env.mirror.sync(id, { check: true }), { action: "none", state: "deleted" });
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), []);
+  // rewrite: under the new title
+  assert.equal((await env.mirror.sync(id, { rewrite: true })).action, "write");
+  assert.equal(await readText(env.dir, "c/plan-renamed.md"), "v2\n");
+  assert.equal((await env.meta(id)).file.state, "ok");
+});
+
+test("image canvas deleted on save: no new asset, and a removed conversation folder is not recreated", async () => {
+  const env = setup();
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const PNG2 = PNG.slice(0, -8) + "AAAAAA==";
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  await env.mirror.sync(id);
+  const before = listFiles(await env.dir.getDirectoryHandle("c"));
+  (await env.dir.getDirectoryHandle("c")).removeEntry("shot.md");
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), before.filter((f) => f !== "shot.md"));
+  // rm -rf of the whole conversation folder, detected on save
+  const b = await env.store.agentWrite({ conversationId: "d", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  await env.mirror.sync(b.id);
+  await env.dir.removeEntry("d");
+  await env.store.agentWrite({ conversationId: "d", id: b.id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  assert.deepEqual(await env.mirror.sync(b.id), { action: "none", state: "deleted" });
+  assert.equal(env.dir.entries.has("d"), false);
+});
+
+test("#95's \"missing\" meta is taken as deleted: no write on save", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  const m = await env.meta(id);
+  await env.storage.set({ [`canvas:${id}:meta`]: { ...m, file: { ...m.file, state: "missing" } } });
+  await env.store.userSave({ id, baseVersion: 1, content: "v2\n" });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.equal(await readText(env.dir, "c/plan.md"), null);
+  assert.equal((await env.meta(id)).file.state, "deleted");
+});
+
 test("slug collisions get -2; a conversation keeps one slug; slugs come from storage, not the folder", async () => {
   const env = setup();
   const a = await env.store.agentWrite({ conversationId: "c_one", title: "Plan", content: "a" });
@@ -575,7 +624,7 @@ test("describeState: header text for each state", () => {
   assert.equal(M.describeState(null), null);
   assert.equal(M.describeState({ state: "ok" }).level, "ok");
   assert.match(M.describeState({ state: "changed", conflictName: "p.katashiro-1.md" }).title, /changed outside Katashiro.*p\.katashiro-1\.md/);
-  assert.match(M.describeState({ state: "missing" }).text, /不見/);
+  assert.match(M.describeState({ state: "missing" }).text, /不再同步/);
   assert.match(M.describeState({ state: "deleted" }).text, /不再同步/);
   assert.equal(M.describeState({ state: "error", error: "x" }).title, "x");
 });

@@ -693,7 +693,7 @@
       fileEl.classList.toggle("warn", d.level === "warn");
     }
     const state = d ? meta.file.state : null;
-    rewriteBtn.hidden = state !== "deleted" || deleted || compareView;
+    rewriteBtn.hidden = (state !== "deleted" && state !== "missing") || deleted || compareView;
     if (d && d.level === "warn" && state !== shownFileState) notice(d.title);
     shownFileState = state;
   }
