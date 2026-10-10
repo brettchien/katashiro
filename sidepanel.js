@@ -54,6 +54,21 @@ function connById(id) {
 
 // ACP constants
 const ACP_PROTOCOL_VERSION = 1;
+// Which build this is: manifest version + release tag / sha from build-info.json ("dev" when
+// absent — an unstamped unpacked load). Shared by the connection-screen badge and the ACP
+// initialize clientInfo (ADR build-provenance-and-version-display). Never rejects.
+const BUILD_INFO = (async () => {
+  const version = chrome.runtime.getManifest().version;
+  let detail = "dev";
+  try {
+    const res = await fetch(chrome.runtime.getURL("build-info.json"));
+    if (res.ok) {
+      const b = await res.json();
+      detail = b.tag || b.sha || "dev";
+    }
+  } catch (_) { /* absent in unpacked dev → dev */ }
+  return { version, detail };
+})();
 const ACP_CWD = "/home/agent";
 // Default request timeout — guards a peer that goes silent WITHOUT closing the socket
 // (onclose rejects pending reqs, but a half-open connection never fires it), which would
@@ -293,10 +308,12 @@ class Conn {
   }
 
   handshake() {
-    this.acpRequest("initialize", {
-      protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: {},
-    })
+    BUILD_INFO
+      .then(({ version, detail }) => this.acpRequest("initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: RoomCore.acpClientInfo(version, detail),
+      }))
       .then((init) => {
         // Only send image blocks to an agent that declares it takes them; the gateway answers
         // `image: false` (and -32602 on an image block) until it supports them.
@@ -794,15 +811,7 @@ const actModeHintEl = document.getElementById("act-mode-hint");
 // unpacked dev shows "dev". Lets you confirm which build actually loaded after an Update + reopen.
 async function loadBuildInfo() {
   if (!buildBadgeEl) return;
-  const version = chrome.runtime.getManifest().version;
-  let detail = "dev";
-  try {
-    const res = await fetch(chrome.runtime.getURL("build-info.json"));
-    if (res.ok) {
-      const b = await res.json();
-      detail = b.tag || b.sha || "dev";
-    }
-  } catch (_) { /* absent in unpacked dev → dev */ }
+  const { version, detail } = await BUILD_INFO;
   buildBadgeEl.textContent = `v${version} · ${detail}`;
   buildBadgeEl.title = `Katashiro v${version}（build: ${detail}）`;
 }

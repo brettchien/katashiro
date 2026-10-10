@@ -329,7 +329,18 @@
     return list.length ? list[0].url : null;
   }
 
+  // ACP initialize `clientInfo` (ACP Implementation: name, title, version). The build — release tag
+  // or sha from build-info.json, "dev" for an unstamped unpacked load — rides as semver build
+  // metadata, so the agent side can tell which Katashiro build it is talking to
+  // (ADR build-provenance-and-version-display). Anything outside [0-9A-Za-z.-] is dropped from it.
+  function acpClientInfo(version, build) {
+    const v = String(version || "0.0.0");
+    const b = String(build || "").replace(/[^0-9A-Za-z.-]/g, "").slice(0, 40) || "dev";
+    return { name: "katashiro", title: "Katashiro", version: `${v}+${b}` };
+  }
+
   return {
+    acpClientInfo,
     escapeAttr,
     wrapRelay,
     batchPrompts,

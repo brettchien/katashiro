@@ -412,3 +412,12 @@ test("configSyncState: a stored config with a good write reports synced; missing
   assert.equal(RoomCore.configSyncState({ writeFailed: false, runningOnDefaults: false }), "synced");
   assert.equal(RoomCore.configSyncState(undefined), "synced");
 });
+
+test("acpClientInfo: name/title + version with the build as semver metadata", () => {
+  assert.deepEqual(RoomCore.acpClientInfo("2.6.1", "8d98205"), { name: "katashiro", title: "Katashiro", version: "2.6.1+8d98205" });
+  assert.equal(RoomCore.acpClientInfo("2.6.1", "v2.6.1").version, "2.6.1+v2.6.1");
+  assert.equal(RoomCore.acpClientInfo("2.6.1", "dev").version, "2.6.1+dev");
+  for (const b of [undefined, "", "   ", "!!!"]) assert.equal(RoomCore.acpClientInfo("2.6.1", b).version, "2.6.1+dev");
+  assert.equal(RoomCore.acpClientInfo("2.6.1", "a b\n<x>/c").version, "2.6.1+abxc");
+  assert.equal(RoomCore.acpClientInfo("2.6.1", "x".repeat(99)).version.length, "2.6.1+".length + 40);
+});
