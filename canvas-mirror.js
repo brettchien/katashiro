@@ -185,7 +185,10 @@
     switch (file.state) {
       case "ok": return { level: "ok", text: "📁 已存到資料夾", title: "最新內容已寫進資料夾" };
       case "recreated": return { level: "warn", text: "📁 檔案被刪過，已重新寫入", title: "資料夾裡的檔案在 Katashiro 外被刪除；畫布不受影響，已用最新內容重新寫入" };
-      case "missing": return { level: "warn", text: "📁 資料夾裡的檔案不見了", title: "資料夾裡的檔案在 Katashiro 外被刪除；畫布不受影響，下次儲存會重新寫入" };
+      // Brett 2026-10-11 (1B): a file deleted outside is taken as meant — this canvas stops mirroring
+      // until the user asks to write it again (or the file comes back). "missing" is #95's meta for it.
+      case "missing":
+      case "deleted": return { level: "warn", text: "📁 檔案已刪除，不再同步", title: "資料夾裡的檔案在 Katashiro 外被刪除，這個畫布不再寫進資料夾；畫布本身不受影響。按「重新寫入」恢復同步。" };
       case "changed": return {
         level: "warn", text: "📁 檔案在 Katashiro 外被修改過",
         title: file.conflictName
@@ -401,8 +404,10 @@
      * "disconnected" | "none" | "write" | "adopt" | "conflict" | "error", state }).
      * check: also look at the file when nothing needs writing (canvas tab open), to notice an
      * outside change or deletion. Nothing is ever read back into the canvas.
+     * rewrite: the user asked to write a file deleted outside again (state "deleted" otherwise
+     * stops this canvas's mirroring, Brett 2026-10-11).
      */
-    async function sync(id, { check = false } = {}) {
+    async function sync(id, { check = false, rewrite = false } = {}) {
       if (!ID_RE.test(String(id))) return { action: "skipped" };
       const root = await deps.getRoot();
       if (!root) return { action: "disconnected" };
@@ -416,6 +421,18 @@
         const returning = !!prev && prev !== meta.file;
         let file = prev;
         try {
+          // Deleted outside: nothing is written — not under a new title's path either, nor an asset —
+          // until the user asks, or the file is back at its old path (then the usual rules apply:
+          // ours → write, anything else → conflict file). "missing" is #95's state for the same thing.
+          if (prev && (prev.state === "deleted" || prev.state === "missing") && !rewrite) {
+            const oldCtx = { id, convSlug: prev.convSlug, slug: prev.slug };
+            const back = isValidSlug(prev.slug) && isValidSlug(prev.convSlug) &&
+              (await hashAt(root.dir, mdPath(oldCtx), oldCtx)) !== null;
+            if (!back) {
+              await saveFile(id, { ...prev, state: "deleted", error: undefined }, meta.fileSyncedVersion);
+              return { action: "none", state: "deleted" };
+            }
+          }
           if (!prev || !isValidSlug(prev.slug) || !isValidSlug(prev.convSlug) || prev.slugBase !== slugify(meta.title)) {
             file = await assignSlugs(id, root.dir, root.folderId, prev);
           }
@@ -432,11 +449,12 @@
               if (prev.hash === newHash && (prev.state === "ok" || prev.state === "recreated")) await saveFile(id, prev, meta.version);
               return { action: "none", state: prev.state };
             }
-            const state = fileState({ diskHash: await hashAt(root.dir, mdPath(ctx), ctx), lastHash: prev.hash });
+            const seen = fileState({ diskHash: await hashAt(root.dir, mdPath(ctx), ctx), lastHash: prev.hash });
+            const state = seen === "missing" && !rewrite ? "deleted" : seen;
             // Fall through and write only when that clobbers nothing: the file is still what we
             // wrote but older (the latest went to a conflict file meanwhile), or there is none yet.
-            // A deleted file is only marked (it never deletes the canvas); the next save writes it.
-            const behind = (state === "ok" && prev.hash !== newHash) || state === "absent";
+            // A deleted file is only marked (it never deletes the canvas) and stops the mirroring.
+            const behind = (state === "ok" && prev.hash !== newHash) || state === "absent" || (seen === "missing" && rewrite);
             if (!behind) {
               const synced = state === "ok" && prev.hash === newHash ? meta.version : meta.fileSyncedVersion;
               await saveFile(id, { ...prev, state, error: undefined }, synced);
@@ -445,14 +463,20 @@
           }
 
           const next = { ...file, error: undefined };
+          const md = mdPath(ctx);
+          const plan = planWrite({ diskHash: await hashAt(root.dir, md, ctx), lastHash: file.hash, newHash });
+          if (plan.action === "write" && plan.missing && !rewrite) {
+            // Ours, and gone: deleted outside on purpose (1B). Mark it; write nothing (before the
+            // asset below, which would otherwise land, or recreate a removed folder).
+            await saveFile(id, { ...file, state: "deleted", error: undefined }, meta.fileSyncedVersion);
+            return { action: "none", state: "deleted" };
+          }
           // Assets first, then the .md that links them (§3.6 write order). Content-addressed: an
           // existing file is left alone whatever it holds (never overwritten).
           if (out.asset) {
             const segs = assetPath(ctx, out.asset.name);
             if ((await hashAt(root.dir, segs, ctx)) === null) await writeAt(root.dir, segs, out.asset.bytes, ctx);
           }
-          const md = mdPath(ctx);
-          const plan = planWrite({ diskHash: await hashAt(root.dir, md, ctx), lastHash: file.hash, newHash });
           if (plan.action === "write") {
             await writeAt(root.dir, md, textBytes, ctx);
             next.hash = newHash;

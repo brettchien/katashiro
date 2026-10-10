@@ -577,16 +577,20 @@ is silent, the conservative choice:
 - Known limit: between hashing the file and the swap file's move into place (`createWritable` →
   `close`) is a window of a few ms in which an outside write would be overwritten. File System
   Access has no compare-and-swap; the window is accepted.
-- **File missing** is detected when a canvas tab opens (and on any sync): the canvas is marked,
-  never deleted, and the next save writes the file again (`state: "recreated"`), since the "no
-  file" rule above allows it and storage is the working copy. Outside changes are only detected on
+- **A file deleted outside** is detected when a canvas tab opens and on any sync. The canvas is
+  never deleted. **Decided (Brett, 2026-10-11): the deletion is taken as meant** — the canvas is
+  marked `state: "deleted"` ("📁 檔案已刪除，不再同步") and nothing is written for it any more,
+  not even on later saves, until the user clicks **📁 重新寫入** in the canvas header (`sync(id,
+  { rewrite: true })`), or the file comes back outside (a `git checkout`), after which the usual
+  rules apply (ours → written over, anything else → conflict file). A rename to a new path is not a
+  deletion (Katashiro never wrote there). Outside changes are only detected on
   open in phase 1 (no focus check, diff or import; read-back stays phase 2).
 - Deleting or evicting a canvas leaves its files. A rename removes the old `.md` only when its hash
   matches; old `.assets` files always stay, as do assets of a replaced image. An existing asset
   file is never overwritten (content-addressed: it is either ours or left alone).
 - Image canvases are written as `![caption](<slug>.assets/<sha256>.<ext>)`; an SVG or
   unrecognised image is not written, and the `.md` says it is kept in Katashiro only.
-- The Revert-to-agent's dialog drops "cannot be undone" only while the folder holds this exact
+- The Revert-to-agent's dialog (kept as is, Brett 2026-10-11) drops "cannot be undone" only while the folder holds this exact
   revision, and then says the old text survives only if the folder was committed to git (the
   write-through overwrites the file right after). *Discard mine* always says it cannot be undone:
   unsaved text never reached the folder.
