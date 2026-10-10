@@ -33,6 +33,27 @@
   // markdown-it's default preset — the readability fix this ADR is motivated by (§1.1).
   const md = global.markdownit({ html: false, linkify: true, highlight: highlightFence });
 
+  // GFM task lists: a list item starting "[ ] " or "[x] " gets a read-only checkbox. A small core
+  // rule instead of a plugin dependency. The checkbox markup is a CONSTANT string (never built from
+  // message text) and still passes through DOMPurify, which keeps <input type=checkbox disabled>.
+  const TASK_RE = /^\[([ xX])\][ \u00a0]/;
+  const TASK_BOX = '<input type="checkbox" class="task-list-item-checkbox" disabled> ';
+  const TASK_BOX_CHECKED = '<input type="checkbox" class="task-list-item-checkbox" checked disabled> ';
+  md.core.ruler.after("inline", "task_lists", (state) => {
+    const t = state.tokens;
+    for (let i = 2; i < t.length; i++) {
+      if (t[i].type !== "inline" || t[i - 1].type !== "paragraph_open" || t[i - 2].type !== "list_item_open") continue;
+      const first = t[i].children && t[i].children[0];
+      const m = first && first.type === "text" ? TASK_RE.exec(first.content) : null;
+      if (!m) continue;
+      first.content = first.content.slice(m[0].length);
+      const box = new state.Token("html_inline", "", 0);
+      box.content = m[1] === " " ? TASK_BOX : TASK_BOX_CHECKED;
+      t[i].children.unshift(box);
+      t[i - 2].attrJoin("class", "task-list-item");
+    }
+  });
+
   // Pinned, no-relax sanitizer config (ADR §3.2). This is where the defense is most easily
   // broken, so relaxing any of it is forbidden:
   //   - HTML profile only — no `svg`/`mathMl` profile.

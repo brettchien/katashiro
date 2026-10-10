@@ -57,3 +57,7 @@ body {
 .hljs-deletion { color: #ffa198; background: rgba(248, 81, 73, 0.15); }
 .hljs-emphasis { font-style: italic; }
 .hljs-strong { font-weight: 600; }
+
+/* GFM task lists (markdown.js): read-only checkboxes instead of bullets. */
+.doc li.task-list-item { list-style: none; }
+.doc li.task-list-item .task-list-item-checkbox { margin: 0 0.4em 0 -1.4em; vertical-align: middle; }
