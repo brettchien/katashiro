@@ -77,8 +77,12 @@ versioned surface next to the conversation that the agent renders into and updat
   `'unsafe-eval'`, so any eval is blocked regardless. The real risk is **functional**: a library
   whose fallback throws, or mermaid 12's default ELK layout trying to start a Worker (blocked by
   `worker-src 'none'`). So each engine gets a **smoke test that renders a fixture inside the real
-  sandbox CSP and passes only with zero `securitypolicyviolation` events**. For mermaid, check
-  whether `@mermaid-js/tiny` bundles ELK and whether it runs without a Worker.
+  sandbox CSP and fails on any `securitypolicyviolation` not on a per-engine allow-list**. An entry
+  matches on `violatedDirective` + `sourceFile` + `sample`; the initial entries are the known,
+  absorbed probes (crepe's `Function("", …)` syntax probe, and the `Function("return this")`
+  global fallbacks in crepe and mermaid-tiny, if they fire). A new or changed violation fails the
+  test until someone reviews it. For mermaid, check whether `@mermaid-js/tiny` bundles ELK and
+  whether it runs without a Worker.
 
 ---
 
@@ -108,6 +112,29 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 - With multi-conversation, switching conversation collapses the old conversation's group and
   expands the new one's.
 - The panel never renders canvas content itself.
+
+**Implementation rules for tab and group moves** (Chrome tab APIs are async and the MV3 service
+worker can be suspended at any point):
+- **One queue per conversation.** Every group operation (create the group, add a tab, split
+  in/out) runs in a per-conversation queue, and the `groupId` lives in `storage.session`. Two quick
+  `canvas_open` calls therefore create one group, not two.
+- **No in-memory state across events.** Tab/group listeners are registered at the top level of
+  the service worker. Before a split move, the canvas tab's original group and index are saved to
+  `storage.session`. Whether Chrome emits a reliable "split ended" signal (e.g. a split field in
+  `tabs.onUpdated`) must be tested; if not, the move back happens lazily on the next `canvas_open`
+  or when the tab is focused.
+- **Move back only if nothing changed.** The tab is returned to its group only if it is still where
+  Katashiro put it and the original group still exists. If the user dragged it elsewhere, closed
+  the group, or moved it to another window, it stays put, and the next `canvas_open` sorts it out.
+- **Re-check after every await.** A move sequence (ungroup → split) re-reads tab state after each
+  step; if a tab or group has gone (the user closed the page mid-move), it rolls back to the
+  previous state instead of assuming the last step succeeded.
+- **Duplicate tabs of one canvas** (the user duplicated the tab): both editors save with their
+  `baseVersion`, so the later save gets the conflict view (§3.5). The card focuses the most
+  recently used tab of that canvas.
+- **Collapsing on conversation switch:** activate a tab outside the old group first (the new
+  group's tab, or the web page), then collapse; Chrome will not collapse a group holding the
+  active tab.
 
 ### 3.2 Isolation — host page plus sandboxed frames
 
@@ -157,7 +184,7 @@ below is built around that.
   fetches anything; everything it shows arrives in this message.
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
-  - `canvas-frame.html`: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`,
+  - `canvas-frame.html`: `ready`, `rendered{version, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and in phase 2
     `selection{text}`.
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
@@ -276,6 +303,32 @@ below is built around that.
   receives only the saved markdown string via `save{}`. Milkdown's markdown is the stored format,
   so agent and user edit the same text with no conversion step. Saved markdown is rendered through
   the same markdown-it + DOMPurify sink as agent markdown; the editor's own DOM is never persisted.
+- **Milkdown normalizes markdown, and the stored text is the normalized text.** Parsing and
+  serializing rewrites formatting (`*` → `-`, escaping, blank lines, table alignment). Left alone,
+  a one-character user edit would save as a fully reformatted document, so the agent's `find`s
+  (written against its own original text) would miss and `diffFromBase` would cover everything.
+  So:
+  - **Agent writes are normalized on render.** After rendering an agent version, the frame sends
+    `rendered{version, normalized}`. The host replaces that version's stored content with
+    `normalized` (same `n`, still `author:"agent"`), and `canvas_read` and `diffFromBase` use it.
+    The tool result waits for this (with a timeout) and carries `normalizedDiff` when the text
+    changed, so the agent's next `find` targets what is actually stored. If no frame renders in
+    time (tab closed), the version is stored raw with `normalized:false` and normalized in place
+    on the next open; a `canvas_patch` whose `find` then misses gets the `stale` error with a diff.
+  - Normalization must be **idempotent** (serializing its own output changes nothing); the
+    Milkdown smoke test asserts it.
+- **Only an explicit user save creates a user version.** `save{}` is sent on Ctrl+S or the Save
+  button, never on editor change events (an autosave, if added, counts only `isTrusted` input).
+  "Dirty" is measured against the **normalized** text loaded into the editor, not the agent's
+  original, and a save whose text equals the current version creates no version. Loading or
+  re-rendering agent content therefore never produces an `author:"user"` version, never makes the
+  next agent write `stale`, and never triggers the §6 Q4 edit note.
+- **Editing is a second render path.** Milkdown parses agent markdown straight into ProseMirror DOM
+  without DOMPurify; the "same sink" above covers only saved text. What holds it is
+  `canvas-frame.html`'s CSP (`script-src 'self'`, `img-src data: blob:`, `connect-src 'none'`) plus
+  link interception. In addition: Milkdown's `html` node renders as plain text, never `innerHTML`;
+  crepe features we do not use are disabled (image-by-URL input, remote image loading, uploads);
+  and CodeMirror language packages are vendored, never loaded dynamically.
 
 ### 3.6 Storage and ownership
 
@@ -312,6 +365,8 @@ below is built around that.
   allows it), then the frame calls `print()`. `alert`/`confirm` are opened too, but nothing in that
   frame is agent script. The `html` frame has no print. To verify during implementation: the
   dialog prints the full deck. Fallback: print from `canvas.html` with the iframe sized to content.
+  The print reload would discard unsaved editor content, so **export is disabled while the editor
+  is dirty**, with a "Save first" prompt.
 - **pptx export** (phase 2–3): `pptxgenjs` from **our slide model** (titles, bullets, images,
   code as monospace). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
   and themes, fragments and transitions are lost. `dom-to-pptx` is the higher-fidelity candidate,
