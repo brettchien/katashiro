@@ -14,7 +14,7 @@ test("frame messages: only our frame, our nonce, allow-listed and well-formed", 
   assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "ready", nonce: "n1" } }, { frameWindow, nonce: "n1" }), null);
   assert.equal(ok({ type: "ready", nonce: "n2" }), null);
   assert.equal(ok({ type: "ready" }), null);
-  assert.equal(ok({ type: "save", nonce: "n1", content: "x" }), null);       // no editor in the MVP
+  assert.equal(ok({ type: "save", nonce: "n1", content: "x" }), null);       // save needs an integer baseVersion
   assert.equal(ok({ type: "rendered", nonce: "n1", version: "3" }), null);
   assert.equal(ok({ type: "error", nonce: "n1", msg: { toString() { return "x"; } } }), null);
   assert.equal(ok({ type: "__proto__", nonce: "n1" }), null);
@@ -79,4 +79,14 @@ test("isImageDataUrl: only base64 data: URLs of the allowed image types", () => 
   for (const bad of ["data:text/html;base64,PGI+", "https://x/y.png", "data:image/png,raw", "data:image/png;base64,<script>", 7]) {
     assert.equal(C.isImageDataUrl(bad), false, String(bad));
   }
+});
+
+test("editing messages (§3.5): save, dirty, rendered.normalized — typed and bounded", () => {
+  assert.ok(ok({ type: "save", nonce: "n1", content: "# x", baseVersion: 3 }));
+  assert.equal(ok({ type: "save", nonce: "n1", content: 5, baseVersion: 3 }), null);
+  assert.equal(ok({ type: "save", nonce: "n1", content: "x".repeat(2 * 1024 * 1024 + 1), baseVersion: 3 }), null);
+  assert.ok(ok({ type: "dirty", nonce: "n1", dirty: true }));
+  assert.equal(ok({ type: "dirty", nonce: "n1", dirty: "yes" }), null);
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, normalized: "- a" }));
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, normalized: 7 }), null);
 });

@@ -3133,3 +3133,31 @@ test("katashiro.canvas_open kind:slides and kind:image (data, data: URL, imageId
   const masked = BrowserMcp.TOOLS["katashiro.canvas_open"].redact({ title: "Px", kind: "image", data: PNG_1PX, mimeType: "image/png" });
   assert.match(masked.data, /^<\d+ bytes>$/);
 });
+
+test("canvas_open: normalizedDiff after the editor reformats markdown; a note when no tab normalized it (§3.5)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  d.canvas.waitNormalized = async (_id, _v, raw) => ({ diff: CanvasStore.unifiedDiff(raw, raw.replace("* ", "- ")) });
+  const r = await callTool(d, "katashiro.canvas_open", { title: "T", content: "* a" });
+  assert.match(r.content[0].text, /normalizedDiff[\s\S]*-\* a\n\+- a/);
+  d.canvas.waitNormalized = async () => null;
+  const r2 = await callTool(d, "katashiro.canvas_open", { title: "U", content: "x" });
+  assert.match(r2.content[0].text, /not normalized yet/);
+  d.canvas.waitNormalized = async () => ({ diff: "" });
+  const r3 = await callTool(d, "katashiro.canvas_open", { title: "V", kind: "slides", content: "x" });
+  assert.doesNotMatch(r3.content[0].text, /normaliz/);                 // slides are stored as sent
+});
+
+test("canvas_open stale after a user edit returns diffFromBase; canvas_read records agentSeenVersion", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "T", content: "a\nb" });
+  await d.canvas.store.userSave({ id: "cv_000000000001", baseVersion: 1, content: "a\nB" });
+  const r = await callTool(d, "katashiro.canvas_open", { id: "cv_000000000001", baseVersion: 1, title: "T", content: "a\nb\nc" });
+  const e = JSON.parse(r.content[0].text);
+  assert.equal(e.error, "stale");
+  assert.equal(e.author, "user");
+  assert.match(e.diffFromBase, /-b\n\+B/);
+  await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" });
+  assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).agentSeenVersion, 2);
+});

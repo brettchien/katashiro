@@ -13,11 +13,31 @@
     <span class="canvas-icon" aria-hidden="true">📄</span>
     <h1 id="canvas-title" class="canvas-title">Canvas</h1>
     <span id="canvas-version" class="canvas-version"></span>
+    <button id="canvas-edit" class="canvas-btn" type="button" title="編輯（Milkdown）" hidden>✏️ 編輯</button>
+    <button id="canvas-save" class="canvas-btn primary" type="button" title="儲存（Ctrl/⌘+S）" hidden>💾 儲存</button>
+    <button id="canvas-cancel" class="canvas-btn" type="button" title="結束編輯" hidden>結束編輯</button>
+    <button id="canvas-revert" class="canvas-btn" type="button" title="還原成 agent 最後寫的版本" hidden>↺ Revert to agent's</button>
     <button id="canvas-delete" class="canvas-btn" type="button" title="刪除這個畫布" hidden>🗑 刪除</button>
     <span class="canvas-banner">Agent-generated content — Katashiro never asks for passwords or keys here.</span>
   </header>
   <div id="canvas-notice" class="canvas-notice" hidden></div>
   <main id="canvas-main" class="canvas-main"></main>
+  <!-- Conflict view (§3.5): the user's unsaved text beside the latest. Plain <textarea> values, never HTML. -->
+  <div id="canvas-conflict" class="canvas-conflict" hidden>
+    <div class="conflict-box">
+      <h2>儲存時發生衝突</h2>
+      <p id="conflict-why"></p>
+      <div class="conflict-panes">
+        <label>你的版本（尚未儲存）<textarea id="conflict-mine" readonly></textarea></label>
+        <label id="conflict-latest-label">目前的版本<textarea id="conflict-latest" readonly></textarea></label>
+      </div>
+      <div class="conflict-actions">
+        <button id="conflict-keep" class="canvas-btn primary" type="button">保留我的（存成最新版）</button>
+        <button id="conflict-discard" class="canvas-btn" type="button">放棄我的</button>
+        <button id="conflict-back" class="canvas-btn" type="button">回到編輯</button>
+      </div>
+    </div>
+  </div>
   <script src="canvas-store.js"></script>
   <script src="canvas-core.js"></script>
   <script src="canvas.js"></script>

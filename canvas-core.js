@@ -11,12 +11,17 @@
   const ERROR_MAX = 500;      // error{msg} is shown with textContent, capped (§3.2)
   const URL_MAX = 2048;
   const COPY_MAX = 1024 * 1024;
+  const TEXT_MAX = 2 * 1024 * 1024;           // a canvas's text cap (canvas-store CONTENT_MAX_BYTES)
 
   // What canvas-frame.html may send (§3.2 per-frame allow-list). MVP: no editor, so no save /
   // selection yet. Anything else is dropped.
   const FRAME_TYPES = {
     ready: () => true,
-    rendered: (m) => Number.isInteger(m.version),
+    // normalized (§3.5): Milkdown's parse+serialize of an agent markdown version, ≤ 2 MB.
+    rendered: (m) => Number.isInteger(m.version) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
+    // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
+    save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
+    dirty: (m) => typeof m.dirty === "boolean",
     error: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host

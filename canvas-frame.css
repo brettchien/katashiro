@@ -68,3 +68,20 @@ body {
 .pic { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; }
 .pic img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; border-radius: 8px; }
 .pic figcaption { color: #94a3b8; font-size: 14px; }
+
+/* Editor (Milkdown crepe, §3.5): full width like the document view; our palette over frame-dark. */
+.editor { padding: 8px clamp(32px, 5vw, 96px) 48px; }
+.editor .milkdown {
+  --crepe-color-background: #0f172a;
+  --crepe-color-surface: #111827;
+  --crepe-color-surface-low: #131c2e;
+  --crepe-color-on-background: #e2e8f0;
+  --crepe-color-on-surface: #e2e8f0;
+  --crepe-color-primary: #60a5fa;
+  --crepe-color-hover: #1e293b;
+  --crepe-color-selected: #334155;
+  --crepe-font-title: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+  --crepe-font-default: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+  --crepe-font-code: Menlo, Consolas, Monaco, monospace;
+}
+.editor .milkdown .ProseMirror { padding: 16px 0; max-width: none; }

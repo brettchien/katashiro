@@ -5,7 +5,7 @@
 // latest content IS the agent's last write; the separate `agent` body (§3.6) arrives with user
 // editing. Keys, all in one chrome.storage area:
 //   canvas:<conversationId>:index  [{ id, title, kind, version, bytes, updatedAt }]
-//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes }
+//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
@@ -48,6 +48,9 @@
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
   const metaKey = (id) => `canvas:${id}:meta`;
   const latestKey = (id) => `canvas:${id}:latest`;
+  // The agent's last write, kept only once the latest differs from it (a user save, §3.5/§3.6).
+  // Invariant: no agent key ⇒ the latest IS the agent's last write.
+  const agentKey = (id) => `canvas:${id}:agent`;
 
   function utf8Bytes(s) {
     return new TextEncoder().encode(s).length;
@@ -64,12 +67,65 @@
   }
 
   class StaleError extends Error {
-    constructor(meta, baseVersion) {
-      super(`canvas "${meta.title}" is at version ${meta.version}, not ${baseVersion} — call canvas_read and write on top of the latest`);
+    constructor(meta, baseVersion, diffFromBase) {
+      super(`canvas "${meta.title}" is at version ${meta.version}, not ${baseVersion} — ` +
+        (diffFromBase != null ? "rebase on diffFromBase, or canvas_read, and write on top of the latest" : "call canvas_read and write on top of the latest"));
       this.code = "stale";
       this.currentVersion = meta.version;
       this.author = meta.author;
+      this.diffFromBase = diffFromBase == null ? null : diffFromBase;
     }
+  }
+
+  // Line-based unified diff (a → b), 2 lines of context. Common prefix/suffix are trimmed first; the
+  // middle is an LCS, bounded (returns null if too large to diff here). Pure, used for the stale
+  // diff, normalizedDiff and Send to agent.
+  const DIFF_MAX_LINES = 3000;
+  function unifiedDiff(a, b, { context = 2 } = {}) {
+    if (a === b) return "";
+    const A = String(a).split("\n"), B = String(b).split("\n");
+    let pre = 0;
+    while (pre < A.length && pre < B.length && A[pre] === B[pre]) pre++;
+    let suf = 0;
+    while (suf < A.length - pre && suf < B.length - pre && A[A.length - 1 - suf] === B[B.length - 1 - suf]) suf++;
+    const a1 = A.slice(pre, A.length - suf), b1 = B.slice(pre, B.length - suf);
+    if (a1.length > DIFF_MAX_LINES || b1.length > DIFF_MAX_LINES) return null;
+    const n = a1.length, m = b1.length;
+    const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+      L[i][j] = a1[i] === b1[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+    }
+    const ops = [];                                    // [' ', line] / ['-', line] / ['+', line] over the whole text
+    for (let k = 0; k < pre; k++) ops.push([" ", A[k]]);
+    let i = 0, j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && a1[i] === b1[j]) { ops.push([" ", a1[i]]); i++; j++; }
+      else if (j < m && (i >= n || L[i][j + 1] > L[i + 1][j])) { ops.push(["+", b1[j]]); j++; }
+      else { ops.push(["-", a1[i]]); i++; }
+    }
+    for (let k = A.length - suf; k < A.length; k++) ops.push([" ", A[k]]);
+    // Group changes into hunks with context.
+    const out = [];
+    let idx = 0;
+    while (idx < ops.length) {
+      if (ops[idx][0] === " ") { idx++; continue; }
+      let start = Math.max(0, idx - context), end = idx;
+      while (end < ops.length) {
+        if (ops[end][0] !== " ") { end++; continue; }
+        let run = 0;
+        while (end + run < ops.length && ops[end + run][0] === " ") run++;
+        if (end + run >= ops.length || run > context * 2) { end = Math.min(ops.length, end + context); break; }
+        end += run;
+      }
+      let aLine = 1, bLine = 1;
+      for (let k = 0; k < start; k++) { if (ops[k][0] !== "+") aLine++; if (ops[k][0] !== "-") bLine++; }
+      const hunk = ops.slice(start, end);
+      const aCount = hunk.filter((o) => o[0] !== "+").length, bCount = hunk.filter((o) => o[0] !== "-").length;
+      out.push(`@@ -${aLine},${aCount} +${bLine},${bCount} @@`);
+      for (const [t, l] of hunk) out.push(t + l);
+      idx = end;
+    }
+    return out.join("\n");
   }
 
   /**
@@ -189,9 +245,12 @@
       return Object.values(all).filter((v) => v && typeof v === "object");
     }
 
+    // What a canvas takes: the latest plus the agent copy kept beside it after a user save.
+    const footprint = (m) => (m.bytes || 0) + (m.agentBytes || 0);
+
     async function usage() {
       const metas = await allMetas();
-      return { total: metas.reduce((n, m) => n + (m.bytes || 0), 0), count: metas.length };
+      return { total: metas.reduce((n, m) => n + footprint(m), 0), count: metas.length };
     }
 
     // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
@@ -199,8 +258,9 @@
     // only after one confirmation. Throws QuotaError if declined or if that cannot free enough.
     async function ensureBudget(addBytes, keepId) {
       const metas = await allMetas();
-      const total = metas.reduce((n, m) => n + (m.bytes || 0), 0);
-      const own = (metas.find((m) => m.id === keepId) || {}).bytes || 0;
+      const total = metas.reduce((n, m) => n + footprint(m), 0);
+      const mine = metas.find((m) => m.id === keepId);
+      const own = mine ? footprint(mine) : 0;
       const over = total - own + addBytes - budgetBytes;
       if (over <= 0) return;
       const candidates = metas
@@ -211,8 +271,8 @@
       for (const m of candidates) {
         if (freed >= over) break;
         if (await isOpen(m.id)) continue;
-        evict.push({ id: m.id, title: m.title, bytes: m.bytes || 0, conversationId: m.conversationId });
-        freed += m.bytes || 0;
+        evict.push({ id: m.id, title: m.title, bytes: footprint(m), conversationId: m.conversationId });
+        freed += footprint(m);
       }
       if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
       // The confirmation waits on the user; a canvas opened meanwhile is kept (the write may then
@@ -242,7 +302,8 @@
         const newId = `cv_${randomHex()}`;
         const meta = {
           id: newId, conversationId, title: v.title, kind: v.kind,
-          version: 1, author: "agent", at, agentVersion: 1, bytes: v.bytes,
+          version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes, agentBytes: 0,
+          normalized: v.kind !== "markdown",               // markdown waits for the editor's normalization
         };
         await putImage(v.image);
         await lock(`canvas:${newId}`, async () => {
@@ -260,21 +321,123 @@
         if (!cur) throw new Error(`no canvas "${id}"`);
         if (cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
         if (cur.kind !== v.kind) throw new Error(`canvas "${id}" is ${cur.kind}; a canvas cannot change kind`);
-        if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
-        meta = { ...cur, title: v.title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1, bytes: v.bytes };
+        if (cur.version !== baseVersion) {
+          // diffFromBase exists only when the base is the agent's own last write (§3.5).
+          let diff = null;
+          if (baseVersion === cur.agentVersion) {
+            const got = await storage.get([agentKey(id), latestKey(id)]);
+            if (got[agentKey(id)] != null) diff = unifiedDiff(got[agentKey(id)], got[latestKey(id)] || "");
+          }
+          throw new StaleError(cur, baseVersion, diff);
+        }
+        meta = {
+          ...cur, title: v.title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
+          agentSeenVersion: cur.version + 1, bytes: v.bytes, agentBytes: 0, normalized: v.kind !== "markdown",
+        };
         await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
+        await storage.remove(agentKey(id));                // the latest is the agent's write again
         await updateIndex(conversationId, indexEntry(meta));
       });
       if (v.kind === "image") await sweepAfter();       // the previous image may be unreferenced now
       return { id, version: meta.version, created: false, title: meta.title };
     }
 
-    async function read({ conversationId, id }) {
+    // asAgent: the agent's canvas_read — records agentSeenVersion (§3.5), so Send to agent does not
+    // push edits the agent has already read. Host reads pass nothing.
+    async function read({ conversationId, id, asAgent }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       const got = await storage.get([metaKey(id), latestKey(id)]);
       const meta = got[metaKey(id)];
       if (!meta || (conversationId && meta.conversationId !== conversationId)) throw new Error(`no canvas "${id}" in this conversation`);
+      if (asAgent && meta.agentSeenVersion !== meta.version) {
+        await lock(`canvas:${id}`, async () => {
+          const cur = await getOne(metaKey(id));
+          if (cur && cur.version === meta.version) await storage.set({ [metaKey(id)]: { ...cur, agentSeenVersion: cur.version } });
+        });
+      }
       return { ...meta, content: got[latestKey(id)] == null ? "" : got[latestKey(id)] };
+    }
+
+    // The agent's last write (for Revert to agent's and the conflict view). Null if gone.
+    async function readAgentCopy(id) {
+      if (!ID_RE.test(String(id))) return null;
+      const got = await storage.get([metaKey(id), latestKey(id), agentKey(id)]);
+      if (!got[metaKey(id)]) return null;
+      return got[agentKey(id)] != null ? got[agentKey(id)] : (got[latestKey(id)] == null ? "" : got[latestKey(id)]);
+    }
+
+    // A user's explicit save (§3.5). Stale if the canvas moved on since baseVersion; a save equal to
+    // the latest creates no version. The first user save keeps the agent's text as the agent copy.
+    async function userSave({ id, baseVersion, content }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      if (typeof content !== "string") throw new Error("`content` must be a string");
+      const bytes = utf8Bytes(content);
+      if (bytes > CONTENT_MAX_BYTES) throw new Error(`content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
+      // Afterwards the canvas holds this save plus an agent copy: the one it has, or (first save)
+      // the current latest, which becomes the copy.
+      const before = ID_RE.test(String(id)) ? await getOne(metaKey(id)) : null;
+      await ensureBudget(bytes + (before ? (before.agentBytes || before.bytes || 0) : 0), id);
+      let result;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`a ${cur.kind} canvas cannot be edited`);
+        if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
+        const got = await storage.get([latestKey(id), agentKey(id)]);
+        const latest = got[latestKey(id)] == null ? "" : got[latestKey(id)];
+        if (content === latest) { result = { version: cur.version, unchanged: true }; return; }
+        const meta = { ...cur, version: cur.version + 1, author: "user", at: now(), bytes };
+        const items = { [latestKey(id)]: content, [metaKey(id)]: meta };
+        if (got[agentKey(id)] == null) {                                 // keep the agent's write
+          items[agentKey(id)] = latest;
+          meta.agentBytes = utf8Bytes(latest);
+        }
+        await storage.set(items);
+        await updateIndex(cur.conversationId, indexEntry(meta));
+        result = { version: meta.version, unchanged: false };
+      });
+      return result;
+    }
+
+    // Revert to agent's (§3.5): the agent's last write becomes the latest again, as a user save.
+    async function revertToAgent({ id, baseVersion }) {
+      let result;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
+        const got = await storage.get([latestKey(id), agentKey(id)]);
+        const agent = got[agentKey(id)];
+        if (agent == null || agent === got[latestKey(id)]) { result = { version: cur.version, unchanged: true }; return; }
+        const meta = { ...cur, version: cur.version + 1, author: "user", at: now(), bytes: utf8Bytes(agent) };
+        await storage.set({ [latestKey(id)]: agent, [metaKey(id)]: meta });
+        await updateIndex(cur.conversationId, indexEntry(meta));
+        result = { version: meta.version, unchanged: false };
+      });
+      return result;
+    }
+
+    // The editor's normalization of an agent markdown write (§3.5). Applies only to that agent
+    // version: the agent copy always; the latest only while it still IS that version.
+    async function applyNormalized({ id, version, normalized }) {
+      if (typeof normalized !== "string" || utf8Bytes(normalized) > CONTENT_MAX_BYTES) return { applied: false };
+      let result = { applied: false };
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur || cur.kind !== "markdown" || cur.agentVersion !== version || cur.normalized) return;
+        const got = await storage.get([latestKey(id), agentKey(id)]);
+        const items = { [metaKey(id)]: { ...cur, normalized: true } };
+        if (got[agentKey(id)] != null) {
+          items[agentKey(id)] = normalized;
+          items[metaKey(id)].agentBytes = utf8Bytes(normalized);
+        } else if (cur.version === version) {
+          items[latestKey(id)] = normalized;
+          items[metaKey(id)].bytes = utf8Bytes(normalized);
+        }
+        await storage.set(items);
+        result = { applied: true, changed: (got[agentKey(id)] != null ? got[agentKey(id)] : got[latestKey(id)]) !== normalized };
+      });
+      return result;
     }
 
     async function list({ conversationId }) {
@@ -289,7 +452,7 @@
         const meta = await getOne(metaKey(id));
         if (!meta) return;
         if (conversationId && meta.conversationId !== conversationId) throw new Error(`no canvas "${id}" in this conversation`);
-        await storage.remove([metaKey(id), latestKey(id)]);
+        await storage.remove([metaKey(id), latestKey(id), agentKey(id)]);
         await lock("canvas:index", async () => {
           const key = indexKey(meta.conversationId);
           const list = ((await getOne(key)) || []).filter((e) => e.id !== id);
@@ -309,7 +472,7 @@
       });
     }
 
-    return { agentWrite, read, readImage, list, remove, touch, usage, sweepImages };
+    return { agentWrite, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
   }
 
   function indexEntry(meta) {
@@ -318,5 +481,5 @@
 
   const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
 
-  return { createCanvasStore, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, unifiedDiff, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });
