@@ -554,7 +554,8 @@
     return out;
   }
 
-  // canvas_open: the title and the content's size — never the document itself (it can be 2 MB).
+  // canvas_open: the title and the content's size — never the document itself (it can be 2 MB),
+  // and never image base64.
   function redactCanvasOpen(args) {
     const a = args || {};
     const out = {};
@@ -563,7 +564,34 @@
     if (a.kind != null) out.kind = a.kind;
     if (typeof a.title === "string") out.title = a.title;
     if (typeof a.content === "string") out.content = `<${new TextEncoder().encode(a.content).length} bytes>`;
+    if (a.imageId != null) out.imageId = a.imageId;
+    if (a.mimeType != null) out.mimeType = a.mimeType;
+    if (typeof a.data === "string") out.data = `<${b64Bytes(a.data.replace(/^data:[^,]*,/, "").replace(/\s+/g, ""))} bytes>`;
+    if (typeof a.caption === "string") out.caption = a.caption.length > 80 ? `${a.caption.slice(0, 80)}…` : a.caption;
     return out;
+  }
+
+  // canvas_open kind:image — exactly one of imageId (a screenshot, copied in) or data (+ mimeType,
+  // or a data: URL). Same rules as show_image; returns { image: { mimeType, data } } or { error }.
+  function canvasImageArg(args, ctx) {
+    const hasId = args.imageId != null && args.imageId !== "";
+    const hasData = typeof args.data === "string" && args.data !== "";
+    if (hasId === hasData) return { error: "an image canvas needs exactly one of `imageId` or `data`" };
+    if (hasId) {
+      const img = ctx.images && ctx.images.get(args.imageId);
+      if (!img) return { error: `no captured image "${args.imageId}" (expired or never taken — call screenshot again)` };
+      return { image: { mimeType: img.mimeType, data: img.data } };
+    }
+    let raw = args.data.trim();
+    let mimeType = args.mimeType == null ? "" : String(args.mimeType).toLowerCase();
+    const m = /^data:([a-z0-9.+/-]+);base64,/i.exec(raw);
+    if (m) {
+      if (mimeType && mimeType !== m[1].toLowerCase()) return { error: `mimeType "${mimeType}" does not match the data: URL's "${m[1]}"` };
+      mimeType = m[1].toLowerCase();
+      raw = raw.slice(m[0].length);
+    }
+    if (!SHOW_IMAGE_MIME_TYPES.includes(mimeType)) return { error: `\`mimeType\` must be one of ${SHOW_IMAGE_MIME_TYPES.join(", ")}` };
+    return { image: { mimeType, data: raw.replace(/\s+/g, "") } };
   }
 
   function redactUploadFile(args) {
@@ -2684,8 +2712,11 @@
       description:
         "Create or update a CANVAS: a document shown to the user in its own browser tab, full width, " +
         "beside the chat — use it for long or structured output the user will read, keep and come " +
-        "back to (a report, a design doc, a plan), instead of a long chat reply. Content is markdown " +
-        "(GFM tables, fenced code). Without `id` it creates a canvas, opens its tab in the background " +
+        "back to (a report, a design doc, a plan, a deck), instead of a long chat reply. `kind`: " +
+        "`markdown` (default; GFM tables, task lists, fenced code), `slides` (markdown, slides separated " +
+        "by lines that are exactly `---`; arrow keys to navigate), or `image` (give `imageId` from " +
+        "screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an optional `caption`; " +
+        "no `content`). Without `id` it creates a canvas, opens its tab in the background " +
         "and returns { id, version: 1 }. To change it, pass `id` and `baseVersion` (the version you " +
         "last wrote or read) with the FULL new content; if the canvas moved on since, the call is " +
         "refused as stale — canvas_read, then write again on top of the latest. A card in your reply " +
@@ -2695,23 +2726,33 @@
         type: "object",
         properties: {
           title: { type: "string", description: "short title, shown on the tab and the card (≤ 120 chars)" },
-          content: { type: "string", description: "the whole document, markdown (≤ 2 MB)" },
-          kind: { type: "string", enum: ["markdown"], description: "content kind (default markdown)" },
+          content: { type: "string", description: "markdown / slides: the whole document (≤ 2 MB)" },
+          kind: { type: "string", enum: ["markdown", "slides", "image"], description: "content kind (default markdown)" },
+          imageId: { type: "string", description: "image: a capture from screenshot" },
+          data: { type: "string", description: "image: base64 bytes or a data:image/...;base64, URL (≤ 5 MB)" },
+          mimeType: { type: "string", enum: SHOW_IMAGE_MIME_TYPES, description: "image: required with raw base64 data" },
+          caption: { type: "string", description: "image: short text under the image (≤ 200 chars)" },
           id: { type: "string", description: "update this canvas (from a previous canvas_open / canvas_list)" },
           baseVersion: { type: "integer", description: "required with id: the version you last wrote or read" }
         },
-        required: ["title", "content"]
+        required: ["title"]
       },
       redact: redactCanvasOpen,
       /** @param {{ title?: string, content?: string, kind?: string, id?: string, baseVersion?: number }} args */
       async call(args, ctx) {
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        let image;
+        if (args.kind === "image") {
+          const r = canvasImageArg(args, ctx);
+          if (r.error) return errText(`canvas_open: ${r.error}`);
+          image = r.image;
+        }
         let res;
         try {
           res = await c.store.agentWrite({
             conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion,
-            title: args.title, kind: args.kind, content: args.content,
+            title: args.title, kind: args.kind, content: args.content, image, caption: args.caption,
           });
         } catch (e) {
           if (e && e.code === "stale") {

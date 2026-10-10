@@ -23,7 +23,24 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const KINDS = ["markdown"];               // MVP; slides / image / chart / mermaid / html follow
+  const KINDS = ["markdown", "slides", "image"];   // phase 1; chart / mermaid / html follow
+  const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
+  const IMAGE_MAX_BYTES = 5 * 1024 * 1024;  // like show_image
+  const IMAGE_GRACE_MS = 10 * 60 * 1000;    // §3.6 sweep: never delete an image written this recently
+  const imageKey = (hash) => `canvas:img:${hash}`;
+
+  function b64Bytes(b64) {
+    return Math.max(0, Math.floor((b64.length * 3) / 4) - (b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0));
+  }
+
+  // sha256 of the DECODED bytes, hex — the content address of an image (§3.6).
+  async function sha256OfBase64(b64) {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const d = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(d), (x) => x.toString(16).padStart(2, "0")).join("");
+  }
   const TITLE_MAX = 120;
   const CONTENT_MAX_BYTES = 2 * 1024 * 1024; // §3.4: 2 MB text per canvas
   const ID_RE = /^cv_[0-9a-f]{12}$/;
@@ -99,16 +116,71 @@
     }
 
     // Validate what any write needs; returns the normalized fields or throws a plain Error.
-    function validate({ title, kind, content }) {
+    // markdown / slides: `content` is the text. image: `image` = { mimeType, data (base64) } plus an
+    // optional `caption`; the stored content is a small JSON reference to the image by hash (§3.6).
+    async function validate({ title, kind, content, image, caption }) {
       const t = title == null ? "" : String(title).trim();
       if (!t) throw new Error("`title` is required");
       if (t.length > TITLE_MAX) throw new Error(`title is ${t.length} chars; keep it to ${TITLE_MAX} or fewer`);
       const k = kind == null ? "markdown" : String(kind);
       if (!KINDS.includes(k)) throw new Error(`kind "${k}" is not supported yet (supported: ${KINDS.join(", ")})`);
+      if (k === "image") {
+        if (!image || typeof image.data !== "string") throw new Error("an image canvas needs an image (`imageId` or `data`)");
+        if (!IMAGE_MIME_TYPES.includes(image.mimeType)) throw new Error(`image type must be one of ${IMAGE_MIME_TYPES.join(", ")}`);
+        if (!/^[A-Za-z0-9+/]+={0,2}$/.test(image.data)) throw new Error("image data is not valid base64");
+        const imgBytes = b64Bytes(image.data);
+        if (imgBytes > IMAGE_MAX_BYTES) throw new Error(`image is ${imgBytes} bytes; a canvas image is capped at ${IMAGE_MAX_BYTES}`);
+        const cap = caption == null ? "" : String(caption).trim();
+        if (cap.length > 200) throw new Error(`caption is ${cap.length} chars; keep it to 200 or fewer`);
+        const hash = await sha256OfBase64(image.data);
+        const json = JSON.stringify({ image: hash, mimeType: image.mimeType, caption: cap });
+        return { title: t, kind: k, content: json, bytes: utf8Bytes(json) + imgBytes, image: { hash, mimeType: image.mimeType, data: image.data } };
+      }
       if (typeof content !== "string") throw new Error("`content` must be a string");
       const bytes = utf8Bytes(content);
       if (bytes > CONTENT_MAX_BYTES) throw new Error(`content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
       return { title: t, kind: k, content, bytes };
+    }
+
+    // Images first, then the content that references them (§3.6 write order). One key per hash, and
+    // always (re)written: an image already stored gets a fresh savedAt, so a sweep cannot take it
+    // before our content lands. Under canvas:index (taken alone, outside any canvas:<id>), so a sweep
+    // runs wholly before (image gone, we write it back) or after (sees the fresh savedAt).
+    async function putImage(img) {
+      if (!img) return;
+      const k = imageKey(img.hash);
+      await lock("canvas:index", () => storage.set({ [k]: { mimeType: img.mimeType, data: img.data, savedAt: now() } }));
+    }
+
+    // Mark-and-sweep (§3.6): delete images no image canvas references, except ones written in the
+    // last 10 minutes (a write referencing them may still be on its way). Under canvas:index.
+    async function sweepImages() {
+      await lock("canvas:index", async () => {
+        const metas = await getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k));
+        const imageIds = Object.values(metas).filter((m) => m && m.kind === "image").map((m) => m.id);
+        const bodies = imageIds.length ? (await storage.get(imageIds.map(latestKey))) || {} : {};
+        const live = new Set();
+        for (const v of Object.values(bodies)) {
+          try { const r = JSON.parse(v); if (r && r.image) live.add(r.image); } catch (_) { /* not an image ref */ }
+        }
+        const imgs = await getMatching(storage, (k) => k.startsWith("canvas:img:"));
+        const dead = Object.entries(imgs)
+          .filter(([k, v]) => !live.has(k.slice("canvas:img:".length)) && now() - ((v && v.savedAt) || 0) > IMAGE_GRACE_MS)
+          .map(([k]) => k);
+        if (dead.length) await storage.remove(dead);
+      });
+    }
+
+    // After a write or delete has succeeded: a failed sweep must not turn it into an error (the agent
+    // would retry and hit stale). The next sweep picks up what this one missed.
+    async function sweepAfter() {
+      try { await sweepImages(); } catch (_) { /* best effort */ }
+    }
+
+    // The image bytes of an image canvas, for the host page (never returned to the agent).
+    async function readImage(hash) {
+      if (!/^[0-9a-f]{64}$/.test(String(hash))) return null;
+      return (await getOne(imageKey(hash))) || null;
     }
 
     // Every canvas's meta, across conversations (for the budget). Reads only the meta keys.
@@ -161,9 +233,9 @@
      * Create (no `id`) or update (with `id` + `baseVersion`) a canvas as the agent.
      * @returns {Promise<{ id, version, created, title }>}
      */
-    async function agentWrite({ conversationId, id, baseVersion, title, kind, content }) {
+    async function agentWrite({ conversationId, id, baseVersion, title, kind, content, image, caption }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
-      const v = validate({ title, kind, content });
+      const v = await validate({ title, kind, content, image, caption });
       const at = now();
       await ensureBudget(v.bytes, id || null);
       if (id == null || id === "") {
@@ -172,6 +244,7 @@
           id: newId, conversationId, title: v.title, kind: v.kind,
           version: 1, author: "agent", at, agentVersion: 1, bytes: v.bytes,
         };
+        await putImage(v.image);
         await lock(`canvas:${newId}`, async () => {
           await storage.set({ [latestKey(newId)]: v.content, [metaKey(newId)]: meta });
           await updateIndex(conversationId, indexEntry(meta));
@@ -181,6 +254,7 @@
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (!Number.isInteger(baseVersion)) throw new Error("updating a canvas needs `baseVersion` (the version you last read or wrote)");
       let meta;
+      await putImage(v.image);
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));
         if (!cur) throw new Error(`no canvas "${id}"`);
@@ -191,6 +265,7 @@
         await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
         await updateIndex(conversationId, indexEntry(meta));
       });
+      if (v.kind === "image") await sweepAfter();       // the previous image may be unreferenced now
       return { id, version: meta.version, created: false, title: meta.title };
     }
 
@@ -222,6 +297,7 @@
           else await storage.remove(key);
         });
       });
+      await sweepAfter();
     }
 
     // The canvas tab was opened (LRU order for eviction). Not a content change: version untouched.
@@ -233,7 +309,7 @@
       });
     }
 
-    return { agentWrite, read, list, remove, touch, usage };
+    return { agentWrite, read, readImage, list, remove, touch, usage, sweepImages };
   }
 
   function indexEntry(meta) {
@@ -242,5 +318,5 @@
 
   const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
 
-  return { createCanvasStore, getMatching, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

@@ -3109,3 +3109,27 @@ test("katashiro.notify: a failed create gives the slot back only if no later cal
   const repeat = await callTool(d, "katashiro.notify", { message: "C" });
   assert.match(repeat.content[0].text, /same notification as the previous one/);   // C's slot survived A's rollback
 });
+
+test("katashiro.canvas_open kind:slides and kind:image (data, data: URL, imageId); bytes never in the pill", async () => {
+  const { deps: d } = deps({ actMode: false, dataUrl: "data:image/jpeg;base64,QUJD" });
+  withCanvas(d);
+  const shot = await callTool(d, "katashiro.screenshot", {});
+  const imgId = /imageId: (\S+)/.exec(shot.content.find((c) => c.type === "text" && /imageId/.test(c.text)).text)[1];
+  const sl = await callTool(d, "katashiro.canvas_open", { title: "Deck", kind: "slides", content: "# A\n---\n# B" });
+  assert.equal(sl.isError, undefined, JSON.stringify(sl));
+  const im = await callTool(d, "katashiro.canvas_open", { title: "Px", kind: "image", data: PNG_1PX, mimeType: "image/png", caption: "c" });
+  assert.equal(im.isError, undefined, JSON.stringify(im));
+  const du = await callTool(d, "katashiro.canvas_open", { title: "Px2", kind: "image", data: `data:image/png;base64,${PNG_1PX}` });
+  assert.equal(du.isError, undefined, JSON.stringify(du));
+  const id = await callTool(d, "katashiro.canvas_open", { title: "Shot", kind: "image", imageId: imgId });
+  assert.equal(id.isError, undefined, JSON.stringify(id));
+  const both = await callTool(d, "katashiro.canvas_open", { title: "X", kind: "image", imageId: imgId, data: PNG_1PX, mimeType: "image/png" });
+  assert.match(both.content[0].text, /exactly one of/);
+  const gone = await callTool(d, "katashiro.canvas_open", { title: "X", kind: "image", imageId: "img_404" });
+  assert.match(gone.content[0].text, /no captured image/);
+  const read = await callTool(d, "katashiro.canvas_read", { id: "cv_000000000002" });
+  assert.match(read.content[0].text, /"kind":"image"/);
+  assert.doesNotMatch(read.content[0].text, new RegExp(PNG_1PX.slice(0, 20)));   // the agent never gets the bytes back
+  const masked = BrowserMcp.TOOLS["katashiro.canvas_open"].redact({ title: "Px", kind: "image", data: PNG_1PX, mimeType: "image/png" });
+  assert.match(masked.data, /^<\d+ bytes>$/);
+});

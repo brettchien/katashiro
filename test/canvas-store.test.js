@@ -237,3 +237,105 @@ test("getMatching: with getKeys only the matching keys are read; without it one 
   assert.deepEqual(read, [["history:1", "history:2"]]);
   assert.deepEqual(await CanvasStore.getMatching(storage, () => false), {});
 });
+
+// --- PR 2: slides and image canvases --------------------------------------------------------
+
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const GIF = "R0lGODlhAQABAAAAACw=";
+
+test("slides is a text kind like markdown", async () => {
+  const { s } = store();
+  const r = await s.agentWrite({ conversationId: "c", title: "Deck", kind: "slides", content: "# A\n---\n# B" });
+  assert.equal((await s.read({ conversationId: "c", id: r.id })).kind, "slides");
+});
+
+test("image canvas: bytes stored once by sha256, content is a small JSON reference", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG }, caption: "one px" });
+  await s.agentWrite({ conversationId: "c", title: "Shot again", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  const imgKeys = Object.keys(storage.data).filter((k) => k.startsWith("canvas:img:"));
+  assert.equal(imgKeys.length, 1);                                      // deduplicated
+  const hash = await CanvasStore.sha256OfBase64(PNG);
+  assert.equal(imgKeys[0], `canvas:img:${hash}`);
+  const r = await s.read({ conversationId: "c", id: a.id });
+  assert.deepEqual(JSON.parse(r.content), { image: hash, mimeType: "image/png", caption: "one px" });
+  assert.equal((await s.readImage(hash)).data, PNG);
+  assert.equal(await s.readImage("../x"), null);
+});
+
+test("image canvas: validation (type, base64, size, caption, needs an image)", async () => {
+  const { s } = store();
+  const w = (image, extra = {}) => s.agentWrite({ conversationId: "c", title: "T", kind: "image", image, ...extra });
+  await assert.rejects(() => w(undefined), /needs an image/);
+  await assert.rejects(() => w({ mimeType: "image/bmp", data: PNG }), /image type/);
+  await assert.rejects(() => w({ mimeType: "image/png", data: "not base64!" }), /base64/);
+  await assert.rejects(() => w({ mimeType: "image/png", data: "A".repeat(Math.ceil(CanvasStore.IMAGE_MAX_BYTES * 4 / 3) + 8) }), /capped/);
+  await assert.rejects(() => w({ mimeType: "image/png", data: PNG }, { caption: "x".repeat(201) }), /caption/);
+});
+
+test("image sweep: replacing or deleting frees an image nobody references, after the grace period", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "T", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  const pngKey = `canvas:img:${await CanvasStore.sha256OfBase64(PNG)}`;
+  clock += 11 * 60 * 1000;                                              // past the 10-minute grace
+  await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "T", kind: "image", image: { mimeType: "image/gif", data: GIF } });
+  assert.ok(!(pngKey in storage.data), "the replaced PNG is swept");
+  const gifKey = `canvas:img:${await CanvasStore.sha256OfBase64(GIF)}`;
+  assert.ok(gifKey in storage.data);
+  await s.remove({ id: a.id });
+  assert.ok(gifKey in storage.data, "inside the grace period it is kept");
+  clock += 11 * 60 * 1000;
+  await s.sweepImages();
+  assert.ok(!(gifKey in storage.data));
+});
+
+test("an image shared by two canvases survives deleting one of them", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  await s.agentWrite({ conversationId: "c", title: "B", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  clock += 11 * 60 * 1000;
+  await s.remove({ id: a.id });
+  assert.equal(Object.keys(storage.data).filter((k) => k.startsWith("canvas:img:")).length, 1);
+});
+
+test("reusing an old unreferenced image refreshes it, so a sweep before the content lands keeps it", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  await s.remove({ id: a.id });                                         // PNG now unreferenced
+  clock += 11 * 60 * 1000;                                              // and past the grace period
+  const pngKey = `canvas:img:${await CanvasStore.sha256OfBase64(PNG)}`;
+  const set = storage.set.bind(storage);
+  storage.set = async (items) => {                                      // a sweep runs between image and content
+    if (Object.keys(items).some((k) => k.endsWith(":latest"))) { storage.set = set; await s.sweepImages(); }
+    return set(items);
+  };
+  await s.agentWrite({ conversationId: "c", title: "B", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  assert.ok(pngKey in storage.data, "the reused image survives the sweep");
+});
+
+test("a failing sweep does not fail the write or delete that triggered it", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  clock += 11 * 60 * 1000;                                              // so the sweeps below do delete
+  const remove = storage.remove.bind(storage);
+  storage.remove = async (keys) => {
+    if ([].concat(keys).some((k) => k.startsWith("canvas:img:"))) throw new Error("boom");
+    return remove(keys);
+  };
+  const w = await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "A", kind: "image", image: { mimeType: "image/gif", data: GIF } });
+  assert.equal(w.version, 2);
+  await s.remove({ id: a.id });
+  assert.deepEqual(await s.list({ conversationId: "c" }), []);
+});
+
+test("image bytes count toward the budget", async () => {
+  const { s } = store({ budgetBytes: 50 });
+  await assert.rejects(
+    () => s.agentWrite({ conversationId: "c", title: "T", kind: "image", image: { mimeType: "image/png", data: PNG } }),
+    (e) => e.code === "quota"
+  );
+});

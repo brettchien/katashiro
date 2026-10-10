@@ -8,15 +8,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>canvas</title>
   <link rel="stylesheet" href="canvas-frame.css">
+  <link rel="stylesheet" href="vendor/reveal/reveal.css">
+  <link rel="stylesheet" href="vendor/reveal/theme-dracula.css">
+  <link rel="stylesheet" href="canvas-slides.css">
 </head>
 <body>
   <!-- Manifest sandbox page: opaque origin, no chrome.* APIs, no storage, no network. Everything it
        shows arrives in a `render` message from canvas.html. -->
-  <article id="doc" class="doc"></article>
+  <article id="doc" class="doc" hidden></article>
+  <div id="deck" class="reveal" hidden><div class="slides"></div></div>
+  <figure id="pic" class="pic" hidden><img alt=""><figcaption></figcaption></figure>
   <script src="vendor/markdown-it.iife.js"></script>
   <script src="vendor/dompurify.iife.js"></script>
   <script src="vendor/highlight.iife.js"></script>
   <script src="markdown.js"></script>
+  <script src="vendor/reveal/reveal.js"></script>
+  <script src="canvas-core.js"></script>
   <script src="canvas-frame.js"></script>
 </body>
 </html>
