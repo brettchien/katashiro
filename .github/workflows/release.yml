@@ -45,7 +45,8 @@ jobs:
             sidepanel.html sidepanel.css sidepanel.js \
             browser-mcp.js room-core.js agent-tools.js composer.js markdown.js jev-grounding.js \
             page vendor \
-            icon.png icon16.png icon32.png icon48.png icon128.png
+            icon.png icon16.png icon32.png icon48.png icon128.png \
+            -x "*.md"
 
       - name: Create release
         env:
