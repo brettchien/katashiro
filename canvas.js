@@ -8,12 +8,16 @@
 //  - the load gate drops the frame on any load we did not cause (the frame navigated itself);
 //  - render is sent only after a `ready` with the current nonce;
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
+// With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
+// Send to agent, Revert or delete, and its frame's save/dirty/selection are refused.
 (function () {
   "use strict";
 
   const TITLE_MAX = 120;
   const params = new URLSearchParams(location.search);
   const canvasId = params.get("id") || "";
+  const compareView = params.get("view") === "agent";
+  const CANVAS_BASE = chrome.runtime.getURL("canvas.html");
 
   const titleEl = document.getElementById("canvas-title");
   const versionEl = document.getElementById("canvas-version");
@@ -29,6 +33,7 @@
   const saveBtn = document.getElementById("canvas-save");
   const cancelBtn = document.getElementById("canvas-cancel");
   const revertBtn = document.getElementById("canvas-revert");
+  const compareBtn = document.getElementById("canvas-compare");
   const conflictEl = document.getElementById("canvas-conflict");
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
@@ -68,13 +73,23 @@
   function setHeader(meta) {
     const t = String(meta.title || "Canvas").slice(0, TITLE_MAX);
     titleEl.textContent = t;
-    versionEl.textContent = `v${meta.version}${meta.author === "user" ? "（你的修改）" : ""}`;
-    document.title = `${t} — Canvas`;
+    if (compareView) {
+      versionEl.textContent = `agent 最後寫的 v${meta.agentVersion}（唯讀；目前是 v${meta.version}）`;
+      document.title = `⇆ ${t} — agent 的版本`;
+    } else {
+      versionEl.textContent = `v${meta.version}${meta.author === "user" ? "（你的修改）" : ""}`;
+      document.title = `${t} — Canvas`;
+    }
     updateButtons();
   }
 
   // Header buttons follow the mode; only markdown is editable in phase 1 (slides: phase 2).
   async function updateButtons() {
+    if (compareView) {
+      // The compare tab is not the canvas (§3.10): nothing here can change it.
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, compareBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      return;
+    }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
     editBtn.hidden = !(editable && mode === "view");
     saveBtn.hidden = mode !== "edit" || deleted;
@@ -91,6 +106,8 @@
     }
     revertBtn.hidden = !canRevert;
     const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    // Compare with agent's (§3.10): when the latest differs from the agent's last write.
+    compareBtn.hidden = !(canRevert && textKind && !!frame);
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
@@ -195,12 +212,16 @@
     }
     const mk = CanvasStore.metaKey(canvasId);
     const lk = CanvasStore.latestKey(canvasId);
-    const got = await chrome.storage.local.get([mk, lk]);
+    const ak = CanvasStore.agentKey(canvasId);
+    const got = await chrome.storage.local.get([mk, lk, ak]);
     if (!got[mk]) {
       notice("找不到這個畫布（可能已被刪除）。");
       return null;
     }
-    return { meta: got[mk], content: got[lk] == null ? "" : got[lk] };
+    const latest = got[lk] == null ? "" : got[lk];
+    // A compare tab shows the agent's last write (the agent copy exists only while it differs).
+    if (compareView) return { meta: got[mk], content: got[ak] != null ? got[ak] : latest, latest };
+    return { meta: got[mk], content: latest };
   }
 
   function mountFrame(query) {
@@ -231,6 +252,7 @@
     nonce = "";
     notice(why);
     finishGoto({ ok: false, error: "the canvas is no longer shown" });
+    finishHighlight({ ok: false, error: "the canvas is no longer shown" });
   }
 
   // What the frame renders: the text for markdown / slides; for an image canvas the stored JSON
@@ -252,11 +274,16 @@
   // §3.5: an agent markdown write not normalized yet → ask the frame to normalize the AGENT copy
   // (which is the latest unless the user has saved since), and wait for rendered{version, normalized}.
   let awaitingNormalize = 0;
+  let lastRenderedVersion = 0;        // §3.10: an agent version newer than this glows what changed
   async function sendRender() {
     if (!frame || !frameReady || !current) return;
     const c = current;
     let content;
     try { content = await renderPayload(c); } catch (e) { notice(CanvasCore.clipError(e.message)); return; }
+    if (compareView) {
+      if (frame && frameReady && current === c) sendCompareRender(c, content);   // superseded while reading
+      return;
+    }
     let normalizeText;
     if (c.meta.kind === "markdown" && c.meta.normalized === false) {
       normalizeText = await store.readAgentCopy(canvasId);
@@ -265,7 +292,34 @@
     if (!frame || !frameReady || current !== c) return;         // superseded while reading
     const msg = { type: "render", kind: c.meta.kind, version: c.meta.version, content };
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
+    // Glow on every agent write (§3.10): the frame compares with what it showed before.
+    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion) msg.glowPrev = true;
+    lastRenderedVersion = c.meta.version;
+    startRender(msg);
+  }
+
+  // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
+  // them reach a deck still being replaced), and fail at once with the reason while it is failed.
+  let renderingVersion = 0;
+  let renderFailed = "";
+  function startRender(msg) {
+    rendered = false;
+    renderFailed = "";
+    renderingVersion = msg.version;
     toFrame(msg);
+  }
+
+  // Compare tab (§3.10): the agent copy, re-sent (no reload) whenever the canvas changes. Its blocks
+  // that differ from the latest glow; once they are equal (e.g. the agent wrote), it says so and
+  // glows what the agent's write changed.
+  function sendCompareRender(c, content) {
+    const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content };
+    const same = c.content === c.latest;
+    if (!same && typeof c.latest === "string") msg.glowAgainst = c.latest;
+    else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) msg.glowPrev = true;
+    lastRenderedVersion = c.meta.agentVersion;
+    notice(same ? "沒有差異：agent 最後寫的版本就是目前的版本（No differences）。" : "");
+    startRender(msg);
   }
 
   // Saves are serialized (refresh() waits on them). The frame gets back the content that was
@@ -365,15 +419,76 @@
     if (!current) return;
     if (!window.confirm("還原成 agent 最後寫的版本？\n\n你目前的內容會被取代，這個動作無法復原。")) return;
     try { await store.revertToAgent({ id: canvasId, baseVersion: current.meta.version }); }
-    catch (e) { notice(`還原失敗：${CanvasCore.clipError((e && e.message) || e)}`); }
+    catch (e) { notice(`還原失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
+    closeCompareTabs();                     // Revert to agent's also ends a compare (§3.10)
   });
+
+  // --- Compare with agent's (§3.10) -------------------------------------------------------------
+  // The side panel does the tab moves (it holds the §3.1 split records and the canvas group); it
+  // checks that the request comes from this canvas tab. Without a panel, the compare view opens
+  // here as a normal tab beside this one.
+  compareBtn.addEventListener("click", async () => {
+    if (!current || compareView || compareBtn.disabled) return;
+    compareBtn.disabled = true;
+    try {
+      let r;
+      try { r = await chrome.runtime.sendMessage({ type: "katashiro-canvas-compare", id: canvasId, conversationId: current.meta.conversationId }); }
+      catch (_) { r = undefined; }
+      if (!r) r = await openCompareHere();
+      if (!r.ok) { notice(`無法開啟比較：${CanvasCore.clipError(r.error)}`); return; }
+      if (r.note) flash(r.note);
+      // Both panes glow the differing blocks: this one now, the compare tab on its first render.
+      const agentText = await store.readAgentCopy(canvasId);
+      if (typeof agentText === "string" && mode === "view") toFrame({ type: "glow", against: agentText });
+    } finally {
+      compareBtn.disabled = false;
+    }
+  });
+
+  async function openCompareHere() {
+    try {
+      const tabs = await chrome.tabs.query({});
+      const old = tabs.find((t) => CanvasTabs.isCompareTabFor(t, CANVAS_BASE, canvasId));
+      if (old) { await chrome.tabs.update(old.id, { active: true }); return { ok: true }; }
+      const me = await chrome.tabs.getCurrent();
+      if (!me) return { ok: false, error: "找不到這個分頁" };
+      await chrome.tabs.create(CanvasTabs.compareTabProps(me, CanvasTabs.compareTabUrl(CANVAS_BASE, canvasId), false));
+      return { ok: true, note: "側邊面板沒有開：比較畫面開在一般分頁（沒有 Split View）。" };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    }
+  }
+
+  async function closeCompareTabs() {
+    try {
+      const ids = (await chrome.tabs.query({})).filter((t) => CanvasTabs.isCompareTabFor(t, CANVAS_BASE, canvasId)).map((t) => t.id);
+      if (ids.length) await chrome.tabs.remove(ids);
+    } catch (_) { /* already closed */ }
+  }
+
+  // Closing the canvas tab closes its compare tab too (§3.10): once no tab shows this canvas, the
+  // compare tab closes itself. (Closing the compare tab just ends the split; Chrome does that.)
+  // Also checked once at start: a compare tab reopened (Ctrl+Shift+T) after its canvas tab closed.
+  async function closeIfCanvasGone() {
+    const canvasUrl = `${CANVAS_BASE}?id=${encodeURIComponent(canvasId)}`;
+    try {
+      const tabs = await chrome.tabs.query({});
+      if (!tabs.some((t) => t.url === canvasUrl || t.pendingUrl === canvasUrl)) closeThisTab();
+    } catch (_) { /* stays open */ }
+  }
+  if (compareView) {
+    chrome.tabs.onRemoved.addListener(closeIfCanvasGone);
+    // A canvas tab navigated elsewhere no longer shows the canvas either.
+    chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) closeIfCanvasGone(); });
+    closeIfCanvasGone();
+  }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
   });
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
 
   window.addEventListener("message", (event) => {
-    const m = CanvasCore.acceptFrameMessage(event, { frameWindow: frame && frame.contentWindow, nonce });
+    const m = CanvasCore.acceptFrameMessage(event, { frameWindow: frame && frame.contentWindow, nonce, readOnly: compareView });
     if (!m) return;
     switch (m.type) {
       case "ready":
@@ -389,8 +504,11 @@
         break;
       case "rendered":
         if (printing && !printing.sent) { printing.sent = true; toFrame({ type: "print" }); }
+        if (m.version !== renderingVersion) break;           // an older render; a newer one is on its way
         rendered = true;
+        renderFailed = "";
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
+        if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
           awaitingNormalize = 0;
           store.applyNormalized({ id: canvasId, version: m.version, normalized: m.normalized }).catch(() => {});
@@ -403,10 +521,16 @@
         dirty = m.dirty;
         updateButtons();
         break;
+      case "highlighted":
+        onHighlighted(m);
+        break;
       case "error":
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
-        offerSendError(m.msg);
+        if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
+        if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
+        else offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
+        finishHighlight({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });
@@ -447,16 +571,81 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Only the side panel: not a content script (sender.tab), not another extension page.
     if (!sender || sender.id !== chrome.runtime.id || sender.tab || sender.url !== PANEL_URL) return false;
+    if (compareView) return false;              // goto / highlight are for the canvas, never its compare tab
+    if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
     if (!msg || msg.type !== "katashiro-canvas-goto" || msg.id !== canvasId) return false;
     if (!Number.isInteger(msg.slide) || msg.slide < 1) { sendResponse({ ok: false, error: "slide must be a positive integer" }); return false; }
     if (current && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}, not slides` }); return false; }
     if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas" }); return false; }
     finishGoto({ ok: false, error: "superseded by a newer goto" });
+    if (renderFailed) { sendResponse({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return false; }
     const timer = setTimeout(() => finishGoto({ ok: false, error: "the slides did not respond in time" }), GOTO_TIMEOUT_MS);
     pendingGoto = { slide: msg.slide, respond: sendResponse, sent: false, timer };
     if (frame && frameReady && rendered) { pendingGoto.sent = true; toFrame({ type: "goto", slide: msg.slide }); }
     return true;                              // answer asynchronously
   });
+
+  // canvas_highlight (§3.10), from the side panel like goto. The frame finds the block by its
+  // rendered text and answers highlighted{}; always answered (frame, drop, newer request, timer).
+  // While the user edits nothing scrolls or takes focus: the frame only checks the anchor, and the
+  // header offers "Agent wants to show you a section" to go there.
+  const HIGHLIGHT_TIMEOUT_MS = 5000;
+  let highlightSeq = 0;
+  let pendingHighlight = null;                // { reqId, req, respond, sent, timer }
+  function finishHighlight(result) {
+    if (!pendingHighlight) return;
+    const { respond, timer } = pendingHighlight;
+    pendingHighlight = null;
+    clearTimeout(timer);
+    respond(result);
+  }
+  function sendHighlight() {
+    pendingHighlight.sent = true;
+    toFrame({ type: "highlight", reqId: pendingHighlight.reqId, ...pendingHighlight.req });
+  }
+  function queueHighlight(req, respond) {
+    finishHighlight({ ok: false, error: "superseded by a newer highlight" });
+    if (renderFailed) { respond({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return; }
+    const timer = setTimeout(() => finishHighlight({ ok: false, error: "the canvas did not respond in time" }), HIGHLIGHT_TIMEOUT_MS);
+    pendingHighlight = { reqId: ++highlightSeq, req, respond, sent: false, timer };
+    if (frame && frameReady && rendered) sendHighlight();
+  }
+  function onHighlighted(m) {
+    if (!pendingHighlight || m.reqId !== pendingHighlight.reqId) return;
+    const r = { ok: m.ok, tag: m.tag, text: m.text, slide: m.slide, error: m.error };
+    if (m.ok && pendingHighlight.req.check) {
+      offerHighlight(pendingHighlight.req);
+      r.deferred = true;
+    }
+    finishHighlight(r);
+  }
+  function offerHighlight(req, text) {
+    notice(text || "Agent 想指給你看一個段落（Agent wants to show you a section）", {
+      label: "前往",
+      fn: async () => {
+        if (mode === "edit" && dirty) { offerHighlight(req, "先儲存或結束編輯，就能前往 agent 指的段落。"); return; }
+        notice("");
+        if (mode === "edit") await leaveEdit();
+        // The section may be gone by now: say so, since no agent is waiting on this answer.
+        queueHighlight({ ...req, check: false }, (r) => { if (!r.ok && !/^superseded/.test(r.error)) notice(`找不到 agent 指的段落：${CanvasCore.clipError(r.error)}`); });
+      },
+    });
+  }
+  function onHighlightRequest(msg, sendResponse) {
+    const hasFind = typeof msg.find === "string", hasHeading = typeof msg.heading === "string";
+    if (hasFind === hasHeading) { sendResponse({ ok: false, error: "give exactly one of find / heading" }); return false; }
+    if (current && current.meta.kind !== "markdown" && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}; only markdown and slides can be highlighted` }); return false; }
+    if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return false; }
+    const req = {
+      find: hasFind ? msg.find.slice(0, 2000) : undefined,
+      heading: hasHeading ? msg.heading.slice(0, 2000) : undefined,
+      label: typeof msg.label === "string" ? Array.from(msg.label).slice(0, 80).join("") : "",
+      durationMs: Number.isFinite(msg.durationMs) ? msg.durationMs : undefined,
+      check: mode === "edit",
+    };
+    queueHighlight(req, sendResponse);
+    return true;                              // answer asynchronously
+  }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
@@ -502,7 +691,7 @@
       notice(`${c.meta.author === "agent" ? "Agent" : "另一個分頁"} 存了 v${c.meta.version}。你可以繼續編輯；儲存時會讓你選要保留哪個版本。`);
       return;
     }
-    sendRender();
+    await sendRender();
   }
 
   // Close this canvas tab. Fails quietly (the tab then just shows the "deleted" notice).
@@ -518,6 +707,7 @@
     current = c;
     setHeader(c.meta);
     mountFrame();
+    if (compareView) return;
     deleteBtn.hidden = false;
     store.touch(canvasId).catch(() => {});      // "last opened", for eviction order (§3.6)
   })();

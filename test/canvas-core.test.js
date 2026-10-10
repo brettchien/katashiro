@@ -182,3 +182,72 @@ test("losesImages: true only when the normalized text has fewer images", () => {
   assert.equal(C.losesImages("![r][ref]\n\n[ref]: x.png", "![r](x.png)\n"), false);
   assert.equal(C.losesImages("* x\n* y", "- x\n- y"), false);
 });
+
+// --- §3.10 showing what changed ------------------------------------------------------------------
+
+test("frame messages: highlighted{} is allow-listed and bounded; a compare tab refuses save/dirty/selection", () => {
+  assert.ok(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: true, tag: "h2", text: "Intro", slide: 2 }));
+  assert.ok(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: false, error: "no block contains \"x\"" }));
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: "1", ok: true }), null);
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: "yes" }), null);
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: true, text: "x".repeat(C.HIGHLIGHT_TEXT_MAX + 1) }), null);
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: true, tag: "x".repeat(17) }), null);
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: true, slide: 0 }), null);
+  assert.equal(ok({ type: "highlighted", nonce: "n1", reqId: 1, ok: false, error: "e".repeat(C.ERROR_MAX + 1) }), null);
+  const ro = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frameWindow, nonce: "n1", readOnly: true });
+  assert.equal(ro({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }), null);
+  assert.equal(ro({ type: "dirty", nonce: "n1", dirty: true }), null);
+  assert.equal(ro({ type: "selection", nonce: "n1", text: "x" }), null);
+  assert.equal(ro({ type: "editFailed", nonce: "n1", msg: "x" }), null);
+  assert.ok(ro({ type: "rendered", nonce: "n1", version: 1 }));
+  assert.ok(ro({ type: "openLink", nonce: "n1", url: "https://x" }));
+  assert.ok(ok({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }));             // the canvas tab still saves
+});
+
+test("diffBlocks: changed blocks glow, removed blocks leave a marker, a replacement is a change", () => {
+  assert.deepEqual(C.diffBlocks(["a", "b", "c"], ["a", "b", "c"]), { changed: [], removedAt: [] });
+  assert.deepEqual(C.diffBlocks(["a", "b", "c"], ["a", "B", "c"]), { changed: [1], removedAt: [] });
+  assert.deepEqual(C.diffBlocks(["a", "b", "c"], ["a", "c"]), { changed: [], removedAt: [1] });
+  assert.deepEqual(C.diffBlocks(["a", "b", "c"], ["a", "b"]), { changed: [], removedAt: [2] });    // at the end
+  assert.deepEqual(C.diffBlocks(["x", "a"], ["a"]), { changed: [], removedAt: [0] });
+  assert.deepEqual(C.diffBlocks(["a"], ["a", "n1", "n2"]), { changed: [1, 2], removedAt: [] });
+  assert.deepEqual(C.diffBlocks([], ["x", "y"]), { changed: [0, 1], removedAt: [] });
+  assert.deepEqual(C.diffBlocks(["a", "b", "c", "d", "e"], ["a", "x", "c", "e", "f"]), { changed: [1, 4], removedAt: [3] });
+  // A moved block: one side of the move is new.
+  assert.deepEqual(C.diffBlocks(["a", "b", "c"], ["c", "a", "b"]), { changed: [0], removedAt: [3] });
+  // Duplicate keys are matched in order.
+  assert.deepEqual(C.diffBlocks(["p:x", "p:x"], ["p:x", "p:y", "p:x"]), { changed: [1], removedAt: [] });
+  // Junk in, nothing out.
+  assert.deepEqual(C.diffBlocks(null, undefined), { changed: [], removedAt: [] });
+});
+
+test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {
+  const prev = Array.from({ length: 1500 }, (_, i) => `p:${i}`);
+  const next = ["p:0", ...Array.from({ length: 1000 }, (_, i) => `q:${i}`), "p:1499"];
+  const t0 = Date.now();
+  const d = C.diffBlocks(prev, next);
+  assert.ok(Date.now() - t0 < 1000);
+  assert.equal(d.changed.length, 1000);
+  assert.equal(d.changed[0], 1);
+  assert.deepEqual(d.removedAt, [1001]);                     // more went than came
+});
+
+test("matchBlock: find inside exactly one block, heading exactly; whitespace collapsed, case kept", () => {
+  const blocks = [
+    { text: "Intro", heading: true },
+    { text: "The   quick\nbrown fox", heading: false },
+    { text: "Limits", heading: true },
+    { text: "The 200 MB limit applies.", heading: false },
+    { text: "Limits of the API", heading: false },
+  ];
+  assert.deepEqual(C.matchBlock(blocks, { find: "quick brown" }), { index: 1 });
+  assert.deepEqual(C.matchBlock(blocks, { find: "  200 MB " }), { index: 3 });
+  assert.deepEqual(C.matchBlock(blocks, { heading: "Limits" }), { index: 2 });              // the paragraph is not a heading
+  assert.match(C.matchBlock(blocks, { find: "Limits" }).error, /^2 blocks match "Limits"; give a longer `find`/);
+  assert.match(C.matchBlock(blocks, { find: "the 200" }).error, /^no block contains "the 200"/);
+  assert.match(C.matchBlock(blocks, { heading: "Limit" }).error, /^no heading reads exactly "Limit"/);
+  assert.match(C.matchBlock(blocks, { find: " \n " }).error, /`find` is empty/);
+  assert.match(C.matchBlock(blocks, { find: "x".repeat(C.FIND_MAX + 1) }).error, /at most 500/);
+  assert.match(C.matchBlock([{ text: "A", heading: true }, { text: "A", heading: true }], { heading: "A" }).error, /^2 headings match/);
+  assert.match(C.matchBlock(null, { find: "x" }).error, /no block/);
+});

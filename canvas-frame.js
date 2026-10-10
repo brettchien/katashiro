@@ -4,9 +4,11 @@
 //  in:  render{nonce, kind, version, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
+//  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
+//       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
-//       save{content, baseVersion}, dirty{dirty} — each carrying the nonce from our URL fragment,
-//       which the host checks.
+//       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?}
+//       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
 // openLink, and the host decides (http(s) only, user confirms, new tab).
@@ -159,6 +161,153 @@
   }
   const post = (msg) => window.parent.postMessage({ ...msg, nonce }, "*");
 
+  // --- Showing what changed (§3.10) ---------------------------------------------------------
+  // Blocks: paragraph, heading, list item, table row, code block, rule, image. A block's text is its
+  // own text (words inside a nested block belong to that block), so a loose list item is its
+  // paragraph and a tight one keeps its words without its sub-list. Keys carry the tag, so h2 → h3
+  // counts as a change. Our own notes and copy buttons are not content.
+  const BLOCK_SEL = "h1,h2,h3,h4,h5,h6,p,li,tr,pre,hr,img";
+  function blocksOf(root) {
+    const els = Array.from(root.querySelectorAll(BLOCK_SEL)).filter((el) => !el.closest(".ks-note"));
+    const at = new Map(els.map((el, i) => [el, i]));
+    const texts = els.map(() => "");
+    const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      const p = n.parentElement;
+      if (!p || p.closest(".copy-btn, .ks-note")) continue;
+      const b = p.closest(BLOCK_SEL);
+      if (b && at.has(b)) texts[at.get(b)] += n.data;
+    }
+    const out = [];
+    els.forEach((el, i) => {
+      const tag = el.tagName.toLowerCase();
+      const text = CanvasCore.normText(texts[i]);
+      if (!text && tag !== "hr" && tag !== "img") return;
+      const key = tag === "img" ? `img:${el.getAttribute("src") || ""}:${el.getAttribute("alt") || ""}` : `${tag}:${text}`;
+      out.push({ el, tag, text, key, heading: /^h[1-6]$/.test(tag) });
+    });
+    return out;
+  }
+  // What glows: blocks of a document, whole slides of a deck (§3.10 "… table row, slide").
+  const slideSections = () => Array.from(deck.querySelectorAll(".slides > section"));
+  const sectionUnit = (sec) => ({ el: sec, key: blocksOf(sec).map((b) => b.key).join("\n") });
+  function shownUnits() {
+    if (shownKind === "slides") return slideSections().map(sectionUnit);
+    if (shownKind === "markdown") return blocksOf(doc);
+    return [];
+  }
+  // Another text's units (the other side of a compare), rendered detached through the same sink.
+  function unitsOfText(kind, text) {
+    if (kind === "slides") {
+      return CanvasCore.splitSlides(text).map((t) => {
+        const sec = document.createElement("section");
+        renderMarkdownInto(sec, t, { copyText: copyViaHost });
+        return sectionUnit(sec);
+      });
+    }
+    const art = document.createElement("article");
+    renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(text), { copyText: copyViaHost });
+    return blocksOf(art);
+  }
+
+  const GLOW_MS = 4000;
+  const reducedMotion = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  // One timer per element and effect: a newer glow restarts it instead of being cut short by an old one.
+  const markTimers = new WeakMap();
+  function mark(el, cls, ms) {
+    let timers = markTimers.get(el);
+    if (!timers) markTimers.set(el, (timers = new Map()));
+    clearTimeout(timers.get(cls));
+    el.classList.remove(cls);
+    void el.offsetWidth;                          // restart the fade
+    el.style.setProperty("--ks-ms", `${Math.round(ms)}ms`);
+    el.classList.add(cls);
+    timers.set(cls, setTimeout(() => { el.classList.remove(cls); timers.delete(cls); }, ms));
+  }
+  // New or changed blocks glow; a removed block leaves a thin marker on its neighbour (on a row's
+  // cells: a table row draws no shadow of its own).
+  function glowDiff(units, against, ms) {
+    if (!units.length || ms <= 0) return;
+    const d = CanvasCore.diffBlocks(against, units.map((u) => u.key));
+    for (const i of d.changed) if (units[i]) mark(units[i].el, "ks-changed", ms);
+    for (const i of d.removedAt) {
+      const el = i < units.length ? units[i].el : units[units.length - 1].el;
+      const cls = i < units.length ? "ks-removed-before" : "ks-removed-after";
+      for (const t of el.tagName === "TR" ? Array.from(el.cells) : [el]) mark(t, cls, ms);
+    }
+  }
+
+  let shownKind = "";
+  let lastKeys = null;                    // the previous render's keys: what an agent write is compared with
+  let glowMemo = null;                    // { version, before, until }: a same-version re-render keeps its glow
+  function showChanges(m) {
+    const units = shownUnits();
+    const keys = units.map((u) => u.key);
+    const before = lastKeys;
+    lastKeys = keys;
+    if (!units.length) return;
+    if (typeof m.glowAgainst === "string") { glowDiff(units, unitsOfText(m.kind, m.glowAgainst).map((u) => u.key), GLOW_MS); return; }
+    if (m.glowPrev && before) {
+      glowMemo = { version: m.version, before, until: Date.now() + GLOW_MS };
+      glowDiff(units, before, GLOW_MS);
+      return;
+    }
+    // §3.5 normalization re-renders the same agent version moments later: keep its glow going.
+    if (glowMemo && glowMemo.version === m.version && Date.now() < glowMemo.until) glowDiff(units, glowMemo.before, glowMemo.until - Date.now());
+  }
+
+  // canvas_highlight (§3.10): find the block by its rendered text, glow it (outline and background
+  // only), put the agent's label in the flow just above it, and bring it into view. `check` (the
+  // user is editing) only answers whether the anchor matches; nothing moves.
+  const NOTE_MAX = 80;
+  function placeNote(el, label, ms) {
+    const note = document.createElement("div");
+    note.className = "ks-note";
+    note.setAttribute("role", "note");
+    const icon = document.createElement("span");
+    icon.textContent = "🤖";
+    const who = document.createElement("b");
+    who.textContent = "Agent:";
+    const text = document.createElement("span");
+    text.textContent = label;                      // agent text: textContent only
+    note.append(icon, who, text);
+    // Never over text: before the table for a row, at the top inside a list item, else right above.
+    if (el.tagName === "TR") (el.closest("table") || el).before(note);
+    else if (el.tagName === "LI") el.prepend(note);
+    else el.before(note);
+    setTimeout(() => note.remove(), ms);
+  }
+  function highlight(m) {
+    const reply = (r) => post({ type: "highlighted", reqId: m.reqId, ...r });
+    if (shownKind !== "markdown" && shownKind !== "slides") { reply({ ok: false, error: "this canvas shows nothing to point at" }); return; }
+    if (editing && !m.check) { reply({ ok: false, error: "the user is editing this canvas" }); return; }
+    const blocks = blocksOf(shownKind === "slides" ? deck : doc);
+    const r = CanvasCore.matchBlock(blocks, typeof m.heading === "string" ? { heading: m.heading } : { find: m.find });
+    if (r.error) { reply({ ok: false, error: CanvasCore.clipError(r.error) }); return; }
+    const b = blocks[r.index];
+    const info = { ok: true, tag: b.tag, text: Array.from(b.text).slice(0, 90).join("") };
+    if (shownKind === "slides") {
+      const s = slideSections().indexOf(b.el.closest(".slides > section"));
+      if (s >= 0) info.slide = s + 1;
+    }
+    if (m.check) { reply(info); return; }
+    const ms = Math.min(Math.max(Number(m.durationMs) || 4000, 500), 10000);
+    const label = typeof m.label === "string" ? Array.from(m.label.trim()).slice(0, NOTE_MAX).join("") : "";
+    const show = () => {
+      if (!b.el.isConnected) { reply({ ok: false, error: "the canvas re-rendered meanwhile; try again" }); return; }
+      mark(b.el, "ks-point", ms);
+      if (label) placeNote(b.el, label, ms);
+      // A deck is moved by reveal, not by scrolling (scrolling its clipped viewport breaks the layout).
+      if (shownKind !== "slides") b.el.scrollIntoView({ block: "center", behavior: reducedMotion() ? "auto" : "smooth" });
+      reply(info);
+    };
+    if (shownKind === "slides" && info.slide && revealReady) {
+      revealReady.then(() => { Reveal.slide(info.slide - 1); show(); }, (e) => reply({ ok: false, error: CanvasCore.clipError(`the slides failed: ${(e && e.message) || e}`) }));
+    } else {
+      show();
+    }
+  }
+
   // Copy goes through the host (#69): this opaque-origin frame has no clipboard access.
   let nextReq = 1;
   const pendingCopies = new Map();
@@ -238,14 +387,22 @@
       return;
     }
     if (m.type === "leaveEdit") { stopEdit(); return; }
+    if (m.type === "highlight") { if (Number.isInteger(m.reqId)) highlight(m); return; }
+    if (m.type === "glow") {
+      // Compare started (§3.10): glow the blocks that differ from the other side.
+      if (!editing && typeof m.against === "string" && (shownKind === "markdown" || shownKind === "slides")) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), GLOW_MS);
+      return;
+    }
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
+    shownKind = m.kind;
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "");
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "");
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
+      try { showChanges(m); } catch (_) { /* the glow is a nicety; the render stands */ }
       // §3.5: the host asks for the normalized form of an agent markdown write (its agent copy).
       let normalized;
       if (m.kind === "markdown" && typeof m.normalizeText === "string") {

@@ -115,5 +115,48 @@
     return record.canvasGroup ? { action: "recreate" } : { action: "none", why: "its group is gone" };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore };
+  // --- Compare with agent's (§3.10) ------------------------------------------------------------
+  // A compare tab is canvas.html?id=<id>&view=agent: read-only, never "the canvas" (classifyTab
+  // says "other", the card and findCanvasTab never pick it).
+  function compareTabUrl(canvasBase, id) {
+    return `${canvasBase}?id=${encodeURIComponent(id)}&view=agent`;
+  }
+  function isCompareTabFor(tab, canvasBase, id) {
+    const url = tab && (tab.url || tab.pendingUrl);
+    if (typeof url !== "string" || !canvasBase || !url.startsWith(`${canvasBase}?`)) return false;
+    let p;
+    try { p = new URL(url).searchParams; } catch (_) { return false; }
+    return p.get("view") === "agent" && p.get("id") === id;
+  }
+
+  /**
+   * The user clicked Compare with agent's in `canvasTab`. `compareTab` = an open compare tab of the
+   * same canvas, if any. Rules (§3.10): an existing compare split with this canvas tab is just
+   * focused; otherwise a stray compare tab is replaced, a split the canvas tab is in (e.g. beside a
+   * page, §3.1) is ended first, and the new compare tab is split with the canvas tab. Without
+   * Split View (Chrome < 155) the compare view is a normal tab.
+   * → { ok: false, reason } | { ok: true, action: "focus" } |
+   *   { ok: true, action: "open", closeOld: tabId | null, unsplit: splitViewId | null, split: boolean }
+   */
+  function planCompare({ canvasTab, compareTab, canSplit }) {
+    if (!canvasTab) return { ok: false, reason: "the canvas tab is gone" };
+    if (compareTab) {
+      if (!canSplit && compareTab.windowId === canvasTab.windowId) return { ok: true, action: "focus" };
+      if (canSplit && inSplit(canvasTab) && compareTab.splitViewId === canvasTab.splitViewId) return { ok: true, action: "focus" };
+    }
+    return {
+      ok: true, action: "open",
+      closeOld: compareTab ? compareTab.id : null,
+      unsplit: canSplit && inSplit(canvasTab) ? canvasTab.splitViewId : null,
+      split: !!canSplit,
+    };
+  }
+
+  // chrome.tabs.create properties for the compare tab: right after the canvas tab, same window and
+  // pinned state (a split needs both), in the background when it is about to be split.
+  function compareTabProps(canvasTab, url, split) {
+    return { url, windowId: canvasTab.windowId, index: canvasTab.index + 1, pinned: !!canvasTab.pinned, active: !split };
+  }
+
+  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, planCompare, compareTabProps };
 });

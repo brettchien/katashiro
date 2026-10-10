@@ -304,7 +304,7 @@ below is built around that.
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
 | `katashiro.canvas_delete({id})` | Deletes a canvas of the conversation after the **user confirms** in the side panel (Brett, 2026-10-10: any canvas, the confirmation is the only gate); declined → nothing deleted, `declined`. A deleted canvas's open tab closes (any delete path), unless it holds unsaved edits, which stay on screen to be copied out |
 | `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out). Only the side panel's messages are accepted (not content scripts); every goto is answered (frame error or drop, newer goto, 5 s canvas timer, panel deadline). If the canvas is open in two tabs both move and the first answer wins |
-| `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10) |
+| `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only; label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
 
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
 - Large payloads use a shell helper that posts to the facade (the `show_image` skill pattern), so
@@ -768,6 +768,23 @@ agent's last write is the baseline.
 - **Effects are ours, not agent CSS.** `canvas-frame.html` runs no agent code (§3.2), so the agent
   cannot inject CSS there; it picks from fixed effects (glow, underline, label) and gives a text
   anchor. An `html` canvas is agent code already and can style itself.
+- **Phase 1 as implemented (PR 6).**
+  - *Glow:* the host marks a render `glowPrev` when an agent version newer than the one it last
+    rendered arrives; the frame keys each block by tag + rendered text (own text only, so a list
+    item's sub-list is its own block; one key per slide for slides) and diffs with an LCS
+    (`CanvasCore.diffBlocks`; above 10⁶ cells everything between the common ends counts as changed).
+    The §3.5 normalization re-render of the same version keeps the glow. Fade ~4 s; with
+    `prefers-reduced-motion` the glow is static and then removed. A removed table row's marker is
+    drawn on the next row's cells.
+  - *Compare:* the canvas tab asks the side panel (`katashiro-canvas-compare`, accepted only from
+    that canvas tab, same id, no `view`); the panel ends any split the canvas tab is in (including
+    one the user made: the button is the user's request), moves it back by the §3.1 record, then
+    opens the compare tab after it in the canvas tab's group and splits them. Without a panel the
+    canvas tab opens the compare view as a normal tab. The compare tab closes itself when no tab of
+    that canvas is left. The *"N changes since you last looked"* hash list and `canvas_patch`'s
+    exact ranges are not in phase 1 (§5 lists only the three items here; `canvas_patch` is phase 2).
+  - *Pointing:* the label is placed in the flow just above the block (before the table for a row,
+    at the top of a list item), so it never covers text; it shifts the content below while shown.
 - **Skill (Brett, 2026-10-10).** `skills/katashiro-point-at` (#67) teaches agents when and how to
   point: `katashiro.highlight` on the displayed page first, `katashiro.inject_css` for several
   elements (cleared afterwards), and `canvas_highlight` on canvases.
