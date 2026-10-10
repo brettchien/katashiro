@@ -213,6 +213,9 @@ test("tools/list returns the 39 browser tools", async () => {
     "katashiro.reload",
     "katashiro.inject_css",
     "katashiro.show_image",
+    "katashiro.canvas_open",
+    "katashiro.canvas_read",
+    "katashiro.canvas_list",
     "katashiro.chat_history",
     "katashiro.notify"
   ]);
@@ -2964,4 +2967,73 @@ test("katashiro.chat_history marks a reply with the time and sender it answers",
   ];
   const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
   assert.ok(text.includes(`[${BrowserMcp.localStamp(orig + 110000)} user ↩ ${BrowserMcp.localStamp(orig)} orca]\n所以要加 sha`), text);
+});
+
+// --- canvas (ADR docs/adr/canvas.md, MVP) -------------------------------------------
+
+const CanvasStore = require("../canvas-store.js");
+
+function withCanvas(d, opts = {}) {
+  const data = {};
+  const storage = {
+    async get(keys) { const out = {}; for (const k of [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]); return out; },
+    async set(items) { for (const [k, v] of Object.entries(items)) data[k] = structuredClone(v); },
+  };
+  let n = 0;
+  const writes = [];
+  d.canvas = {
+    store: CanvasStore.createCanvasStore({ storage, lock: (_n, fn) => fn(), randomHex: () => (++n).toString(16).padStart(12, "0") }),
+    conversationId: () => opts.conversationId || "c_test",
+    onWrite: async (res) => { writes.push(res); return opts.note || ""; },
+  };
+  return { writes, data };
+}
+
+test("katashiro.canvas_open creates, then updates with baseVersion; not act-gated, no tab needed", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  const { writes } = withCanvas(d, { note: "opened in a background tab" });
+  const r1 = await callTool(d, "katashiro.canvas_open", { title: "Plan", content: "# Plan" });
+  assert.equal(r1.isError, undefined, JSON.stringify(r1));
+  assert.match(r1.content[0].text, /^created canvas "Plan" — id cv_000000000001, version 1 \(opened in a background tab\)/);
+  assert.equal(writes[0].created, true);
+  const r2 = await callTool(d, "katashiro.canvas_open", { id: "cv_000000000001", baseVersion: 1, title: "Plan", content: "# Plan v2" });
+  assert.match(r2.content[0].text, /^updated canvas "Plan" — id cv_000000000001, version 2/);
+  const r3 = await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" });
+  assert.match(r3.content[0].text, /"version":2/);
+  assert.match(r3.content[0].text, /\n\n# Plan v2$/);
+  const r4 = await callTool(d, "katashiro.canvas_list", {});
+  assert.match(r4.content[0].text, /^cv_000000000001  v2  markdown  \d+ B  .*  Plan$/);
+});
+
+test("katashiro.canvas_open: a stale write returns a structured JSON error", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "T", content: "a" });
+  await callTool(d, "katashiro.canvas_open", { id: "cv_000000000001", baseVersion: 1, title: "T", content: "b" });
+  const r = await callTool(d, "katashiro.canvas_open", { id: "cv_000000000001", baseVersion: 1, title: "T", content: "c" });
+  assert.equal(r.isError, true);
+  const e = JSON.parse(r.content[0].text);
+  assert.equal(e.error, "stale");
+  assert.equal(e.currentVersion, 2);
+});
+
+test("canvas tools without a panel (no ctx.canvas) fail cleanly", async () => {
+  const { deps: d } = deps({ actMode: false });
+  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_list"]) {
+    const r = await callTool(d, name, { title: "T", content: "x", id: "cv_000000000001" });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /not available in this host/);
+  }
+});
+
+test("katashiro.canvas_open redact shows the title and size, never the document", () => {
+  const masked = BrowserMcp.TOOLS["katashiro.canvas_open"].redact({ title: "Plan", content: "secret body".repeat(10), id: "cv_1", baseVersion: 2 });
+  assert.deepEqual(masked, { id: "cv_1", baseVersion: 2, title: "Plan", content: "<110 bytes>" });
+});
+
+test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated by act mode)", () => {
+  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_list"]) {
+    assert.equal(BrowserMcp.TOOLS[name].sessionScope, true);
+    assert.ok(!BrowserMcp.TOOLS[name].write);
+  }
 });

@@ -201,6 +201,13 @@ class Conn {
       clientInfo: clientInfoSnapshot,
       // show_image renders into THIS agent's current turn (or as its own message between turns).
       showImage: (img) => this.showImage(img),
+      // Canvas (ADR docs/adr/canvas.md): one store for the panel, keyed by this window's
+      // conversation; a write shows its card in THIS agent's turn and opens a new canvas's tab.
+      canvas: {
+        store: canvasStore,
+        conversationId: () => conversationId,
+        onWrite: (res) => this.onCanvasWrite(res),
+      },
       windowId: panelWindowId,
     };
   }
@@ -703,6 +710,26 @@ class Conn {
       appendMessage({ senderId: this.id, senderName: this.name, text: caption, images: [src] });
     }
     return { width: im.naturalWidth, height: im.naturalHeight };
+  }
+
+  // katashiro.canvas_open saved a canvas: put its card in this turn (or, between turns, as its own
+  // row), and open a NEW canvas in a background tab. An update needs no tab work: an open canvas
+  // tab re-renders itself from storage.onChanged. Returns a short note for the tool result.
+  async onCanvasWrite({ id, version, created, title }) {
+    const card = canvasCard({ id, version, title });
+    if (this.turnActive) {
+      if (!this.stream || !this.stream.bubble) this.startStream();
+      this.stream.contentEl.insertBefore(card, this.stream.bubble);
+    } else {
+      const row = document.createElement("div");
+      row.className = "message system";
+      row.appendChild(card);
+      messagesList.appendChild(row);
+    }
+    maybeScroll();
+    if (!created) return (await findCanvasTab(id)) ? "its open tab updated" : "";
+    await openCanvasTab(id, { active: false });
+    return "opened in a background tab";
   }
 
   ensureToolStrip() {
@@ -2029,6 +2056,60 @@ function formatTime(timestamp) {
 // stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
 // handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
 // renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
+// --- canvas helpers ----------------------------------------------------------------
+// The panel's canvas store: chrome.storage.local, serialized by Web Locks shared with the canvas
+// tabs (same extension origin), per canvas-store.js.
+const canvasStore = CanvasStore.createCanvasStore({
+  storage: chrome.storage.local,
+  lock: (name, fn) => navigator.locks.request(name, fn),
+});
+
+function canvasTabUrl(id) {
+  return chrome.runtime.getURL(`canvas.html?id=${encodeURIComponent(id)}`);
+}
+
+async function findCanvasTab(id) {
+  // Match patterns do not cover chrome-extension://, so list tabs and compare URLs (needs "tabs").
+  const want = canvasTabUrl(id);
+  const tabs = await chrome.tabs.query({});
+  return tabs.find((t) => t.url === want || t.pendingUrl === want) || null;
+}
+
+// Focus the canvas's tab, or open it (in the panel's window, after the active tab).
+async function openCanvasTab(id, { active = true } = {}) {
+  const existing = await findCanvasTab(id);
+  if (existing) {
+    if (active) {
+      await chrome.tabs.update(existing.id, { active: true });
+      await chrome.windows.update(existing.windowId, { focused: true });
+    }
+    return existing;
+  }
+  const opts = { url: canvasTabUrl(id), active };
+  if (typeof panelWindowId === "number") opts.windowId = panelWindowId;
+  return chrome.tabs.create(opts);
+}
+
+// The chat card for a canvas write: "📄 <title> · v<N> — 開啟". Title is agent text → textContent.
+function canvasCard({ id, version, title }) {
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = "canvas-card";
+  const icon = document.createElement("span");
+  icon.className = "canvas-card-icon";
+  icon.textContent = "📄";
+  const name = document.createElement("span");
+  name.className = "canvas-card-title";
+  name.textContent = String(title || "Canvas").slice(0, 120);
+  const meta = document.createElement("span");
+  meta.className = "canvas-card-meta";
+  meta.textContent = `v${version} — 開啟`;
+  card.append(icon, name, meta);
+  card.title = "在分頁中開啟這個畫布";
+  card.addEventListener("click", () => { openCanvasTab(id, { active: true }).catch(() => {}); });
+  return card;
+}
+
 // --- show_image helpers ---------------------------------------------------------
 const SVG_RASTER_MAX_EDGE = 4096;                       // px, after the 2× scale
 const SVG_DEFAULT_SIZE = { width: 1200, height: 800 };  // an SVG with no intrinsic size

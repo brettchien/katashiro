@@ -1369,3 +1369,23 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .reply-part + .reply-quote { margin-top: 8px; }
 .reply-quote.missing { cursor: default; font-style: italic; }
+
+/* Canvas card (ADR canvas §3.7): a canvas write in the agent's turn; click opens its tab. */
+.canvas-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 8px 12px;
+  background: rgba(96, 165, 250, 0.08);
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.canvas-card:hover { background: rgba(96, 165, 250, 0.16); }
+.canvas-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.canvas-card-meta { color: var(--text-secondary); white-space: nowrap; }

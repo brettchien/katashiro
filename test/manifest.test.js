@@ -36,3 +36,23 @@ test("sessions is an optional permission (reopen_tab), never a required one", ()
 test("notifications is a required permission (katashiro.notify)", () => {
   assert.ok(manifest.permissions.includes("notifications"));
 });
+
+test("canvas: the frame is a sandbox page with a no-network CSP; nothing is web-accessible", () => {
+  assert.deepEqual(manifest.sandbox.pages, ["canvas-frame.html"]);
+  const csp = manifest.content_security_policy.sandbox;
+  assert.match(csp, /^sandbox allow-scripts;/);                     // Chrome requires sandbox + allow-scripts
+  assert.doesNotMatch(csp, /allow-same-origin|allow-popups|allow-forms|allow-top-navigation|allow-modals/);
+  assert.doesNotMatch(csp, /unsafe-eval/);
+  for (const d of ["default-src 'none'", "script-src 'self'", "connect-src 'none'", "frame-src 'none'",
+    "worker-src 'none'", "form-action 'none'", "base-uri 'none'", "img-src data: blob:"]) {
+    assert.ok(csp.includes(d), `sandbox CSP lacks ${d}`);
+  }
+  // ADR §3.2: canvas pages must never be web_accessible_resources (no framing by web pages).
+  assert.equal(manifest.web_accessible_resources, undefined);
+  // canvas.html (an extension page) may frame only our own pages.
+  assert.match(manifest.content_security_policy.extension_pages, /frame-src 'self';/);
+});
+
+test("unlimitedStorage is required (canvases outgrow the 10 MB storage.local quota)", () => {
+  assert.ok(manifest.permissions.includes("unlimitedStorage"));
+});
