@@ -99,6 +99,11 @@
       case "error":
         notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
         break;
+      case "copy": {
+        const reply = (ok) => frame && frame.contentWindow.postMessage({ type: "copied", nonce, reqId: m.reqId, ok }, "*");
+        navigator.clipboard.writeText(m.text).then(() => reply(true), () => reply(false));
+        break;
+      }
       case "openLink": {
         const url = CanvasCore.safeLinkUrl(m.url);
         if (!url) { notice("已擋下一個非 http(s) 的連結。"); break; }

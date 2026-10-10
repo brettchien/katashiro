@@ -51,3 +51,10 @@ test("nonce: 32 hex chars, different each time", () => {
   assert.match(a, /^[0-9a-f]{32}$/);
   assert.notEqual(a, b);
 });
+
+test("copy (#69): text + integer reqId, bounded to 1 MB", () => {
+  assert.ok(ok({ type: "copy", nonce: "n1", text: "const a = 1", reqId: 1 }));
+  assert.equal(ok({ type: "copy", nonce: "n1", text: "x", reqId: "1" }), null);
+  assert.equal(ok({ type: "copy", nonce: "n1", text: 5, reqId: 1 }), null);
+  assert.equal(ok({ type: "copy", nonce: "n1", text: "x".repeat(1024 * 1024 + 1), reqId: 1 }), null);
+});

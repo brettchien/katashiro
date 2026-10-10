@@ -89,7 +89,10 @@
   // Add a copy button to each code block. Built with createElement AFTER sanitize, reading the
   // code via textContent — NEVER concatenated into the markdown HTML string before sanitizing
   // (§3.4). The button lives in <pre> (not <code>), so it is excluded from the copied text.
-  function addCopyButtons(root) {
+  // `copyText(text) → Promise` defaults to the Clipboard API; the sandboxed canvas frame (opaque
+  // origin, no clipboard access) passes one that asks its host page to copy instead.
+  function addCopyButtons(root, copyText) {
+    const copy = copyText || ((t) => global.navigator.clipboard.writeText(t));
     if (!root.querySelectorAll) return;
     root.querySelectorAll("pre").forEach((pre) => {
       if (pre.querySelector(".copy-btn")) return;
@@ -113,16 +116,16 @@
           btn.textContent = label;
           global.setTimeout(() => (btn.textContent = "copy"), 1200);
         };
-        global.navigator.clipboard.writeText(text).then(() => flash("copied"), () => flash("failed"));
+        Promise.resolve().then(() => copy(text)).then(() => flash("copied"), () => flash("failed"));
       });
       pre.appendChild(btn);
     });
   }
 
   // The sanctioned way to place rendered markdown in the DOM: sanitized innerHTML, then enhance.
-  function renderMarkdownInto(el, text) {
+  function renderMarkdownInto(el, text, opts) {
     el.innerHTML = renderMarkdown(text);
-    addCopyButtons(el);
+    addCopyButtons(el, opts && opts.copyText);
   }
 
   global.renderMarkdown = renderMarkdown;
