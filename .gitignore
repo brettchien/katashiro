@@ -2,3 +2,4 @@
 # scripts/stamp-build.sh (or a git hook) and by the release workflow at package time — never
 # committed, so an unpacked dev load shows "dev" unless you stamp it yourself.
 build-info.json
+scripts/vendor-build/node_modules/
