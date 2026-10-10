@@ -769,11 +769,15 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 8. **`html` and act mode** (raised in review after Q2): with `html` on by default, an `html` canvas
    is an exfiltration path that skips act mode (§3.2 residual risk). Both options keep `html` on
    by default:
-   - **(a) Click to run.** An `html` canvas first renders **without script** (the frame loads in a
-     no-script mode: meta CSP `script-src 'self'`, agent HTML through DOMPurify so links, forms
-     and `<meta http-equiv=refresh>` cannot navigate). The host header has **Run scripts**; one
-     click reloads the frame in script mode for that canvas revision (a host-caused load, new
-     nonce, §3.2). A new revision needs a new click.
+   - **(a) Click to run.** An `html` canvas first renders **without script in the existing
+     `canvas-frame.html`**: its meta CSP `script-src 'self'`, DOMPurify (which strips forms and
+     `<meta http-equiv=refresh>`) and link interception already make this "display, don't run",
+     with no new code. In that state the host's allow-list for the frame also refuses `save` and
+     `selection` (there is no editor). The host header has **Run scripts**; one click swaps the
+     iframe to `canvas-html-frame.html` for that canvas revision (a host-caused load, new nonce,
+     §3.2). A new revision needs a new click. Two pages, not one page switching modes by a URL
+     parameter: a mode switch would have to inject the meta CSP from script at load, where one
+     ordering mistake drops the protection; separate pages keep the boundary static.
    - **(b) Gate `html` by act mode.** `canvas_open`/`canvas_patch` with `kind:"html"` require act
      mode, like the browser tools; the other kinds stay ungated.
    *Recommended (Jellyfish, Orca): (a). It keeps working outside act mode, and every script run
