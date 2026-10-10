@@ -308,8 +308,13 @@ below is built around that.
   a one-character user edit would save as a fully reformatted document, so the agent's `find`s
   (written against its own original text) would miss and `diffFromBase` would cover everything.
   So:
-  - **Agent writes are normalized on render.** After rendering an agent version, the frame sends
-    `rendered{version, normalized}`. The host replaces that version's stored content with
+  - **Agent writes are normalized on render — `markdown` kind only** (`slides`, `chart` and the
+    others are stored as sent). The frame normalizes with Milkdown's parser + serializer alone, no
+    editor view, so it does not depend on how the canvas is displayed. After rendering an agent
+    `markdown` version, the frame sends `rendered{version, normalized}`. The host accepts
+    `normalized` only from `canvas-frame.html` with the current nonce, only for the `version` it is
+    waiting on, and only up to 2 MB (as `save`); anything else is ignored. If two tabs of the same
+    canvas both answer, the first wins (normalization is idempotent, so they agree). The host replaces that version's stored content with
     `normalized` (same `n`, still `author:"agent"`), and `canvas_read` and `diffFromBase` use it.
     The tool result waits for this (with a timeout) and carries `normalizedDiff` when the text
     changed, so the agent's next `find` targets what is actually stored. If no frame renders in
@@ -323,6 +328,9 @@ below is built around that.
   original, and a save whose text equals the current version creates no version. Loading or
   re-rendering agent content therefore never produces an `author:"user"` version, never makes the
   next agent write `stale`, and never triggers the §6 Q4 edit note.
+- **View and edit are separate modes.** A `markdown` canvas is displayed read-only through
+  markdown-it + DOMPurify (the chat's sink). Milkdown is mounted only when the user clicks Edit, and
+  unmounted on leaving edit mode, so the unsanitized path below exists only while the user edits.
 - **Editing is a second render path.** Milkdown parses agent markdown straight into ProseMirror DOM
   without DOMPurify; the "same sink" above covers only saved text. What holds it is
   `canvas-frame.html`'s CSP (`script-src 'self'`, `img-src data: blob:`, `connect-src 'none'`) plus
