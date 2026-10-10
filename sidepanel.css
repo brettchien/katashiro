@@ -791,6 +791,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   background: none;
   border: none;
   box-shadow: none;
+  border-radius: 12px;                                 /* match the image, so the reply-flash outline hugs it */
 }
 .bubble.image-only .bubble-image {
   margin-top: 0;

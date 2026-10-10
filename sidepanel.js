@@ -2222,7 +2222,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   // A pasted image with no text: show the image itself, not inside a padded blue frame.
-  if (!text && Array.isArray(images) && images.length) bubble.classList.add("image-only");
+  if (!(text && text.trim()) && Array.isArray(images) && images.length) bubble.classList.add("image-only");
   if (text) {                                           // sanitized sink (ADR §3.2) — never raw innerHTML
     if (isMe) renderMarkdownInto(bubble, text);
     else renderAgentText(bubble, text);                  // agent text may carry "↩ time" reply markers
