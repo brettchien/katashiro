@@ -393,9 +393,13 @@
         break;
       case "error":
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
-        if (mode === "edit" && !dirty) { mode = "view"; updateButtons(); }   // e.g. the editor failed to open
         offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
+        break;
+      case "editFailed":
+        mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });
+        updateButtons();
+        offerSendError(m.msg);
         break;
       case "copy": {
         const reply = (ok) => frame && frame.contentWindow.postMessage({ type: "copied", nonce, reqId: m.reqId, ok }, "*");

@@ -205,7 +205,7 @@
     }
     if (m.type === "edit") {
       startEdit(typeof m.content === "string" ? m.content : "", m.version)
-        .catch((err) => { stopEdit(); post({ type: "error", msg: String((err && err.message) || err) }); });
+        .catch((err) => { stopEdit(); post({ type: "editFailed", msg: String((err && err.message) || err) }); });
       return;
     }
     if (m.type === "saved") {

@@ -27,6 +27,9 @@
     printed: () => true,
     slide: (m) => Number.isInteger(m.index) && Number.isInteger(m.total) && m.index >= 1 && m.total >= 1,
     error: (m) => typeof m.msg === "string",
+    // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
+    // CSP violations while an editor is open and must not end edit mode.
+    editFailed: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
@@ -45,6 +48,12 @@
     if (!Object.prototype.hasOwnProperty.call(FRAME_TYPES, m.type)) return null;
     if (!FRAME_TYPES[m.type](m)) return null;
     return m;
+  }
+
+  // The host's edit mode after a frame message: only editFailed ends it, and never over unsaved
+  // edits. A plain error (e.g. a CSP-blocked image inside an open editor) leaves it alone.
+  function modeAfterFrameMessage(type, { mode, dirty }) {
+    return type === "editFailed" && mode === "edit" && !dirty ? "view" : mode;
   }
 
   // openLink: http(s) only, absolute, bounded. Returns the normalized URL or null.
@@ -128,7 +137,8 @@
    * must never lose one (Milkdown 7.22.2 silently dropped images without a title); if the normalized
    * text has fewer, the frame keeps the agent's text as it is.
    * A best-effort count, not a CommonMark parser (#89): alt text may hold one level of balanced
-   * brackets but not a line break, and indented code is counted like text (the serializer turns it
+   * brackets but not a line break, a `[ref]: …` definition must keep its destination on the same
+   * line, and indented code is counted like text (the serializer turns it
    * into a fence, so such a canvas just stays unnormalized — the safe direction).
    */
   function countImages(text) {
@@ -226,5 +236,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
