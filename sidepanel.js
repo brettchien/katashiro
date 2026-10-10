@@ -2255,7 +2255,9 @@ async function openCanvasTab(id, { active = true } = {}) {
 
 // --- canvas tab group + Split View (§3.1; decisions in canvas-tabs.js) -----------------------
 // One queue for every group / split move, so two quick canvas_open calls create one group, not
-// two (§3.1 "one queue per conversation" — a panel holds one conversation).
+// two (§3.1 "one queue per conversation" — a panel holds one conversation). A queued fn must not
+// call openCanvasTab or canvasTabQueue: it would wait on itself. No timeout — a Chrome call that
+// never settles stalls later group moves (accepted for phase 1).
 let canvasTabChain = Promise.resolve();
 function canvasTabQueue(fn) {
   const run = canvasTabChain.then(fn, fn);
@@ -2421,9 +2423,10 @@ async function splitCanvasWithActive(canvasTab) {
     return { ok: false, text: `could not create the split: ${(e && e.message) || e}` };
   }
   if (record) canvasSplitMoves.set(canvasTab.id, record);
-  // The page title is page content: bounded, quoted, and only ever a label.
-  const t = String(page.title || page.url || "the page").slice(0, 80);
-  return { ok: true, text: `shown beside "${t}" in Split View` };
+  // The page title is page content: bounded (by code point, so no half emoji), JSON-quoted, and
+  // only ever a label.
+  const t = Array.from(String(page.title || page.url || "the page")).slice(0, 80).join("");
+  return { ok: true, text: `shown beside ${JSON.stringify(t)} in Split View` };
 }
 
 // The chat card for a canvas write: "📄 <title> · v<N> — 開啟". Title is agent text → textContent.
