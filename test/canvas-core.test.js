@@ -148,3 +148,17 @@ test("safeFileName: no separators, control chars, reserved names or dots; capped
 test("printed message is allow-listed (PDF export)", () => {
   assert.ok(ok({ type: "printed", nonce: "n1" }));
 });
+
+// --- #86: normalization must never lose an image ----------------------------------------------
+test("countImages: inline, block and reference images, not inside code fences", () => {
+  assert.equal(C.countImages("a ![b](x.png) c ![](data:image/png;base64,AA) d"), 2);
+  assert.equal(C.countImages("![r][ref]\n\n[ref]: x.png"), 1);
+  assert.equal(C.countImages("```md\n![in code](x.png)\n```\n![out](y.png)"), 1);
+  assert.equal(C.countImages("[link](x) and !important and ![not closed"), 0);
+});
+test("losesImages: true only when the normalized text has fewer images", () => {
+  assert.equal(C.losesImages("a\n\n![b](x.png)\n", "a\n"), true);
+  assert.equal(C.losesImages("a ![b](x.png) c", "a  c"), true);
+  assert.equal(C.losesImages("![r][ref]\n\n[ref]: x.png", "![r](x.png)\n"), false);
+  assert.equal(C.losesImages("* x\n* y", "- x\n- y"), false);
+});

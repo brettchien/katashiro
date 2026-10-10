@@ -62,7 +62,7 @@ versioned surface next to the conversation that the agent renders into and updat
 - **pptx:** `pptxgenjs` 4.0.1 (MIT, 450 KB) writes pptx in the browser from a slide model.
   `pptxtojson` 2.2.0 (MIT) parses pptx into JSON. `dom-to-pptx` 2.1.2 converts rendered HTML into
   editable pptx (untested).
-- **Editors:** `@milkdown/crepe` 7.22.2 (MIT, ProseMirror, markdown-native WYSIWYG) and CodeMirror 6.
+- **Editors:** `@milkdown/crepe` 7.22.3 (7.22.2 dropped images without a title, #86) (MIT, ProseMirror, markdown-native WYSIWYG) and CodeMirror 6.
   **Brett chose Milkdown over Quill (2026-10-10).** Quill 2.0.3 (BSD-3, 204 KB, last release 2025-01)
   stores a Delta/HTML model, so every agent ↔ user round trip through markdown loses something: it has
   no default horizontal-rule format (`---` slide breaks), drops code-fence languages, and converts

@@ -123,6 +123,26 @@
   }
 
   /**
+   * #86 safety net: how many markdown images (`![alt](…)` / `![alt][ref]`) a text has outside code
+   * fences. Normalization must never lose one (Milkdown 7.22.2 silently dropped images without a
+   * title); if the normalized text has fewer, the frame keeps the agent's text as it is.
+   */
+  function countImages(text) {
+    let n = 0;
+    let fence = null;
+    for (const line of String(text == null ? "" : text).split("\n")) {
+      const f = /^\s*(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (fence === null) { fence = f[1]; continue; }
+        if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) { fence = null; continue; }
+      }
+      if (fence === null) n += (line.match(/!\[[^\]\n]*\]\s?[(\[]/g) || []).length;
+    }
+    return n;
+  }
+  const losesImages = (before, after) => countImages(after) < countImages(before);
+
+  /**
    * Milkdown writes an empty paragraph as a line with only "<br />" (to keep the blank line). The
    * canvas renders markdown with html:false, so it would show as the literal text "<br />", and it
    * piles up on every save. Treat such a line as a blank line: drop it (outside code fences, at any indent) and
@@ -187,5 +207,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

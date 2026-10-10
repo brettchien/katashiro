@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Pinned inputs for vendor/*.iife.js — see vendor/BUILD.md",
   "dependencies": {
-    "@milkdown/crepe": "7.22.2",
+    "@milkdown/crepe": "7.22.3",
     "dompurify": "3.4.16",
     "esbuild": "0.28.2",
     "highlight.js": "11.12.0",
