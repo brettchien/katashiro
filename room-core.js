@@ -435,7 +435,34 @@
     return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
   }
 
+  // #56: after a browser restart every window id changes, so this window's history key is empty
+  // while the previous run's keys sit orphaned (their window ids no longer exist). Plan which orphan
+  // this window adopts — the most recently saved one, only if this window has no history of its own
+  // — and which orphans are old enough to prune. Pure: the caller does the storage work under a lock.
+  //   entries: { [key]: { savedAt?, messages? } } (only HISTORY keys), liveIds: Set of window id strings
+  function planHistoryAdoption({ entries, liveIds, ownKey, prefix, now, keepMs }) {
+    const own = entries[ownKey];
+    const ownEmpty = !own || !Array.isArray(own.messages) || own.messages.length === 0;
+    const orphans = Object.keys(entries).filter((k) => {
+      if (k === ownKey || !k.startsWith(prefix)) return false;
+      const id = k.slice(prefix.length);
+      return /^\d+$/.test(id) && !liveIds.has(id);
+    });
+    const savedAt = (k) => Number((entries[k] && entries[k].savedAt) || 0);
+    let adopt = null;
+    if (ownEmpty) {
+      for (const k of orphans) {
+        const e = entries[k];
+        if (!e || !Array.isArray(e.messages) || !e.messages.length) continue;
+        if (adopt === null || savedAt(k) > savedAt(adopt)) adopt = k;
+      }
+    }
+    const prune = orphans.filter((k) => k !== adopt && now - savedAt(k) > keepMs);
+    return { adopt, prune };
+  }
+
   return {
+    planHistoryAdoption,
     splitReplySegments,
     replyParts,
     uiTime,

@@ -509,3 +509,37 @@ test("replyParts: no markers → the whole text; bare markers are dropped", () =
     [{ replyTo: "2026-10-10T16:05:12+08:00", text: "A" }]);
   assert.deepEqual(RoomCore.replyParts("↩ 2026-10-10T16:05:12+08:00\n"), [{ replyTo: null, text: "↩ 2026-10-10T16:05:12+08:00\n" }]);
 });
+
+// --- #56: history across a browser restart -------------------------------------------------
+
+test("planHistoryAdoption: an empty window adopts the most recently saved orphan; old orphans are pruned", () => {
+  const DAY = 86400000, now = 100 * DAY;
+  const msg = [{ text: "hi" }];
+  const entries = {
+    "history:11": { savedAt: now - DAY, messages: msg },        // orphan, recent
+    "history:12": { savedAt: now - 2 * DAY, messages: msg },    // orphan, older
+    "history:13": { savedAt: now - 30 * DAY, messages: msg },   // orphan, stale
+    "history:14": { savedAt: now - 30 * DAY, messages: [] },    // orphan, stale + empty
+    "history:20": { savedAt: now, messages: msg },              // a live window
+    "history:default": { savedAt: 0, messages: msg },           // never touched
+  };
+  const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["20", "30"]), ownKey: "history:30", prefix: "history:", now, keepMs: 7 * DAY });
+  assert.equal(plan.adopt, "history:11");
+  assert.deepEqual(plan.prune.sort(), ["history:13", "history:14"]);
+});
+
+test("planHistoryAdoption: a window with its own history adopts nothing; orphans with no savedAt count as old", () => {
+  const entries = {
+    "history:30": { messages: [{ text: "mine" }] },
+    "history:11": { messages: [{ text: "old run" }] },
+  };
+  const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["30"]), ownKey: "history:30", prefix: "history:", now: 10 ** 13, keepMs: 1000 });
+  assert.equal(plan.adopt, null);
+  assert.deepEqual(plan.prune, ["history:11"]);
+});
+
+test("planHistoryAdoption: a live window's key is never adopted or pruned", () => {
+  const entries = { "history:5": { savedAt: 1, messages: [{ text: "x" }] } };
+  const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["5"]), ownKey: "history:6", prefix: "history:", now: 10 ** 13, keepMs: 1 });
+  assert.deepEqual(plan, { adopt: null, prune: [] });
+});

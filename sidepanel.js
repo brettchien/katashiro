@@ -1202,7 +1202,8 @@ function saveHistory() {
   if (!historyKey) return;
   const sessions = {};
   room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages } });
+  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages, savedAt: Date.now() } })
+    .catch(() => { /* quota (10 MB in incognito) — the on-screen chat is unaffected */ });
 }
 
 // Append a record to the persisted scrollback (skipped while restoring). System/status notices are
@@ -1219,26 +1220,36 @@ function replayMessage(rec) {
   else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || null });
 }
 
-// Drop the scrollback of windows that no longer exist (closed, or ids from a previous browser run).
-// Only numeric window keys are pruned; the "default" fallback key is left alone. Best effort.
-// Always prunes storage.local (the on-disk copy), whichever store this window uses. getAll() lists
+// History of windows that no longer exist (#56). After a browser restart every window id changes,
+// so instead of pruning those keys at once, a window with no history of its own ADOPTS the most
+// recently saved orphan — its scrollback, conversationId and ACP session ids, so the agent's
+// session resumes too — and orphans older than 7 days are pruned. Several restored windows each
+// adopt one (the lock makes "pick + move" atomic across panels). Only numeric window keys count;
+// "default" is left alone. storage.local only: incognito history is never adopted. getAll() lists
 // only normal + popup windows by default, so ask for every type — a panel in an app/devtools window
-// would otherwise prune its own key on each open.
+// would otherwise treat its own key as orphaned. Best effort: never blocks the panel.
 const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
-async function pruneOrphanHistory() {
+const HISTORY_ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+async function adoptOrPruneOrphanHistory(ownKey, { adoptAllowed }) {
   try {
-    const [all, wins] = await Promise.all([
-      chrome.storage.local.get(null),
-      chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
-    ]);
-    const live = new Set(wins.map((w) => String(w.id)));
-    const stale = Object.keys(all).filter((k) => {
-      if (!k.startsWith(HISTORY_PREFIX)) return false;
-      const id = k.slice(HISTORY_PREFIX.length);
-      return /^\d+$/.test(id) && !live.has(id);
+    await navigator.locks.request("history:adopt", async () => {
+      const [all, wins] = await Promise.all([
+        chrome.storage.local.get(null),
+        chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
+      ]);
+      const entries = {};
+      for (const [k, v] of Object.entries(all)) if (k.startsWith(HISTORY_PREFIX)) entries[k] = v;
+      const plan = RoomCore.planHistoryAdoption({
+        entries, liveIds: new Set(wins.map((w) => String(w.id))), ownKey, prefix: HISTORY_PREFIX,
+        now: Date.now(), keepMs: HISTORY_ORPHAN_KEEP_MS,
+      });
+      if (plan.adopt && adoptAllowed) {
+        await chrome.storage.local.set({ [ownKey]: entries[plan.adopt] });
+        await chrome.storage.local.remove(plan.adopt);
+      }
+      if (plan.prune.length) await chrome.storage.local.remove(plan.prune);
     });
-    if (stale.length) await chrome.storage.local.remove(stale);
-  } catch (_) { /* pruning is housekeeping — never block the panel on it */ }
+  } catch (_) { /* housekeeping — never block the panel on it */ }
 }
 
 // Load per-window history + saved session ids and replay the scrollback. Runs BEFORE the room is
@@ -1249,7 +1260,7 @@ async function loadHistory() {
   panelWindowId = win.id;
   historyKey = `${HISTORY_PREFIX}${win.id}`;
   if (win.incognito) historyStore = chrome.storage.session;
-  await pruneOrphanHistory();
+  await adoptOrPruneOrphanHistory(historyKey, { adoptAllowed: !win.incognito });
   const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
   savedSessions = data.sessions || {};
@@ -1405,7 +1416,8 @@ settingsView.addEventListener("click", (e) => {
 // Clear the on-screen scrollback + this window's persisted mirror (storage.local). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
-// just not the cleared bubbles. Guarded by a confirm since storage.local is the only copy.
+// just not the cleared bubbles. Guarded by a confirm since the stored copy (storage.local, or
+// storage.session in an incognito window) is the only one.
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   messagesList.replaceChildren();
