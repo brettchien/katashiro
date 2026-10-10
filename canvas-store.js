@@ -142,12 +142,14 @@
       return { title: t, kind: k, content, bytes };
     }
 
-    // Images first, then the content that references them (§3.6 write order). Stored once per hash.
+    // Images first, then the content that references them (§3.6 write order). One key per hash, and
+    // always (re)written: an image already stored gets a fresh savedAt, so a sweep cannot take it
+    // before our content lands. Under canvas:index (taken alone, outside any canvas:<id>), so a sweep
+    // runs wholly before (image gone, we write it back) or after (sees the fresh savedAt).
     async function putImage(img) {
       if (!img) return;
       const k = imageKey(img.hash);
-      if (await getOne(k)) return;
-      await storage.set({ [k]: { mimeType: img.mimeType, data: img.data, savedAt: now() } });
+      await lock("canvas:index", () => storage.set({ [k]: { mimeType: img.mimeType, data: img.data, savedAt: now() } }));
     }
 
     // Mark-and-sweep (§3.6): delete images no image canvas references, except ones written in the
@@ -167,6 +169,12 @@
           .map(([k]) => k);
         if (dead.length) await storage.remove(dead);
       });
+    }
+
+    // After a write or delete has succeeded: a failed sweep must not turn it into an error (the agent
+    // would retry and hit stale). The next sweep picks up what this one missed.
+    async function sweepAfter() {
+      try { await sweepImages(); } catch (_) { /* best effort */ }
     }
 
     // The image bytes of an image canvas, for the host page (never returned to the agent).
@@ -257,7 +265,7 @@
         await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
         await updateIndex(conversationId, indexEntry(meta));
       });
-      if (v.kind === "image") await sweepImages();      // the previous image may be unreferenced now
+      if (v.kind === "image") await sweepAfter();       // the previous image may be unreferenced now
       return { id, version: meta.version, created: false, title: meta.title };
     }
 
@@ -289,7 +297,7 @@
           else await storage.remove(key);
         });
       });
-      await sweepImages();
+      await sweepAfter();
     }
 
     // The canvas tab was opened (LRU order for eviction). Not a content change: version untouched.

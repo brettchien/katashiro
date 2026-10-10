@@ -40,6 +40,9 @@
       revealReady = Reveal.initialize({
         hash: false, history: false, respondToHashChanges: false,
         postMessage: false, postMessageEvents: false,           // only our own message channel
+        // Never the scroll view: in a narrow tab reveal would switch to it, which reads sessionStorage
+        // (throws in our opaque origin, leaving the deck hidden) and re-parses the slides via innerHTML.
+        view: null, scrollActivationWidth: null,
         controls: true, progress: true, slideNumber: "c/t", center: true,
         transition: "slide", width: 1280, height: 720, margin: 0.06,
       });

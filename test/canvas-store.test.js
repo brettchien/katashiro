@@ -300,6 +300,38 @@ test("an image shared by two canvases survives deleting one of them", async () =
   assert.equal(Object.keys(storage.data).filter((k) => k.startsWith("canvas:img:")).length, 1);
 });
 
+test("reusing an old unreferenced image refreshes it, so a sweep before the content lands keeps it", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  await s.remove({ id: a.id });                                         // PNG now unreferenced
+  clock += 11 * 60 * 1000;                                              // and past the grace period
+  const pngKey = `canvas:img:${await CanvasStore.sha256OfBase64(PNG)}`;
+  const set = storage.set.bind(storage);
+  storage.set = async (items) => {                                      // a sweep runs between image and content
+    if (Object.keys(items).some((k) => k.endsWith(":latest"))) { storage.set = set; await s.sweepImages(); }
+    return set(items);
+  };
+  await s.agentWrite({ conversationId: "c", title: "B", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  assert.ok(pngKey in storage.data, "the reused image survives the sweep");
+});
+
+test("a failing sweep does not fail the write or delete that triggered it", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  clock += 11 * 60 * 1000;                                              // so the sweeps below do delete
+  const remove = storage.remove.bind(storage);
+  storage.remove = async (keys) => {
+    if ([].concat(keys).some((k) => k.startsWith("canvas:img:"))) throw new Error("boom");
+    return remove(keys);
+  };
+  const w = await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "A", kind: "image", image: { mimeType: "image/gif", data: GIF } });
+  assert.equal(w.version, 2);
+  await s.remove({ id: a.id });
+  assert.deepEqual(await s.list({ conversationId: "c" }), []);
+});
+
 test("image bytes count toward the budget", async () => {
   const { s } = store({ budgetBytes: 50 });
   await assert.rejects(
