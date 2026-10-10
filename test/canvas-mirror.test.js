@@ -389,6 +389,7 @@ test("file deleted outside (1B): the canvas is kept, its mirroring stops until r
   // the user asks: written again, mirroring resumes
   const w = await env.mirror.sync(id, { rewrite: true });
   assert.equal(w.action, "write");
+  assert.equal(w.state, "ok");                                          // the user asked: no warning
   assert.equal(await readText(env.dir, "c/plan.md"), "v2\n");
   await env.store.userSave({ id, baseVersion: 2, content: "v3\n" });
   await env.mirror.sync(id);
