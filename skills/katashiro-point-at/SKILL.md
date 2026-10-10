@@ -14,7 +14,8 @@ heaviest. Pick the lightest that works.
 - The current chat is a **Katashiro** chat (its browser tunnel is attached), so `katashiro.*` tools
   are available. Not in Discord/Slack threads or cron turns.
 - The thing to point at is in the **active tab** (the one the user is looking at). If it is in
-  another tab, `katashiro.switch_tab` first, and say so.
+  another tab: with act mode on, `katashiro.switch_tab` first and say so; `switch_tab` is a write
+  tool, so with act mode off ask the user to switch to that tab themselves.
 
 ## 1. One element on a page → `katashiro.highlight` (default)
 
@@ -28,6 +29,8 @@ heaviest. Pick the lightest that works.
   `selector` instead. `read_dom` returns raw HTML, not selectors: read the markup and write a
   selector from it (prefer an id or a stable class), e.g. on GitHub markdown
   `.markdown-heading:has(a[id^="user-content-310-"])`.
+- A `selector` is looked up in the top-level page only. For an element inside an iframe, use its
+  snapshot `ref` (`f<N>:eN`).
 - `label`: a few words, max 80 characters ("Save button", "the 200 MB limit").
 - `durationMs`: default 4000, max 15000. Use longer while you explain in the same turn.
 - Read-only and harmless: the outline lives in Katashiro's own overlay, never changes the page,
@@ -70,14 +73,15 @@ keep emphasis while the user scrolls.
 ## 3. A part of a Katashiro canvas → `katashiro.canvas_highlight`
 
 For canvases (documents and slides the agent rendered; see the canvas ADR,
-`docs/adr/canvas.md`), use `katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It
-scrolls the canvas to the block and glows it. `find` matches the block's **rendered text** (what
-the user sees, not the markdown source), at most 500 characters, and must match exactly one
-block; `heading` matches a heading's rendered text exactly. No match or several matches is an
-error. You cannot inject CSS into a canvas: the effects are fixed (outline and
-background only), and you only give a text anchor. `durationMs` is capped at 10 s and calls are
-rate-limited; it is refused on `html` canvases; while the user is editing, it does not scroll but
-asks the user ("Agent wants to show you a section"). Available once canvas phase 1 ships; check with `search_capabilities`.
+`docs/adr/canvas.md`), use `katashiro.canvas_highlight` with
+`{id, find | heading, label, durationMs}`. It scrolls the canvas to the block and glows it.
+`find` matches the block's **rendered text** (what the user sees, not the markdown source), at
+most 500 characters, and must match exactly one block; `heading` matches a heading's rendered
+text exactly. No match or several matches is an error. You cannot inject CSS into a canvas: the
+effects are fixed (outline and background only), and you only give a text anchor. `durationMs` is
+capped at 10 s and calls are rate-limited; it is refused on `html` canvases; while the user is
+editing, it does not scroll but asks the user ("Agent wants to show you a section"). Available
+once canvas phase 1 ships; check with `search_capabilities`.
 
 After you write a new canvas version the changed blocks glow on their own, so you don't need to
 highlight your own edits. Use `canvas_highlight` to point at something specific while you explain.
