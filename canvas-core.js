@@ -24,7 +24,7 @@
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
     // Esc in the editor (Brett, 2026-10-11): asks the host to leave edit mode, like 結束編輯.
-    escape: () => true,
+    escape: (m) => typeof m.dirty === "boolean",
     // canvas_goto: the slide now shown (1-based) and the deck's length.
     // PDF export (§3.8): the frame finished its print() call.
     printed: () => true,

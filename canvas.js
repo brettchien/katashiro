@@ -457,7 +457,7 @@
   editBtn.addEventListener("click", enterEdit);
   saveBtn.addEventListener("click", () => toFrame({ type: "requestSave" }));
   function requestLeaveEdit() {
-    if (mode !== "edit") return;
+    if (mode !== "edit" || !conflictEl.hidden) return;   // the conflict dialog is answered first
     if (dirty && !window.confirm("放棄尚未儲存的修改？")) return;
     leaveEdit();
   }
@@ -579,6 +579,9 @@
         if (mode === "edit") saveFromEditor(m.content, m.baseVersion);
         break;
       case "escape":
+        // The frame's dirty state as of the keypress; its "dirty" message may still be debounced.
+        dirty = m.dirty;
+        updateButtons();
         requestLeaveEdit();
         break;
       case "dirty":
