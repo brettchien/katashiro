@@ -2164,7 +2164,7 @@ function formatTime(timestamp) {
 const canvasStore = CanvasStore.createCanvasStore({
   storage: chrome.storage.local,
   lock: (name, fn) => navigator.locks.request(name, fn),
-  // Over the 200 MB budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
+  // Over the budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
   // panel (the agent's write arrives here; no canvas tab may be open).
   isOpen: async (id) => !!(await findCanvasTab(id)),
   confirmEvict: async ({ evict }) => window.confirm(
