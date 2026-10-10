@@ -205,7 +205,10 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 > sessions live in `chrome.storage.local`, so they survive the reload (and a browser restart's
 > stale windows are pruned on the next panel open); settings are kept too. A reply in progress is
 > cancelled (`session/cancel`) first. The scrollback is stored on disk in your Chrome profile
-> (never synced); 🧹 clears this window's copy.
+> (never synced); 🧹 clears only this window's copy — another window's scrollback is deleted once
+> that window is closed, on the next panel open. Incognito windows (if you allow Katashiro in
+> incognito) never write the scrollback to disk: it stays in `chrome.storage.session` and is lost on
+> reload or when the browser closes.
 
 > **Settings sync:** config lives in `chrome.storage.sync`, so it follows your Google account to
 > every Chrome with sync (Extensions) on. `manifest.json` pins the extension ID

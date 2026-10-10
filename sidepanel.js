@@ -810,8 +810,10 @@ loadBuildInfo();
 
 // Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
 // exactly like chrome://extensions' reload button. It closes the side panel in EVERY window; each
-// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive. Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a
-// short delay so the notification leaves before the page dies (pagehide's cancel is best effort).
+// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive
+// (incognito windows keep theirs in storage.session, which the reload clears). Confirmed with
+// confirm(), like 清除聊天. In-flight turns get session/cancel first, with a short delay so the
+// notification leaves before the page dies (pagehide's cancel is best effort).
 const reloadExtensionBtn = document.getElementById("reload-extension-btn");
 const RELOAD_CANCEL_GRACE_MS = 150;
 if (reloadExtensionBtn) {
@@ -1018,19 +1020,25 @@ function persist() {
 // conversation via `chat_history`. It IS written to disk (the Chrome profile), never synced.
 // Window ids are only stable for one browser run: after a browser restart the old keys belong to no
 // window, so loadHistory() prunes every `history:<id>` whose window is gone.
+// Incognito windows (manifest incognito defaults to "spanning", so they share storage.local) keep
+// storage.session instead — an incognito conversation must never reach the profile on disk.
 const HISTORY_CAP = 200;
 const HISTORY_PREFIX = "history:";
-const historyStore = chrome.storage.local;
+let historyStore = chrome.storage.local;  // storage.session for an incognito window (loadHistory)
 let historyKey = null;                    // "history:<windowId>"
 let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
 let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
 const historyMessages = [];               // in-memory mirror of the persisted scrollback
 let restoring = false;                    // true while replaying — suppresses re-recording
 
-function currentWindowId() {
+function currentWindow() {
   return new Promise((resolve) => {
-    try { chrome.windows.getCurrent((w) => resolve(w && w.id != null ? w.id : "default")); }
-    catch { resolve("default"); }
+    try {
+      chrome.windows.getCurrent((w) => resolve({
+        id: w && w.id != null ? w.id : "default",
+        incognito: !!(w && w.incognito),
+      }));
+    } catch { resolve({ id: "default", incognito: false }); }
   });
 }
 
@@ -1057,16 +1065,23 @@ function replayMessage(rec) {
 
 // Drop the scrollback of windows that no longer exist (closed, or ids from a previous browser run).
 // Only numeric window keys are pruned; the "default" fallback key is left alone. Best effort.
+// Always prunes storage.local (the on-disk copy), whichever store this window uses. getAll() lists
+// only normal + popup windows by default, so ask for every type — a panel in an app/devtools window
+// would otherwise prune its own key on each open.
+const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
 async function pruneOrphanHistory() {
   try {
-    const [all, wins] = await Promise.all([historyStore.get(null), chrome.windows.getAll()]);
+    const [all, wins] = await Promise.all([
+      chrome.storage.local.get(null),
+      chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
+    ]);
     const live = new Set(wins.map((w) => String(w.id)));
     const stale = Object.keys(all).filter((k) => {
       if (!k.startsWith(HISTORY_PREFIX)) return false;
       const id = k.slice(HISTORY_PREFIX.length);
       return /^\d+$/.test(id) && !live.has(id);
     });
-    if (stale.length) await historyStore.remove(stale);
+    if (stale.length) await chrome.storage.local.remove(stale);
   } catch (_) { /* pruning is housekeeping — never block the panel on it */ }
 }
 
@@ -1074,9 +1089,10 @@ async function pruneOrphanHistory() {
 // built so each conn seeds its acpSessionId (→ session/resume restores the same conversation) and
 // the restored messages sit above the reconnect notices.
 async function loadHistory() {
-  const wid = await currentWindowId();
-  panelWindowId = wid;
-  historyKey = `${HISTORY_PREFIX}${wid}`;
+  const win = await currentWindow();
+  panelWindowId = win.id;
+  historyKey = `${HISTORY_PREFIX}${win.id}`;
+  if (win.incognito) historyStore = chrome.storage.session;
   await pruneOrphanHistory();
   const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
