@@ -399,6 +399,40 @@ below is built around that.
 - If `chrome.storage.local` becomes slow at this size, move version bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
 
+**Local folder mirror (Brett, 2026-10-10).** `chrome.storage.local` lives only in this Chrome
+profile: it does not sync, it is wiped if the extension is removed, and nothing backs it up. So the
+user can pick a **folder on disk** (Settings → *Save canvases to a folder*), and Katashiro mirrors
+every canvas there as plain files, which the user can put under git, Dropbox or Time Machine.
+
+- **API:** File System Access, `showDirectoryPicker({mode: "readwrite"})` from an extension page
+  (Settings in the panel), on a user click. The `FileSystemDirectoryHandle` is kept in IndexedDB on
+  the extension origin (handles do not fit in `chrome.storage`), so both the panel (agent writes)
+  and `canvas.html` (user saves) can use it. **Sandbox frames never get it** (opaque origin, §3.2).
+- **Layout:**
+  ```
+  <folder>/
+    <conversation-slug>/
+      <canvas-slug>.md            # markdown and slides (slides keep their --- separators)
+      <canvas-slug>.assets/       # images, <sha256>.<ext>, linked relatively from the .md
+    .katashiro/<canvasId>.json    # id, kind, title, file path, hash + mtime last written
+  ```
+  Slugs come from titles (sanitized, deduplicated with a suffix); a rename moves the file.
+- **Write-through (phase 1):** after every stored version (agent or user), the latest content is
+  written to its file. The folder holds the **latest** content only; version history stays in
+  storage (or in git, if the user commits the folder).
+- **Read-back (phase 2):** when a canvas tab opens or regains focus, and before `canvas_read`, the
+  file's hash is compared with the one last written. If it changed outside Katashiro (edited in an
+  editor, `git pull`), it is imported as a user version (`author: "user"`, `source: "file"`); if
+  the canvas also changed in storage since, the §3.5 conflict view opens. A deleted file marks the
+  canvas *file missing*; it never deletes the canvas.
+- **Permission:** a grant lasts for the browser session. After a restart Chrome may ask again
+  (unless the user chose a persistent grant; to verify for extension origins). Until the user
+  clicks *Reconnect folder* in the canvas header, writes stay in storage and are flushed on
+  reconnect. Storage is always the working copy; the folder is a mirror, so a missing permission
+  never loses data.
+- **Not in incognito**: incognito panels never write to the folder (it would persist what
+  incognito promises not to).
+
 ### 3.7 Chat integration
 
 - The card sits in the agent's turn. Clicking it opens the canvas at the version that turn created.
@@ -485,7 +519,8 @@ flowchart TB
   OA["openab: MCP facade + gateway<br/>(relays only, stores nothing)"]
   subgraph CH["Brett's Chrome profile"]
     SP["Side panel<br/>ACP socket + browser MCP server<br/>runs canvas_* tools"]
-    ST[("chrome.storage.local<br/>the only copy of canvases")]
+    ST[("chrome.storage.local<br/>working copy of canvases")]
+    FS[("Local folder (optional)<br/>.md + assets, latest only")]
     CV["canvas.html tab<br/>header, versions, Edit/Save,<br/>Send to agent"]
     FR["canvas-frame.html<br/>sandbox iframe: render + editor<br/>no storage, no network"]
     WEB["Web pages"]
@@ -495,6 +530,8 @@ flowchart TB
   SP <-->|"read / write<br/>(navigator.locks)"| ST
   CV <-->|"read / write, onChanged<br/>(navigator.locks)"| ST
   CV <-->|"postMessage (nonce, allow-list)"| FR
+  SP -->|"write-through"| FS
+  CV <-->|"write-through, read-back"| FS
   WEB -.->|"blocked: not web_accessible"| CV
 ```
 
@@ -532,8 +569,9 @@ sequenceDiagram
   O->>A: prompt
 ```
 
-- **The only copy lives in the user's Chrome profile** (`chrome.storage.local`, or
-  `storage.session` in incognito). openab does not store canvases. The agent container holds only
+- **Canvases live on the user's machine only:** the working copy in the Chrome profile
+  (`chrome.storage.local`, or `storage.session` in incognito), plus an optional mirror in a folder
+  the user picked (§3.6). openab does not store canvases. The agent container holds only
   what passed through the agent's context (what it wrote, or read with `canvas_read`), like any
   tool result. Nothing goes to a cloud service.
 - **Write path, agent → canvas:** agent tool call → facade → gateway → the panel's ACP socket → the
@@ -625,6 +663,11 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
    **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
    `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
+5a. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
+   folder mirror (§3.6), not a cloud sync.
+6. **Versions:** keep full version history (current draft), keep only the latest plus the agent's
+   last write (enough for the Send-to-agent diff and one "revert to agent's version"), or no
+   versions at all (a revision number for concurrency only)? Under discussion with Brett.
 5. **Order:** canvas phase 1 before multi-conversation (conversationId already exists), or after?
    *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
 
