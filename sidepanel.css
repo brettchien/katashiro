@@ -1306,23 +1306,24 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 /* --- reply-to --------------------------------------------------------------------------------- */
 .message-content { position: relative; }
 .reply-btn {
-  position: absolute;
-  top: 0;
-  right: 0;
+  margin-left: 6px;
   border: none;
-  background: rgba(0, 0, 0, 0.35);
-  color: inherit;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-secondary);
   border-radius: 6px;
-  font-size: 12px;
-  padding: 1px 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
+  vertical-align: middle;
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.15s;
 }
+.reply-btn:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.14); }
 .message:hover .reply-btn,
 .reply-btn:focus-visible { opacity: 1; }
-/* A message that starts with a code block has its copy button top-right too (#62): sit left of it. */
-.message-content:has(> .bubble > pre:first-child) > .reply-btn { right: 64px; }
+/* Touch screens have no hover: keep it faintly visible there. */
+@media (hover: none) { .reply-btn { opacity: 0.6; } }
 .reply-quote {
   font-size: 12px;
   opacity: 0.7;
