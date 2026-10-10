@@ -119,7 +119,7 @@
   /**
    * Milkdown writes an empty paragraph as a line with only "<br />" (to keep the blank line). The
    * canvas renders markdown with html:false, so it would show as the literal text "<br />", and it
-   * piles up on every save. Treat such a line as a blank line: drop it (outside code fences) and
+   * piles up on every save. Treat such a line as a blank line: drop it (outside code fences, at any indent) and
    * collapse the run of blank lines it leaves. Idempotent.
    */
   function cleanEditorMarkdown(text) {
@@ -127,7 +127,8 @@
     const out = [];
     let fence = null;
     for (const line of lines) {
-      const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      // Any indent: a fence inside a nested list item starts 4+ spaces in. Over-matching only skips cleaning.
+      const f = /^\s*(`{3,}|~{3,})/.exec(line);
       if (f) {
         if (fence === null) fence = f[1];
         else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;

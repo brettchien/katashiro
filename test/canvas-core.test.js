@@ -97,4 +97,7 @@ test("cleanEditorMarkdown: Milkdown's <br /> empty-paragraph lines become blank 
   assert.equal(out, "a\n\nb\n\n```html\n<br />\n```\n\nc <br /> inline\n");
   assert.equal(C.cleanEditorMarkdown(out), out);                      // idempotent
   assert.equal(C.cleanEditorMarkdown("x\n\n\n\ny"), "x\n\ny");
+  // a fence nested in a list item is indented 4+ spaces; its body must be left alone
+  const nested = "- a\n  - b\n\n    ```\n    x\n\n\n    <br>\n    ```\n";
+  assert.equal(C.cleanEditorMarkdown(nested), nested);
 });
