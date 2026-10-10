@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 38 browser tools", async () => {
+test("tools/list returns the 39 browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -212,6 +212,7 @@ test("tools/list returns the 38 browser tools", async () => {
     "katashiro.paste_image",
     "katashiro.reload",
     "katashiro.inject_css",
+    "katashiro.show_image",
     "katashiro.chat_history",
     "katashiro.notify"
   ]);
@@ -2855,4 +2856,82 @@ test("katashiro.client_info: dev build without sha, and a host without the provi
   delete d.clientInfo;
   const res = await callTool(d, "katashiro.client_info");
   assert.equal(res.isError, true);
+});
+
+// --- show_image ------------------------------------------------------------------
+
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+function withShowImage(d, impl) {
+  const shown = [];
+  d.showImage = async (img) => { shown.push(img); return impl ? impl(img) : { width: 1, height: 1 }; };
+  return shown;
+}
+
+test("katashiro.show_image: base64 data is shown with its caption; the pill never sees the bytes", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });   // not act-gated, sessionScope
+  const shown = withShowImage(d);
+  const res = await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png", caption: "chart" });
+  assert.equal(res.isError, undefined, JSON.stringify(res));
+  assert.equal(shown.length, 1);
+  assert.equal(shown[0].dataUrl, `data:image/png;base64,${PNG_1PX}`);
+  assert.equal(shown[0].caption, "chart");
+  assert.match(res.content[0].text, /shown to the user: 1×1 image\/png .* — "chart"/);
+});
+
+test("katashiro.show_image redact replaces the base64 with its decoded size", () => {
+  const r = BrowserMcp.TOOLS["katashiro.show_image"].redact({ data: PNG_1PX, mimeType: "image/png", caption: "x".repeat(90) });
+  assert.doesNotMatch(JSON.stringify(r), /iVBOR/);
+  assert.match(r.data, /^<\d+ bytes>$/);
+  assert.equal(r.caption.length, 81);
+  assert.equal(BrowserMcp.TOOLS["katashiro.show_image"].redact({ data: `data:image/png;base64,${PNG_1PX}` }).data, r.data);
+});
+
+test("katashiro.show_image accepts a data: URL and infers the type", async () => {
+  const { deps: d } = deps();
+  const shown = withShowImage(d);
+  const res = await callTool(d, "katashiro.show_image", { data: `data:image/png;base64,${PNG_1PX}` });
+  assert.equal(res.isError, undefined);
+  assert.equal(shown[0].dataUrl, `data:image/png;base64,${PNG_1PX}`);
+  const clash = await callTool(d, "katashiro.show_image", { data: `data:image/png;base64,${PNG_1PX}`, mimeType: "image/jpeg" });
+  assert.equal(clash.isError, true);
+});
+
+test("katashiro.show_image shows a stored screenshot by imageId", async () => {
+  const s = BrowserMcp.createServer({ id: "srv", name: "katashiro" });
+  const bag = deps({ dataUrl: "data:image/jpeg;base64,QUJD" });
+  const shown = withShowImage(bag.deps);
+  const callOn = (name, args) => s.handleMcpMessage("tools/call", { name, arguments: args || {} }, bag.deps);
+  const imageId = /imageId: (\S+)/.exec((await callOn("katashiro.screenshot")).content[1].text)[1];
+  const res = await callOn("katashiro.show_image", { imageId });
+  assert.equal(res.isError, undefined, JSON.stringify(res));
+  assert.equal(shown[0].dataUrl, "data:image/jpeg;base64,QUJD");
+  const gone = await callOn("katashiro.show_image", { imageId: "img_nope" });
+  assert.equal(gone.isError, true);
+  assert.match(gone.content[0].text, /no captured image/);
+});
+
+test("katashiro.show_image validates its inputs and reports undecodable images", async () => {
+  const { deps: d } = deps();
+  const shown = withShowImage(d);
+  const big = "A".repeat(Math.ceil((5 * 1024 * 1024 + 10) * 4 / 3));
+  for (const bad of [
+    {},                                                             // no source
+    { imageId: "x", data: PNG_1PX, mimeType: "image/png" },          // both
+    { data: PNG_1PX },                                              // raw base64 without mimeType
+    { data: PNG_1PX, mimeType: "image/svg+xml" },                   // not an allowed type
+    { data: "not base64!!", mimeType: "image/png" },
+    { data: big, mimeType: "image/png" },                            // over 5 MB
+    { data: PNG_1PX, mimeType: "image/png", caption: "c".repeat(201) }
+  ]) {
+    const res = await callTool(d, "katashiro.show_image", bad);
+    assert.equal(res.isError, true, JSON.stringify(bad).slice(0, 80));
+  }
+  assert.equal(shown.length, 0);
+  d.showImage = async () => { throw new Error("decode"); };
+  const res = await callTool(d, "katashiro.show_image", { data: "QUJD", mimeType: "image/png" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /does not decode/);
+  delete d.showImage;
+  assert.match((await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png" })).content[0].text, /not available/);
 });

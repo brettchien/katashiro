@@ -306,6 +306,13 @@
   // imageId files get their own, wider total.
   const UPLOAD_IMAGEID_MAX_BYTES = 20 * 1024 * 1024;
 
+  // show_image: an image the agent wants the USER to see, rendered in the panel. `data` crossed the
+  // tunnel as base64 (typically sent by a shell helper straight to the facade, so the bytes never
+  // pass through the model) — same 5 MB decoded cap as upload_file. `imageId` stays local.
+  const SHOW_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+  const SHOW_IMAGE_CAPTION_MAX = 200;
+  const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
   // `@import` / `src()` can leak page state to a remote server through attribute selectors (CSS
   // exfiltration). Backslashes are refused outright because CSS escapes (`u\72l(`) would slip a
@@ -514,6 +521,17 @@
   }
 
   // upload_file: file name, MIME type and size — never the content (text or base64).
+  // show_image: never let the base64 reach the pill — report its decoded size instead.
+  function redactShowImage(args) {
+    const a = args || {};
+    const out = {};
+    if (a.imageId != null) out.imageId = a.imageId;
+    if (a.mimeType != null) out.mimeType = a.mimeType;
+    if (typeof a.data === "string") out.data = `<${b64Bytes(a.data.replace(/^data:[^,]*,/, "").replace(/\s+/g, ""))} bytes>`;
+    if (typeof a.caption === "string") out.caption = a.caption.length > 80 ? `${a.caption.slice(0, 80)}…` : a.caption;
+    return out;
+  }
+
   function redactUploadFile(args) {
     const a = args || {};
     const files = Array.isArray(a.files) ? a.files : [];
@@ -2560,6 +2578,65 @@
       }
     },
 
+    "katashiro.show_image": {
+      description:
+        "Show an image to the USER in the side panel chat (they see it; you get only a one-line " +
+        "confirmation). Give exactly one source: `imageId` — a capture from `screenshot` (e.g. " +
+        "'here is that background tab'), no bytes sent; or `data` — base64 (or a data: URL) of a " +
+        "png/jpeg/gif/webp ≤ 5 MB with `mimeType`, e.g. a chart or diagram you rendered. Do NOT " +
+        "emit large base64 yourself: send `data` from a shell helper that posts to the facade. " +
+        "Optional `caption` (≤ 200 chars) is shown under the image. Not a page action, so act mode " +
+        "does not gate it.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          imageId: { type: "string", description: "imageId returned by screenshot" },
+          data: { type: "string", description: "base64 image bytes, or a data:image/...;base64, URL" },
+          mimeType: { type: "string", enum: SHOW_IMAGE_MIME_TYPES, description: "required with raw base64 `data`" },
+          caption: { type: "string", description: "short text shown under the image (≤ 200 chars)" }
+        }
+      },
+      redact: redactShowImage,
+      /** @param {{ imageId?: string, data?: string, mimeType?: string, caption?: string }} args */
+      async call(args, ctx) {
+        if (typeof ctx.showImage !== "function") return errText("show_image is not available in this host (no side panel)");
+        const hasId = args.imageId != null && args.imageId !== "";
+        const hasData = typeof args.data === "string" && args.data !== "";
+        if (hasId === hasData) return errText("give exactly one of `imageId` or `data`");
+        const caption = args.caption == null ? "" : String(args.caption).trim();
+        if (caption.length > SHOW_IMAGE_CAPTION_MAX) return errText(`caption is ${caption.length} chars; show_image is capped at ${SHOW_IMAGE_CAPTION_MAX}`);
+        let mimeType, data;
+        if (hasId) {
+          const img = ctx.images && ctx.images.get(args.imageId);
+          if (!img) return errText(`no captured image "${args.imageId}" (expired or never taken — call screenshot again)`);
+          ({ mimeType, data } = img);
+        } else {
+          let raw = args.data.trim();
+          mimeType = args.mimeType == null ? "" : String(args.mimeType).toLowerCase();
+          const m = /^data:([a-z0-9.+/-]+);base64,/i.exec(raw);
+          if (m) {
+            if (mimeType && mimeType !== m[1].toLowerCase()) return errText(`mimeType "${mimeType}" does not match the data: URL's "${m[1]}"`);
+            mimeType = m[1].toLowerCase();
+            raw = raw.slice(m[0].length);
+          }
+          if (!SHOW_IMAGE_MIME_TYPES.includes(mimeType)) return errText(`\`mimeType\` must be one of ${SHOW_IMAGE_MIME_TYPES.join(", ")}`);
+          data = raw.replace(/\s+/g, "");
+          if (!/^[A-Za-z0-9+/]+={0,2}$/.test(data)) return errText("`data` is not valid base64");
+          const bytes = b64Bytes(data);
+          if (bytes > SHOW_IMAGE_MAX_BYTES) return errText(`image is ${bytes} bytes; show_image is capped at ${SHOW_IMAGE_MAX_BYTES} (shrink it first)`);
+        }
+        let dims;
+        try {
+          dims = await ctx.showImage({ dataUrl: `data:${mimeType};base64,${data}`, caption });
+        } catch (e) {
+          return errText(`could not display the image — it does not decode as ${mimeType}`);
+        }
+        const size = dims && dims.width ? `${dims.width}×${dims.height} ` : "";
+        return okText(`shown to the user: ${size}${mimeType} (${Math.round(b64Bytes(data) / 1024)} KB)${caption ? ` — "${caption}"` : ""}`);
+      }
+    },
+
     "katashiro.chat_history": {
       description:
         "Read this side panel's own chat transcript (the window the panel lives in): user messages, " +
@@ -2771,7 +2848,7 @@
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
       // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the

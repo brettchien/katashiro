@@ -199,6 +199,8 @@ class Conn {
       // window so the click handler below focuses the right one.
       chatHistory: () => historyMessages,
       clientInfo: clientInfoSnapshot,
+      // show_image renders into THIS agent's current turn (or as its own message between turns).
+      showImage: (img) => this.showImage(img),
       windowId: panelWindowId,
     };
   }
@@ -654,6 +656,46 @@ class Conn {
   }
 
   // The current turn's tool-activity strip (above the reply bubble), created on first use.
+  // katashiro.show_image: decode first (a non-image rejects, so the tool reports it), then show it
+  // inside the in-flight turn — between the tool strip and the reply bubble — or, between turns,
+  // as a standalone message from this agent. Memory-only like pasted images; history gets a marker.
+  async showImage({ dataUrl, caption }) {
+    const im = new Image();
+    im.src = dataUrl;                                    // a data: URL browser-mcp.js built from validated base64
+    await im.decode();
+    im.className = "bubble-image agent-image";
+    im.alt = caption || "image";
+    // Full size in a new tab. Chrome refuses to open data: URLs at top level, so go through a blob:
+    // URL — decoded by hand, since the CSP's connect-src does not allow fetch(data:).
+    im.addEventListener("click", () => {
+      const [head, b64] = dataUrl.split(",", 2);
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: head.slice(5, head.indexOf(";")) }));
+      window.open(url, "_blank");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    });
+    const fig = document.createElement("figure");
+    fig.className = "agent-figure";
+    fig.appendChild(im);
+    if (caption) {
+      const cap = document.createElement("figcaption");
+      cap.textContent = caption;                         // textContent: agent-supplied text
+      fig.appendChild(cap);
+    }
+    if (this.turnActive) {
+      if (!this.stream || !this.stream.bubble) this.startStream();
+      const s = this.stream;
+      s.contentEl.insertBefore(fig, s.bubble);
+      s.imageCount = (s.imageCount || 0) + 1;
+      maybeScroll();
+    } else {
+      appendMessage({ senderId: this.id, senderName: this.name, text: caption, images: [dataUrl] });
+    }
+    return { width: im.naturalWidth, height: im.naturalHeight };
+  }
+
   ensureToolStrip() {
     if (!this.stream || !this.stream.bubble) this.startStream();
     const s = this.stream;
@@ -719,8 +761,9 @@ class Conn {
       // Exception: a turn that ran browser tools but emitted no text is a legitimate pure-action
       // turn — keep the row (and its tool-activity strip) so the user still sees what happened;
       // only the empty typing bubble is dropped.
-      if (s.toolStrip && s.toolStrip.childElementCount > 0) {
+      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount) {
         s.bubble.remove();
+        if (s.imageCount) recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText("", s.imageCount), timestamp: Date.now() });
         if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
         maybeScroll();
         return;
@@ -734,7 +777,7 @@ class Conn {
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
     renderMarkdownInto(s.bubble, s.text);
-    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: s.text, timestamp: Date.now() });
+    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText(s.text, s.imageCount || 0), timestamp: Date.now() });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
   }
