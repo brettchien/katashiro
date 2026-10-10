@@ -3037,3 +3037,31 @@ test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated 
     assert.ok(!BrowserMcp.TOOLS[name].write);
   }
 });
+
+// --- screenshot of Katashiro's own canvas tab ---------------------------------------
+
+test("katashiro.screenshot may capture Katashiro's own canvas tab; other extension pages stay refused", async () => {
+  const base = "chrome-extension://kata/canvas.html";
+  for (const [url, allowed] of [
+    [`${base}?id=cv_000000000001`, true],
+    [base, true],
+    ["chrome-extension://kata/sidepanel.html", false],
+    ["chrome-extension://other/canvas.html?id=x", false],
+    [`${base}x?id=1`, false],
+    ["chrome://settings", false],
+  ]) {
+    const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", tabUrl: url });
+    d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
+    const res = await callTool(d, "katashiro.screenshot", {});
+    assert.equal(calls.captureVisibleTab.length, allowed ? 1 : 0, url);
+    assert.equal(!!res.isError, !allowed, url);
+  }
+});
+
+test("DOM tools stay refused on the canvas tab (only screenshot is ownCanvas)", async () => {
+  const { deps: d } = deps({ tabUrl: "chrome-extension://kata/canvas.html?id=cv_000000000001" });
+  d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
+  const res = await callTool(d, "katashiro.snapshot", {});
+  assert.equal(res.isError, true);
+  assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.ownCanvas).map(([n]) => n), ["katashiro.screenshot"]);
+});

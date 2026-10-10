@@ -195,6 +195,14 @@
   // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
   // pre-reject pages with no scriptable web origin (chrome://, about:, the Web Store, file://, PDF
   // viewer) here, so those return a clear message instead of a raw Chrome error.
+  // Katashiro's own canvas page (canvas.html?id=…), by exact extension URL prefix.
+  function isOwnCanvasTab(chrome, tab) {
+    const getURL = chrome && chrome.runtime && chrome.runtime.getURL;
+    if (typeof getURL !== "function" || !tab || typeof tab.url !== "string") return false;
+    const base = getURL("canvas.html");
+    return tab.url === base || tab.url.startsWith(`${base}?`);
+  }
+
   function pageOrigin(url) {
     try {
       const u = new URL(url || "");
@@ -1042,12 +1050,14 @@
 
     "katashiro.screenshot": {
       description:
-        "Capture a screenshot (image) of the active tab. EXPENSIVE and slow to reason over — use " +
+        "Capture a screenshot (image) of the active tab (a web page, or one of Katashiro's own canvas " +
+        "tabs — switch_tab to it to check how a canvas you wrote looks). EXPENSIVE and slow to reason over — use " +
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
         "read text or to confirm an action succeeded (action tools already return the new snapshot). " +
         "Also returns an `imageId`: pass it to `paste_image` (paste into an editor, e.g. a Jira " +
         "description) or `upload_file` (`files: [{ imageId }]`) to put this screenshot into another " +
         "page — the image stays in the extension, you never handle its bytes.",
+      ownCanvas: true,                   // may capture Katashiro's own canvas tab (see callBrowserTool)
       inputSchema: { type: "object", properties: {} },
       redact: redactDefault,
       /** @param {object} _args (none) */
@@ -2979,7 +2989,10 @@
     const tab = await activeTab(chrome);
     // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
-    if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
+    // One exception: a tool marked ownCanvas (screenshot) may look at Katashiro's OWN canvas tab
+    // (canvas.html, ADR canvas), so the agent can check what it rendered. Never another extension's
+    // page, never any other page of ours; DOM tools stay refused there (no script can be injected).
+    if (!pageOrigin(tab.url) && !(tool.ownCanvas && isOwnCanvasTab(chrome, tab))) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
     return withTabContext(await tool.call(args, ctx), tab);
