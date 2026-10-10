@@ -457,3 +457,35 @@ test("framed entries keep their boundaries through batchPrompts", () => {
   const b = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 2, 0), senderName: "B" }, "two");
   assert.equal(RoomCore.batchPrompts([a, b]), "[2026-10-10 16:01:00 B]\none\n\n[2026-10-10 16:02:00 B]\ntwo");
 });
+
+// --- agent-side reply markers --------------------------------------------------------------------
+
+test("splitReplySegments: no markers → one plain segment", () => {
+  assert.deepEqual(RoomCore.splitReplySegments("hello\nworld"), [{ replyTo: null, text: "hello\nworld" }]);
+});
+
+test("splitReplySegments: several parts, each answering a time; text after the time is ignored", () => {
+  const segs = RoomCore.splitReplySegments(
+    "intro\n↩ 2026-10-10 16:05:12\nfirst answer\n\n↩ 2026-10-10 16:07:30 user「x」\nsecond answer");
+  assert.deepEqual(segs, [
+    { replyTo: null, text: "intro" },
+    { replyTo: "2026-10-10 16:05:12", text: "first answer" },
+    { replyTo: "2026-10-10 16:07:30", text: "second answer" }
+  ]);
+});
+
+test("splitReplySegments: markers inside a code fence are content, not markers", () => {
+  const segs = RoomCore.splitReplySegments("```\n↩ 2026-10-10 16:05:12\n```");
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].replyTo, null);
+});
+
+test("needsReplyHint: two framed messages, or one reply — not a single plain one or a relay", () => {
+  const a = "[2026-10-10 16:01:00 user]\none", b = "[2026-10-10 16:02:00 user]\ntwo";
+  const r = "[2026-10-10 16:03:00 user ↩ 2026-10-10 16:01:00 orca「x」]\nthree";
+  assert.equal(RoomCore.needsReplyHint([a]), false);
+  assert.equal(RoomCore.needsReplyHint([a, b]), true);
+  assert.equal(RoomCore.needsReplyHint([r]), true);
+  assert.equal(RoomCore.needsReplyHint(['<message from="k04">\nhi\n</message>']), false);
+  assert.match(RoomCore.REPLY_HINT, /↩ <its time>/);
+});

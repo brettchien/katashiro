@@ -379,7 +379,43 @@
     return body ? `${promptHeader(meta)}\n${body}` : promptHeader(meta);
   }
 
+  // Agent-side reply-to: a line "↩ YYYY-MM-DD HH:MM:SS" (anything after the time is ignored) starts
+  // a part of the reply that answers the message sent at that time. Split the reply into segments
+  // { replyTo: "<time>" | null, text } — markers inside ``` fences are left alone.
+  const REPLY_MARKER = /^\s*↩\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\b.*$/;
+  function splitReplySegments(text) {
+    const lines = String(text == null ? "" : text).split("\n");
+    const segs = [];
+    let cur = { replyTo: null, lines: [] };
+    let fence = false;
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) fence = !fence;
+      const m = fence ? null : REPLY_MARKER.exec(line);
+      if (m) {
+        if (cur.replyTo || cur.lines.some((l) => l.trim())) segs.push(cur);
+        cur = { replyTo: m[1], lines: [] };
+      } else {
+        cur.lines.push(line);
+      }
+    }
+    if (cur.replyTo || cur.lines.some((l) => l.trim())) segs.push(cur);
+    return segs.map((s) => ({ replyTo: s.replyTo, text: s.lines.join("\n").trim() }));
+  }
+
+  // A batch the agent may want to answer piecewise — two or more user messages, or a reply — gets a
+  // one-line note on the marker convention, so any agent can use it without a skill.
+  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [^\]\n]*\]/;
+  const REPLY_HINT = "(To answer a specific message above, start that part of your reply with a line " +
+    "\"↩ <its time>\", e.g. \"↩ 2026-10-10 16:05:12\" — the user sees it as a quote.)";
+  function needsReplyHint(entries) {
+    const framed = (Array.isArray(entries) ? entries : []).filter((e) => HEADER_RE.test(String(e || "")));
+    return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
+  }
+
   return {
+    splitReplySegments,
+    needsReplyHint,
+    REPLY_HINT,
     msgTime,
     excerpt,
     messageId,

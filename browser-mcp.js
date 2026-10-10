@@ -2686,7 +2686,7 @@
         if (!all.length) return okText("(no chat history in this window)");
         const start = Math.max(0, all.length - limit);
         const lines = all.slice(start).map((m) => {
-          const when = Number.isFinite(m.timestamp) ? localStamp(m.timestamp) : "?";
+          const when = Number.isFinite(m.timestamp) ? localStamp(m.timestamp).slice(0, 19) : "?";
           const who = m.kind === "sent" ? "user" : (m.senderName || "?");
           const re = m.replyTo && Number.isFinite(m.replyTo.timestamp)
             ? ` ↩ ${localStamp(m.replyTo.timestamp).slice(0, 19)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` : "";
@@ -2694,7 +2694,7 @@
           if (text.length > maxChars) text = `${text.slice(0, maxChars)}… [${text.length - maxChars} more chars]`;
           return `${when} ${m.kind === "error" ? "[error] " : ""}${who}${re}: ${text}`;
         });
-        const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"} (oldest first, user's local time)`;
+        const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"} (oldest first, user's local time UTC${localStamp(Date.now()).slice(20)})`;
         return okText(`${head}\n\n${lines.join("\n\n")}`);
       }
     },

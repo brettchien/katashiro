@@ -440,7 +440,9 @@ class Conn {
     // Batch delivery: drain the WHOLE backlog and send it as one turn, not one-per-round. If the
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
-    const text = RoomCore.batchPrompts(this.promptQueue.splice(0));
+    const batch = this.promptQueue.splice(0);
+    let text = RoomCore.batchPrompts(batch);
+    if (text && RoomCore.needsReplyHint(batch)) text += `\n\n${RoomCore.REPLY_HINT}`;
     let images = [];
     if (this.pendingImages.length && !this.canImage) {
       const n = this.pendingImages.splice(0).length;
@@ -782,7 +784,7 @@ class Conn {
     // Render the accumulated markdown once, now that the turn is complete (ADR §3.3): streaming
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
-    renderMarkdownInto(s.bubble, s.text);
+    renderAgentText(s.bubble, s.text);
     const doneAt = Date.now();
     const row = s.bubble.closest(".message");
     if (row && s.contentEl) {
@@ -1196,8 +1198,8 @@ async function loadHistory() {
   const msgs = Array.isArray(data.messages) ? data.messages : [];
   if (msgs.length) {
     restoring = true;
+    historyMessages.push(...msgs);                       // first, so replayed "↩ time" markers resolve
     msgs.forEach(replayMessage);
-    historyMessages.push(...msgs);
     restoring = false;
   }
 }
@@ -2106,6 +2108,44 @@ function attachReplyButton(contentEl, target) {
   contentEl.appendChild(b);
 }
 
+// The newest recorded message sent at this "YYYY-MM-DD HH:MM:SS" (local), as a reply target.
+function findMessageByTime(stamp) {
+  for (let i = historyMessages.length - 1; i >= 0; i--) {
+    const m = historyMessages[i];
+    if (m && Number.isFinite(m.timestamp) && m.kind !== "error" && RoomCore.msgTime(m.timestamp) === stamp) {
+      return { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
+    }
+  }
+  return null;
+}
+
+// Render an agent's reply. Plain text → the markdown sink as before. With "↩ time" marker lines,
+// each part is rendered on its own (still through the sanitized sink) under a quote of the message
+// it answers; a marker whose time matches nothing shows the time with "找不到原訊息".
+function renderAgentText(el, text) {
+  const segs = RoomCore.splitReplySegments(text);
+  if (!segs.some((s) => s.replyTo)) { renderMarkdownInto(el, text); return; }
+  el.replaceChildren();
+  for (const seg of segs) {
+    if (seg.replyTo) {
+      const target = findMessageByTime(seg.replyTo);
+      if (target) el.appendChild(replyQuoteEl(target));
+      else {
+        const q = document.createElement("div");
+        q.className = "reply-quote missing";
+        q.textContent = `↩ ${seg.replyTo}（找不到原訊息）`;
+        el.appendChild(q);
+      }
+    }
+    if (seg.text) {
+      const part = document.createElement("div");
+      part.className = "reply-part";
+      renderMarkdownInto(part, seg.text);
+      el.appendChild(part);
+    }
+  }
+}
+
 function jumpToMessage(id) {
   if (!id) return;
   const row = messagesList.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
@@ -2143,7 +2183,10 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo 
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  if (text) renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (text) {                                           // sanitized sink (ADR §3.2) — never raw innerHTML
+    if (isMe) renderMarkdownInto(bubble, text);
+    else renderAgentText(bubble, text);                  // agent text may carry "↩ time" reply markers
+  }
   if (Array.isArray(images)) {
     for (const src of images) {
       const im = document.createElement("img");
