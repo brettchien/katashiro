@@ -313,18 +313,63 @@ test("changed outside Katashiro: never overwritten; the latest goes to one confl
   assert.equal((await env.meta(id)).file.state, "ok");
 });
 
-test("a file Katashiro never wrote already at the path is treated as changed", async () => {
+test("a new slug never lands on a file Katashiro never wrote: it is left alone, the next slug is taken", async () => {
   const env = setup();
   await writeText(env.dir, "c/plan.md", "someone else's\n");
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "mine\n" });
   const r = await env.mirror.sync(id);
-  assert.equal(r.action, "conflict");
+  assert.equal(r.action, "write");
   assert.equal(await readText(env.dir, "c/plan.md"), "someone else's\n");
+  assert.equal(await readText(env.dir, "c/plan-2.md"), "mine\n");
+  assert.equal((await env.meta(id)).file.state, "ok");
   // A directory at the path is not a file to overwrite either.
   const env2 = setup();
   await writeText(env2.dir, "c/plan.md/inner", "x");
   const b = await env2.store.agentWrite({ conversationId: "c", title: "Plan", content: "mine\n" });
-  assert.equal((await env2.mirror.sync(b.id)).action, "conflict");
+  assert.equal((await env2.mirror.sync(b.id)).action, "write");
+  assert.equal(await readText(env2.dir, "c/plan-2.md"), "mine\n");
+});
+
+test("a deleted canvas's file stays; a new canvas with the same title takes the next slug, not a conflict", async () => {
+  const env = setup();
+  const a = await env.store.agentWrite({ conversationId: "c_abc", title: "Notes", content: "# A\n" });
+  await env.mirror.sync(a.id);
+  await env.store.remove({ id: a.id });
+  const b = await env.store.agentWrite({ conversationId: "c_abc", title: "Notes", content: "# B\n" });
+  const r = await env.mirror.sync(b.id);
+  assert.equal(r.action, "write");
+  assert.equal(await readText(env.dir, "c_abc/notes.md"), "# A\n");
+  assert.equal(await readText(env.dir, "c_abc/notes-2.md"), "# B\n");
+  await env.store.userSave({ id: b.id, baseVersion: 1, content: "# B2\n" });
+  assert.equal((await env.mirror.sync(b.id)).action, "write");
+  assert.equal((await env.meta(b.id)).file.state, "ok");
+});
+
+test("same content under a newer version: fileSyncedVersion moves on without a write", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Plan", content: "v1\n" });
+  const meta = await env.meta(id);
+  assert.equal(meta.version, 2);
+  assert.equal((await env.mirror.sync(id)).action, "none");
+  assert.equal((await env.meta(id)).fileSyncedVersion, 2);
+  const sets = env.storage.sets;
+  await env.mirror.sync(id);
+  assert.equal(env.storage.sets, sets, "settled: no further meta writes");
+});
+
+test("check after an error clears the stale error text", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1" });
+  await env.mirror.sync(id);
+  const meta = await env.meta(id);
+  meta.file = { ...meta.file, state: "error", error: "disk full" };
+  await env.storage.set({ [CanvasStore.metaKey(id)]: meta });
+  assert.equal((await env.mirror.sync(id, { check: true })).state, "ok");
+  const file = (await env.meta(id)).file;
+  assert.equal(file.state, "ok");
+  assert.equal(file.error, undefined);
 });
 
 test("file deleted outside: the canvas is marked file missing, never deleted; the next save writes it again", async () => {
@@ -452,8 +497,55 @@ test("another folder: slugs and hashes start over (files there were never writte
   env.dir = fakeDir("other");
   env.folderId = "f2";
   await writeText(env.dir, "c/plan.md", "unrelated\n");
-  assert.equal((await env.mirror.sync(id)).action, "conflict");
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  assert.equal(await readText(env.dir, "c/plan.md"), "unrelated\n");
+  assert.equal(await readText(env.dir, "c/plan-2.md"), "v1");
   assert.equal((await env.meta(id)).file.folder, "f2");
+});
+
+test("folder A → B → A: A's hashes are remembered, so A's files are still Katashiro's", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c_abc", title: "Notes", content: "# v1\n" });
+  await env.mirror.sync(id);
+  const dirA = env.dir;
+  env.dir = fakeDir("b");
+  env.folderId = "f2";
+  await env.mirror.sync(id);
+  assert.equal((await env.meta(id)).file.folder, "f2");
+  assert.equal((await env.meta(id)).filesByFolder.f1.slug, "notes");
+  env.dir = dirA;
+  env.folderId = "f1";
+  // Back on A with nothing new: the remembered state is restored (no shortcut on syncedHash).
+  assert.equal((await env.mirror.sync(id)).action, "adopt");
+  let meta = await env.meta(id);
+  assert.equal(meta.file.folder, "f1");
+  assert.equal(meta.filesByFolder.f2.slug, "notes");
+  await env.store.agentWrite({ conversationId: "c_abc", id, baseVersion: meta.version, title: "Notes", content: "# v2\n" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "write");
+  assert.equal(await readText(dirA, "c_abc/notes.md"), "# v2\n");
+  assert.deepEqual(listFiles(dirA).filter((p) => p.startsWith("c_abc/")), ["c_abc/notes.md"]);
+  // Another canvas cannot take A's slug while it is only remembered.
+  env.dir = fakeDir("c");
+  env.folderId = "f3";
+  await env.mirror.sync(id);
+  env.dir = dirA;
+  env.folderId = "f1";
+  const other = await env.store.agentWrite({ conversationId: "c_abc", title: "Notes", content: "other\n" });
+  await env.mirror.sync(other.id);
+  assert.equal((await env.meta(other.id)).file.slug, "notes-2");
+});
+
+test("withFile: the replaced folder's state is remembered, at most 3, newest kept", () => {
+  let m = { id: "x", file: { folder: "a", slug: "s" } };
+  for (const f of ["b", "c", "d", "e"]) m = M.withFile(m, { folder: f, slug: "s" });
+  assert.equal(m.file.folder, "e");
+  assert.deepEqual(Object.keys(m.filesByFolder), ["b", "c", "d"]);
+  m = M.withFile(m, { folder: "c", slug: "s2" });             // back to c: it leaves the memory
+  assert.equal(m.file.slug, "s2");
+  assert.deepEqual(Object.keys(m.filesByFolder), ["b", "d", "e"]);
+  assert.deepEqual(M.withFile({ id: "y" }, { folder: "a" }), { id: "y", file: { folder: "a" } });
+  assert.ok(M.onlyMirrorFieldsChanged({ id: "x" }, { id: "x", filesByFolder: { a: {} } }));
 });
 
 test("describeState: header text for each state", () => {

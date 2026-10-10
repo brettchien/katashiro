@@ -8,7 +8,7 @@
 //   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
-// and noMirror (created in an incognito window: never written to the folder).
+// filesByFolder, and noMirror (created in an incognito window: never written to the folder).
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
 // canvas's own (`canvas:<id>`) and, nested inside it for the index, `canvas:index` — always in

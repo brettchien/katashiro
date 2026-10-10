@@ -547,7 +547,8 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
 **Phase 1 implementation (PR 7).** `canvas-mirror.js` decides (slugs, path check, write plan,
 conflict names; unit-tested on a fake directory handle) and makes the few File System Access
 calls; the handle lives in IndexedDB `katashiro-canvas-mirror`. Settings → *畫布存到資料夾* picks,
-reconnects or stops (the files stay; picking the same folder again keeps its hashes). The panel
+reconnects or stops (the files stay; picking a folder used before — the current one or the 3
+before it — keeps its hashes). The panel
 syncs a canvas on every `storage.onChanged` of its content or meta (so agent writes and
 normalization), each canvas tab syncs its own saves and has *Reconnect folder*; both take the
 `canvas:<id>` lock, and a sync whose content hash equals the last one synced does nothing. Writes
@@ -555,8 +556,17 @@ happen only while Chrome already grants access; nobody prompts without a click. 
 is silent, the conservative choice:
 - The mirror state is `meta.file` (`{folder, convSlug, slug, slugBase, hash, syncedHash,
   jsonHash, conflictName, conflictHash, state}`) plus `meta.fileSyncedVersion`; `folder` is an id
-  minted per picked folder, so another folder starts over (no hashes, new slugs). Canvases created
+  minted per picked folder, so another folder starts over (no hashes, new slugs). The state for the
+  last 3 other folders is kept in `meta.filesByFolder`, so going back to a folder (A → B → A) still
+  knows which files Katashiro wrote there; a folder older than that starts over. Canvases created
   in an incognito window carry `meta.noMirror` and are never written, by any page.
+- **A new slug never lands on an existing file.** When a canvas gets a slug in a folder (first
+  write, rename, new folder), a path whose `.md` already exists (a deleted canvas's file, the
+  user's own) is skipped for the next free `-2`, `-3`, …, so that file is neither overwritten nor
+  turned into a conflict on every save. The "a file Katashiro never wrote → different" rule above
+  still covers a file that appears there after the slug is assigned.
+- `fileSyncedVersion` also moves on when a new version has the same content as the file (an agent
+  rewrite with the same text), so the Revert dialog does not under-promise.
 - Until multi-conversation gives conversations a title, the conversation slug is the slugged
   `conversationId` (`c_…`). Slugs are also capped at 160 UTF-8 bytes, so a conflict file name stays
   under the common 255-byte limit.
@@ -564,6 +574,9 @@ is silent, the conservative choice:
   `.katashiro-<time>.md` as long as it is still exactly what Katashiro wrote there; once the user
   edits it too, a new one is made. If the disk already holds exactly the new content, it is adopted
   (nothing written), even for a file Katashiro never wrote.
+- Known limit: between hashing the file and the swap file's move into place (`createWritable` →
+  `close`) is a window of a few ms in which an outside write would be overwritten. File System
+  Access has no compare-and-swap; the window is accepted.
 - **File missing** is detected when a canvas tab opens (and on any sync): the canvas is marked,
   never deleted, and the next save writes the file again (`state: "recreated"`), since the "no
   file" rule above allows it and storage is the working copy. Outside changes are only detected on
@@ -580,7 +593,9 @@ is silent, the conservative choice:
 - To verify in real Chrome: `showDirectoryPicker` from the side panel; whether a grant survives a
   browser restart for an extension origin (persistent permissions); `requestPermission` after an
   IndexedDB read still inside the click's activation; whether File System Access follows a symlink
-  planted in the folder; Chrome's refusal of some names or folders (e.g. the home folder).
+  planted in the folder; Chrome's refusal of some names or folders (e.g. the home folder);
+  Windows' 260-character path limit (an asset path is up to ~80 + `.assets\` + ~70 characters
+  under the conversation folder and the folder the user picked).
 
 ### 3.7 Chat integration
 

@@ -100,9 +100,11 @@
   function jsonPath({ id }) { return [".katashiro", `${id}.json`]; }
 
   /**
-   * The only paths a canvas may touch: its .md, its conflict files, its assets, its json. `ctx` is
-   * { id, convSlug, slug } from storage; anything else (another canvas's file, .git/…, a nested
-   * path, a bad slug) is refused.
+   * The only path shapes a canvas may touch: its .md, its conflict files, its assets, its json. `ctx`
+   * is { id, convSlug, slug } from storage; anything else (.git/…, a nested path, a bad slug, a
+   * conflict-looking name of another slug) is refused. This checks the shape for `ctx`, not who owns
+   * the file there: that two canvases never share slugs is assignSlugs' job, and nothing is
+   * overwritten or removed unless its hash is one Katashiro wrote there (planWrite, the rename check).
    */
   function isAllowedPath(segs, ctx) {
     if (!Array.isArray(segs) || !segs.every((s) => typeof s === "string" && s)) return false;
@@ -145,7 +147,7 @@
   }
 
   // The meta fields this module owns; a meta change touching only these is not a content change.
-  const FILE_FIELDS = ["file", "fileSyncedVersion"];
+  const FILE_FIELDS = ["file", "fileSyncedVersion", "filesByFolder"];
   function onlyMirrorFieldsChanged(a, b) {
     if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
     const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
@@ -248,6 +250,35 @@
   }
 
   const ERROR_MAX = 200;
+  const FOLDERS_KEPT = 3;              // other folders whose mirror state a canvas remembers
+  const SLUG_TRIES = 50;
+
+  /**
+   * meta with `file` as its mirror state. The state for the folder it replaces moves to
+   * meta.filesByFolder (the last FOLDERS_KEPT), so going back to that folder still knows which
+   * files Katashiro wrote there.
+   */
+  function withFile(meta, file) {
+    const away = { ...(meta.filesByFolder || {}) };
+    delete away[file.folder];
+    if (meta.file && meta.file.folder && meta.file.folder !== file.folder) {
+      delete away[meta.file.folder];
+      away[meta.file.folder] = meta.file;            // newest last
+    }
+    const keys = Object.keys(away);
+    for (const k of keys.slice(0, Math.max(0, keys.length - FOLDERS_KEPT))) delete away[k];
+    const next = { ...meta, file };
+    if (Object.keys(away).length) next.filesByFolder = away;
+    else delete next.filesByFolder;
+    return next;
+  }
+
+  /** A canvas's mirror state for one folder: current or remembered; null if none. */
+  function fileFor(meta, folderId) {
+    if (!meta) return null;
+    if (meta.file && meta.file.folder === folderId) return meta.file;
+    return (meta.filesByFolder && meta.filesByFolder[folderId]) || null;
+  }
 
   /**
    * @param {object} deps
@@ -294,12 +325,16 @@
     }
 
     // Slugs for this canvas in this folder, reserved at once under canvas:index (the caller holds
-    // canvas:<id>), so two canvases cannot take the same one. A conversation keeps one slug.
-    async function assignSlugs(id, folderId, prev) {
+    // canvas:<id>), so two canvases cannot take the same one. A conversation keeps one slug. A new
+    // slug never lands on an existing .md (a deleted canvas's file, the user's own): that one is left
+    // alone and the next free -2, -3 … is taken, rather than a conflict on every save.
+    async function assignSlugs(id, dir, folderId, prev) {
       return lock("canvas:index", async () => {
         const cur = await getOne(metaKey(id));
         const all = Object.values(await CanvasStore.getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k)));
-        const others = all.filter((m) => m && m.id !== id && m.file && m.file.folder === folderId && isValidSlug(m.file.convSlug));
+        const others = all.filter((m) => m && m.id !== id)
+          .map((m) => ({ conversationId: m.conversationId, file: fileFor(m, folderId) }))
+          .filter((m) => m.file && isValidSlug(m.file.convSlug));
         let convSlug = prev && isValidSlug(prev.convSlug) ? prev.convSlug : null;
         if (!convSlug) {
           const sibling = others.find((m) => m.conversationId === cur.conversationId);
@@ -311,15 +346,22 @@
         }
         const slugBase = slugify(cur.title);
         const taken = new Set(others.filter((m) => m.file.convSlug === convSlug).map((m) => m.file.slug));
-        const slug = uniqueSlug(slugBase, taken);
-        const same = prev && prev.slug === slug && prev.convSlug === convSlug;
+        let slug = uniqueSlug(slugBase, taken);
+        let same = prev && prev.slug === slug && prev.convSlug === convSlug;
+        for (let n = 0; !same && n < SLUG_TRIES; n++) {
+          const ctx = { id, convSlug, slug };
+          if ((await hashAt(dir, mdPath(ctx), ctx)) === null) break;
+          taken.add(slug);
+          slug = uniqueSlug(slugBase, taken);
+          same = prev && prev.slug === slug && prev.convSlug === convSlug;
+        }
         const file = {
           folder: folderId, convSlug, slug, slugBase,
           hash: same ? prev.hash : null,               // a new path: Katashiro never wrote there
           syncedHash: null, jsonHash: prev ? prev.jsonHash || null : null,
           conflictName: null, conflictHash: null, state: prev ? prev.state : undefined,
         };
-        await storage.set({ [metaKey(id)]: { ...cur, file } });
+        await storage.set({ [metaKey(id)]: withFile(cur, file) });
         return file;
       });
     }
@@ -348,7 +390,7 @@
       const clean = {};
       for (const [k, v] of Object.entries(file)) if (v !== undefined) clean[k] = v;
       if (JSON.stringify(cur.file) === JSON.stringify(clean) && cur.fileSyncedVersion === syncedVersion) return;
-      const next = { ...cur, file: clean };
+      const next = withFile(cur, clean);
       if (syncedVersion !== undefined) next.fileSyncedVersion = syncedVersion;
       await storage.set({ [metaKey(id)]: next });
     }
@@ -369,11 +411,13 @@
         const meta = got[metaKey(id)];
         if (!meta || meta.noMirror) return { action: "skipped" };
         const content = got[latestKey(id)] == null ? "" : got[latestKey(id)];
-        const prev = meta.file && meta.file.folder === root.folderId ? meta.file : null;
+        const prev = fileFor(meta, root.folderId);
+        // Back to a folder used before: its remembered state becomes meta.file, so no shortcut.
+        const returning = !!prev && prev !== meta.file;
         let file = prev;
         try {
           if (!prev || !isValidSlug(prev.slug) || !isValidSlug(prev.convSlug) || prev.slugBase !== slugify(meta.title)) {
-            file = await assignSlugs(id, root.folderId, prev);
+            file = await assignSlugs(id, root.dir, root.folderId, prev);
           }
           const ctx = { id, convSlug: file.convSlug, slug: file.slug };
           const out = await renderFile(meta, content, file.slug);
@@ -381,15 +425,21 @@
           const newHash = await sha256(textBytes);
           const renamed = !!(prev && (prev.slug !== file.slug || prev.convSlug !== file.convSlug));
 
-          if (file === prev && prev.syncedHash === newHash) {
-            if (!check) return { action: "none", state: prev.state };
+          if (file === prev && !returning && prev.syncedHash === newHash) {
+            // Same content under a newer version (an agent rewrite with the same text): the file
+            // still holds the latest, so fileSyncedVersion moves on without writing anything.
+            if (!check) {
+              if (prev.hash === newHash && (prev.state === "ok" || prev.state === "recreated")) await saveFile(id, prev, meta.version);
+              return { action: "none", state: prev.state };
+            }
             const state = fileState({ diskHash: await hashAt(root.dir, mdPath(ctx), ctx), lastHash: prev.hash });
             // Fall through and write only when that clobbers nothing: the file is still what we
             // wrote but older (the latest went to a conflict file meanwhile), or there is none yet.
             // A deleted file is only marked (it never deletes the canvas); the next save writes it.
             const behind = (state === "ok" && prev.hash !== newHash) || state === "absent";
             if (!behind) {
-              await saveFile(id, { ...prev, state }, meta.fileSyncedVersion);
+              const synced = state === "ok" && prev.hash === newHash ? meta.version : meta.fileSyncedVersion;
+              await saveFile(id, { ...prev, state, error: undefined }, synced);
               return { action: "none", state };
             }
           }
@@ -523,23 +573,30 @@
   }
 
   /**
-   * Settings → pick a folder (a user gesture). Picking the folder that was used before keeps its
-   * folderId, so the hashes Katashiro wrote there still count and nothing turns into a conflict.
+   * Settings → pick a folder (a user gesture). Picking a folder used before (the current one or the
+   * FOLDERS_KEPT before it) keeps its folderId, so the hashes Katashiro wrote there still count (each
+   * canvas remembers them per folder) and nothing turns into a conflict.
    */
   async function pickFolder() {
     const handle = await globalThis.showDirectoryPicker({ mode: "readwrite", id: "katashiro-canvas" });
     let prev = null;
     try { prev = await readRecord(); } catch (_) { /* none */ }
+    const known = [];
+    if (prev && prev.handle && prev.folderId) known.push({ handle: prev.handle, folderId: prev.folderId });
+    for (const k of (prev && Array.isArray(prev.earlier) ? prev.earlier : [])) {
+      if (k && k.handle && k.folderId && !known.some((x) => x.folderId === k.folderId)) known.push(k);
+    }
     let folderId = null;
-    if (prev && prev.handle && prev.folderId) {
-      try { if (await prev.handle.isSameEntry(handle)) folderId = prev.folderId; } catch (_) { /* different */ }
+    for (const k of known) {
+      try { if (await k.handle.isSameEntry(handle)) { folderId = k.folderId; break; } } catch (_) { /* different */ }
     }
     if (!folderId) {
       const b = new Uint8Array(8);
       globalThis.crypto.getRandomValues(b);
       folderId = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
     }
-    await writeRecord({ handle, folderId, pickedAt: Date.now() });
+    const earlier = known.filter((k) => k.folderId !== folderId).slice(0, FOLDERS_KEPT);
+    await writeRecord({ handle, folderId, pickedAt: Date.now(), earlier });
     return { name: handle.name, folderId };
   }
 
@@ -551,7 +608,7 @@
 
   return {
     createCanvasMirror, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
-    onlyMirrorFieldsChanged, sniffImageExt, imageMarkdown, describeState, mdPath, assetPath, jsonPath,
+    onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, describeState, mdPath, assetPath, jsonPath,
     folderStatus, grantedRoot, requestAccess, pickFolder, stopMirror, NOT_A_FILE, SLUG_MAX, SLUG_MAX_BYTES,
   };
 });
