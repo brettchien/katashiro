@@ -328,7 +328,9 @@ below is built around that.
     canvas both answer, the first wins (normalization is idempotent, so they agree). The host replaces that version's stored content with
     `normalized` (same `n`, still `author:"agent"`), and `canvas_read` and `diffFromBase` use it.
     The tool result waits for this (with a timeout) and carries `normalizedDiff` when the text
-    changed, so the agent's next `find` targets what is actually stored. If no frame renders in
+    changed. The panel learns of it through `storage.onChanged` on `canvas:<id>:meta`, whose entry
+    for that version flips to `normalized: true` (no extra runtime message), and computes the diff
+    from the raw text it wrote, so the agent's next `find` targets what is actually stored. If no frame renders in
     time (tab closed), the version is stored raw with `normalized:false` and normalized in place
     on the next open; a `canvas_patch` whose `find` then misses gets the `stale` error with a diff.
   - Normalization must be **idempotent** (serializing its own output changes nothing); the
@@ -490,8 +492,8 @@ flowchart TB
   end
   AG <-->|"tool calls (MCP)"| OA
   OA <-->|"MCP-over-ACP tunnel (wss)"| SP
-  SP <-->|"read / write"| ST
-  CV <-->|"read / write, onChanged"| ST
+  SP <-->|"read / write<br/>(navigator.locks)"| ST
+  CV <-->|"read / write, onChanged<br/>(navigator.locks)"| ST
   CV <-->|"postMessage (nonce, allow-list)"| FR
   WEB -.->|"blocked: not web_accessible"| CV
 ```
@@ -508,10 +510,15 @@ sequenceDiagram
   participant F as sandbox frame
   A->>O: canvas_open(title, kind, content)
   O->>P: tunnel: tools/call
-  P->>S: write meta + v1
-  P-->>A: {id, version: 1}
+  Note over P,C: every read-check-write holds navigator.locks('canvas:<id>')
+  P->>S: write meta + v1 (normalized: false)
   S-->>C: onChanged
   C->>F: render v1
+  F->>C: rendered{v1, normalized}
+  C->>S: replace v1 text, meta v1.normalized = true
+  S-->>P: onChanged (meta)
+  P-->>A: {id, version: 1, normalizedDiff?}
+  Note over P: on timeout: return with normalized false
   Note over F: user clicks Edit, then Save
   F->>C: save{content, baseVersion: 1}
   C->>S: write v2 (author: user)
