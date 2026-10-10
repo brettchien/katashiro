@@ -156,6 +156,10 @@ class Conn {
       // (the panel has a canvas; browser-mcp.js stays DOM-free).
       screenshot: screenshotConfig,
       reencodeImage: reencodeJpeg,
+      // chat_history reads this window's persisted scrollback; notify tags its toasts with the
+      // window so the click handler below focuses the right one.
+      chatHistory: () => historyMessages,
+      windowId: panelWindowId,
     };
   }
 
@@ -952,6 +956,16 @@ loadConfig().then(async (r) => {
   }
 );
 
+// katashiro.notify toasts: a click brings this panel's window forward. Every open panel hears every
+// click, so each claims only the ids tagged with its own window.
+if (chrome.notifications && chrome.notifications.onClicked) {
+  chrome.notifications.onClicked.addListener((id) => {
+    if (panelWindowId == null || id.indexOf(`${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:`) !== 0) return;
+    if (typeof panelWindowId === "number") chrome.windows.update(panelWindowId, { focused: true });
+    chrome.notifications.clear(id);
+  });
+}
+
 // The synced config can land a few seconds after startup (reinstall, new device). While we are
 // still on defaults and the user hasn't touched anything, adopt it and reconnect — so the panel
 // recovers without a reopen. Once the user edits locally, their edit wins over the late arrival.
@@ -1004,6 +1018,7 @@ function persist() {
 // are never written to disk.
 const HISTORY_CAP = 200;
 let historyKey = null;                    // "history:<windowId>"
+let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
 let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
 const historyMessages = [];               // in-memory mirror of the persisted scrollback
 let restoring = false;                    // true while replaying — suppresses re-recording
@@ -1041,6 +1056,7 @@ function replayMessage(rec) {
 // the restored messages sit above the reconnect notices.
 async function loadHistory() {
   const wid = await currentWindowId();
+  panelWindowId = wid;
   historyKey = `history:${wid}`;
   const got = await chrome.storage.session.get(historyKey);
   const data = (got && got[historyKey]) || {};

@@ -313,6 +313,17 @@
   const CSS_MAX = 20000;
   const CSS_FORBIDDEN = /url\s*\(|src\s*\(|image\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|@import|@font-face|@namespace|\\/i;
 
+  // chat_history: the panel keeps at most 200 messages (HISTORY_CAP in sidepanel.js), so that is
+  // also the most one call can return; the per-message cap keeps a pasted log from flooding a turn.
+  const HISTORY_TOOL_MAX = 200;
+  const HISTORY_CHARS_MAX = 20000;
+
+  // notify: OS notification bodies get truncated by the platform well before these; the caps
+  // keep a model from dumping a report into a toast. The id prefix is shared with sidepanel.js.
+  const NOTIFY_TITLE_MAX = 80;
+  const NOTIFY_MESSAGE_MAX = 300;
+  const NOTIFY_ID_PREFIX = "katashiro-notify:";
+
   // Stylesheets inject_css has applied, per tab, so `clear` can remove exactly those. A sheet
   // does not survive a navigation anyway; removing an already-gone one is a harmless no-op.
   const injectedCss = new Map();
@@ -2511,6 +2522,89 @@
         injectedCss.get(tabId).push(css);
         return okText(`injected ${css.length} chars of CSS (call inject_css with clear: true to undo; snapshot to see what is now visible)`);
       }
+    },
+
+    "katashiro.chat_history": {
+      description:
+        "Read this side panel's own chat transcript (the window the panel lives in): user messages, " +
+        "every agent's replies in the room, and error notices — oldest first, numbered. Use it to " +
+        "recover context after your session was restarted (e.g. a fresh session with no memory of " +
+        "the conversation the user can still see). Read-only. Images are not kept in the history (a " +
+        "placeholder marks them); system/status notices are not recorded. `limit` = how many of the " +
+        "most recent messages (default 50, max 200); `maxChars` caps each message's text (default " +
+        "2000, max 20000).",
+      // sessionScope: the transcript belongs to the panel, not to the active page — so this works
+      // with a chrome:// or blank active tab too.
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", description: "most recent N messages (default 50, max 200)" },
+          maxChars: { type: "number", description: "per-message text cap (default 2000, max 20000)" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ limit?: number, maxChars?: number }} args */
+      async call(args, ctx) {
+        if (typeof ctx.chatHistory !== "function") return errText("chat history is not available in this host (no side panel transcript)");
+        const limit = args.limit == null ? 50 : args.limit;
+        const maxChars = args.maxChars == null ? 2000 : args.maxChars;
+        if (!Number.isInteger(limit) || limit < 1 || limit > HISTORY_TOOL_MAX) return errText(`\`limit\` must be an integer 1–${HISTORY_TOOL_MAX}`);
+        if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > HISTORY_CHARS_MAX) return errText(`\`maxChars\` must be an integer 1–${HISTORY_CHARS_MAX}`);
+        const all = ctx.chatHistory() || [];
+        if (!all.length) return okText("(no chat history in this window)");
+        const start = Math.max(0, all.length - limit);
+        const lines = all.slice(start).map((m, i) => {
+          const when = Number.isFinite(m.timestamp) ? new Date(m.timestamp).toISOString() : "?";
+          const who = m.kind === "sent" ? `${m.senderName || "user"} (user)` : (m.senderName || "?");
+          let text = m.text == null ? "" : String(m.text);
+          if (text.length > maxChars) text = `${text.slice(0, maxChars)}… [${text.length - maxChars} more chars]`;
+          return `#${start + i + 1} ${when} ${m.kind === "error" ? "[error] " : ""}${who}: ${text}`;
+        });
+        const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"} (oldest first, timestamps UTC)`;
+        return okText(`${head}\n\n${lines.join("\n\n")}`);
+      }
+    },
+
+    "katashiro.notify": {
+      description:
+        "Show a desktop (OS) notification to the user via chrome.notifications — for something they " +
+        "would want to know even when not looking at the panel: a long task finished, a build is " +
+        "ready or failed, a decision is needed. Do not use it for routine progress or for a reply " +
+        "the user is already watching. Clicking the notification focuses the browser window that " +
+        "hosts this panel. `title` ≤ 80 chars, `message` ≤ 300 chars.",
+      // Not a page write: it does not act with the user's site authority, so act mode does not
+      // gate it. sessionScope: it needs no active tab.
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          title: { type: "string", description: "short headline (≤ 80 chars)" },
+          message: { type: "string", description: "body text (≤ 300 chars)" }
+        },
+        required: ["message"]
+      },
+      redact: redactDefault,
+      /** @param {{ title?: string, message: string }} args */
+      async call(args, ctx) {
+        const notifications = ctx.chrome.notifications;
+        if (!notifications || typeof notifications.create !== "function") return errText("notifications are unavailable — the extension lacks the `notifications` permission");
+        const message = args.message == null ? "" : String(args.message).trim();
+        if (!message) return errText("notify needs a non-empty `message`");
+        if (message.length > NOTIFY_MESSAGE_MAX) return errText(`message is ${message.length} chars; notify is capped at ${NOTIFY_MESSAGE_MAX}`);
+        const title = args.title == null ? "" : String(args.title).trim();
+        if (title.length > NOTIFY_TITLE_MAX) return errText(`title is ${title.length} chars; notify is capped at ${NOTIFY_TITLE_MAX}`);
+        // The id prefix carries the panel's window so its onClicked handler focuses the right window
+        // (every open panel hears every click; each only claims its own).
+        const id = `${NOTIFY_ID_PREFIX}${ctx.windowId == null ? "" : ctx.windowId}:${Date.now()}`;
+        await notifications.create(id, {
+          type: "basic",
+          iconUrl: "icon128.png",
+          title: title || "Katashiro",
+          message
+        });
+        return okText(`notification shown: ${title ? `${title} — ` : ""}${message}`);
+      }
     }
   };
 
@@ -2615,7 +2709,8 @@
     // DOM, so they neither need nor are constrained by the current active tab's origin — a
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage };
+      // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, windowId: deps.windowId };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
@@ -2836,5 +2931,5 @@
     }
   }
 
-  return { TOOLS, BROWSER_TOOLS, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
+  return { TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });
