@@ -53,8 +53,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   folder, then let the agent write a canvas: `<folder>/c_…/<title>.md` appears, plus
   `.katashiro/<id>.json`. Edit the `.md` in an editor and save in the canvas: the file is left
   alone, a `<title>.katashiro-<UTC time>.md` appears beside it, and the canvas header shows
-  "📁 檔案在 Katashiro 外被修改過". Delete the `.md` and reopen the canvas tab: "資料夾裡的檔案不見了";
-  the next save writes it again. Restart Chrome: the canvas header shows **📁 Reconnect folder**
+  "📁 檔案在 Katashiro 外被修改過". Delete the `.md` and reopen the canvas tab: "📁 檔案已刪除，不再同步", and
+  later saves leave the folder alone; **📁 重新寫入** writes it again and mirroring resumes. Restart Chrome: the canvas header shows **📁 Reconnect folder**
   (unless Chrome kept the grant); saves made before reconnecting are written after it.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a

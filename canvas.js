@@ -37,6 +37,7 @@
   const conflictEl = document.getElementById("canvas-conflict");
   const fileEl = document.getElementById("canvas-file");
   const reconnectBtn = document.getElementById("canvas-reconnect");
+  const rewriteBtn = document.getElementById("canvas-rewrite");
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
@@ -692,6 +693,7 @@
       fileEl.classList.toggle("warn", d.level === "warn");
     }
     const state = d ? meta.file.state : null;
+    rewriteBtn.hidden = state !== "deleted" || deleted || compareView;
     if (d && d.level === "warn" && state !== shownFileState) notice(d.title);
     shownFileState = state;
   }
@@ -705,6 +707,19 @@
     if (deleted || compareView) return Promise.resolve();    // a compare tab is read-only (§3.10): the canvas tab writes
     return mirror.sync(canvasId, opts).catch(() => {}).then(updateFileStatus);
   }
+  // 1B (Brett 2026-10-11): a file deleted outside stops this canvas's mirroring; this writes it again.
+  rewriteBtn.addEventListener("click", async () => {
+    rewriteBtn.disabled = true;
+    try {
+      const r = await mirror.sync(canvasId, { rewrite: true });
+      if (r.action === "write") flash("📁 已重新寫進資料夾，恢復同步");
+      else if (r.action === "disconnected") notice("資料夾需要重新授權，請先按 Reconnect folder。");
+      else if (r.action === "error") notice(`寫入資料夾失敗：${CanvasCore.clipError(r.error)}`);
+    } finally {
+      rewriteBtn.disabled = false;
+      updateFileStatus();
+    }
+  });
   reconnectBtn.addEventListener("click", async () => {
     reconnectBtn.disabled = true;
     try {

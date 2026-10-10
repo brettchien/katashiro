@@ -372,23 +372,46 @@ test("check after an error clears the stale error text", async () => {
   assert.equal(file.error, undefined);
 });
 
-test("file deleted outside: the canvas is marked file missing, never deleted; the next save writes it again", async () => {
+test("file deleted outside (1B): the canvas is kept, its mirroring stops until rewrite or the file is back", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
   await env.mirror.sync(id);
   (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
   const r = await env.mirror.sync(id, { check: true });
-  assert.deepEqual(r, { action: "none", state: "missing" });
-  assert.equal((await env.meta(id)).file.state, "missing");
+  assert.deepEqual(r, { action: "none", state: "deleted" });
+  assert.equal((await env.meta(id)).file.state, "deleted");
   assert.equal(await readText(env.dir, "c/plan.md"), null);              // not recreated on open
   assert.equal((await env.store.read({ id })).content, "v1\n");          // the canvas is intact
+  // later saves do not bring it back
   await env.store.userSave({ id, baseVersion: 1, content: "v2\n" });
-  const w = await env.mirror.sync(id);
-  assert.equal(w.state, "recreated");
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.equal(await readText(env.dir, "c/plan.md"), null);
+  // the user asks: written again, mirroring resumes
+  const w = await env.mirror.sync(id, { rewrite: true });
+  assert.equal(w.action, "write");
   assert.equal(await readText(env.dir, "c/plan.md"), "v2\n");
+  await env.store.userSave({ id, baseVersion: 2, content: "v3\n" });
+  await env.mirror.sync(id);
+  assert.equal(await readText(env.dir, "c/plan.md"), "v3\n");
   // check also notices an outside change while nothing is pending
   await writeText(env.dir, "c/plan.md", "outside\n");
   assert.equal((await env.mirror.sync(id, { check: true })).state, "changed");
+});
+
+test("deleted on save (no tab check first) also stops; a file put back outside resumes under the usual rules", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  await env.store.userSave({ id, baseVersion: 1, content: "v2\n" });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.equal(await readText(env.dir, "c/plan.md"), null);
+  // git checkout puts our last file back: it is ours again, so the latest is written over it
+  await writeText(env.dir, "c/plan.md", "v1\n");
+  await env.store.userSave({ id, baseVersion: 2, content: "v3\n" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "write");
+  assert.equal(await readText(env.dir, "c/plan.md"), "v3\n");
 });
 
 test("slug collisions get -2; a conversation keeps one slug; slugs come from storage, not the folder", async () => {
@@ -553,5 +576,6 @@ test("describeState: header text for each state", () => {
   assert.equal(M.describeState({ state: "ok" }).level, "ok");
   assert.match(M.describeState({ state: "changed", conflictName: "p.katashiro-1.md" }).title, /changed outside Katashiro.*p\.katashiro-1\.md/);
   assert.match(M.describeState({ state: "missing" }).text, /不見/);
+  assert.match(M.describeState({ state: "deleted" }).text, /不再同步/);
   assert.equal(M.describeState({ state: "error", error: "x" }).title, "x");
 });
