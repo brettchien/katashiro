@@ -62,9 +62,14 @@ versioned surface next to the conversation that the agent renders into and updat
 - **pptx:** `pptxgenjs` 4.0.1 (MIT, 450 KB) writes pptx in the browser from a slide model.
   `pptxtojson` 2.2.0 (MIT) parses pptx into JSON. `dom-to-pptx` 2.1.2 converts rendered HTML into
   editable pptx (untested).
-- **Editors:** `@milkdown/crepe` 7.22.2 (ProseMirror, markdown-native WYSIWYG) and CodeMirror 6.
-  We do not use Quill: its Delta/HTML model loses tables, code-fence languages and `---` slide breaks
-  on a markdown round trip.
+- **Editors:** `@milkdown/crepe` 7.22.2 (MIT, ProseMirror, markdown-native WYSIWYG) and CodeMirror 6.
+  **Brett chose Milkdown over Quill (2026-10-10).** Quill 2.0.3 (BSD-3, 204 KB, last release 2025-01)
+  stores a Delta/HTML model, so every agent ↔ user round trip through markdown loses something: it has
+  no default horizontal-rule format (`---` slide breaks), drops code-fence languages, and converts
+  tables unreliably. Measured crepe bundle (esbuild IIFE, CSS excluded): **2.7 MB minified, 906 KB
+  gzip**, 0 `eval`, 0 `new Function`, and 2 `Function(`: a `Function("return this")` global
+  fallback, and a `Function("", "var x …")` syntax probe inside `try`, which the sandbox CSP blocks
+  and the `try` absorbs. The smoke test below covers it.
 - **eval scan (static grep of the dist files):** reveal.js has 0 `eval` and 0 `Function(`. Chart.js
   has none (only identifiers named `…Function(`). `mermaid.tiny.js` has 0 `eval` and 4
   `Function("return this")()` global-object fallbacks that sit behind `self` checks. pptxgenjs has
@@ -79,14 +84,29 @@ versioned surface next to the conversation that the agent renders into and updat
 
 ## 3. Decision
 
-### 3.1 Surface — a canvas tab, with a card in the chat
+### 3.1 Surface — one Chrome tab per canvas, grouped (decided by Brett, 2026-10-10)
 
-A canvas opens in **its own extension tab** (`canvas.html`), not inside the panel:
+Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), never inside the panel:
 
-- The panel is ~400 px wide. Slides and documents need the full tab width, and `split_tabs` can
-  put the canvas next to the page being discussed.
-- The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Opening it focuses the
-  existing canvas tab or creates one. One tab shows one canvas, with a version picker.
+- The panel is ~400 px wide. Slides and documents need the full tab width.
+- **One Chrome tab per canvas, gathered in a native tab group per conversation** (title = the
+  conversation title, or "Canvas" until multi-conversation lands; fixed color), in the panel's
+  window. Canvases stay together and out of the user's page tabs; the group collapses to one chip.
+  This needs no tab UI of our own: drag, pin, close and Split View are Chrome's.
+- The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Clicking it focuses that
+  canvas's tab, or reopens it in the group if it was closed. A tab shows one canvas, with a version
+  picker. A new canvas from the agent opens a new tab in the group without stealing focus.
+- **Split View beside a web page.** Katashiro's `split_tabs` requires both tabs to share window,
+  pinned state and tab group (it checks this before `tabs.createSplit`, following Chrome's split
+  rule; Chrome's own rejection has not been tested live). So "canvas beside this page" temporarily
+  moves the canvas tab **out of its group** (into the page's group, if any), splits, and moves it
+  back when the split ends or the page closes. Two canvases split directly, being in the same group.
+  Agent form: `canvas_open(…, beside: "current")`.
+- If the user drags a canvas tab out of the group or deletes the group, Katashiro does not fight
+  it: the next `canvas_open` in that conversation recreates the group, and stray canvas tabs are
+  found again by URL.
+- With multi-conversation, switching conversation collapses the old conversation's group and
+  expands the new one's.
 - The panel never renders canvas content itself.
 
 ### 3.2 Isolation — host page plus sandboxed frames
@@ -137,8 +157,9 @@ below is built around that.
   fetches anything; everything it shows arrives in this message.
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
-  - `canvas-frame.html`: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`, and in
-    phase 2 `selection{text}` and `save{content, baseVersion}`.
+  - `canvas-frame.html`: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`,
+    `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and in phase 2
+    `selection{text}`.
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
@@ -195,6 +216,8 @@ below is built around that.
 | 3 | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
+- **Markdown canvases are editable from phase 1** (Milkdown crepe, §3.5). Slides get the
+  CodeMirror 6 source + live preview editor in phase 2.
 - **Slides are sanitized like markdown.** reveal's markdown plugin parses with marked, which passes
   raw HTML through, and its `<!-- .element: … -->` comments set attributes. We do not use it.
   Instead we split on `---`, render each slide with markdown-it + DOMPurify (the chat's sink), and
@@ -222,7 +245,7 @@ below is built around that.
   the content does not pass through model output twice.
 - Not gated by act mode: like `show_image`, it changes nothing on any web page.
 
-### 3.5 Versions and concurrency (editing is phase 2)
+### 3.5 Versions and concurrency (markdown editing in phase 1, slides in phase 2)
 
 - Each save is a version `{n, author: "agent" | "user", at, content}`.
 - **Optimistic concurrency, agent side.** An agent update carries `baseVersion` (required with
@@ -248,9 +271,11 @@ below is built around that.
 - User edits reach the agent through `canvas_read`. Open question 4: should the next prompt also get
   a one-line note such as `[canvas "X" edited by user: v5 → v6]`? If so, metadata only, never the
   content.
-- Editors (phase 2): Milkdown crepe for `markdown`, and CodeMirror 6 source + live preview for
-  `slides`. **Both run inside `canvas-frame.html`, never in the `html` frame.** The host receives
-  only the saved markdown string via `save{}`. Phase 1 is view-only.
+- Editors: **Milkdown crepe for `markdown` (phase 1)**, and CodeMirror 6 source + live preview for
+  `slides` (phase 2). **Both run inside `canvas-frame.html`, never in the `html` frame.** The host
+  receives only the saved markdown string via `save{}`. Milkdown's markdown is the stored format,
+  so agent and user edit the same text with no conversion step. Saved markdown is rendered through
+  the same markdown-it + DOMPurify sink as agent markdown; the editor's own DOM is never persisted.
 
 ### 3.6 Storage and ownership
 
@@ -305,8 +330,10 @@ below is built around that.
 - One model (versioned canvas plus card) serves documents, slides, charts and diagrams.
 
 ### Negative / tradeoffs
-- Vendor weight: reveal.js ~120 KB + CSS/themes, Chart.js ~200 KB, mermaid-tiny 2.7 MB (phase 3).
-  The release zip grows by roughly 3 MB at full scope.
+- Vendor weight: Milkdown crepe 2.7 MB minified (phase 1), reveal.js ~120 KB + CSS/themes, Chart.js
+  ~200 KB, mermaid-tiny 2.7 MB (phase 3). The release zip grows by roughly 6 MB at full scope.
+- More Chrome tabs than an in-page tab strip would need (one per open canvas, each loading its own
+  sandbox frame), and group bookkeeping around Split View (§3.1).
 - A second rendering path (sandbox) beside the panel's markdown sink, with its own security review.
 - The sandbox does not stop a frame from navigating itself. That takes a load gate, link
   interception and per-frame message allow-lists (§3.2), and the `html` kind still cannot be made
@@ -333,12 +360,18 @@ below is built around that.
   every agent container, and not covered by state backup), static, and not editable. Kept only as
   `show_image` for one-off pictures.
 - **Quill for editing.** It loses markdown structure on a round trip (§2). Rejected for Milkdown and
-  CodeMirror.
+  CodeMirror (Brett, 2026-10-10).
+- **One canvas tab with its own internal tab strip.** Keeps Chrome's tab bar to one tab per window and
+  makes conversation switching a single swap. But it means building tab UI, and side-by-side
+  comparison needs a "pop out" step. Rejected for native tabs + tab group (Brett, 2026-10-10).
+- **Only one canvas at a time.** Simplest, but a document and a deck cannot coexist, and a new canvas
+  overwrites the old one. Rejected.
 
 ## 5. Scope and non-goals
 
-- **Phase 1 scope:** canvas tab and sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/
-  `canvas_read`/`canvas_list`, versions, card, PDF via print. **View-only.**
+- **Phase 1 scope:** canvas tabs in a per-conversation tab group (with the Split View rule, §3.1),
+  sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, versions,
+  card, PDF via print, and **Milkdown editing of `markdown` canvases** with the §3.5 concurrency.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 
@@ -346,8 +379,8 @@ below is built around that.
 
 Each has a recommendation from the review (Jellyfish, 2026-10-10), which this draft follows.
 
-1. **Surface:** a canvas tab (proposed), or a resizable drawer inside the panel?
-   *Recommended: the tab; a drawer is too narrow.*
+1. ~~**Surface:** a canvas tab, or a resizable drawer inside the panel?~~ **Decided (Brett,
+   2026-10-10):** a tab per canvas, grouped per conversation (§3.1). Editor: Milkdown (§2, §3.5).
 2. **`html` kind:** do we want agent-authored script at all (phase 2), or stop at
    markdown/slides/chart/mermaid?
    *Recommended: phase 2 stops at `chart` (and `mermaid` in phase 3). If `html` is built later, it
