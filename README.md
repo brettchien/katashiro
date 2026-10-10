@@ -241,6 +241,7 @@ how to use Katashiro features that need more than a single tool call.
 | Skill | What it does |
 |---|---|
 | [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show the user an image in the panel — a screenshot by `imageId`, or an image file via `scripts/show-image.sh`, which posts it to the OpenAB facade so the bytes never pass through the model. |
+| [`katashiro-point-at`](skills/katashiro-point-at/SKILL.md) | Point the user at what you are explaining: glow one element with `katashiro.highlight`, emphasise several with temporary `katashiro.inject_css` (and clear it after), or glow a canvas block with `katashiro.canvas_highlight`. |
 
 Install for Claude Code by copying (or symlinking) the folder into the agent's skills directory:
 
