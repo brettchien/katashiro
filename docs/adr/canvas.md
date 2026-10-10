@@ -287,7 +287,8 @@ below is built around that.
 
 - **No version history (Brett, 2026-10-10, §6 Q7).** A canvas keeps exactly two contents: the
   **latest** and the **agent's last write**. `version` is only a revision counter: every save adds
-  1 and records `{author: "agent" | "user", at}` for the latest; older contents are not kept, except
+  1 and records `{author: "agent" | "user" | "file", at}` for the latest (`file` = imported from
+  the folder mirror after the user clicked Import, §3.6); older contents are not kept, except
   the agent's last write (`agentVersion` + its text). That one extra copy is what the Send-to-agent
   diff (§3.7), the `stale` diff below and **Revert to agent's** (the header button that makes the
   agent's last write the latest again, as a user save) need. History beyond that is the user's
@@ -421,17 +422,64 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
     <conversation-slug>/
       <canvas-slug>.md            # markdown and slides (slides keep their --- separators)
       <canvas-slug>.assets/       # images, <sha256>.<ext>, linked relatively from the .md
-    .katashiro/<canvasId>.json    # id, kind, title, file path, hash + mtime last written
+    .katashiro/<canvasId>.json    # id, kind, title, slug, hash last written — informational only
   ```
-  Slugs come from titles (sanitized, deduplicated with a suffix); a rename moves the file.
-- **Write-through (phase 1):** after every save (agent or user), the latest content is written to
-  its file. With no version history in Katashiro (§3.5), **committing the folder to git is how the
-  user keeps history**.
-- **Read-back (phase 2):** when a canvas tab opens or regains focus, and before `canvas_read`, the
-  file's hash is compared with the one last written. If it changed outside Katashiro (edited in an
-  editor, `git pull`), it is imported as a user save (`author: "user"`, `source: "file"`); if
-  the canvas also changed in storage since, the §3.5 conflict view opens. A deleted file marks the
-  canvas *file missing*; it never deletes the canvas.
+- **Paths come only from storage (never from the folder).** A file path is always computed from
+  the slugs kept in the canvas `meta`: `<conv-slug>/<canvas-slug>.md` and
+  `<conv-slug>/<canvas-slug>.assets/<sha256>.<ext>`. Before every write the path is checked against
+  exactly that pattern, and anything else is refused. `.katashiro/*.json` is written for humans
+  and tools but **never read for paths**: if it were, a tampered json (via `git pull`, a synced
+  folder, another program) could point a canvas at `.git/hooks/pre-commit` or `.envrc`, and the
+  next agent write would plant code there. (`getFileHandle` already refuses `..` and `/`, so this
+  is about files *inside* the chosen folder.) The hash last written, `fileSyncedVersion` and the
+  slugs live in `meta`, not in the json.
+- **Slugs.** Conversation and canvas titles may come from the agent, so: lower-case, only
+  `[a-z0-9_-]` and CJK characters, other characters become `-`; never starting with `.`; not
+  `.git`, `.katashiro`, `node_modules` or a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`–`9`, `LPT1`–`9`); at most 80 characters; empty becomes `canvas`; collisions get `-2`,
+  `-3`, …. A slug is fixed when assigned; a rename computes a new one and moves the file (below).
+- **Assets.** Extension from an allow-list (`png`, `jpg`, `gif`, `webp`), chosen by the file's
+  **magic bytes**, never by an agent-supplied MIME type. **SVG is never written as a file**: opened
+  from `file://` it runs script. (SVG stays inside storage and the sandbox.)
+- **Write-through (phase 1), without clobbering outside edits.** After every save (agent or user),
+  the latest content is written to its file. With no version history in Katashiro (§3.5),
+  **committing the folder to git is how the user keeps history**. Before
+  writing, Katashiro hashes the file on disk and compares it with the hash it last wrote:
+  - same (or no file yet) → overwrite;
+  - different (edited in VS Code, `git pull`, …) → **do not overwrite**: write
+    `<canvas-slug>.katashiro-<timestamp>.md` beside it, and the canvas header shows *"The file was
+    changed outside Katashiro"*;
+  - a file Katashiro never wrote already sits at the path → treated as "different".
+  A rename moves the file only if the old file's hash still matches; otherwise the old file stays
+  and the new one is written fresh. Writing only files whose hash matches also covers symlinks
+  planted in the folder (whether File System Access follows them is to be tested).
+- **Read-back (phase 2) detects; the user decides.** When a canvas tab opens or regains focus, and
+  before `canvas_read`, the file's hash is compared with the one last written. A change is
+  **never imported automatically**: anyone who can write the folder (a git remote, a Dropbox
+  share) could otherwise put words in the user's mouth, the same class of problem as B3/P1.
+  - The canvas tab shows *"File changed outside Katashiro — view diff / import / ignore"*.
+  - **Import** creates a save with **`author: "file"`** (a third author, not `user` plus a
+    flag). If the canvas also changed in storage since, the §3.5 conflict view opens instead.
+  - `canvas_read` marks content whose author is `file` as *"external file, not an edit confirmed
+    by the user in Katashiro"*, and returns `fileChanged: true` while a change is pending import; it never
+    returns the un-imported file text.
+  - Send to agent includes `file` saves under the §3.7 data-block rules.
+  - A deleted file marks the canvas *file missing*; it never deletes the canvas.
+- **Imported markdown references only its own assets.** `![](…)` is resolved only when it matches
+  `<canvas-slug>.assets/<sha256>.<ext>`, the bytes hash to that name and the magic bytes are an
+  allowed image. Every other relative path (`../.env`, `config/secrets.json`) is left as plain
+  text and never read; otherwise one line in a `.md` could pull any file in the folder into the
+  canvas and, through `canvas_read`, into the agent's context.
+- **Locks and catch-up.** Files are written under the same `canvas:<id>` lock as storage (§3.6),
+  storage first, then the file. `meta.fileSyncedVersion` records the last revision written to
+  disk; on reconnect, every canvas behind is written, with the same hash check (the file may have
+  changed while disconnected).
+- **Who writes.** `requestPermission` needs a user gesture, and the service worker cannot use File
+  System Access, so only the panel and `canvas.html` write files.
+- **Reinstalling the extension** loses storage and the IndexedDB handle; the folder stays.
+  Restoring canvases *from* the folder is not in phase 1–2. If it is added, every file and json in
+  the folder is untrusted input: imports are `author: "file"`, and the path, slug and asset rules
+  above apply.
 - **Permission:** a grant lasts for the browser session. After a restart Chrome may ask again
   (unless the user chose a persistent grant; to verify for extension origins). Until the user
   clicks *Reconnect folder* in the canvas header, writes stay in storage and are flushed on
