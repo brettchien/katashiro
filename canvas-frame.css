@@ -88,10 +88,15 @@ body {
 
 /* Print (PDF export, §3.8): white paper, no editor chrome or copy buttons. */
 @media print {
+  /* Light controls on paper: under the dark scheme a task-list checkbox prints as a dark square,
+     checked or not. */
+  :root { color-scheme: light; }
   html, body { background: #fff !important; color: #000 !important; }
   .doc { padding: 0 !important; color: #000; }
   .doc a { color: #1d4ed8; }
   .copy-btn, .editor { display: none !important; }
   .doc pre.hljs { background: #f6f8fa; border-color: #d0d7de; }
   .doc pre.hljs code { color: #24292f; }
+  .doc .hljs-addition { color: #116329; background: #dafbe1; }
+  .doc .hljs-deletion { color: #82071e; background: #ffebe9; }
 }

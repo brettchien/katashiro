@@ -127,6 +127,9 @@ test("composeCanvasPush: note, host line, data in a fence it cannot close", () =
   const fence = "``````";
   assert.ok(out2.includes(`${fence}\n${evil}\n${fence}`));
   assert.equal(C.composeCanvasPush({ header: "only" }), "only");
+  // lang labels the fence (chat highlighting); anything but a plain word is dropped
+  assert.ok(C.composeCanvasPush({ header: "h", data: "-a", lang: "diff" }).endsWith("```diff\n-a\n```"));
+  assert.ok(C.composeCanvasPush({ header: "h", data: "-a", lang: "x\n```" }).endsWith("```\n-a\n```"));
   const big = C.composeCanvasPush({ header: "h", data: "y".repeat(C.PUSH_DATA_MAX + 10) });
   assert.match(big, /truncated at 20 KB/);
   assert.ok(big.length < C.PUSH_DATA_MAX + 200);
