@@ -211,6 +211,7 @@ class Conn {
         // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel.
         confirmDelete: ({ title, version, author }) => Promise.resolve(window.confirm(
           `${this.name} 要刪除畫布「${String(title).slice(0, 60)}」（v${version}${author === "user" ? "，含你的修改" : ""}）。\n\n允許嗎？這個動作無法復原。`)),
+        gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
       },
       windowId: panelWindowId,
     };
@@ -2121,6 +2122,21 @@ async function waitCanvasNormalized(id, version, raw) {
   const stored = await canvasStore.readAgentCopy(id);
   if (stored == null || typeof raw !== "string") return null;
   return { diff: CanvasStore.unifiedDiff(raw, stored) || "" };
+}
+
+// canvas_goto: bring the canvas's tab to the front (opening it if needed) and ask it — an extension
+// page, reached by runtime messaging — to show slide N. A freshly opened tab may not listen yet,
+// so retry for a few seconds. Returns { ok, index, total } or { ok:false, error }.
+async function gotoCanvasSlide(id, slide) {
+  await openCanvasTab(id, { active: true });
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    let r;
+    try { r = await chrome.runtime.sendMessage({ type: "katashiro-canvas-goto", id, slide }); } catch (_) { r = undefined; }
+    if (r) return r;
+    await new Promise((res) => setTimeout(res, 300));
+  }
+  return { ok: false, error: "the canvas tab did not answer in time" };
 }
 
 function canvasTabUrl(id) {

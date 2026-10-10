@@ -290,6 +290,7 @@ below is built around that.
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
 | `katashiro.canvas_delete({id})` | Deletes a canvas of the conversation after the **user confirms** in the side panel (Brett, 2026-10-10: any canvas, the confirmation is the only gate); declined → nothing deleted, `declined` |
+| `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out) |
 | `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10) |
 
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.

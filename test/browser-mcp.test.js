@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 39 browser tools", async () => {
+test("tools/list returns every browser tool, in order", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -216,6 +216,7 @@ test("tools/list returns the 39 browser tools", async () => {
     "katashiro.canvas_open",
     "katashiro.canvas_read",
     "katashiro.canvas_delete",
+    "katashiro.canvas_goto",
     "katashiro.canvas_list",
     "katashiro.chat_history",
     "katashiro.notify"
@@ -3184,4 +3185,25 @@ test("katashiro.canvas_delete asks the user; yes deletes, no keeps (any canvas, 
   await callTool(d, "katashiro.canvas_open", { title: "X", content: "b" });
   const noAsk = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000002" });
   assert.match(noAsk.content[0].text, /no way to ask the user/);   // never deletes without asking
+});
+
+test("katashiro.canvas_goto: slides only, positive slide, reports what is shown", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Deck", kind: "slides", content: "a\n---\nb" });
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "x" });
+  const calls = [];
+  d.canvas.gotoSlide = async (id, slide) => { calls.push([id, slide]); return { ok: true, index: Math.min(slide, 2), total: 2 }; };
+  const ok = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 2 });
+  assert.equal(ok.content[0].text, 'showing slide 2 of 2 of "Deck"');
+  const clamped = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 9 });
+  assert.match(clamped.content[0].text, /asked for 9; the deck has 2/);
+  const doc = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000002", slide: 1 });
+  assert.match(doc.content[0].text, /is markdown, not slides/);
+  const zero = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 0 });
+  assert.match(zero.content[0].text, /positive integer/);
+  d.canvas.gotoSlide = async () => ({ ok: false, error: "the user is editing this canvas" });
+  const busy = await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 1 });
+  assert.match(busy.content[0].text, /editing/);
+  assert.deepEqual(calls, [["cv_000000000001", 2], ["cv_000000000001", 9]]);
 });

@@ -258,7 +258,12 @@
         sendRender();
         updateButtons();
         break;
+      case "slide":
+        if (pendingGoto) { const r = pendingGoto.respond; pendingGoto = null; r({ ok: true, index: m.index, total: m.total }); }
+        break;
       case "rendered":
+        rendered = true;
+        if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
           awaitingNormalize = 0;
           store.applyNormalized({ id: canvasId, version: m.version, normalized: m.normalized }).catch(() => {});
@@ -290,6 +295,22 @@
   });
 
   // Live updates: the panel writes a new version → re-read and re-render in place.
+  // canvas_goto (from the side panel, same extension only): show slide N of THIS canvas. Answered
+  // once the frame reports the slide it now shows; a frame not rendered yet gets it after rendering.
+  let rendered = false;
+  let pendingGoto = null;                     // { slide, respond, sent }
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!sender || sender.id !== chrome.runtime.id) return false;
+    if (!msg || msg.type !== "katashiro-canvas-goto" || msg.id !== canvasId) return false;
+    if (!Number.isInteger(msg.slide) || msg.slide < 1) { sendResponse({ ok: false, error: "slide must be a positive integer" }); return false; }
+    if (current && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}, not slides` }); return false; }
+    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas" }); return false; }
+    if (pendingGoto) pendingGoto.respond({ ok: false, error: "superseded by a newer goto" });
+    pendingGoto = { slide: msg.slide, respond: sendResponse, sent: false };
+    if (frame && frameReady && rendered) { pendingGoto.sent = true; toFrame({ type: "goto", slide: msg.slide }); }
+    return true;                              // answer asynchronously
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (!changes[CanvasStore.metaKey(canvasId)] && !changes[CanvasStore.latestKey(canvasId)]) return;

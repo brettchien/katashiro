@@ -101,3 +101,9 @@ test("cleanEditorMarkdown: Milkdown's <br /> empty-paragraph lines become blank 
   const nested = "- a\n  - b\n\n    ```\n    x\n\n\n    <br>\n    ```\n";
   assert.equal(C.cleanEditorMarkdown(nested), nested);
 });
+
+test("slide message (canvas_goto): 1-based integers only", () => {
+  assert.ok(ok({ type: "slide", nonce: "n1", index: 2, total: 5 }));
+  assert.equal(ok({ type: "slide", nonce: "n1", index: 0, total: 5 }), null);
+  assert.equal(ok({ type: "slide", nonce: "n1", index: "2", total: 5 }), null);
+});

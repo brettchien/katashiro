@@ -22,6 +22,8 @@
     // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
+    // canvas_goto: the slide now shown (1-based) and the deck's length.
+    slide: (m) => Number.isInteger(m.index) && Number.isInteger(m.total) && m.index >= 1 && m.total >= 1,
     error: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host

@@ -212,6 +212,17 @@
       return;
     }
     if (m.type === "requestSave") { requestSave(); return; }
+    if (m.type === "goto") {
+      // canvas_goto: a slide number only (1-based), clamped to the deck.
+      if (!revealReady || !Number.isInteger(m.slide)) return;
+      revealReady.then(() => {
+        const total = Reveal.getTotalSlides();
+        const n = Math.min(Math.max(m.slide, 1), total);
+        Reveal.slide(n - 1);
+        post({ type: "slide", index: n, total });
+      });
+      return;
+    }
     if (m.type === "leaveEdit") { stopEdit(); return; }
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
