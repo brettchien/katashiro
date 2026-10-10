@@ -69,8 +69,8 @@ keep emphasis while the user scrolls.
 
 ## 3. A part of a Katashiro canvas → `katashiro.canvas_highlight`
 
-For canvases (documents and slides the agent rendered; see the canvas ADR, `docs/adr/canvas.md`,
-PR #66), use `katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It
+For canvases (documents and slides the agent rendered; see the canvas ADR,
+`docs/adr/canvas.md`), use `katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It
 scrolls the canvas to the block and glows it. `find` matches the block's **rendered text** (what
 the user sees, not the markdown source), at most 500 characters, and must match exactly one
 block; `heading` matches a heading's rendered text exactly. No match or several matches is an
