@@ -9,8 +9,10 @@
 //   canvas:<id>:latest             the latest content (string)
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
-// canvas's own (`canvas:<id>`) and, for the index, `canvas:index` — always in that order, never
-// the reverse, so two writers cannot deadlock. In the extension `lock` is navigator.locks
+// canvas's own (`canvas:<id>`) and, nested inside it for the index, `canvas:index` — always in
+// that order, never the reverse, so two writers cannot deadlock. Holding the id lock across the
+// index update keeps index versions from going backwards. Content and meta go in one set(), so
+// onChanged fires once and a lock-free reader never sees new content with old meta. In the extension `lock` is navigator.locks
 // (shared by every page of the extension origin); tests pass a simple in-process lock.
 //
 // Dual target like browser-mcp.js: classic <script> (globalThis.CanvasStore) and require() in tests.
@@ -104,11 +106,9 @@
           version: 1, author: "agent", at, agentVersion: 1, bytes: v.bytes,
         };
         await lock(`canvas:${newId}`, async () => {
-          // content first, then meta: a reader that sees meta always finds its body
-          await storage.set({ [latestKey(newId)]: v.content });
-          await storage.set({ [metaKey(newId)]: meta });
+          await storage.set({ [latestKey(newId)]: v.content, [metaKey(newId)]: meta });
+          await updateIndex(conversationId, indexEntry(meta));
         });
-        await updateIndex(conversationId, indexEntry(meta));
         return { id: newId, version: 1, created: true, title: v.title };
       }
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
@@ -121,10 +121,9 @@
         if (cur.kind !== v.kind) throw new Error(`canvas "${id}" is ${cur.kind}; a canvas cannot change kind`);
         if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
         meta = { ...cur, title: v.title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1, bytes: v.bytes };
-        await storage.set({ [latestKey(id)]: v.content });
-        await storage.set({ [metaKey(id)]: meta });
+        await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
+        await updateIndex(conversationId, indexEntry(meta));
       });
-      await updateIndex(conversationId, indexEntry(meta));
       return { id, version: meta.version, created: false, title: meta.title };
     }
 

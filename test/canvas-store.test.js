@@ -117,12 +117,32 @@ test("ids are validated and confined to their conversation", async () => {
   await assert.rejects(() => s.agentWrite({ conversationId: "c", id: "cv_ffffffffffff", baseVersion: 1, title: "T", content: "b" }), /no canvas/);
 });
 
-test("content is written before meta, so a reader that sees meta finds the body", async () => {
-  const order = [];
+test("content and meta land in one set(), so onChanged fires once with a consistent pair", async () => {
+  const calls = [];
   const storage = memStorage();
   const set = storage.set;
-  storage.set = async (items) => { order.push(...Object.keys(items)); return set(items); };
+  storage.set = async (items) => { calls.push(Object.keys(items).sort()); return set(items); };
   const s = CanvasStore.createCanvasStore({ storage, lock: memLock(), randomHex: () => "0123456789ab" });
-  await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
-  assert.ok(order.indexOf("canvas:cv_0123456789ab:latest") < order.indexOf("canvas:cv_0123456789ab:meta"));
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "T", content: "b" });
+  const body = calls.filter((ks) => ks.some((k) => k.startsWith(`canvas:${id}:`)));
+  assert.deepEqual(body, [[`canvas:${id}:latest`, `canvas:${id}:meta`], [`canvas:${id}:latest`, `canvas:${id}:meta`]]);
+});
+
+test("the index is updated while the canvas lock is still held, so its version cannot go backwards", async () => {
+  const held = new Set();
+  const nested = [];
+  const inner = memLock();
+  const lock = (name, fn) => inner(name, async () => {
+    if (name === "canvas:index") nested.push([...held]);
+    held.add(name);
+    try { return await fn(); } finally { held.delete(name); }
+  });
+  const s = CanvasStore.createCanvasStore({ storage: memStorage(), lock, randomHex: () => "0123456789ab" });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  const w2 = s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "T", content: "b" });
+  const w3 = w2.then(() => s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "c" }));
+  await Promise.all([w2, w3]);
+  assert.deepEqual(nested, [[`canvas:${id}`], [`canvas:${id}`], [`canvas:${id}`]]);
+  assert.equal((await s.list({ conversationId: "c" }))[0].version, 3);
 });
