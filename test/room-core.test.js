@@ -421,3 +421,91 @@ test("acpClientInfo: name/title + version with the build as semver metadata", ()
   assert.equal(RoomCore.acpClientInfo("2.6.1", "a b\n<x>/c").version, "2.6.1+abxc");
   assert.equal(RoomCore.acpClientInfo("2.6.1", "x".repeat(99)).version.length, "2.6.1+".length + 40);
 });
+
+// --- reply-to headers ---------------------------------------------------------------------------
+// Local-time Date components, so these hold in any TZ the suite runs under.
+const at = (mo, d, h, mi, s) => new Date(2026, mo - 1, d, h, mi, s).getTime();
+
+const OFF = /[+-]\d{2}:\d{2}$/;
+test("msgTime: ISO 8601 local time with offset, no spaces", () => {
+  const t = RoomCore.msgTime(at(10, 10, 16, 5, 12));
+  assert.match(t, /^2026-10-10T16:05:12[+-]\d{2}:\d{2}$/);
+  assert.doesNotMatch(t, /\s/);
+  assert.equal(Date.parse(t), at(10, 10, 16, 5, 12));                // round-trips exactly
+  assert.match(RoomCore.msgTime(at(1, 2, 0, 0, 1)), /^2026-01-02T00:00:01/);
+  assert.equal(RoomCore.uiTime(at(10, 10, 16, 5, 12)), "2026-10-10 16:05:12");
+});
+
+test("sameSecond: matches any ISO form of the same second", () => {
+  const ts = at(10, 10, 16, 5, 12) + 345;
+  assert.equal(RoomCore.sameSecond(RoomCore.msgTime(ts), ts), true);
+  assert.equal(RoomCore.sameSecond(new Date(ts).toISOString(), ts), true);       // Z form
+  assert.equal(RoomCore.sameSecond("2026-10-10T16:05:12", ts), true);            // no offset = local
+  assert.equal(RoomCore.sameSecond(RoomCore.msgTime(ts + 1000), ts), false);
+  assert.equal(RoomCore.sameSecond("nonsense", ts), false);
+});
+
+test("excerpt collapses whitespace and caps at 150 chars", () => {
+  assert.equal(RoomCore.excerpt("a\n\n  b\tc "), "a b c");
+  assert.equal(RoomCore.excerpt("x".repeat(151)), `${"x".repeat(150)}…`);
+  assert.equal(RoomCore.excerpt("x".repeat(150)), "x".repeat(150));
+  assert.equal(RoomCore.excerpt(null), "");
+});
+
+test("messageId = conversation id + ms timestamp", () => {
+  assert.equal(RoomCore.messageId("c_ab12", 1760083512000), "c_ab12:1760083512000");
+});
+
+test("promptHeader / framePrompt: plain message and a reply", () => {
+  assert.equal(RoomCore.promptHeader({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }), `[${RoomCore.msgTime(at(10, 10, 16, 5, 12))} Brett]`);
+  const reply = { timestamp: at(10, 10, 16, 7, 30), senderName: "Brett",
+    replyTo: { timestamp: at(10, 10, 16, 5, 40), senderName: "orca", text: "沒辦法直接知道，\nKatashiro 沒有回報" } };
+  assert.equal(RoomCore.promptHeader(reply), `[${RoomCore.msgTime(at(10, 10, 16, 7, 30))} Brett ↩ ${RoomCore.msgTime(at(10, 10, 16, 5, 40))} orca「沒辦法直接知道， Katashiro 沒有回報」]`);
+  assert.equal(RoomCore.framePrompt(reply, "所以要加 sha"), `[${RoomCore.msgTime(at(10, 10, 16, 7, 30))} Brett ↩ ${RoomCore.msgTime(at(10, 10, 16, 5, 40))} orca「沒辦法直接知道， Katashiro 沒有回報」]\n所以要加 sha`);
+  assert.equal(RoomCore.framePrompt({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }, ""), `[${RoomCore.msgTime(at(10, 10, 16, 5, 12))} Brett]`);
+});
+
+test("framed entries keep their boundaries through batchPrompts", () => {
+  const a = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 1, 0), senderName: "B" }, "one");
+  const b = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 2, 0), senderName: "B" }, "two");
+  assert.equal(RoomCore.batchPrompts([a, b]), `[${RoomCore.msgTime(at(10, 10, 16, 1, 0))} B]\none\n\n[${RoomCore.msgTime(at(10, 10, 16, 2, 0))} B]\ntwo`);
+});
+
+// --- agent-side reply markers --------------------------------------------------------------------
+
+test("splitReplySegments: no markers → one plain segment", () => {
+  assert.deepEqual(RoomCore.splitReplySegments("hello\nworld"), [{ replyTo: null, text: "hello\nworld" }]);
+});
+
+test("splitReplySegments: several parts, each answering a time; text after the time is ignored", () => {
+  const segs = RoomCore.splitReplySegments(
+    "intro\n↩ 2026-10-10T16:05:12+08:00\nfirst answer\n\n↩ 2026-10-10T16:07:30Z user「x」\nsecond answer");
+  assert.deepEqual(segs, [
+    { replyTo: null, text: "intro" },
+    { replyTo: "2026-10-10T16:05:12+08:00", text: "first answer" },
+    { replyTo: "2026-10-10T16:07:30Z", text: "second answer" }
+  ]);
+});
+
+test("splitReplySegments: markers inside a code fence are content, not markers", () => {
+  const segs = RoomCore.splitReplySegments("```\n↩ 2026-10-10T16:05:12+08:00\n```");
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].replyTo, null);
+});
+
+test("needsReplyHint: two framed messages, or one reply — not a single plain one or a relay", () => {
+  const a = "[2026-10-10T16:01:00+08:00 user]\none", b = "[2026-10-10T16:02:00+08:00 user]\ntwo";
+  const r = "[2026-10-10T16:03:00+08:00 user ↩ 2026-10-10T16:01:00+08:00 orca「x」]\nthree";
+  assert.equal(RoomCore.needsReplyHint([a]), false);
+  assert.equal(RoomCore.needsReplyHint([a, b]), true);
+  assert.equal(RoomCore.needsReplyHint([r]), true);
+  assert.equal(RoomCore.needsReplyHint(['<message from="k04">\nhi\n</message>']), false);
+  assert.match(RoomCore.REPLY_HINT, /↩ <its time>/);
+});
+
+test("replyParts: no markers → the whole text; bare markers are dropped", () => {
+  assert.deepEqual(RoomCore.replyParts("plain\nreply"), [{ replyTo: null, text: "plain\nreply" }]);
+  assert.deepEqual(RoomCore.replyParts("↩ 2026-10-10T16:05:12+08:00\nA\n↩ 2026-10-10T16:07:30+08:00\n"),
+    [{ replyTo: "2026-10-10T16:05:12+08:00", text: "A" }]);
+  assert.deepEqual(RoomCore.replyParts("↩ 2026-10-10T16:05:12+08:00\n"), [{ replyTo: null, text: "↩ 2026-10-10T16:05:12+08:00\n" }]);
+});

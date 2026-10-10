@@ -440,7 +440,10 @@ class Conn {
     // Batch delivery: drain the WHOLE backlog and send it as one turn, not one-per-round. If the
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
-    const text = RoomCore.batchPrompts(this.promptQueue.splice(0));
+    const batch = this.promptQueue.splice(0);
+    let text = RoomCore.batchPrompts(batch);
+    // (A retried batch already carries the note — don't stack a second one.)
+    if (text && RoomCore.needsReplyHint(batch) && !text.endsWith(RoomCore.REPLY_HINT)) text += `\n\n${RoomCore.REPLY_HINT}`;
     let images = [];
     if (this.pendingImages.length && !this.canImage) {
       const n = this.pendingImages.splice(0).length;
@@ -782,8 +785,32 @@ class Conn {
     // Render the accumulated markdown once, now that the turn is complete (ADR §3.3): streaming
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
-    renderMarkdownInto(s.bubble, s.text);
-    recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText(s.text, s.imageCount || 0), timestamp: Date.now() });
+    // A reply with "↩ <time>" markers becomes one message per part — the first part fills this
+    // turn's bubble, each later part is its own row — every part quoting (clickable) the message it
+    // answers, with its own id, ↩ button and history record, so a reload replays them split too.
+    const doneAt = Date.now();
+    const split = RoomCore.replyParts(s.text);
+    const first = split[0];
+    const firstReply = first.replyTo ? replyTargetFor(first.replyTo) : null;
+    renderMarkdownInto(s.bubble, first.text);
+    if (firstReply && s.contentEl) s.contentEl.insertBefore(replyQuoteEl(firstReply), s.bubble);
+    const row = s.bubble.closest(".message");
+    const firstId = RoomCore.messageId(conversationId, doneAt);
+    if (row && s.contentEl) {
+      row.dataset.msgId = firstId;
+      attachReplyButton(s.contentEl, { id: firstId, senderName: this.name, timestamp: doneAt, text: first.text });
+    }
+    recordMessage({
+      kind: "received", id: firstId, senderId: this.id, senderName: this.name,
+      text: Composer.historyText(first.text, s.imageCount || 0), timestamp: doneAt,
+      replyTo: firstReply ? recordReplyTo(firstReply) : undefined,
+    });
+    split.slice(1).forEach((p, i) => {
+      appendMessage({
+        senderId: this.id, senderName: this.name, text: p.text, timestamp: doneAt + i + 1,   // +1 ms: distinct ids
+        replyTo: p.replyTo ? replyTargetFor(p.replyTo) : null,
+      });
+    });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
   }
@@ -1112,6 +1139,12 @@ let historyKey = null;                    // "history:<windowId>"
 let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
 let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
 const historyMessages = [];               // in-memory mirror of the persisted scrollback
+// This scrollback's stable conversation id — message ids are `<conversationId>:<ms timestamp>`
+// (RoomCore.messageId), the reference a reply points at. Minted once, kept across clears/reloads.
+let conversationId = null;
+function newConversationId() {
+  return "c_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+}
 let restoring = false;                    // true while replaying — suppresses re-recording
 
 function currentWindow() {
@@ -1129,7 +1162,7 @@ function saveHistory() {
   if (!historyKey) return;
   const sessions = {};
   room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  historyStore.set({ [historyKey]: { sessions, messages: historyMessages } });
+  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages } });
 }
 
 // Append a record to the persisted scrollback (skipped while restoring). System/status notices are
@@ -1143,7 +1176,7 @@ function recordMessage(rec) {
 
 function replayMessage(rec) {
   if (rec.kind === "error") appendErrorMessage(rec.senderName, rec.text, null); // no retry on restore
-  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp });
+  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || null });
 }
 
 // Drop the scrollback of windows that no longer exist (closed, or ids from a previous browser run).
@@ -1180,11 +1213,12 @@ async function loadHistory() {
   const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
   savedSessions = data.sessions || {};
+  conversationId = data.conversationId || newConversationId();
   const msgs = Array.isArray(data.messages) ? data.messages : [];
   if (msgs.length) {
     restoring = true;
+    historyMessages.push(...msgs);                       // first, so replayed "↩ time" markers resolve
     msgs.forEach(replayMessage);
-    historyMessages.push(...msgs);
     restoring = false;
   }
 }
@@ -1804,6 +1838,11 @@ messageInput.addEventListener("paste", (e) => {
 });
 
 messageInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && replyTarget) {
+    e.preventDefault();
+    setReplyTarget(null);
+    return;
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     sendMessage();
@@ -1837,24 +1876,35 @@ messagesList.addEventListener("click", (e) => {
 });
 
 // Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
-// cascade — a human message always breaks any agent↔agent loop. User text goes verbatim (the
-// gateway wraps it in its own sender_context); only agent→agent relay is <message from>-wrapped.
+// cascade — a human message always breaks any agent↔agent loop. User text is sent under a
+// [time user (↩ quoted)] header (RoomCore.framePrompt; the gateway adds its own sender_context on
+// top); agent→agent relay stays <message from>-wrapped. @mention routing reads the raw text.
 function sendMessage() {
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
   if (stagingPending > 0) return;                        // Enter mid-encode: don't strand the image for the next message
   if (!text && images.length === 0) return;
 
+  const sentAt = Date.now();
+  const replyTo = replyTarget;                           // what this message answers (or null)
   appendMessage({
-    senderId: myUserId, senderName: myUserName, text, timestamp: Date.now(),
+    senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
+    replyTo,
   });
+  setReplyTarget(null);
+  // What the agent receives: a [time sender (↩ quoted)] header + the text, so a batched backlog
+  // keeps its message boundaries and a reply says what it answers (RoomCore.framePrompt).
+  const framed = RoomCore.framePrompt({
+    timestamp: sentAt, senderName: "user",
+    replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text },
+  }, text);
 
   loopGuard.onHuman();
   const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(text, images);
+    if (c) c.enqueue(framed, images);
   });
 
   messageInput.value = "";
@@ -2026,10 +2076,129 @@ function openLightbox(src, caption) {
   document.body.appendChild(overlay);
 }
 
-function appendMessage({ senderId, senderName, text, timestamp, images }) {
+// --- reply-to ------------------------------------------------------------------------------------
+// ↩ on a message → a quote chip above the input; the next send answers it (framed in the prompt as
+// "↩ HH:MM:SS sender「excerpt」"). The chip shows who/when/what; ✕ or Esc cancels.
+let replyTarget = null;                                  // { id, senderName, timestamp, text } or null
+const replyChip = document.getElementById("reply-chip");
+
+// How a sender appears to the agent: the user's own messages are "user" (the panel calls them "You").
+function promptName(name) {
+  return name === myUserName ? "user" : (name || "?");
+}
+
+function setReplyTarget(t) {
+  replyTarget = t || null;
+  if (!replyChip) return;
+  replyChip.replaceChildren();
+  replyChip.hidden = !replyTarget;
+  if (!replyTarget) return;
+  const label = document.createElement("span");
+  label.className = "reply-chip-text";
+  label.textContent = `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
+  label.title = RoomCore.excerpt(replyTarget.text, 400);
+  label.addEventListener("click", () => jumpToMessage(replyTarget && replyTarget.id));
+  const x = document.createElement("button");
+  x.type = "button";
+  x.className = "reply-chip-cancel";
+  x.textContent = "✕";
+  x.title = "取消回覆";
+  x.addEventListener("click", () => setReplyTarget(null));
+  replyChip.append(label, x);
+  messageInput.focus();
+}
+
+// The small "↩ sender time：excerpt" line above a reply's bubble; click jumps to the original.
+function replyQuoteEl(replyTo) {
+  const q = document.createElement("div");
+  q.className = "reply-quote";
+  const when = Number.isFinite(replyTo.timestamp) ? RoomCore.uiTime(replyTo.timestamp) : "?";
+  q.textContent = `↩ ${replyTo.senderName || "?"} ${when}：${RoomCore.excerpt(replyTo.text, 80)}`;
+  if (!replyTo.id) q.classList.add("missing");
+  q.title = "跳到原訊息";
+  q.addEventListener("click", () => jumpToMessage(replyTo.id));
+  return q;
+}
+
+function attachReplyButton(contentEl, target) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "reply-btn";
+  b.textContent = "↩";
+  b.title = "回覆這則";
+  b.addEventListener("click", () => setReplyTarget(target));
+  contentEl.appendChild(b);
+}
+
+// The newest recorded message sent in the second this ISO stamp names, as a reply target.
+function findMessageByTime(stamp) {
+  // Agents almost always answer the USER, so when several messages share that second prefer the
+  // user's; otherwise the newest match.
+  let fallback = null;
+  for (let i = historyMessages.length - 1; i >= 0; i--) {
+    const m = historyMessages[i];
+    if (!m || !Number.isFinite(m.timestamp) || m.kind === "error" || !RoomCore.sameSecond(stamp, m.timestamp)) continue;
+    const t = { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
+    if (m.kind === "sent") return t;
+    if (!fallback) fallback = t;
+  }
+  return fallback;
+}
+
+// The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
+// says the original was not found (its quote does not jump anywhere).
+function replyTargetFor(stamp) {
+  return findMessageByTime(stamp) ||
+    { id: null, senderName: "?", timestamp: Date.parse(stamp), text: "（找不到原訊息）" };
+}
+
+// What a history record keeps of the message a reply answers.
+function recordReplyTo(t) {
+  return { id: t.id, senderName: t.senderName, timestamp: t.timestamp, text: RoomCore.excerpt(t.text) };
+}
+
+// Render an agent's reply. Plain text → the markdown sink as before. With "↩ time" marker lines,
+// each part is rendered on its own (still through the sanitized sink) under a quote of the message
+// it answers; a marker whose time matches nothing shows the time with "找不到原訊息".
+function renderAgentText(el, text) {
+  const segs = RoomCore.splitReplySegments(text);
+  if (!segs.some((s) => s.replyTo)) { renderMarkdownInto(el, text); return; }
+  el.replaceChildren();
+  for (const seg of segs) {
+    if (seg.replyTo) {
+      const target = findMessageByTime(seg.replyTo);
+      if (target) el.appendChild(replyQuoteEl(target));
+      else {
+        const q = document.createElement("div");
+        q.className = "reply-quote missing";
+        q.textContent = `↩ ${seg.replyTo}（找不到原訊息）`;
+        el.appendChild(q);
+      }
+    }
+    if (seg.text) {
+      const part = document.createElement("div");
+      part.className = "reply-part";
+      renderMarkdownInto(part, seg.text);
+      el.appendChild(part);
+    }
+  }
+}
+
+function jumpToMessage(id) {
+  if (!id) return;
+  const row = messagesList.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
+  if (!row) return;                                      // trimmed out of the 200-message scrollback
+  row.scrollIntoView({ block: "center", behavior: "smooth" });
+  row.classList.add("flash");
+  setTimeout(() => row.classList.remove("flash"), 1500);
+}
+
+function appendMessage({ senderId, senderName, text, timestamp, images, replyTo }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
+  const id = RoomCore.messageId(conversationId, timestamp);
+  msgDiv.dataset.msgId = id;
 
   if (!isMe) {
     const avatar = document.createElement("div");
@@ -2048,9 +2217,14 @@ function appendMessage({ senderId, senderName, text, timestamp, images }) {
     content.appendChild(nameEl);
   }
 
+  if (replyTo) content.appendChild(replyQuoteEl(replyTo));
+
   const bubble = document.createElement("div");
   bubble.className = "bubble";
-  if (text) renderMarkdownInto(bubble, text);          // sanitized sink (ADR §3.2) — never raw innerHTML
+  if (text) {                                           // sanitized sink (ADR §3.2) — never raw innerHTML
+    if (isMe) renderMarkdownInto(bubble, text);
+    else renderAgentText(bubble, text);                  // agent text may carry "↩ time" reply markers
+  }
   if (Array.isArray(images)) {
     for (const src of images) {
       const im = document.createElement("img");
@@ -2067,10 +2241,13 @@ function appendMessage({ senderId, senderName, text, timestamp, images }) {
   ts.textContent = formatTime(timestamp);
   content.appendChild(ts);
 
+  attachReplyButton(content, { id, senderName, timestamp, text });
+
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
   recordMessage({
-    kind: isMe ? "sent" : "received", senderId, senderName, timestamp,
+    kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
+    replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
     text: Composer.historyText(text, Array.isArray(images) ? images.length : 0), // images are memory-only
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming

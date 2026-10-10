@@ -339,7 +339,115 @@
     return { name: "katashiro", title: "Katashiro", version: `${v}+${b}` };
   }
 
+  // --- reply-to / message headers ------------------------------------------------------------
+  // Messages are referred to by time, not a #N counter — "#12" reads like a PR/issue number to an
+  // agent. Agent-facing stamps are ISO 8601 / RFC 3339 in the user's local time WITH its offset —
+  // 2026-10-10T16:05:12+08:00 — one token with no spaces, so it is clear where it ends; the same
+  // form chat_history uses, so a header matches a history line verbatim.
+  const pad2 = (n) => String(n).padStart(2, "0");
+  function msgTime(ts) {
+    const d = new Date(ts);
+    const off = -d.getTimezoneOffset();
+    const a = Math.abs(off);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}` +
+      `${off >= 0 ? "+" : "-"}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
+  }
+  // Human-facing (panel quotes / chip): local "YYYY-MM-DD HH:MM:SS".
+  function uiTime(ts) {
+    return msgTime(ts).slice(0, 19).replace("T", " ");
+  }
+  // Same second? — how a "↩ <time>" marker is matched to a message. Accepts any ISO form
+  // (offset, Z, or none = local), so an agent that rewrites the stamp still matches.
+  function sameSecond(stamp, ts) {
+    const t = Date.parse(String(stamp || ""));
+    return Number.isFinite(t) && Number.isFinite(ts) && Math.floor(t / 1000) === Math.floor(ts / 1000);
+  }
+
+  // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.
+  const REPLY_EXCERPT_MAX = 150;
+  function excerpt(text, max = REPLY_EXCERPT_MAX) {
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  }
+
+  // A message's stable id: the conversation it belongs to + its millisecond timestamp.
+  function messageId(conversationId, ts) {
+    return `${conversationId || "c"}:${ts}`;
+  }
+
+  // The header a user message carries in the prompt, so a batched backlog keeps its boundaries and
+  // a reply says what it answers:
+  //   [2026-10-10T16:05:12+08:00 user]
+  //   [2026-10-10T16:07:30+08:00 user ↩ 2026-10-10T16:05:40+08:00 orca「沒辦法直接知道…」]
+  // `replyTo` = { timestamp, senderName, text } of the quoted message (or null).
+  function promptHeader({ timestamp, senderName, replyTo }) {
+    let h = `${msgTime(timestamp)} ${senderName || "user"}`;
+    if (replyTo) h += ` ↩ ${msgTime(replyTo.timestamp)} ${replyTo.senderName || "?"}「${excerpt(replyTo.text)}」`;
+    return `[${h}]`;
+  }
+
+  // Header + body, as one prompt entry (batchPrompts then joins entries with blank lines).
+  function framePrompt(meta, text) {
+    const body = text == null ? "" : String(text);
+    return body ? `${promptHeader(meta)}\n${body}` : promptHeader(meta);
+  }
+
+  // Agent-side reply-to: a line "↩ <ISO time>" (anything after the time is ignored) starts
+  // a part of the reply that answers the message sent at that time. Split the reply into segments
+  // { replyTo: "<time>" | null, text } — markers inside ``` fences are left alone.
+  const REPLY_MARKER = /^\s*↩\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)(?:\s.*)?$/;
+  function splitReplySegments(text) {
+    const lines = String(text == null ? "" : text).split("\n");
+    const segs = [];
+    let cur = { replyTo: null, lines: [] };
+    let fence = false;
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) fence = !fence;
+      const m = fence ? null : REPLY_MARKER.exec(line);
+      if (m) {
+        if (cur.replyTo || cur.lines.some((l) => l.trim())) segs.push(cur);
+        cur = { replyTo: m[1], lines: [] };
+      } else {
+        cur.lines.push(line);
+      }
+    }
+    if (cur.replyTo || cur.lines.some((l) => l.trim())) segs.push(cur);
+    return segs.map((s) => ({ replyTo: s.replyTo, text: s.lines.join("\n").trim() }));
+  }
+
+  // How a finished agent reply is shown: one part per "↩" segment, or the whole text as one part when
+  // it has no markers. Parts with no text (a bare marker) are dropped — never an empty bubble.
+  function replyParts(text) {
+    const segs = splitReplySegments(text).filter((s) => s.text);
+    if (!segs.some((s) => s.replyTo)) return [{ replyTo: null, text: String(text == null ? "" : text) }];
+    return segs;
+  }
+
+  // A batch the agent may want to answer piecewise — two or more user messages, or a reply — gets a
+  // one-line note on the marker convention, so any agent can use it without a skill.
+  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) [^\]\n]*\]/;
+  const REPLY_HINT = "(To answer a specific message above, start that part of your reply with a line " +
+    "\"↩ <its time>\", copying the time from its header, e.g. \"↩ 2026-10-10T16:05:12+08:00\" — the " +
+    "user sees it as a quote.)";
+  function needsReplyHint(entries) {
+    const framed = (Array.isArray(entries) ? entries : []).filter((e) => HEADER_RE.test(String(e || "")));
+    return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
+  }
+
   return {
+    splitReplySegments,
+    replyParts,
+    uiTime,
+    sameSecond,
+    needsReplyHint,
+    REPLY_HINT,
+    msgTime,
+    excerpt,
+    messageId,
+    promptHeader,
+    framePrompt,
+    REPLY_EXCERPT_MAX,
     acpClientInfo,
     escapeAttr,
     wrapRelay,

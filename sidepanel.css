@@ -1284,3 +1284,70 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   padding: 4px 10px;
   line-height: 1.2;
 }
+
+/* --- reply-to --------------------------------------------------------------------------------- */
+.message-content { position: relative; }
+.reply-btn {
+  position: absolute;
+  top: 0;
+  right: 0;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  color: inherit;
+  border-radius: 6px;
+  font-size: 12px;
+  padding: 1px 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.message:hover .reply-btn,
+.reply-btn:focus-visible { opacity: 1; }
+.reply-quote {
+  font-size: 12px;
+  opacity: 0.7;
+  border-left: 2px solid var(--border-color);
+  padding-left: 6px;
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  cursor: pointer;
+}
+.reply-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 16px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-left: 3px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+.reply-chip[hidden] { display: none; }
+.reply-chip-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.reply-chip-cancel {
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+.message.flash .bubble {
+  outline: 2px solid #f5c542;
+  outline-offset: 2px;
+  animation: reply-flash 1.5s ease-out;
+}
+@keyframes reply-flash {
+  0%, 40% { box-shadow: 0 0 0 4px rgba(245, 197, 66, 0.55); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 197, 66, 0); }
+}
+.reply-part + .reply-quote { margin-top: 8px; }
+.reply-quote.missing { cursor: default; font-style: italic; }
