@@ -44,7 +44,7 @@ jobs:
             manifest.json background.js build-info.json \
             sidepanel.html sidepanel.css sidepanel.js \
             browser-mcp.js room-core.js agent-tools.js composer.js markdown.js jev-grounding.js \
-            canvas.html canvas.css canvas.js canvas-core.js canvas-store.js \
+            canvas.html canvas.css canvas.js canvas-core.js canvas-store.js canvas-tabs.js \
             canvas-frame.html canvas-frame.css canvas-frame.js canvas-slides.css \
             page vendor \
             icon.png icon16.png icon32.png icon48.png icon128.png \
