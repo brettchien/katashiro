@@ -2075,7 +2075,7 @@ function setReplyTarget(t) {
   if (!replyTarget) return;
   const label = document.createElement("span");
   label.className = "reply-chip-text";
-  label.textContent = `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.msgTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
+  label.textContent = `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
   label.title = RoomCore.excerpt(replyTarget.text, 400);
   label.addEventListener("click", () => jumpToMessage(replyTarget && replyTarget.id));
   const x = document.createElement("button");
@@ -2092,7 +2092,7 @@ function setReplyTarget(t) {
 function replyQuoteEl(replyTo) {
   const q = document.createElement("div");
   q.className = "reply-quote";
-  q.textContent = `↩ ${replyTo.senderName || "?"} ${RoomCore.msgTime(replyTo.timestamp)}：${RoomCore.excerpt(replyTo.text, 80)}`;
+  q.textContent = `↩ ${replyTo.senderName || "?"} ${RoomCore.uiTime(replyTo.timestamp)}：${RoomCore.excerpt(replyTo.text, 80)}`;
   q.title = "跳到原訊息";
   q.addEventListener("click", () => jumpToMessage(replyTo.id));
   return q;
@@ -2108,11 +2108,11 @@ function attachReplyButton(contentEl, target) {
   contentEl.appendChild(b);
 }
 
-// The newest recorded message sent at this "YYYY-MM-DD HH:MM:SS" (local), as a reply target.
+// The newest recorded message sent in the second this ISO stamp names, as a reply target.
 function findMessageByTime(stamp) {
   for (let i = historyMessages.length - 1; i >= 0; i--) {
     const m = historyMessages[i];
-    if (m && Number.isFinite(m.timestamp) && m.kind !== "error" && RoomCore.msgTime(m.timestamp) === stamp) {
+    if (m && Number.isFinite(m.timestamp) && m.kind !== "error" && RoomCore.sameSecond(stamp, m.timestamp)) {
       return { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
     }
   }

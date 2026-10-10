@@ -325,15 +325,16 @@
   // also the most one call can return; the per-message cap keeps a pasted log from flooding a turn.
   const HISTORY_TOOL_MAX = 200;
 
-  // chat_history stamps: the user's LOCAL time with its UTC offset — the same clock the prompt
-  // headers use ("[16:05:12 user]"), so an agent can match a header to a history line.
+  // chat_history stamps: ISO 8601 / RFC 3339 in the user's LOCAL time with its offset
+  // (2026-10-10T16:05:12+08:00) — no spaces, so it is clear where the stamp ends; the exact form the
+  // prompt headers use, so an agent can match a header to a history line.
   const pad2h = (n) => String(n).padStart(2, "0");
   function localStamp(ts) {
     const d = new Date(ts);
     const off = -d.getTimezoneOffset();
     const sign = off >= 0 ? "+" : "-";
     const oh = pad2h(Math.floor(Math.abs(off) / 60)), om = pad2h(Math.abs(off) % 60);
-    return `${d.getFullYear()}-${pad2h(d.getMonth() + 1)}-${pad2h(d.getDate())} ${pad2h(d.getHours())}:${pad2h(d.getMinutes())}:${pad2h(d.getSeconds())} ${sign}${oh}:${om}`;
+    return `${d.getFullYear()}-${pad2h(d.getMonth() + 1)}-${pad2h(d.getDate())}T${pad2h(d.getHours())}:${pad2h(d.getMinutes())}:${pad2h(d.getSeconds())}${sign}${oh}:${om}`;
   }
 
   const HISTORY_CHARS_MAX = 20000;
@@ -2655,7 +2656,7 @@
       description:
         "Read this side panel's own chat transcript (the window the panel lives in): user messages, " +
         "every agent's replies in the room, and error notices — oldest first, each stamped with the " +
-        "user's local time (the same YYYY-MM-DD HH:MM:SS the [time sender] prompt headers use) and, " +
+        "user's local time as ISO 8601 with offset (the form the [time sender] prompt headers use) and, " +
         "for a reply, the message it answers (↩ time sender). Use it to " +
         "recover context after your session was restarted (e.g. a fresh session with no memory of " +
         "the conversation the user can still see). Read-only. It returns the WHOLE room, including " +
@@ -2686,15 +2687,15 @@
         if (!all.length) return okText("(no chat history in this window)");
         const start = Math.max(0, all.length - limit);
         const lines = all.slice(start).map((m) => {
-          const when = Number.isFinite(m.timestamp) ? localStamp(m.timestamp).slice(0, 19) : "?";
+          const when = Number.isFinite(m.timestamp) ? localStamp(m.timestamp) : "?";
           const who = m.kind === "sent" ? "user" : (m.senderName || "?");
           const re = m.replyTo && Number.isFinite(m.replyTo.timestamp)
-            ? ` ↩ ${localStamp(m.replyTo.timestamp).slice(0, 19)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` : "";
+            ? ` ↩ ${localStamp(m.replyTo.timestamp)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` : "";
           let text = m.text == null ? "" : String(m.text);
           if (text.length > maxChars) text = `${text.slice(0, maxChars)}… [${text.length - maxChars} more chars]`;
           return `${when} ${m.kind === "error" ? "[error] " : ""}${who}${re}: ${text}`;
         });
-        const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"} (oldest first, user's local time UTC${localStamp(Date.now()).slice(20)})`;
+        const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"} (oldest first; times are ISO 8601, the user's local time)`;
         return okText(`${head}\n\n${lines.join("\n\n")}`);
       }
     },

@@ -340,14 +340,28 @@
   }
 
   // --- reply-to / message headers ------------------------------------------------------------
-  // Messages are referred to by local time, not a #N counter — "#12" reads like a PR/issue number to
-  // an agent. Always the full date + time (YYYY-MM-DD HH:MM:SS, the user's local clock) — the same
+  // Messages are referred to by time, not a #N counter — "#12" reads like a PR/issue number to an
+  // agent. Agent-facing stamps are ISO 8601 / RFC 3339 in the user's local time WITH its offset —
+  // 2026-10-10T16:05:12+08:00 — one token with no spaces, so it is clear where it ends; the same
   // form chat_history uses, so a header matches a history line verbatim.
   const pad2 = (n) => String(n).padStart(2, "0");
   function msgTime(ts) {
     const d = new Date(ts);
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
-      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    const off = -d.getTimezoneOffset();
+    const a = Math.abs(off);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}` +
+      `${off >= 0 ? "+" : "-"}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
+  }
+  // Human-facing (panel quotes / chip): local "YYYY-MM-DD HH:MM:SS".
+  function uiTime(ts) {
+    return msgTime(ts).slice(0, 19).replace("T", " ");
+  }
+  // Same second? — how a "↩ <time>" marker is matched to a message. Accepts any ISO form
+  // (offset, Z, or none = local), so an agent that rewrites the stamp still matches.
+  function sameSecond(stamp, ts) {
+    const t = Date.parse(String(stamp || ""));
+    return Number.isFinite(t) && Number.isFinite(ts) && Math.floor(t / 1000) === Math.floor(ts / 1000);
   }
 
   // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.
@@ -364,8 +378,8 @@
 
   // The header a user message carries in the prompt, so a batched backlog keeps its boundaries and
   // a reply says what it answers:
-  //   [2026-10-10 16:05:12 user]
-  //   [2026-10-10 16:07:30 user ↩ 2026-10-10 16:05:40 orca「沒辦法直接知道…」]
+  //   [2026-10-10T16:05:12+08:00 user]
+  //   [2026-10-10T16:07:30+08:00 user ↩ 2026-10-10T16:05:40+08:00 orca「沒辦法直接知道…」]
   // `replyTo` = { timestamp, senderName, text } of the quoted message (or null).
   function promptHeader({ timestamp, senderName, replyTo }) {
     let h = `${msgTime(timestamp)} ${senderName || "user"}`;
@@ -379,10 +393,10 @@
     return body ? `${promptHeader(meta)}\n${body}` : promptHeader(meta);
   }
 
-  // Agent-side reply-to: a line "↩ YYYY-MM-DD HH:MM:SS" (anything after the time is ignored) starts
+  // Agent-side reply-to: a line "↩ <ISO time>" (anything after the time is ignored) starts
   // a part of the reply that answers the message sent at that time. Split the reply into segments
   // { replyTo: "<time>" | null, text } — markers inside ``` fences are left alone.
-  const REPLY_MARKER = /^\s*↩\s*(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\b.*$/;
+  const REPLY_MARKER = /^\s*↩\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)(?:\s.*)?$/;
   function splitReplySegments(text) {
     const lines = String(text == null ? "" : text).split("\n");
     const segs = [];
@@ -404,9 +418,10 @@
 
   // A batch the agent may want to answer piecewise — two or more user messages, or a reply — gets a
   // one-line note on the marker convention, so any agent can use it without a skill.
-  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [^\]\n]*\]/;
+  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) [^\]\n]*\]/;
   const REPLY_HINT = "(To answer a specific message above, start that part of your reply with a line " +
-    "\"↩ <its time>\", e.g. \"↩ 2026-10-10 16:05:12\" — the user sees it as a quote.)";
+    "\"↩ <its time>\", copying the time from its header, e.g. \"↩ 2026-10-10T16:05:12+08:00\" — the " +
+    "user sees it as a quote.)";
   function needsReplyHint(entries) {
     const framed = (Array.isArray(entries) ? entries : []).filter((e) => HEADER_RE.test(String(e || "")));
     return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
@@ -414,6 +429,8 @@
 
   return {
     splitReplySegments,
+    uiTime,
+    sameSecond,
     needsReplyHint,
     REPLY_HINT,
     msgTime,

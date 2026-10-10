@@ -2670,8 +2670,8 @@ test("katashiro.chat_history returns the transcript oldest first, numbered, with
   const res = await callTool(d, "katashiro.chat_history");
   assert.equal(res.isError, undefined);
   const text = res.content[0].text;
-  assert.match(text, /^3 of 3 messages \(oldest first, user's local time UTC[+-]\d{2}:\d{2}\)/);
-  const L = (i) => BrowserMcp.localStamp(HISTORY[i].timestamp).slice(0, 19);   // no per-line offset
+  assert.match(text, /^3 of 3 messages \(oldest first; times are ISO 8601, the user's local time\)/);
+  const L = (i) => BrowserMcp.localStamp(HISTORY[i].timestamp);
   assert.ok(text.includes(`${L(0)} user: is the build done?`));
   assert.ok(text.includes(`${L(1)} Orca: ${"x".repeat(50)}`));
   assert.ok(text.includes(`${L(2)} [error] Orca: turn failed`));
@@ -2949,7 +2949,8 @@ test("katashiro.show_image accepts SVG (the panel rasterizes it)", async () => {
 
 test("localStamp: local date-time with the UTC offset", () => {
   const ts = new Date(2026, 9, 10, 16, 5, 12).getTime();
-  assert.match(BrowserMcp.localStamp(ts), /^2026-10-10 16:05:12 [+-]\d{2}:\d{2}$/);
+  assert.match(BrowserMcp.localStamp(ts), /^2026-10-10T16:05:12[+-]\d{2}:\d{2}$/);
+  assert.equal(Date.parse(BrowserMcp.localStamp(ts)), ts);
 });
 
 test("katashiro.chat_history marks a reply with the time and sender it answers", async () => {
@@ -2961,5 +2962,5 @@ test("katashiro.chat_history marks a reply with the time and sender it answers",
       replyTo: { id: "c_x:" + orig, senderName: "orca", timestamp: orig, text: "沒辦法直接知道" } }
   ];
   const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
-  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000).slice(0, 19)} user ↩ 2026-10-10 16:05:40 orca: 所以要加 sha`), text);
+  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000)} user ↩ ${BrowserMcp.localStamp(orig)} orca: 所以要加 sha`), text);
 });
