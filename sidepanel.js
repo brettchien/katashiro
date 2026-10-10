@@ -247,11 +247,12 @@ class Conn {
         if (wait > 0) { timer = setTimeout(arm, wait); return; }
         if (this.pendingReqs.delete(id)) reject(`request timed out: ${method}${d.reason ? ` (${d.reason})` : ""}`);
       };
-      arm();
       this.pendingReqs.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
       });
+      arm();                                       // after set(): a deadline already past rejects here
+      if (!this.pendingReqs.has(id)) return;
       this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
     });
   }
@@ -420,9 +421,11 @@ class Conn {
     if (this.alive !== true) this.markAlive(true);       // markAlive no-ops when already alive (no render spam)
     if (msg.method === "mcp/message") { this.lastTunnelMsgAt = this.lastRecvAt; updateRoster(); }
     // Turn activity (pushes the turn's idle deadline out): any update for our session — text, tool
-    // events, or whatever else the gateway sends — and the agent driving our browser tunnel.
+    // events, or whatever else the gateway sends — and the agent driving our browser tunnel (mcp/message;
+    // the tunnel is per connection, not per session, so another session using it also counts — the
+    // 35-min cap still bounds the turn).
     if ((msg.method === "session/update" && msg.params && msg.params.sessionId === this.acpSessionId) ||
-        (typeof msg.method === "string" && msg.method.startsWith("mcp/"))) {
+        msg.method === "mcp/message") {
       this.lastTurnActivityAt = this.lastRecvAt;
     }
 
