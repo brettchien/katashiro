@@ -784,14 +784,33 @@ class Conn {
     // Render the accumulated markdown once, now that the turn is complete (ADR §3.3): streaming
     // stayed plain textContent; markdown is parsed+sanitized only here. A stream that stops/errors
     // still reaches finalize, so the message renders (not left as raw md).
-    renderAgentText(s.bubble, s.text);
+    // A reply with "↩ <time>" markers becomes one message per part — the first part fills this
+    // turn's bubble, each later part is its own row — every part quoting (clickable) the message it
+    // answers, with its own id, ↩ button and history record, so a reload replays them split too.
     const doneAt = Date.now();
+    const parts = RoomCore.splitReplySegments(s.text);
+    const split = parts.some((p) => p.replyTo) ? parts : [{ replyTo: null, text: s.text }];
+    const first = split[0];
+    const firstReply = first.replyTo ? replyTargetFor(first.replyTo) : null;
+    renderMarkdownInto(s.bubble, first.text);
+    if (firstReply && s.contentEl) s.contentEl.insertBefore(replyQuoteEl(firstReply), s.bubble);
     const row = s.bubble.closest(".message");
+    const firstId = RoomCore.messageId(conversationId, doneAt);
     if (row && s.contentEl) {
-      row.dataset.msgId = RoomCore.messageId(conversationId, doneAt);
-      attachReplyButton(s.contentEl, { id: row.dataset.msgId, senderName: this.name, timestamp: doneAt, text: s.text });
+      row.dataset.msgId = firstId;
+      attachReplyButton(s.contentEl, { id: firstId, senderName: this.name, timestamp: doneAt, text: first.text });
     }
-    recordMessage({ kind: "received", id: RoomCore.messageId(conversationId, doneAt), senderId: this.id, senderName: this.name, text: Composer.historyText(s.text, s.imageCount || 0), timestamp: doneAt });
+    recordMessage({
+      kind: "received", id: firstId, senderId: this.id, senderName: this.name,
+      text: Composer.historyText(first.text, s.imageCount || 0), timestamp: doneAt,
+      replyTo: firstReply ? recordReplyTo(firstReply) : undefined,
+    });
+    split.slice(1).forEach((p, i) => {
+      appendMessage({
+        senderId: this.id, senderName: this.name, text: p.text, timestamp: doneAt + i + 1,   // +1 ms: distinct ids
+        replyTo: p.replyTo ? replyTargetFor(p.replyTo) : null,
+      });
+    });
     if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`); // note the stop after the partial reply
     maybeScroll();
   }
@@ -2092,7 +2111,9 @@ function setReplyTarget(t) {
 function replyQuoteEl(replyTo) {
   const q = document.createElement("div");
   q.className = "reply-quote";
-  q.textContent = `↩ ${replyTo.senderName || "?"} ${RoomCore.uiTime(replyTo.timestamp)}：${RoomCore.excerpt(replyTo.text, 80)}`;
+  const when = Number.isFinite(replyTo.timestamp) ? RoomCore.uiTime(replyTo.timestamp) : "?";
+  q.textContent = `↩ ${replyTo.senderName || "?"} ${when}：${RoomCore.excerpt(replyTo.text, 80)}`;
+  if (!replyTo.id) q.classList.add("missing");
   q.title = "跳到原訊息";
   q.addEventListener("click", () => jumpToMessage(replyTo.id));
   return q;
@@ -2117,6 +2138,18 @@ function findMessageByTime(stamp) {
     }
   }
   return null;
+}
+
+// The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
+// says the original was not found (its quote does not jump anywhere).
+function replyTargetFor(stamp) {
+  return findMessageByTime(stamp) ||
+    { id: null, senderName: "?", timestamp: Date.parse(stamp), text: "（找不到原訊息）" };
+}
+
+// What a history record keeps of the message a reply answers.
+function recordReplyTo(t) {
+  return { id: t.id, senderName: t.senderName, timestamp: t.timestamp, text: RoomCore.excerpt(t.text) };
 }
 
 // Render an agent's reply. Plain text → the markdown sink as before. With "↩ time" marker lines,
@@ -2209,7 +2242,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo 
   messagesList.appendChild(msgDiv);
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
-    replyTo: replyTo ? { id: replyTo.id, senderName: replyTo.senderName, timestamp: replyTo.timestamp, text: RoomCore.excerpt(replyTo.text) } : undefined,
+    replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
     text: Composer.historyText(text, Array.isArray(images) ? images.length : 0), // images are memory-only
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
