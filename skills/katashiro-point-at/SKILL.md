@@ -18,9 +18,11 @@ heaviest. Pick the lightest that works.
 
 ## 1. One element on a page → `katashiro.highlight` (default)
 
-1. `katashiro.snapshot` (or the snapshot an action just returned) to get the element's `ref`.
-2. `katashiro.highlight` with `{ref, snapshotId, label, durationMs}`. It checks the element is
-   visible and scrolls it to the center itself; no separate `scroll` needed.
+1. Target the element: its `ref` from `katashiro.snapshot` (or the snapshot an action just
+   returned), or a CSS `selector` for a non-interactive element (see below).
+2. `katashiro.highlight` with `{ref, snapshotId}` or `{selector}`, plus `label` and `durationMs`.
+   It checks the element is visible and scrolls it to the center itself; no separate `scroll`
+   needed.
 
 - Snapshots give `ref`s only to interactive elements. For a heading or paragraph, pass a CSS
   `selector` instead. `read_dom` returns raw HTML, not selectors: read the markup and write a
@@ -39,7 +41,7 @@ Use it when an overlay is not enough: compare several rows, dim everything excep
 keep emphasis while the user scrolls.
 
 ```css
-/* glow the elements you mean; selectors from katashiro.read_dom, not snapshot refs */
+/* glow the elements you mean; selectors written from read_dom markup, not snapshot refs */
 .pricing-table tr:nth-child(3), #limits h2 {
   outline: 3px solid #f59e0b !important;
   box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.35) !important;
