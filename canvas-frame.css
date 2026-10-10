@@ -85,3 +85,13 @@ body {
   --crepe-font-code: Menlo, Consolas, Monaco, monospace;
 }
 .editor .milkdown .ProseMirror { padding: 16px 0; max-width: none; }
+
+/* Print (PDF export, §3.8): white paper, no editor chrome or copy buttons. */
+@media print {
+  html, body { background: #fff !important; color: #000 !important; }
+  .doc { padding: 0 !important; color: #000; }
+  .doc a { color: #1d4ed8; }
+  .copy-btn, .editor { display: none !important; }
+  .doc pre.hljs { background: #f6f8fa; border-color: #d0d7de; }
+  .doc pre.hljs code { color: #24292f; }
+}

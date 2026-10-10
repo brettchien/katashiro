@@ -63,6 +63,8 @@ body {
   white-space: pre-wrap;
 }
 .canvas-notice[hidden] { display: none; }
+.canvas-notice { display: flex; align-items: center; gap: 8px; }
+.canvas-notice #canvas-notice { flex: 1 1 auto; }
 
 .canvas-main {
   flex: 1 1 auto;

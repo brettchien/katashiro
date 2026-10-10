@@ -1943,15 +1943,29 @@ function sendMessage() {
   const images = stagedImages.slice();                   // snapshot the staged attachments
   if (stagingPending > 0) return;                        // Enter mid-encode: don't strand the image for the next message
   if (!text && images.length === 0) return;
-
-  const sentAt = Date.now();
   const replyTo = replyTarget;                           // what this message answers (or null)
+  setReplyTarget(null);
+  postUserText(text, images, replyTo);
+
+  messageInput.value = "";
+  messageInput.style.height = "auto";
+  stagedImages = [];
+  renderStagedPreviews();
+  sendBtn.disabled = true;
+}
+
+// Post a message as the user: show it, frame it, route it to the room. Shared by the input box and
+// the canvas's Send to agent / Send error (which compose their text in the canvas tab, §3.7).
+// `mentions` (optional): route by these @names instead of parsing `text` — a canvas push carries
+// canvas data that must not pick the recipients. Returns the agents it was enqueued to.
+function postUserText(text, images, replyTo, mentions) {
+  images = images || [];
+  const sentAt = Date.now();
   appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
     replyTo,
   });
-  setReplyTarget(null);
   // What the agent receives: a [time sender (↩ quoted)] header + the text, so a batched backlog
   // keeps its message boundaries and a reply says what it answers (RoomCore.framePrompt).
   const framed = RoomCore.framePrompt({
@@ -1960,18 +1974,46 @@ function sendMessage() {
   }, text);
 
   loopGuard.onHuman();
-  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
+  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text, mentions });
+  const sentTo = [];
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(framed, images);
+    if (c) { c.enqueue(framed, images); sentTo.push(c); }
   });
-
-  messageInput.value = "";
-  messageInput.style.height = "auto";
-  stagedImages = [];
-  renderStagedPreviews();
-  sendBtn.disabled = true;
+  return sentTo;
 }
+
+// §3.7: a canvas tab asks this panel to post as the user (Send to agent / Send error). Only from
+// Katashiro's own canvas.html (never a content script in a web page), only for THIS window's
+// conversation (every open panel hears the broadcast), only while an agent is connected, capped,
+// and deduped by request id against double clicks.
+const seenPushIds = new Set();
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-push") return false;
+  let fromCanvas = false;
+  try {
+    const u = new URL(sender && sender.url);
+    fromCanvas = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html";
+  } catch (_) { /* no or bad url */ }
+  if (!fromCanvas) {
+    sendResponse({ ok: false, error: "not from a Katashiro canvas" });
+    return false;
+  }
+  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.PUSH_TEXT_MAX || typeof msg.note !== "string") {
+    sendResponse({ ok: false, error: "nothing to send, or too long" });
+    return false;
+  }
+  if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
+  const active = connById(activeAgentUrl);
+  if (!active || !active.acpReady) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
+  seenPushIds.add(msg.reqId);
+  // @mentions come from the user's note only, never from the diff / error text inside the fence.
+  const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
+  if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
+  sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、") });
+  return false;
+});
 
 // Relay an agent's finalized reply into the room so OTHER agents can see + respond to it — the
 // "talk to each other like a Discord thread" mechanic. Wrapped with attribution, routed per
