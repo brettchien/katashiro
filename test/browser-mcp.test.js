@@ -2722,18 +2722,21 @@ test("katashiro.notify creates a basic notification tagged with the panel's wind
   assert.equal(created.length, 1);
   assert.ok(created[0].id.startsWith(`${BrowserMcp.NOTIFY_ID_PREFIX}7:`));
   assert.deepEqual(created[0].o, { type: "basic", iconUrl: "icon128.png", title: "Build", message: "images ready" });
-  assert.match(res.content[0].text, /notification shown: Build — images ready/);
+  assert.match(res.content[0].text, /notification sent: Build — images ready/);
 });
 
 test("katashiro.notify defaults the title and validates its inputs", async () => {
   const { deps: d } = deps();
   const created = withNotifications(d);
-  await callTool(d, "katashiro.notify", { message: "hi" });
-  assert.equal(created[0].o.title, "Katashiro");
+  d.windowId = 60;                                               // module-level budget: own window
+  // Bad calls first: each is refused by validation (not the limiter) and spends no budget.
   for (const bad of [{}, { message: "  " }, { message: "m".repeat(301) }, { message: "ok", title: "t".repeat(81) }]) {
     const res = await callTool(d, "katashiro.notify", bad);
     assert.equal(res.isError, true, JSON.stringify(bad));
+    assert.match(res.content[0].text, /non-empty|capped at/, JSON.stringify(bad));
   }
+  assert.equal((await callTool(d, "katashiro.notify", { message: "hi" })).isError, undefined);
+  assert.equal(created[0].o.title, "Katashiro");
   assert.equal(created.length, 1);
 });
 
@@ -2742,4 +2745,81 @@ test("katashiro.notify without the notifications API is a clean error", async ()
   const res = await callTool(d, "katashiro.notify", { message: "hi" });
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /notifications/);
+});
+
+test("katashiro.notify: per-window cooldown, dedupe of identical content, distinct ids", async () => {
+  const { deps: d } = deps();
+  const created = withNotifications(d);
+  let t = 1_000_000;
+  d.now = () => t;
+  d.windowId = 41;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a" })).isError, undefined);
+  t += 3_000;
+  const limited = await callTool(d, "katashiro.notify", { message: "b" });
+  assert.equal(limited.isError, true);
+  assert.match(limited.content[0].text, /rate limited.*retry in 7s/);
+  d.windowId = 42;                                               // another window has its own budget
+  assert.equal((await callTool(d, "katashiro.notify", { message: "b" })).isError, undefined);
+  d.windowId = 41;
+  t += 10_000;                                                   // cooldown over, but same content
+  const dup = await callTool(d, "katashiro.notify", { message: "a" });
+  assert.equal(dup.isError, true);
+  assert.match(dup.content[0].text, /same notification/);
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a", title: "T" })).isError, undefined);
+  t += 60_000;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a", title: "T" })).isError, undefined);
+  assert.equal(created.length, 4);
+  assert.equal(new Set(created.map((c) => c.id)).size, 4);
+  assert.ok(created.every((c) => /:\d+-\d+$/.test(c.id)));
+});
+
+test("katashiro.notify: parallel calls cannot slip past the cooldown", async () => {
+  const { deps: d } = deps();
+  const created = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  d.chrome.notifications = { create: async (id, o) => { await gate; created.push({ id, o }); return id; } };
+  d.windowId = 50;
+  const pending = Promise.all([
+    callTool(d, "katashiro.notify", { message: "a" }),
+    callTool(d, "katashiro.notify", { message: "b" })
+  ]);
+  release();
+  const results = await pending;
+  assert.equal(results.filter((r) => r.isError === undefined).length, 1);
+  assert.match(results.find((r) => r.isError).content[0].text, /rate limited/);
+  assert.equal(created.length, 1);
+});
+
+test("katashiro.notify: a failed create gives the slot back", async () => {
+  const { deps: d } = deps();
+  let fail = true;
+  const created = [];
+  d.chrome.notifications = { create: async (id, o) => { if (fail) throw new Error("boom"); created.push({ id, o }); return id; } };
+  const t = 1_000_000;
+  d.now = () => t;
+  d.windowId = 51;                                               // module-level budget: own window
+  const first = await callTool(d, "katashiro.notify", { message: "a" });
+  assert.equal(first.isError, true);
+  fail = false;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a" })).isError, undefined);
+  assert.equal(created.length, 1);
+});
+
+test("katashiro.notify: a clock stepped backwards does not freeze the limits", async () => {
+  const { deps: d } = deps();
+  const created = withNotifications(d);
+  let t = 1_000_000;
+  d.now = () => t;
+  d.windowId = 52;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a" })).isError, undefined);
+  t -= 3_600_000;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "b" })).isError, undefined);
+  assert.equal(created.length, 2);
+});
+
+test("katashiro.chat_history declares integer limit/maxChars", () => {
+  const props = BrowserMcp.TOOLS["katashiro.chat_history"].inputSchema.properties;
+  assert.equal(props.limit.type, "integer");
+  assert.equal(props.maxChars.type, "integer");
 });
