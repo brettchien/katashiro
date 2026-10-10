@@ -1,10 +1,12 @@
 // canvas-frame.js — renders one canvas inside the sandboxed canvas-frame.html (ADR §3.2–§3.3).
 //
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
-//  in:  render{nonce, kind, version, content}
+//  in:  render{nonce, kind, version, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
-//  out: ready, rendered{version}, error{msg}, openLink{url}, copy{reqId, text} — each carrying the nonce from our
-//       URL fragment, which the host checks.
+//  in:  edit{content, version}, saved{version}, requestSave, leaveEdit      (markdown editing, §3.5)
+//  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
+//       save{content, baseVersion}, dirty{dirty} — each carrying the nonce from our URL fragment,
+//       which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
 // openLink, and the host decides (http(s) only, user confirms, new tab).
@@ -15,6 +17,86 @@
   const doc = document.getElementById("doc");
   const deck = document.getElementById("deck");
   const pic = document.getElementById("pic");
+  const editorRoot = document.getElementById("editor");
+
+  // --- Milkdown (§3.5), loaded on first use: normalizing an agent write, or the user's Edit. ---
+  let milkdownLoad = null;
+  function loadMilkdown() {
+    if (!milkdownLoad) {
+      milkdownLoad = new Promise((resolve, reject) => {
+        const css = document.createElement("link");
+        css.rel = "stylesheet";
+        css.href = "vendor/milkdown/crepe.css";
+        document.head.appendChild(css);
+        const s = document.createElement("script");
+        s.src = "vendor/milkdown/crepe.iife.js";        // 'self' only (sandbox CSP + meta CSP)
+        s.onload = () => (globalThis.KatashiroMilkdown ? resolve(globalThis.KatashiroMilkdown) : reject(new Error("editor failed to load")));
+        s.onerror = () => reject(new Error("editor failed to load"));
+        document.head.appendChild(s);
+      });
+    }
+    return milkdownLoad;
+  }
+
+  // Features we do not use stay off: image upload / by-URL, LaTeX (fonts), CodeMirror (dynamic
+  // language loading), AI and the top bar (§3.5).
+  function crepeOptions(M, root, value) {
+    const F = M.Crepe.Feature;
+    return {
+      root, defaultValue: value,
+      features: { [F.ImageBlock]: false, [F.Latex]: false, [F.CodeMirror]: false, [F.AI]: false, [F.TopBar]: false },
+    };
+  }
+
+  // Normalize with the parser + serializer of a hidden editor (never shown, never edited).
+  let normalizer = null;
+  async function normalize(text) {
+    const M = await loadMilkdown();
+    if (!normalizer) {
+      const host = document.createElement("div");
+      host.hidden = true;
+      document.body.appendChild(host);
+      const crepe = new M.Crepe(crepeOptions(M, host, ""));
+      normalizer = crepe.create().then(() => crepe);
+    }
+    const crepe = await normalizer;
+    return crepe.editor.action((ctx) => ctx.get(M.serializerCtx)(ctx.get(M.parserCtx)(text)));
+  }
+
+  // The editor. Dirty is measured against the text right after loading (already normalized), so
+  // opening the editor never makes the canvas look changed; only Ctrl+S / Save sends save{}.
+  let editing = null;                     // { crepe, version, baseline, dirty }
+  async function startEdit(content, version) {
+    const M = await loadMilkdown();
+    doc.hidden = true;
+    editorRoot.hidden = false;
+    editorRoot.replaceChildren();
+    const crepe = new M.Crepe(crepeOptions(M, editorRoot, content));
+    await crepe.create();
+    const state = { crepe, version, baseline: crepe.getMarkdown(), dirty: false };
+    editing = state;
+    crepe.on((listener) => listener.markdownUpdated((_ctx, md) => {
+      if (editing !== state) return;
+      const dirty = md !== state.baseline;
+      if (dirty !== state.dirty) { state.dirty = dirty; post({ type: "dirty", dirty }); }
+    }));
+  }
+  function requestSave() {
+    if (!editing) return;
+    post({ type: "save", content: editing.crepe.getMarkdown(), baseVersion: editing.version });
+  }
+  function stopEdit() {
+    if (!editing) return;
+    const { crepe } = editing;
+    editing = null;
+    try { crepe.destroy(); } catch (_) { /* already gone */ }
+    editorRoot.replaceChildren();
+    editorRoot.hidden = true;
+    doc.hidden = false;
+  }
+  document.addEventListener("keydown", (e) => {
+    if (editing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); requestSave(); }
+  });
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
   function renderMarkdown(content) {
@@ -81,6 +163,7 @@
     const a = e.target && e.target.closest ? e.target.closest("a, area") : null;
     if (!a) return;
     e.preventDefault();
+    if (editing) return;                  // editing: a click places the cursor; nothing opens
     e.stopPropagation();
     const href = a.getAttribute("href") || "";
     if (href.startsWith("#")) {
@@ -108,16 +191,36 @@
       if (done) { pendingCopies.delete(m.reqId); done(m.ok === true); }
       return;
     }
+    if (m.type === "edit") {
+      startEdit(typeof m.content === "string" ? m.content : "", m.version)
+        .catch((err) => { stopEdit(); post({ type: "error", msg: String((err && err.message) || err) }); });
+      return;
+    }
+    if (m.type === "saved") {
+      if (editing && Number.isInteger(m.version)) {
+        editing.version = m.version;
+        editing.baseline = editing.crepe.getMarkdown();
+        if (editing.dirty) { editing.dirty = false; post({ type: "dirty", dirty: false }); }
+      }
+      return;
+    }
+    if (m.type === "requestSave") { requestSave(); return; }
+    if (m.type === "leaveEdit") { stopEdit(); return; }
     if (m.type !== "render") return;
+    if (editing) stopEdit();                // the host only re-renders a clean editor
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "");
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "");
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
-    }).then(
-      () => post({ type: "rendered", version: m.version }),
-      (err) => post({ type: "error", msg: String((err && err.message) || err) })
-    );
+    }).then(async () => {
+      // §3.5: the host asks for the normalized form of an agent markdown write (its agent copy).
+      let normalized;
+      if (m.kind === "markdown" && typeof m.normalizeText === "string") {
+        try { normalized = await normalize(m.normalizeText); } catch (_) { /* stays unnormalized */ }
+      }
+      post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
+    }, (err) => post({ type: "error", msg: String((err && err.message) || err) }));
   });
 
   post({ type: "ready" });

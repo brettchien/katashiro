@@ -339,3 +339,96 @@ test("image bytes count toward the budget", async () => {
     (e) => e.code === "quota"
   );
 });
+
+// --- PR 3: editing, agent copy, normalization (ADR §3.5) ----------------------------------
+
+test("unifiedDiff: hunks with context, empty when equal", () => {
+  assert.equal(CanvasStore.unifiedDiff("a\nb", "a\nb"), "");
+  const d = CanvasStore.unifiedDiff("1\n2\n3\n4\n5\n6\n7", "1\n2\n3\nX\n5\n6\n7");
+  assert.equal(d, "@@ -2,5 +2,5 @@\n 2\n 3\n-4\n+X\n 5\n 6");
+  assert.match(CanvasStore.unifiedDiff("a", "a\nb"), /\+b/);
+  assert.match(CanvasStore.unifiedDiff("a\nb", "b"), /-a/);
+});
+
+test("user save: needs the current version, keeps the agent's text as the agent copy, no-op when unchanged", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "agent text" });
+  assert.deepEqual(await s.userSave({ id, baseVersion: 1, content: "agent text" }), { version: 1, unchanged: true });
+  await assert.rejects(() => s.userSave({ id, baseVersion: 0, content: "x" }), (e) => e.code === "stale");
+  assert.deepEqual(await s.userSave({ id, baseVersion: 1, content: "user text" }), { version: 2, unchanged: false });
+  const r = await s.read({ conversationId: "c", id });
+  assert.equal(r.content, "user text");
+  assert.equal(r.author, "user");
+  assert.equal(r.agentVersion, 1);
+  assert.equal(storage.data[CanvasStore.agentKey(id)], "agent text");
+  assert.equal(await s.readAgentCopy(id), "agent text");
+  await s.userSave({ id, baseVersion: 2, content: "user text 2" });
+  assert.equal(storage.data[CanvasStore.agentKey(id)], "agent text");   // still the AGENT's write
+});
+
+test("stale agent write after a user edit carries diffFromBase (agent copy → latest)", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a\nb\nc" });
+  await s.userSave({ id, baseVersion: 1, content: "a\nB\nc" });
+  await assert.rejects(
+    () => s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "T", content: "a\nb\nc\nd" }),
+    (e) => e.code === "stale" && e.currentVersion === 2 && e.author === "user" && /-b\n\+B/.test(e.diffFromBase)
+  );
+});
+
+test("an agent write drops the agent copy (latest is the agent's again); agentSeenVersion tracks reads", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await s.userSave({ id, baseVersion: 1, content: "b" });
+  let m = await s.read({ conversationId: "c", id });
+  assert.equal(m.agentSeenVersion, 1);
+  await s.read({ conversationId: "c", id, asAgent: true });
+  m = await s.read({ conversationId: "c", id });
+  assert.equal(m.agentSeenVersion, 2);
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "c" });
+  assert.ok(!(CanvasStore.agentKey(id) in storage.data));
+  assert.equal(await s.readAgentCopy(id), "c");
+});
+
+test("revert to agent's: the agent copy becomes the latest as a user save", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "agent" });
+  assert.deepEqual(await s.revertToAgent({ id, baseVersion: 1 }), { version: 1, unchanged: true });
+  await s.userSave({ id, baseVersion: 1, content: "mine" });
+  await assert.rejects(() => s.revertToAgent({ id, baseVersion: 1 }), (e) => e.code === "stale");
+  assert.deepEqual(await s.revertToAgent({ id, baseVersion: 2 }), { version: 3, unchanged: false });
+  const r = await s.read({ conversationId: "c", id });
+  assert.equal(r.content, "agent");
+  assert.equal(r.author, "user");
+});
+
+test("applyNormalized: markdown only, that agent version only; latest only while it is still that version", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c", title: "T", content: "* x" });
+  assert.equal((await s.read({ conversationId: "c", id: a.id })).normalized, false);
+  assert.deepEqual(await s.applyNormalized({ id: a.id, version: 9, normalized: "- x" }), { applied: false });
+  assert.deepEqual(await s.applyNormalized({ id: a.id, version: 1, normalized: "- x" }), { applied: true, changed: true });
+  let r = await s.read({ conversationId: "c", id: a.id });
+  assert.equal(r.content, "- x");
+  assert.equal(r.normalized, true);
+  assert.deepEqual(await s.applyNormalized({ id: a.id, version: 1, normalized: "zzz" }), { applied: false });   // only once
+  // user saved before the normalization arrived: only the agent copy is normalized
+  const b = await s.agentWrite({ conversationId: "c", title: "U", content: "* y" });
+  await s.userSave({ id: b.id, baseVersion: 1, content: "user" });
+  await s.applyNormalized({ id: b.id, version: 1, normalized: "- y" });
+  r = await s.read({ conversationId: "c", id: b.id });
+  assert.equal(r.content, "user");
+  assert.equal(storage.data[CanvasStore.agentKey(b.id)], "- y");
+  // slides are stored as sent
+  const sl = await s.agentWrite({ conversationId: "c", title: "S", kind: "slides", content: "* z" });
+  assert.equal((await s.read({ conversationId: "c", id: sl.id })).normalized, true);
+  assert.deepEqual(await s.applyNormalized({ id: sl.id, version: 1, normalized: "- z" }), { applied: false });
+});
+
+test("remove also deletes the agent copy", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await s.userSave({ id, baseVersion: 1, content: "b" });
+  await s.remove({ id });
+  assert.deepEqual(Object.keys(storage.data), []);
+});

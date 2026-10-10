@@ -207,6 +207,7 @@ class Conn {
         store: canvasStore,
         conversationId: () => conversationId,
         onWrite: (res) => this.onCanvasWrite(res),
+        waitNormalized: (id, version, raw) => waitCanvasNormalized(id, version, raw),
       },
       windowId: panelWindowId,
     };
@@ -2097,6 +2098,27 @@ const canvasStore = CanvasStore.createCanvasStore({
     evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
     (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
 });
+
+// §3.5: after an agent markdown write, wait (briefly) for an open canvas tab to normalize it, then
+// return { diff } — raw → stored text ("" if unchanged) — or null if no tab rendered it in time.
+const CANVAS_NORMALIZE_WAIT_MS = 4000;
+async function waitCanvasNormalized(id, version, raw) {
+  if (!(await findCanvasTab(id))) return null;           // nothing will render it now
+  const key = CanvasStore.metaKey(id);
+  const done = (m) => m && (m.agentVersion !== version || m.normalized === true);
+  const ready = await new Promise((resolve) => {
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; chrome.storage.onChanged.removeListener(onChange); clearTimeout(timer); resolve(v); };
+    const onChange = (changes, area) => { if (area === "local" && changes[key] && done(changes[key].newValue)) finish(true); };
+    const timer = setTimeout(() => finish(false), CANVAS_NORMALIZE_WAIT_MS);
+    chrome.storage.onChanged.addListener(onChange);
+    chrome.storage.local.get(key).then((got) => { if (done(got[key])) finish(true); }, () => {});
+  });
+  if (!ready) return null;
+  const stored = await canvasStore.readAgentCopy(id);
+  if (stored == null || typeof raw !== "string") return null;
+  return { diff: CanvasStore.unifiedDiff(raw, stored) || "" };
+}
 
 function canvasTabUrl(id) {
   return chrome.runtime.getURL(`canvas.html?id=${encodeURIComponent(id)}`);

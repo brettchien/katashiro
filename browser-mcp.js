@@ -320,6 +320,7 @@
   const SHOW_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
   const SHOW_IMAGE_CAPTION_MAX = 200;
   // SVG is accepted: the panel rasterizes it to PNG (or, failing that, only ever shows it as an <img>).
+  const CANVAS_DIFF_MAX = 20000;           // chars of a diff put into a tool result
   const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
@@ -2756,7 +2757,8 @@
           });
         } catch (e) {
           if (e && e.code === "stale") {
-            return errText(JSON.stringify({ error: "stale", currentVersion: e.currentVersion, author: e.author, message: e.message }));
+            const diff = e.diffFromBase == null ? null : String(e.diffFromBase).slice(0, CANVAS_DIFF_MAX);
+            return errText(JSON.stringify({ error: "stale", currentVersion: e.currentVersion, author: e.author, diffFromBase: diff, message: e.message }));
           }
           if (e && e.code === "quota") return errText(JSON.stringify({ error: "quota", message: e.message }));
           return errText(`canvas_open: ${(e && e.message) || e}`);
@@ -2765,7 +2767,19 @@
         if (typeof c.onWrite === "function") {
           try { opened = (await c.onWrite(res)) || ""; } catch (_) { /* the canvas is saved either way */ }
         }
-        return okText(`${res.created ? "created" : "updated"} canvas "${res.title}" — id ${res.id}, version ${res.version}${opened ? ` (${opened})` : ""}`);
+        let text = `${res.created ? "created" : "updated"} canvas "${res.title}" — id ${res.id}, version ${res.version}${opened ? ` (${opened})` : ""}`;
+        // markdown: the editor normalizes it (§3.5) and the STORED text is the normalized one. Wait
+        // briefly for that, so the agent's next find/edit targets what is actually stored.
+        if ((args.kind || "markdown") === "markdown" && typeof c.waitNormalized === "function") {
+          let n = null;
+          try { n = await c.waitNormalized(res.id, res.version, args.content); } catch (_) { /* best effort */ }
+          if (n && n.diff) {
+            text += `\nnormalizedDiff (the editor reformatted your markdown; the stored text is the normalized one — base your next edit on it):\n${n.diff.slice(0, CANVAS_DIFF_MAX)}`;
+          } else if (!n) {
+            text += "\n(not normalized yet: no canvas tab rendered it in time; it will be when the tab opens — canvas_read before a partial edit)";
+          }
+        }
+        return okText(text);
       }
     },
 
@@ -2785,7 +2799,7 @@
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
         try {
-          const r = await c.store.read({ conversationId: c.conversationId(), id: args.id });
+          const r = await c.store.read({ conversationId: c.conversationId(), id: args.id, asAgent: true });
           const head = { id: r.id, title: r.title, kind: r.kind, version: r.version, author: r.author, at: new Date(r.at).toISOString() };
           return okText(`${JSON.stringify(head)}\n\n${r.content}`);
         } catch (e) {

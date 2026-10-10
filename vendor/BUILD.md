@@ -68,6 +68,23 @@ Slides in the canvas (ADR `docs/adr/canvas.md` §3.3), loaded only by the sandbo
   DOMPurify (ADR §3.3), so reveal only receives sanitized `<section>`s.
 - Verified: eval-free (`grep -cE '\beval\(|Function\('` → 0).
 
+## `milkdown/` — Milkdown crepe (canvas editing)
+
+The markdown editor of the canvas (ADR `docs/adr/canvas.md` §3.5), loaded **on demand** by the
+sandboxed `canvas-frame.html` only (when the user clicks Edit, or to normalize an agent write),
+never by the panel.
+
+- Source: `@milkdown/crepe@7.22.2` (MIT; transitive deps pinned by the lock file), bundled by
+  esbuild into `crepe.iife.js` (global `KatashiroMilkdown = { Crepe, parserCtx, serializerCtx }`,
+  entry `scripts/vendor-build/entry-crepe.js`) and `crepe.css` (`entry-crepe.css`).
+- `crepe.css` is crepe's `common/style.css` **minus `latex.css`** (it pulls KaTeX fonts by
+  `url()`) and the AI / image-block / top-bar styles, plus `frame-dark.css`; it has no `url()` and
+  no `@import`. The frame disables those features (ImageBlock, Latex, CodeMirror — which loads
+  language packages dynamically —, AI, TopBar).
+- Milkdown's `html` node renders raw HTML as text (`textContent`), never `innerHTML` (§3.5).
+- Verified: no `eval(`; two `Function("return this")`-style global fallbacks (KaTeX/lodash), which
+  the frame's CSP would block and which are not reached in a browser. ~2.7 MB minified.
+
 ## Reproducible rebuild
 
 The markdown-it / DOMPurify / highlight.js bundles are built from pinned inputs in
@@ -88,6 +105,8 @@ add316e5136c3ed131ab6dbe99bdd05195f236462093f017426fc439eab64713  highlight.iife
 aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.js
 615ee850cbbb98a0f688b60ed37b21819a3f54c9f3e6f20e33e63693ab74a0c0  reveal/reveal.css
 47bf8605c95d61ad25c23d2e16b7de9aca79c1c5b5f1af33558f87f1faef26d0  reveal/theme-dracula.css
+97a8f2cb1a005bef3723ee203c293327ba9a86bd79fa51f7ab768f1d9388c06c  milkdown/crepe.iife.js
+7d6bb77a0d31140eb36fdec3b9831eaba9eae3f8583564f67f9c413c8f51ac5a  milkdown/crepe.css
 ```
 
 To bump a version: edit `package.json`, run `npm i --package-lock-only` there, run `build.sh`, and update
