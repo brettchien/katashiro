@@ -44,8 +44,8 @@
       (m.error === undefined || (typeof m.error === "string" && m.error.length <= ERROR_MAX)),
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
-  // state, no selection.
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection"]);
+  // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is

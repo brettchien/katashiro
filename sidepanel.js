@@ -2025,7 +2025,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   let fromCanvas = false;
   try {
     const u = new URL(sender && sender.url);
-    fromCanvas = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html";
+    fromCanvas = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html"
+      && !u.searchParams.get("view");                                   // a compare tab never pushes (§3.10)
   } catch (_) { /* no or bad url */ }
   if (!fromCanvas) {
     sendResponse({ ok: false, error: "not from a Katashiro canvas" });

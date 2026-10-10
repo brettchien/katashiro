@@ -280,7 +280,10 @@
     const c = current;
     let content;
     try { content = await renderPayload(c); } catch (e) { notice(CanvasCore.clipError(e.message)); return; }
-    if (compareView) { sendCompareRender(c, content); return; }
+    if (compareView) {
+      if (frame && frameReady && current === c) sendCompareRender(c, content);   // superseded while reading
+      return;
+    }
     let normalizeText;
     if (c.meta.kind === "markdown" && c.meta.normalized === false) {
       normalizeText = await store.readAgentCopy(canvasId);
@@ -292,7 +295,17 @@
     // Glow on every agent write (§3.10): the frame compares with what it showed before.
     if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion) msg.glowPrev = true;
     lastRenderedVersion = c.meta.version;
+    startRender(msg);
+  }
+
+  // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
+  // them reach a deck still being replaced), and fail at once with the reason while it is failed.
+  let renderingVersion = 0;
+  let renderFailed = "";
+  function startRender(msg) {
     rendered = false;
+    renderFailed = "";
+    renderingVersion = msg.version;
     toFrame(msg);
   }
 
@@ -306,8 +319,7 @@
     else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) msg.glowPrev = true;
     lastRenderedVersion = c.meta.agentVersion;
     notice(same ? "沒有差異：agent 最後寫的版本就是目前的版本（No differences）。" : "");
-    rendered = false;
-    toFrame(msg);
+    startRender(msg);
   }
 
   // Saves are serialized (refresh() waits on them). The frame gets back the content that was
@@ -456,14 +468,19 @@
 
   // Closing the canvas tab closes its compare tab too (§3.10): once no tab shows this canvas, the
   // compare tab closes itself. (Closing the compare tab just ends the split; Chrome does that.)
-  if (compareView) {
+  // Also checked once at start: a compare tab reopened (Ctrl+Shift+T) after its canvas tab closed.
+  async function closeIfCanvasGone() {
     const canvasUrl = `${CANVAS_BASE}?id=${encodeURIComponent(canvasId)}`;
-    chrome.tabs.onRemoved.addListener(async () => {
-      try {
-        const tabs = await chrome.tabs.query({});
-        if (!tabs.some((t) => t.url === canvasUrl || t.pendingUrl === canvasUrl)) closeThisTab();
-      } catch (_) { /* stays open */ }
-    });
+    try {
+      const tabs = await chrome.tabs.query({});
+      if (!tabs.some((t) => t.url === canvasUrl || t.pendingUrl === canvasUrl)) closeThisTab();
+    } catch (_) { /* stays open */ }
+  }
+  if (compareView) {
+    chrome.tabs.onRemoved.addListener(closeIfCanvasGone);
+    // A canvas tab navigated elsewhere no longer shows the canvas either.
+    chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) closeIfCanvasGone(); });
+    closeIfCanvasGone();
   }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
@@ -487,7 +504,9 @@
         break;
       case "rendered":
         if (printing && !printing.sent) { printing.sent = true; toFrame({ type: "print" }); }
+        if (m.version !== renderingVersion) break;           // an older render; a newer one is on its way
         rendered = true;
+        renderFailed = "";
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
@@ -507,6 +526,7 @@
         break;
       case "error":
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
+        if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
         if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
         else offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
@@ -558,6 +578,7 @@
     if (current && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}, not slides` }); return false; }
     if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas" }); return false; }
     finishGoto({ ok: false, error: "superseded by a newer goto" });
+    if (renderFailed) { sendResponse({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return false; }
     const timer = setTimeout(() => finishGoto({ ok: false, error: "the slides did not respond in time" }), GOTO_TIMEOUT_MS);
     pendingGoto = { slide: msg.slide, respond: sendResponse, sent: false, timer };
     if (frame && frameReady && rendered) { pendingGoto.sent = true; toFrame({ type: "goto", slide: msg.slide }); }
@@ -584,6 +605,7 @@
   }
   function queueHighlight(req, respond) {
     finishHighlight({ ok: false, error: "superseded by a newer highlight" });
+    if (renderFailed) { respond({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return; }
     const timer = setTimeout(() => finishHighlight({ ok: false, error: "the canvas did not respond in time" }), HIGHLIGHT_TIMEOUT_MS);
     pendingHighlight = { reqId: ++highlightSeq, req, respond, sent: false, timer };
     if (frame && frameReady && rendered) sendHighlight();
@@ -604,7 +626,8 @@
         if (mode === "edit" && dirty) { offerHighlight(req, "先儲存或結束編輯，就能前往 agent 指的段落。"); return; }
         notice("");
         if (mode === "edit") await leaveEdit();
-        queueHighlight({ ...req, check: false }, () => {});
+        // The section may be gone by now: say so, since no agent is waiting on this answer.
+        queueHighlight({ ...req, check: false }, (r) => { if (!r.ok && !/^superseded/.test(r.error)) notice(`找不到 agent 指的段落：${CanvasCore.clipError(r.error)}`); });
       },
     });
   }

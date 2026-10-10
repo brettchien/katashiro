@@ -198,6 +198,7 @@ test("frame messages: highlighted{} is allow-listed and bounded; a compare tab r
   assert.equal(ro({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }), null);
   assert.equal(ro({ type: "dirty", nonce: "n1", dirty: true }), null);
   assert.equal(ro({ type: "selection", nonce: "n1", text: "x" }), null);
+  assert.equal(ro({ type: "editFailed", nonce: "n1", msg: "x" }), null);
   assert.ok(ro({ type: "rendered", nonce: "n1", version: 1 }));
   assert.ok(ro({ type: "openLink", nonce: "n1", url: "https://x" }));
   assert.ok(ok({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }));             // the canvas tab still saves
