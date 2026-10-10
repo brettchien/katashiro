@@ -663,13 +663,13 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
    **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
    `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
-5a. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
-   folder mirror (§3.6), not a cloud sync.
-6. **Versions:** keep full version history (current draft), keep only the latest plus the agent's
-   last write (enough for the Send-to-agent diff and one "revert to agent's version"), or no
-   versions at all (a revision number for concurrency only)? Under discussion with Brett.
 5. **Order:** canvas phase 1 before multi-conversation (conversationId already exists), or after?
    *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
+6. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
+   folder mirror (§3.6), not a cloud sync.
+7. **Versions:** keep full version history (current draft), keep only the latest plus the agent's
+   last write (enough for the Send-to-agent diff and one "revert to agent's version"), or no
+   versions at all (a revision number for concurrency only)? Under discussion with Brett.
 
 ---
 
