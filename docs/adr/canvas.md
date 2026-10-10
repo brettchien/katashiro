@@ -314,9 +314,19 @@ below is built around that.
   stale, and the host opens a conflict view (their text beside the latest version) where they
   choose: keep mine (saved on top as the latest), or discard mine. If the editor is clean, the new
   version renders directly.
-- User edits reach the agent through `canvas_read`. Open question 4: should the next prompt also get
-  a one-line note such as `[canvas "X" edited by user: v5 → v6]`? If so, metadata only, never the
-  content.
+- User edits reach the agent through `canvas_read`, or when the user presses **Send to agent**
+  (§3.7). Nothing is noted automatically (§6 Q4, decided).
+- **`agentSeenVersion`.** `meta` records the latest revision the agent has seen, updated on every
+  agent write and every `canvas_read`. Send to agent is enabled only when
+  `version > agentSeenVersion`, and its header says *"agent last saw vN"*, so edits the agent has
+  already read are not pushed again as new. The diff base stays the `agent` copy; no extra content
+  is stored. (A `stale` whose `baseVersion` is a user revision still has `diffFromBase: null`:
+  that content is gone, and the agent re-reads.)
+- **Destructive actions, with no history to fall back on.** *Revert to agent's* (replaces the
+  user's latest) and *discard mine* in the conflict view each ask for confirmation, and the dialog
+  says *"This cannot be undone"* unless the folder mirror is on (then the old text is in the
+  folder, and in git if the user commits it). Importing an outside file change is never automatic
+  (§3.6, `author: "file"`).
 - Editors: **Milkdown crepe for `markdown` (phase 1)**, and CodeMirror 6 source + live preview for
   `slides` (phase 2). **Both run inside `canvas-frame.html`, never in the `html` frame.** The host
   receives only the saved markdown string via `save{}`. Milkdown's markdown is the stored format,
@@ -333,14 +343,20 @@ below is built around that.
     `markdown` version, the frame sends `rendered{version, normalized}`. The host accepts
     `normalized` only from `canvas-frame.html` with the current nonce, only for the `version` it is
     waiting on, and only up to 2 MB (as `save`); anything else is ignored. If two tabs of the same
-    canvas both answer, the first wins (normalization is idempotent, so they agree). The host replaces that version's stored content with
-    `normalized` (same `n`, still `author:"agent"`), and `canvas_read` and `diffFromBase` use it.
+    canvas both answer, the first wins (normalization is idempotent, so they agree). Under the
+    `canvas:<id>` lock the host **always** replaces the `agent` copy with `normalized` (if
+    `agentVersion` is still that version), and replaces `latest` **only if `meta.version` still
+    equals it** (the user may have saved since). Author stays `agent`; `canvas_read`, the
+    Send-to-agent diff and `diffFromBase` all use the normalized text.
     The tool result waits for this (with a timeout) and carries `normalizedDiff` when the text
     changed. The panel learns of it through `storage.onChanged` on `canvas:<id>:meta`, whose entry
     for that version flips to `normalized: true` (no extra runtime message), and computes the diff
     from the raw text it wrote, so the agent's next `find` targets what is actually stored. If no frame renders in
-    time (tab closed), the version is stored raw with `normalized:false` and normalized in place
-    on the next open; a `canvas_patch` whose `find` then misses gets the `stale` error with a diff.
+    time (tab closed), the version is stored raw with `normalized:false` and normalized on the
+    next open, by the same rule: the `agent` copy always, `latest` only if still that version.
+    (Normalizing only `latest` would make every agent-vs-latest diff span the whole document.) A
+    late result (after the timeout) is applied under the same rule; a `canvas_patch` whose `find`
+    then misses gets the `stale` error with a diff.
   - Normalization must be **idempotent** (serializing its own output changes nothing); the
     Milkdown smoke test asserts it.
 - **Only an explicit user save creates a user version.** `save{}` is sent on Ctrl+S or the Save
@@ -348,7 +364,7 @@ below is built around that.
   "Dirty" is measured against the **normalized** text loaded into the editor, not the agent's
   original, and a save whose text equals the current version creates no version. Loading or
   re-rendering agent content therefore never produces an `author:"user"` version, never makes the
-  next agent write `stale`, and never triggers the §6 Q4 edit note.
+  next agent write `stale`, and never enables Send to agent.
 - **View and edit are separate modes.** A `markdown` canvas is displayed read-only through
   markdown-it + DOMPurify (the chat's sink). Milkdown is mounted only when the user clicks Edit, and
   unmounted on leaving edit mode, so the unsanitized path below exists only while the user edits.
@@ -371,7 +387,10 @@ below is built around that.
 - **The cap is a byte budget** (200 MB, a setting; §6 Q3). With no history, a canvas costs at most
   two copies of its text plus its images, so the budget is reached only by many canvases or many
   images. Over budget, the host drops whole canvases, least recently opened first (never one open
-  in a tab), after asking once.
+  in a tab), after asking once. **The question is asked in the panel** (the agent's write arrives
+  there, and no canvas tab may be open): *"Canvas storage is full — remove N least-recently-opened
+  canvases?"*. If the user declines, or the panel cannot ask, that write fails with
+  `{error: "quota"}` and nothing is written.
 - **Sizing.** Text is small: a long markdown document is ~20–100 KB, a slide deck's markdown
   ~50–300 KB, so even 1 000 canvases of text stay under ~200 MB. **Images dominate**, so they are
   stored **once, by content hash** (`canvas:img:<sha256>`), and contents refer to them; two copies
@@ -385,6 +404,12 @@ below is built around that.
   `navigator.locks.request('canvas:<id>', …)` (Web Locks are shared by all pages of the extension
   origin), and index updates and eviction take `canvas:index`. A single writer would avoid locks,
   but canvas tabs must still save while the panel is closed (§3.9).
+  **Lock order is fixed: `canvas:<id>` before `canvas:index`, never the reverse.** A save holds
+  `canvas:<id>` and then takes `canvas:index` to update the index. Sweep and eviction hold only
+  `canvas:index` and read canvases **without** taking per-canvas locks; the "skip images written in
+  the last 10 minutes" rule covers a save in flight. Dropping a canvas during eviction does take
+  its `canvas:<id>` lock, so eviction first releases `canvas:index`, takes `canvas:<id>`, then
+  `canvas:index` again, and re-checks that the canvas is still unopened and over budget.
 - **Images: no stored reference counts.** Without transactions, a crash between "write content" and
   "increment count" leaves the count wrong: too low deletes a live image, too high keeps it
   forever. Instead:
@@ -493,8 +518,12 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
 - The card sits in the agent's turn, `📄 <title> · v<N>`, N being the revision that turn wrote.
   Clicking it opens the canvas (always the latest); if it has moved on, the header says *"updated
   since v<N>"*.
-- **Reply-to** (#61) may quote a canvas, rendering `↩ 📄 title v3` (the revision it was at).
-- `chat_history` records `[canvas "title" v3]` placeholders, not the content (as with images).
+- **Reply-to** (#61) may quote a canvas, rendering `↩ 📄 title v3` (the revision it was at). With
+  no history, v3's content usually no longer exists, so the quote carries **metadata only** (id,
+  title, revision). Content is attached only if the `agent` copy is still exactly v3, and then as
+  a §3.7 data block.
+- `chat_history` records `[canvas "title" v3]` placeholders, not the content (as with images);
+  `v3` is a revision label, not something that can be opened.
 - **"Send to agent" button (Brett, 2026-10-10; §6 Q4).** User edits are **not** announced
   automatically. The agent reads them itself with `canvas_read` when it needs to (its tool
   description says so). When the user wants the agent to look now, the canvas header's **Send to
