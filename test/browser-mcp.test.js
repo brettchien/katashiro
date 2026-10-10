@@ -2770,6 +2770,51 @@ test("katashiro.notify: per-window cooldown, dedupe of identical content, distin
   assert.ok(created.every((c) => /:\d+-\d+$/.test(c.id)));
 });
 
+test("katashiro.notify: parallel calls cannot slip past the cooldown", async () => {
+  const { deps: d } = deps();
+  const created = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  d.chrome.notifications = { create: async (id, o) => { await gate; created.push({ id, o }); return id; } };
+  d.windowId = 50;
+  const pending = Promise.all([
+    callTool(d, "katashiro.notify", { message: "a" }),
+    callTool(d, "katashiro.notify", { message: "b" })
+  ]);
+  release();
+  const results = await pending;
+  assert.equal(results.filter((r) => r.isError === undefined).length, 1);
+  assert.match(results.find((r) => r.isError).content[0].text, /rate limited/);
+  assert.equal(created.length, 1);
+});
+
+test("katashiro.notify: a failed create gives the slot back", async () => {
+  const { deps: d } = deps();
+  let fail = true;
+  const created = [];
+  d.chrome.notifications = { create: async (id, o) => { if (fail) throw new Error("boom"); created.push({ id, o }); return id; } };
+  const t = 1_000_000;
+  d.now = () => t;
+  d.windowId = 51;                                               // module-level budget: own window
+  const first = await callTool(d, "katashiro.notify", { message: "a" });
+  assert.equal(first.isError, true);
+  fail = false;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a" })).isError, undefined);
+  assert.equal(created.length, 1);
+});
+
+test("katashiro.notify: a clock stepped backwards does not freeze the limits", async () => {
+  const { deps: d } = deps();
+  const created = withNotifications(d);
+  let t = 1_000_000;
+  d.now = () => t;
+  d.windowId = 52;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "a" })).isError, undefined);
+  t -= 3_600_000;
+  assert.equal((await callTool(d, "katashiro.notify", { message: "b" })).isError, undefined);
+  assert.equal(created.length, 2);
+});
+
 test("katashiro.chat_history declares integer limit/maxChars", () => {
   const props = BrowserMcp.TOOLS["katashiro.chat_history"].inputSchema.properties;
   assert.equal(props.limit.type, "integer");

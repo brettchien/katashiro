@@ -324,7 +324,7 @@
   const NOTIFY_MESSAGE_MAX = 300;
   const NOTIFY_ID_PREFIX = "katashiro-notify:";
   // A looping agent must not stack toasts: per panel window, at most one notification per
-  // NOTIFY_COOLDOWN_MS, and the same title+message is refused again within NOTIFY_DEDUPE_MS.
+  // NOTIFY_COOLDOWN_MS, and repeating the previous title+message is refused within NOTIFY_DEDUPE_MS.
   const NOTIFY_COOLDOWN_MS = 10_000;
   const NOTIFY_DEDUPE_MS = 60_000;
   const lastNotify = new Map();            // windowKey → { at, key }
@@ -2581,7 +2581,7 @@
         "ready or failed, a decision is needed. Do not use it for routine progress or for a reply " +
         "the user is already watching. Clicking the notification focuses the browser window that " +
         "hosts this panel. `title` ≤ 80 chars, `message` ≤ 300 chars. At most one per 10 s per " +
-        "window, and an identical title+message is refused for 60 s. A success means the browser " +
+        "window, and repeating the previous title+message is refused for 60 s. A success means the browser " +
         "accepted it, not that the user saw it — OS settings (notifications off, Focus) can hide it.",
       // Not a page write: it does not act with the user's site authority, so act mode does not
       // gate it. sessionScope: it needs no active tab.
@@ -2608,22 +2608,32 @@
         const now = typeof ctx.now === "function" ? ctx.now() : Date.now();
         const key = `${title}\n${message}`;
         const last = lastNotify.get(windowKey);
-        if (last && last.key === key && now - last.at < NOTIFY_DEDUPE_MS) {
-          return errText(`not sent: the same notification was sent ${Math.round((now - last.at) / 1000)}s ago (identical ones are refused for ${NOTIFY_DEDUPE_MS / 1000}s)`);
+        // A clock that stepped backwards (age < 0) expires the limits rather than freezing them.
+        const age = last ? now - last.at : Infinity;
+        if (last && age >= 0 && last.key === key && age < NOTIFY_DEDUPE_MS) {
+          return errText(`not sent: the same notification as the previous one was sent ${Math.round(age / 1000)}s ago (a repeat of the previous one is refused for ${NOTIFY_DEDUPE_MS / 1000}s)`);
         }
-        if (last && now - last.at < NOTIFY_COOLDOWN_MS) {
-          return errText(`not sent: rate limited — one notification per ${NOTIFY_COOLDOWN_MS / 1000}s per window; retry in ${Math.ceil((NOTIFY_COOLDOWN_MS - (now - last.at)) / 1000)}s`);
+        if (last && age >= 0 && age < NOTIFY_COOLDOWN_MS) {
+          return errText(`not sent: rate limited — one notification per ${NOTIFY_COOLDOWN_MS / 1000}s per window; retry in ${Math.ceil((NOTIFY_COOLDOWN_MS - age) / 1000)}s`);
         }
+        // Claim the slot before awaiting: parallel calls in one turn would otherwise all pass the
+        // check above before any of them recorded itself. A failed create gives the slot back.
+        lastNotify.set(windowKey, { at: now, key });
         // The id prefix carries the panel's window so its onClicked handler focuses the right window
         // (every open panel hears every click; each only claims its own).
         const id = `${NOTIFY_ID_PREFIX}${windowKey}:${now}-${++notifySeq}`;
-        await notifications.create(id, {
-          type: "basic",
-          iconUrl: "icon128.png",
-          title: title || "Katashiro",
-          message
-        });
-        lastNotify.set(windowKey, { at: now, key });
+        try {
+          await notifications.create(id, {
+            type: "basic",
+            iconUrl: "icon128.png",
+            title: title || "Katashiro",
+            message
+          });
+        } catch (e) {
+          if (last) lastNotify.set(windowKey, last);
+          else lastNotify.delete(windowKey);
+          throw e;
+        }
         return okText(`notification sent: ${title ? `${title} — ` : ""}${message}`);
       }
     }
