@@ -115,6 +115,8 @@ body {
 .ks-removed-before { box-shadow: inset 0 3px 0 rgba(248, 113, 113, 0.9); animation: ks-fade-mark var(--ks-ms, 4000ms) ease-in forwards; }
 .ks-removed-after { box-shadow: inset 0 -3px 0 rgba(248, 113, 113, 0.9); animation: ks-fade-mark var(--ks-ms, 4000ms) ease-in forwards; }
 @keyframes ks-fade-mark { to { box-shadow: inset 0 0 0 transparent; } }
+/* While a compare is open the markers stay (Brett, 2026-10-11): no fade. */
+.ks-hold.ks-changed, .ks-hold.ks-removed-before, .ks-hold.ks-removed-after { animation: none; }
 /* canvas_highlight: amber, held, then faded at the end. */
 .ks-point {
   outline: 3px solid #f59e0b;

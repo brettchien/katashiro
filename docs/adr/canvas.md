@@ -789,14 +789,16 @@ agent's last write is the baseline.
   shows *"3 changes since you last looked"* and a click replays the glow on those blocks.
 - **Compare in Split View (phase 1).** *Compare with agent's* opens a second, **read-only** tab
   `canvas.html?id=…&view=agent` with the agent's last write and splits it with the canvas tab.
-  Both panes glow the differing blocks; if the agent copy equals the latest, it says *"No
-  differences"*.
+  Both panes mark the differing blocks, and **the markers stay while the compare is open** (Brett,
+  2026-10-11: no fade in Split View), re-marked after every render and cleared when the compare
+  tab closes; if the agent copy equals the latest, it says *"No differences"*.
   - **Split rules.** Chrome splits two tabs at a time, and the canvas tab may already be split with
     a web page (and moved into that page's group, §3.1). Compare first ends that split under the
     §3.1 move rules, returns the canvas tab to the canvas group, then splits it with the compare
     tab, both in the canvas group. When compare ends, the earlier web-page split is **not**
     restored. Without Split View (Chrome < 155) the compare view opens as a normal tab.
-  - **Ending it.** Closing **either** tab ends the compare: closing the compare tab just removes the
+  - **Ending it.** The compare tab has a **✕ 結束比較** button (Brett, 2026-10-11) that closes it.
+    Closing **either** tab ends the compare: closing the compare tab just removes the
     split; closing the canvas tab closes the compare tab too. *Revert to agent's* also ends it.
   - **It is not the canvas.** The compare tab has its own iframe, nonce and load count (§3.2 is
     unchanged); its host shows no Edit, Send to agent or Revert, and its allow-list refuses `save`
