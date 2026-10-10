@@ -543,3 +543,32 @@ test("planHistoryAdoption: a live window's key is never adopted or pruned", () =
   const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["5"]), ownKey: "history:6", prefix: "history:", now: 10 ** 13, keepMs: 1 });
   assert.deepEqual(plan, { adopt: null, prune: [] });
 });
+
+// --- #62 ---------------------------------------------------------------------------------------
+
+test("batchWithReplyHint: a retried prompt batched with new messages carries the hint once, at the end", () => {
+  const H = RoomCore.REPLY_HINT;
+  const retried = `[2026-10-10T16:05:12+08:00 user]\nfirst\n\n[2026-10-10T16:05:20+08:00 user]\nsecond\n\n${H}`;
+  const fresh = "[2026-10-10T16:06:00+08:00 user]\nthird";
+  const out = RoomCore.batchWithReplyHint([retried, fresh]);
+  assert.equal(out.split(H).length - 1, 1);
+  assert.ok(out.endsWith(`\n\n${H}`));
+  assert.ok(out.includes("third"));
+  // retried alone, it keeps its hint (once)
+  const alone = RoomCore.batchWithReplyHint([retried]);
+  assert.equal(alone.split(H).length - 1, 1);
+  assert.ok(alone.endsWith(H));
+  // a single plain message needs no hint and gets none
+  assert.equal(RoomCore.batchWithReplyHint(["hello"]), "hello");
+});
+
+test("nextUniqueMs never repeats or goes back", () => {
+  let last = 0;
+  const seen = new Set();
+  for (const t of [1000, 1000, 1001, 999, 1001, 2000]) {
+    last = RoomCore.nextUniqueMs(last, t);
+    assert.ok(!seen.has(last));
+    seen.add(last);
+  }
+  assert.deepEqual([...seen], [1000, 1001, 1002, 1003, 1004, 2000]);
+});

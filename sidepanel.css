@@ -1321,6 +1321,8 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .message:hover .reply-btn,
 .reply-btn:focus-visible { opacity: 1; }
+/* A message that starts with a code block has its copy button top-right too (#62): sit left of it. */
+.message-content:has(> .bubble > pre:first-child) > .reply-btn { right: 64px; }
 .reply-quote {
   font-size: 12px;
   opacity: 0.7;

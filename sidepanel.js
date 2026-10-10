@@ -448,9 +448,9 @@ class Conn {
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
     const batch = this.promptQueue.splice(0);
-    let text = RoomCore.batchPrompts(batch);
-    // (A retried batch already carries the note — don't stack a second one.)
-    if (text && RoomCore.needsReplyHint(batch) && !text.endsWith(RoomCore.REPLY_HINT)) text += `\n\n${RoomCore.REPLY_HINT}`;
+    // The reply hint exactly once, at the end — also when a retried prompt (which carries it) is
+    // batched with newer messages (#62).
+    let text = RoomCore.batchWithReplyHint(batch);
     let images = [];
     if (this.pendingImages.length && !this.canImage) {
       const n = this.pendingImages.splice(0).length;
@@ -828,13 +828,16 @@ class Conn {
     // A reply with "↩ <time>" markers becomes one message per part — the first part fills this
     // turn's bubble, each later part is its own row — every part quoting (clickable) the message it
     // answers, with its own id, ↩ button and history record, so a reload replays them split too.
-    const doneAt = Date.now();
+    const doneAt = uniqueMsgMs(Date.now());
     const split = RoomCore.replyParts(s.text);
     const first = split[0];
     const firstReply = first.replyTo ? replyTargetFor(first.replyTo) : null;
     renderMarkdownInto(s.bubble, first.text);
     if (firstReply && s.contentEl) s.contentEl.insertBefore(replyQuoteEl(firstReply), s.bubble);
     const row = s.bubble.closest(".message");
+    // The row showed the time streaming STARTED; the id, quotes and chat_history use doneAt (#62).
+    const tsEl = s.contentEl && s.contentEl.querySelector(":scope > .timestamp");
+    if (tsEl) tsEl.textContent = formatTime(doneAt);
     const firstId = RoomCore.messageId(conversationId, doneAt);
     if (row && s.contentEl) {
       row.dataset.msgId = firstId;
@@ -847,7 +850,7 @@ class Conn {
     });
     split.slice(1).forEach((p, i) => {
       appendMessage({
-        senderId: this.id, senderName: this.name, text: p.text, timestamp: doneAt + i + 1,   // +1 ms: distinct ids
+        senderId: this.id, senderName: this.name, text: p.text, timestamp: uniqueMsgMs(doneAt + i + 1),   // distinct ids
         replyTo: p.replyTo ? replyTargetFor(p.replyTo) : null,
       });
     });
@@ -2140,6 +2143,13 @@ function canvasCard({ id, version, title }) {
   card.title = "在分頁中開啟這個畫布";
   card.addEventListener("click", () => { openCanvasTab(id, { active: true }).catch(() => {}); });
   return card;
+}
+
+// Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
+let lastMsgMs = 0;
+function uniqueMsgMs(t) {
+  lastMsgMs = RoomCore.nextUniqueMs(lastMsgMs, t);
+  return lastMsgMs;
 }
 
 // --- show_image helpers ---------------------------------------------------------

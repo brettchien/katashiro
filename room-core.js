@@ -461,7 +461,31 @@
     return { adopt, prune };
   }
 
+  // #62: the batch text with the reply hint exactly once, at the end. A retried prompt already
+  // carries the hint; if new messages were queued after it, endsWith() no longer saw it and the
+  // hint ended up twice (once mid-prompt). Strip it from every item, then add it once if needed.
+  function batchWithReplyHint(batch) {
+    const suffix = `\n\n${REPLY_HINT}`;
+    const items = (Array.isArray(batch) ? batch : []).map((t) => {
+      let s = t == null ? "" : String(t);
+      while (s.endsWith(suffix)) s = s.slice(0, -suffix.length);
+      return s === REPLY_HINT ? "" : s;
+    });
+    const text = batchPrompts(items);
+    // A retried item had the hint for a reason (it batched several messages): keep it.
+    const hadHint = (Array.isArray(batch) ? batch : []).some((t) => String(t == null ? "" : t).endsWith(suffix));
+    return text && (hadHint || needsReplyHint(items)) ? `${text}${suffix}` : text;
+  }
+
+  // #62: message ids are <conversationId>:<ms>; two messages finishing in the same ms (a split
+  // reply's parts, two agents) must not share one. Returns t, or last + 1 if t is not after last.
+  function nextUniqueMs(last, t) {
+    return t > last ? t : last + 1;
+  }
+
   return {
+    batchWithReplyHint,
+    nextUniqueMs,
     planHistoryAdoption,
     splitReplySegments,
     replyParts,
