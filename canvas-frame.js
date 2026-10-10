@@ -73,17 +73,21 @@
     editorRoot.replaceChildren();
     const crepe = new M.Crepe(crepeOptions(M, editorRoot, content));
     await crepe.create();
-    const state = { crepe, version, baseline: crepe.getMarkdown(), dirty: false };
+    const state = { crepe, version, baseline: editorText(crepe), dirty: false };
     editing = state;
     crepe.on((listener) => listener.markdownUpdated((_ctx, md) => {
       if (editing !== state) return;
-      const dirty = md !== state.baseline;
+      const dirty = CanvasCore.cleanEditorMarkdown(md) !== state.baseline;
       if (dirty !== state.dirty) { state.dirty = dirty; post({ type: "dirty", dirty }); }
     }));
   }
+  // The editor's markdown as stored: Milkdown's "<br />" empty-paragraph lines become blank lines.
+  function editorText(crepe) {
+    return CanvasCore.cleanEditorMarkdown(crepe.getMarkdown());
+  }
   function requestSave() {
     if (!editing) return;
-    post({ type: "save", content: editing.crepe.getMarkdown(), baseVersion: editing.version });
+    post({ type: "save", content: editorText(editing.crepe), baseVersion: editing.version });
   }
   function stopEdit() {
     if (!editing) return;
@@ -101,7 +105,8 @@
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
   function renderMarkdown(content) {
     doc.hidden = false;
-    renderMarkdownInto(doc, content, { copyText: copyViaHost });
+    // Older saves may still hold "<br />" lines; never show them as literal text.
+    renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
@@ -201,7 +206,7 @@
         editing.version = m.version;
         // The baseline is what was saved; text typed while the save was in flight stays dirty.
         if (typeof m.content === "string") editing.baseline = m.content;
-        const dirty = editing.crepe.getMarkdown() !== editing.baseline;
+        const dirty = editorText(editing.crepe) !== editing.baseline;
         if (dirty !== editing.dirty) { editing.dirty = dirty; post({ type: "dirty", dirty }); }
       }
       return;
@@ -219,7 +224,7 @@
       // §3.5: the host asks for the normalized form of an agent markdown write (its agent copy).
       let normalized;
       if (m.kind === "markdown" && typeof m.normalizeText === "string") {
-        try { normalized = await normalize(m.normalizeText); } catch (_) { /* stays unnormalized */ }
+        try { normalized = CanvasCore.cleanEditorMarkdown(await normalize(m.normalizeText)); } catch (_) { /* stays unnormalized */ }
       }
       post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
     }, (err) => post({ type: "error", msg: String((err && err.message) || err) }));

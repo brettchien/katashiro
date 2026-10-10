@@ -2776,7 +2776,7 @@
           if (n && n.diff) {
             text += `\nnormalizedDiff (the editor reformatted your markdown; the stored text is the normalized one — base your next edit on it):\n${n.diff.slice(0, CANVAS_DIFF_MAX)}`;
           } else if (!n) {
-            text += "\n(not normalized yet: no canvas tab rendered it in time; it will be when the tab opens — canvas_read before a partial edit)";
+            text += "\n(not normalized yet: no canvas tab rendered it in time — none is open, or the user is editing it; it will be once a tab shows it — canvas_read before a partial edit)";
           }
         }
         return okText(text);

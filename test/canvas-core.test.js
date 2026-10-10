@@ -90,3 +90,14 @@ test("editing messages (§3.5): save, dirty, rendered.normalized — typed and b
   assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, normalized: "- a" }));
   assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, normalized: 7 }), null);
 });
+
+test("cleanEditorMarkdown: Milkdown's <br /> empty-paragraph lines become blank lines, not inside fences", () => {
+  const md = "a\n\n<br />\n\n<br />\n\nb\n\n```html\n<br />\n```\n\n<BR>\n\nc <br /> inline\n";
+  const out = C.cleanEditorMarkdown(md);
+  assert.equal(out, "a\n\nb\n\n```html\n<br />\n```\n\nc <br /> inline\n");
+  assert.equal(C.cleanEditorMarkdown(out), out);                      // idempotent
+  assert.equal(C.cleanEditorMarkdown("x\n\n\n\ny"), "x\n\ny");
+  // a fence nested in a list item is indented 4+ spaces; its body must be left alone
+  const nested = "- a\n  - b\n\n    ```\n    x\n\n\n    <br>\n    ```\n";
+  assert.equal(C.cleanEditorMarkdown(nested), nested);
+});
