@@ -107,8 +107,10 @@
     if (frame) frame.remove();
     frame = null;
     frameReady = false;
+    rendered = false;
     nonce = "";
     notice(why);
+    finishGoto({ ok: false, error: "the canvas is no longer shown" });
   }
 
   // What the frame renders: the text for markdown / slides; for an image canvas the stored JSON
@@ -258,7 +260,12 @@
         sendRender();
         updateButtons();
         break;
+      case "slide":
+        finishGoto({ ok: true, index: m.index, total: m.total });
+        break;
       case "rendered":
+        rendered = true;
+        if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
           awaitingNormalize = 0;
           store.applyNormalized({ id: canvasId, version: m.version, normalized: m.normalized }).catch(() => {});
@@ -273,6 +280,7 @@
         break;
       case "error":
         notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
+        finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
       case "copy": {
         const reply = (ok) => frame && frame.contentWindow.postMessage({ type: "copied", nonce, reqId: m.reqId, ok }, "*");
@@ -290,6 +298,35 @@
   });
 
   // Live updates: the panel writes a new version → re-read and re-render in place.
+  // canvas_goto (from the side panel, same extension only): show slide N of THIS canvas. Answered
+  // once the frame reports the slide it now shows; a frame not rendered yet gets it after rendering.
+  // Always answered: by the frame, a frame error / drop, a newer goto, or the timer (Jellyfish #79).
+  // Two tabs of the same canvas both move; the first to answer wins (ADR, canvas_goto).
+  const GOTO_TIMEOUT_MS = 5000;
+  let rendered = false;
+  let pendingGoto = null;                     // { slide, respond, sent, timer }
+  function finishGoto(result) {
+    if (!pendingGoto) return;
+    const { respond, timer } = pendingGoto;
+    pendingGoto = null;
+    clearTimeout(timer);
+    respond(result);
+  }
+  const PANEL_URL = chrome.runtime.getURL("sidepanel.html");
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    // Only the side panel: not a content script (sender.tab), not another extension page.
+    if (!sender || sender.id !== chrome.runtime.id || sender.tab || sender.url !== PANEL_URL) return false;
+    if (!msg || msg.type !== "katashiro-canvas-goto" || msg.id !== canvasId) return false;
+    if (!Number.isInteger(msg.slide) || msg.slide < 1) { sendResponse({ ok: false, error: "slide must be a positive integer" }); return false; }
+    if (current && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}, not slides` }); return false; }
+    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas" }); return false; }
+    finishGoto({ ok: false, error: "superseded by a newer goto" });
+    const timer = setTimeout(() => finishGoto({ ok: false, error: "the slides did not respond in time" }), GOTO_TIMEOUT_MS);
+    pendingGoto = { slide: msg.slide, respond: sendResponse, sent: false, timer };
+    if (frame && frameReady && rendered) { pendingGoto.sent = true; toFrame({ type: "goto", slide: msg.slide }); }
+    return true;                              // answer asynchronously
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
     if (!changes[CanvasStore.metaKey(canvasId)] && !changes[CanvasStore.latestKey(canvasId)]) return;

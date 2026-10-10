@@ -2843,6 +2843,36 @@
       }
     },
 
+    "katashiro.canvas_goto": {
+      description:
+        "Show a given slide of a SLIDES canvas to the user: brings its tab to the front (opening it if " +
+        "needed) and jumps to slide `slide` (1-based, clamped to the deck). Returns the slide now shown " +
+        "and the deck's length. Use it while you walk the user through a deck; screenshot to check.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id (a slides canvas)" },
+          slide: { type: "integer", minimum: 1, description: "slide number, 1-based" }
+        },
+        required: ["id", "slide"]
+      },
+      redact: redactDefault,
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        if (!Number.isInteger(args.slide) || args.slide < 1) return errText("canvas_goto: `slide` must be a positive integer");
+        let meta;
+        try { meta = await c.store.read({ conversationId: c.conversationId(), id: args.id }); }
+        catch (e) { return errText(`canvas_goto: ${(e && e.message) || e}`); }
+        if (meta.kind !== "slides") return errText(`canvas_goto: canvas "${meta.title}" is ${meta.kind}, not slides`);
+        if (typeof c.gotoSlide !== "function") return errText("canvas_goto: not available in this host");
+        const r = await c.gotoSlide(meta.id, args.slide);
+        if (!r || !r.ok) return errText(`canvas_goto: ${(r && r.error) || "failed"}`);
+        return okText(`showing slide ${r.index} of ${r.total} of "${meta.title}"${r.index !== args.slide ? ` (asked for ${args.slide}; the deck has ${r.total})` : ""}`);
+      }
+    },
+
     "katashiro.canvas_list": {
       description: "List this conversation's canvases: id, title, kind, version, size, last update.",
       sessionScope: true,
