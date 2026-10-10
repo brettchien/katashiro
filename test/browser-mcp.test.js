@@ -2728,12 +2728,15 @@ test("katashiro.notify creates a basic notification tagged with the panel's wind
 test("katashiro.notify defaults the title and validates its inputs", async () => {
   const { deps: d } = deps();
   const created = withNotifications(d);
-  await callTool(d, "katashiro.notify", { message: "hi" });
-  assert.equal(created[0].o.title, "Katashiro");
+  d.windowId = 60;                                               // module-level budget: own window
+  // Bad calls first: each is refused by validation (not the limiter) and spends no budget.
   for (const bad of [{}, { message: "  " }, { message: "m".repeat(301) }, { message: "ok", title: "t".repeat(81) }]) {
     const res = await callTool(d, "katashiro.notify", bad);
     assert.equal(res.isError, true, JSON.stringify(bad));
+    assert.match(res.content[0].text, /non-empty|capped at/, JSON.stringify(bad));
   }
+  assert.equal((await callTool(d, "katashiro.notify", { message: "hi" })).isError, undefined);
+  assert.equal(created[0].o.title, "Katashiro");
   assert.equal(created.length, 1);
 });
 
