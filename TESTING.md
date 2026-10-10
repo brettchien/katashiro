@@ -52,4 +52,5 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt. Run `chrome.storage.local.remove("canvas:budgetBytes")`
-  to go back to 200 MB. Both take effect without a reload. Values under 1 MB are ignored.
+  to go back to 200 MB. Both take effect without a reload. Values under 1 MB are ignored, and
+  values over 200 MB are capped at 200 MB.

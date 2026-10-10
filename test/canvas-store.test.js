@@ -216,6 +216,10 @@ test("budget: a storage override (≥ 1 MB) replaces 200 MB, read on every check
   assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
   await storage.set({ [K]: "2097152" });              // not a number → ignored
   assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
+  await storage.set({ [K]: 1.5 * MB + 0.5 });         // not an integer → floored
+  assert.equal((await s.usage()).budget, 1.5 * MB);
+  await storage.set({ [K]: 300 * MB });               // over 200 MB → capped
+  assert.equal((await s.usage()).budget, CanvasStore.BUDGET_BYTES);
   await storage.set({ [K]: MB });
   assert.equal((await s.usage()).budget, MB);
   await s.agentWrite({ conversationId: "c", title: "A", content: "a".repeat(600 * 1024) });

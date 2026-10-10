@@ -163,7 +163,7 @@
     async function budget() {
       if (deps.budgetBytes) return deps.budgetBytes;
       const v = ((await storage.get(BUDGET_OVERRIDE_KEY)) || {})[BUDGET_OVERRIDE_KEY];
-      return Number.isFinite(v) && v >= BUDGET_OVERRIDE_MIN ? Math.floor(v) : BUDGET_BYTES;
+      return Number.isFinite(v) && v >= BUDGET_OVERRIDE_MIN ? Math.min(Math.floor(v), BUDGET_BYTES) : BUDGET_BYTES;
     }
     const isOpen = deps.isOpen || (async () => false);
     const confirmEvict = deps.confirmEvict || (async () => false);
@@ -501,7 +501,10 @@
   const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
   // Testing the eviction without filling 200 MB: from the side panel's DevTools console,
   //   chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })
-  // and chrome.storage.local.remove("canvas:budgetBytes") to go back. Values under 1 MB are ignored.
+  // and chrome.storage.local.remove("canvas:budgetBytes") to go back. Values under 1 MB are ignored;
+  // values over 200 MB are capped at 200 MB (the override only lowers the budget). Every scan of
+  // canvas:* keys matches exact shapes (cv_ ids, the img: prefix), so none of them sees this key; a
+  // future "delete every canvas:* key" would drop it too, which just restores 200 MB.
   const BUDGET_OVERRIDE_KEY = "canvas:budgetBytes";
   const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
