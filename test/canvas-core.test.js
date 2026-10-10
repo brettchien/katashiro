@@ -58,3 +58,25 @@ test("copy (#69): text + integer reqId, bounded to 1 MB", () => {
   assert.equal(ok({ type: "copy", nonce: "n1", text: 5, reqId: 1 }), null);
   assert.equal(ok({ type: "copy", nonce: "n1", text: "x".repeat(1024 * 1024 + 1), reqId: 1 }), null);
 });
+
+// --- slides (PR 2) ----------------------------------------------------------------------------
+
+test("splitSlides: '---' lines separate slides; not inside code fences; blank ends dropped", () => {
+  assert.deepEqual(C.splitSlides("# A\n---\n# B\n\n---\n# C"), ["# A", "# B\n", "# C"]);
+  assert.deepEqual(C.splitSlides("---\n# only\n---\n"), ["# only"]);
+  const fenced = "# Code\n```yaml\n---\nkey: v\n```\n---\n# Next";
+  assert.deepEqual(C.splitSlides(fenced), ["# Code\n```yaml\n---\nkey: v\n```", "# Next"]);
+  assert.deepEqual(C.splitSlides("~~~\n---\n~~~"), ["~~~\n---\n~~~"]);
+  assert.deepEqual(C.splitSlides("a\n----\nb"), ["a\n----\nb"]);          // only exactly three dashes
+  assert.deepEqual(C.splitSlides("a\r\n---\r\nb"), ["a", "b"]);
+  assert.deepEqual(C.splitSlides(""), [""]);
+  assert.deepEqual(C.splitSlides("a\n---\n\n---\nb"), ["a", "", "b"]);   // an intentional empty slide stays
+});
+
+test("isImageDataUrl: only base64 data: URLs of the allowed image types", () => {
+  assert.ok(C.isImageDataUrl("data:image/png;base64,iVBORw0KGgo="));
+  assert.ok(C.isImageDataUrl("data:image/svg+xml;base64,PHN2Zz4="));
+  for (const bad of ["data:text/html;base64,PGI+", "https://x/y.png", "data:image/png,raw", "data:image/png;base64,<script>", 7]) {
+    assert.equal(C.isImageDataUrl(bad), false, String(bad));
+  }
+});

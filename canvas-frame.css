@@ -61,3 +61,10 @@ body {
 /* GFM task lists (markdown.js): read-only checkboxes instead of bullets. */
 .doc li.task-list-item { list-style: none; }
 .doc li.task-list-item .task-list-item-checkbox { margin: 0 0.4em 0 -1.4em; vertical-align: middle; }
+
+[hidden] { display: none !important; }
+
+/* image canvas: centered, fits the tab, caption below (text only). */
+.pic { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; }
+.pic img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; border-radius: 8px; }
+.pic figcaption { color: #94a3b8; font-size: 14px; }

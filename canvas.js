@@ -83,12 +83,25 @@
     notice(why);
   }
 
-  function sendRender() {
+  // What the frame renders: the text for markdown / slides; for an image canvas the stored JSON
+  // reference is resolved here (the frame has no storage) into { dataUrl, caption }.
+  async function renderPayload(c) {
+    if (c.meta.kind !== "image") return c.content;
+    let ref;
+    try { ref = JSON.parse(c.content); } catch (_) { throw new Error("broken image canvas"); }
+    const img = await store.readImage(ref && ref.image);
+    if (!img) throw new Error("the image of this canvas is missing");
+    return { dataUrl: `data:${img.mimeType};base64,${img.data}`, caption: String((ref && ref.caption) || "") };
+  }
+
+  async function sendRender() {
     if (!frame || !frameReady || !current) return;
+    const c = current;
+    let content;
+    try { content = await renderPayload(c); } catch (e) { notice(CanvasCore.clipError(e.message)); return; }
+    if (!frame || !frameReady || current !== c) return;         // superseded while reading the image
     // '*' is the only target for an opaque-origin frame; the load gate is what makes it safe.
-    frame.contentWindow.postMessage({
-      type: "render", nonce, kind: current.meta.kind, version: current.meta.version, content: current.content,
-    }, "*");
+    frame.contentWindow.postMessage({ type: "render", nonce, kind: c.meta.kind, version: c.meta.version, content }, "*");
   }
 
   window.addEventListener("message", (event) => {

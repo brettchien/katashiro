@@ -13,6 +13,53 @@
 
   const nonce = location.hash.slice(1);
   const doc = document.getElementById("doc");
+  const deck = document.getElementById("deck");
+  const pic = document.getElementById("pic");
+
+  // markdown: the document view. A canvas never changes kind, so each frame shows one view.
+  function renderMarkdown(content) {
+    doc.hidden = false;
+    renderMarkdownInto(doc, content, { copyText: copyViaHost });
+  }
+
+  // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
+  // markdown sink; reveal.js only receives finished <section>s (no reveal markdown plugin, which
+  // would pass raw HTML through). Re-renders keep the current slide.
+  let revealReady = null;
+  function renderSlides(content) {
+    deck.hidden = false;
+    document.body.classList.add("mode-slides");
+    const container = deck.querySelector(".slides");
+    const sections = CanvasCore.splitSlides(content).map((text) => {
+      const sec = document.createElement("section");
+      renderMarkdownInto(sec, text, { copyText: copyViaHost });
+      return sec;
+    });
+    container.replaceChildren(...sections);
+    if (!revealReady) {
+      revealReady = Reveal.initialize({
+        hash: false, history: false, respondToHashChanges: false,
+        postMessage: false, postMessageEvents: false,           // only our own message channel
+        controls: true, progress: true, slideNumber: "c/t", center: true,
+        transition: "slide", width: 1280, height: 720, margin: 0.06,
+      });
+      return revealReady;
+    }
+    return revealReady.then(() => {
+      const h = Reveal.getIndices().h || 0;
+      Reveal.sync();
+      Reveal.slide(Math.min(h, sections.length - 1));
+    });
+  }
+
+  // image: a data: URL the host read from storage (checked again here), caption as text.
+  function renderImage(content) {
+    if (!content || !CanvasCore.isImageDataUrl(content.dataUrl)) throw new Error("not an image");
+    pic.hidden = false;
+    pic.querySelector("img").src = content.dataUrl;
+    pic.querySelector("img").alt = content.caption || "image";
+    pic.querySelector("figcaption").textContent = content.caption || "";
+  }
   const post = (msg) => window.parent.postMessage({ ...msg, nonce }, "*");
 
   // Copy goes through the host (#69): this opaque-origin frame has no clipboard access.
@@ -59,13 +106,15 @@
       return;
     }
     if (m.type !== "render") return;
-    try {
-      if (m.kind !== "markdown") throw new Error(`unsupported kind: ${m.kind}`);
-      renderMarkdownInto(doc, typeof m.content === "string" ? m.content : "", { copyText: copyViaHost });
-      post({ type: "rendered", version: m.version });
-    } catch (err) {
-      post({ type: "error", msg: String((err && err.message) || err) });
-    }
+    Promise.resolve().then(() => {
+      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "");
+      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "");
+      if (m.kind === "image") return renderImage(m.content);
+      throw new Error(`unsupported kind: ${m.kind}`);
+    }).then(
+      () => post({ type: "rendered", version: m.version }),
+      (err) => post({ type: "error", msg: String((err && err.message) || err) })
+    );
   });
 
   post({ type: "ready" });

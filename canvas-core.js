@@ -77,5 +77,39 @@
     return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
   }
 
-  return { acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  /**
+   * Split slide markdown into slides on lines that are exactly "---" (ADR §3.3), ignoring any
+   * inside a fenced code block (```/~~~). Leading/trailing blank slides are dropped; at least one
+   * slide is always returned. Pure, so the frame and the tests share it.
+   */
+  function splitSlides(text) {
+    const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+    const slides = [];
+    let cur = [];
+    let fence = null;                       // the opening fence string while inside a code block
+    for (const line of lines) {
+      const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+      if (f) {
+        if (fence === null) fence = f[1];
+        else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
+      }
+      if (fence === null && /^ {0,3}---\s*$/.test(line)) {
+        slides.push(cur.join("\n"));
+        cur = [];
+      } else {
+        cur.push(line);
+      }
+    }
+    slides.push(cur.join("\n"));
+    const kept = slides.filter((s, i) => s.trim() !== "" || (i > 0 && i < slides.length - 1));
+    return kept.length ? kept : [""];
+  }
+
+  // image render payload (host → frame): only a data: URL of an allowed image type.
+  const IMAGE_DATA_URL_RE = /^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}$/;
+  function isImageDataUrl(s) {
+    return typeof s === "string" && IMAGE_DATA_URL_RE.test(s);
+  }
+
+  return { splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
