@@ -702,7 +702,7 @@
       m.file.state === "ok" && m.fileSyncedVersion === m.version);
   }
   function syncFile(opts) {
-    if (deleted) return Promise.resolve();
+    if (deleted || compareView) return Promise.resolve();    // a compare tab is read-only (§3.10): the canvas tab writes
     return mirror.sync(canvasId, opts).catch(() => {}).then(updateFileStatus);
   }
   reconnectBtn.addEventListener("click", async () => {
