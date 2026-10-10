@@ -121,7 +121,7 @@
       const diff = CanvasStore.unifiedDiff(agentText == null ? "" : agentText, c.content);
       const head = `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.agentVersion} → v${c.meta.version}, edited by user]`;
       const text = CanvasCore.composeCanvasPush({
-        note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null,
+        note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null, lang: "diff",
       });
       const r = await pushToAgent(text, note);
       if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
