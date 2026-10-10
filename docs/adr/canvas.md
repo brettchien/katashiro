@@ -760,8 +760,10 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
    **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
    `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
-5. **Order:** canvas phase 1 before multi-conversation (conversationId already exists), or after?
-   *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
+5. ~~**Order:** canvas phase 1 before multi-conversation, or after?~~ **Decided (Brett,
+   2026-10-10):** canvas phase 1 first. Storage is keyed by `conversationId` from day one (§3.6); until
+   multi-conversation lands the tab group is titled "Canvas", and group titles and collapse-on-switch
+   (§3.1) are added with multi-conversation.
 6. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
    folder mirror (§3.6), not a cloud sync.
 7. ~~**Versions:** full history, latest + agent's last write, or none?~~ **Decided (Brett,
