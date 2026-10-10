@@ -34,6 +34,12 @@
   const cancelBtn = document.getElementById("canvas-cancel");
   const revertBtn = document.getElementById("canvas-revert");
   const compareBtn = document.getElementById("canvas-compare");
+  const endCompareBtn = document.getElementById("canvas-end-compare");
+  // The compare tab's own way out (Brett, 2026-10-11): closing it ends the compare (§3.10).
+  if (compareView) {
+    endCompareBtn.hidden = false;
+    endCompareBtn.addEventListener("click", () => closeThisTab());
+  }
   const conflictEl = document.getElementById("canvas-conflict");
   const fileEl = document.getElementById("canvas-file");
   const reconnectBtn = document.getElementById("canvas-reconnect");
