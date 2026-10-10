@@ -837,7 +837,7 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    folder mirror (§3.6), not a cloud sync.
 7. ~~**Versions:** full history, latest + agent's last write, or none?~~ **Decided (Brett,
    2026-10-10):** latest + the agent's last write, with a revision counter (§3.5, §3.6).
-8. **`html` and act mode** (raised in review after Q2): with `html` on by default, an `html` canvas
+8. **`html` and act mode** — **Decided (Brett, 2026-10-10): (a) click to run.** (Raised in review after Q2): with `html` on by default, an `html` canvas
    is an exfiltration path that skips act mode (§3.2 residual risk). Both options keep `html` on
    by default:
    - **(a) Click to run.** An `html` canvas first renders **without script in the existing
