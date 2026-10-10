@@ -741,6 +741,10 @@ sequenceDiagram
 - **Phase 1 scope:** canvas tabs in a per-conversation tab group (with the Split View rule, §3.1),
   sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, revision counter + agent's last write,
   card, PDF via print, and **Milkdown editing of `markdown` canvases** with the §3.5 concurrency.
+- **No embedded third-party media (Brett, 2026-10-10).** YouTube and other external videos or
+  iframes are shown as **links** only: a click goes through `openLink` (§3.2) and opens a new tab.
+  Embedding would need `frame-src` to a third party from the sandbox, a new egress path, and
+  YouTube's embed may also require a Referer that an opaque-origin frame does not send.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 
