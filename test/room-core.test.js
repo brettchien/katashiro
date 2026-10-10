@@ -581,3 +581,25 @@ test("nextUniqueMs never repeats or goes back", () => {
   }
   assert.deepEqual([...seen], [1000, 1001, 1002, 1003, 1004, 2000]);
 });
+
+// --- turnDeadline: a turn times out on silence, not on length ----------------
+test("turnDeadline: no activity → idleMs after the start", () => {
+  assert.deepEqual(RoomCore.turnDeadline({ startedAt: 1000, lastActivityAt: 1000, idleMs: 600, maxMs: 2100 }), { at: 1600, reason: "idle" });
+});
+test("turnDeadline: activity pushes the idle deadline out", () => {
+  assert.deepEqual(RoomCore.turnDeadline({ startedAt: 1000, lastActivityAt: 1500, idleMs: 600, maxMs: 2100 }), { at: 2100, reason: "idle" });
+  assert.deepEqual(RoomCore.turnDeadline({ startedAt: 1000, lastActivityAt: 1400, idleMs: 600, maxMs: 2100 }), { at: 2000, reason: "idle" });
+});
+test("turnDeadline: never later than maxMs after the start, however busy the turn", () => {
+  assert.deepEqual(RoomCore.turnDeadline({ startedAt: 1000, lastActivityAt: 3000, idleMs: 600, maxMs: 2100 }), { at: 3100, reason: "max" });
+});
+test("turnDeadline: activity stamped before the turn (a previous turn) does not count", () => {
+  assert.deepEqual(RoomCore.turnDeadline({ startedAt: 1000, lastActivityAt: 0, idleMs: 600, maxMs: 2100 }), { at: 1600, reason: "idle" });
+});
+test("turn timeouts: the max sits above the core's 30-min prompt hard timeout, idle below it", () => {
+  assert.ok(RoomCore.TURN_MAX_TIMEOUT_MS > 30 * 60 * 1000);
+  assert.ok(RoomCore.TURN_IDLE_TIMEOUT_MS < RoomCore.TURN_MAX_TIMEOUT_MS);
+});
+test("turnDeadline reasons keep isDeadProbeReason's 'timed out' match (the cancel path)", () => {
+  assert.equal(RoomCore.promptFailureAction(RoomCore.isDeadProbeReason("request timed out: session/prompt (idle)"), true), "cancel");
+});
