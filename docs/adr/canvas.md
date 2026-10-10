@@ -108,7 +108,7 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   Agent form: `canvas_open(…, beside: "current")`.
 - If the user drags a canvas tab out of the group or deletes the group, Katashiro does not fight
   it: the next `canvas_open` in that conversation recreates the group, and stray canvas tabs are
-  found again by URL.
+  found again by URL (ignoring compare tabs, `view=agent`, §3.10).
 - With multi-conversation, switching conversation collapses the old conversation's group and
   expands the new one's.
 - **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
@@ -137,7 +137,7 @@ worker can be suspended at any point):
   previous state instead of assuming the last step succeeded.
 - **Duplicate tabs of one canvas** (the user duplicated the tab): both editors save with their
   `baseVersion`, so the later save gets the conflict view (§3.5). The card focuses the most
-  recently used tab of that canvas.
+  recently used tab of that canvas, never a compare tab (`view=agent`, §3.10).
 - **Collapsing on conversation switch:** activate a tab outside the old group first (the new
   group's tab, or the web page), then collapse; Chrome will not collapse a group holding the
   active tab.
@@ -563,7 +563,8 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
   - **Quick actions** (phase 2, seen in ChatGPT/Gemini/Mistral): one-click chips in the header
     (shorter, longer, more formal, translate, fix code, add summary). A chip sends a prompt like
     Send to agent; with a selection, it applies to the selection only. The agent then edits with
-    `canvas_patch`.
+    `canvas_patch`. The instruction is a fixed host string; the selection goes in a data block
+    under the push rules below.
   - **Assets view** (phase 2, seen in Perplexity Labs): a side list of the canvas's images, charts and
     attachments, to preview or download one by one.
   - Not adopted: artifacts that call the model, connect to apps, or share storage between users,
@@ -702,21 +703,50 @@ agent's last write is the baseline.
 - **Glow on every agent write (phase 1).** When an agent version renders, `canvas-frame.html`
   compares it with the previous content at **block level** (paragraph, heading, list item, table
   row, slide) and gives new or changed blocks a glow that fades over a few seconds; a removed
-  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly. If the
-  canvas was not open, the header shows *"3 changes since you last looked"* and a click replays
-  the glow.
+  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly.
+- **"Changes since you last looked" without history.** The content the user last saw is not kept
+  (§3.5), so `meta` stores a **block hash list** of the last render the user saw: one short hash
+  per block, tens of bytes each, no content. On the next open the new render is hashed the same
+  way; blocks with a new hash count as added or changed, missing hashes as removed. The header
+  shows *"3 changes since you last looked"* and a click replays the glow on those blocks.
 - **Compare in Split View (phase 1).** *Compare with agent's* opens a second, **read-only** tab
-  `canvas.html?id=…&view=agent` with the agent's last write and splits it with the current tab
-  (`tabs.createSplit`; both tabs are in the canvas group, so the §3.1 same-group rule holds). Both
-  panes glow the differing blocks. Closing the left tab, or *Revert to agent's*, ends the compare.
-  Without Split View (Chrome < 155) the same view opens as a normal tab.
+  `canvas.html?id=…&view=agent` with the agent's last write and splits it with the canvas tab.
+  Both panes glow the differing blocks; if the agent copy equals the latest, it says *"No
+  differences"*.
+  - **Split rules.** Chrome splits two tabs at a time, and the canvas tab may already be split with
+    a web page (and moved into that page's group, §3.1). Compare first ends that split under the
+    §3.1 move rules, returns the canvas tab to the canvas group, then splits it with the compare
+    tab, both in the canvas group. When compare ends, the earlier web-page split is **not**
+    restored. Without Split View (Chrome < 155) the compare view opens as a normal tab.
+  - **Ending it.** Closing **either** tab ends the compare: closing the compare tab just removes the
+    split; closing the canvas tab closes the compare tab too. *Revert to agent's* also ends it.
+  - **It is not the canvas.** The compare tab has its own iframe, nonce and load count (§3.2 is
+    unchanged); its host shows no Edit, Send to agent or Revert, and its allow-list refuses `save`
+    and `selection`. The duplicate-tab rule (most recently used tab, §3.1) and "found again by
+    URL" both **ignore `view=agent`**, so a card never focuses a compare tab.
+  - **Agent writes during compare.** The `agent` copy changes, so the host re-sends `render` to the
+    compare frame (no reload) and both panes re-glow.
 - **Agent pointing (phase 1).** `canvas_highlight` (§3.4) lets the agent say "look here" while it
-  explains: the host finds the block by text or heading, scrolls to it, and glows it with an
-  optional short label.
+  explains. The agent controls the anchor and the label, so both are constrained to point, not
+  forge:
+  - **Anchoring.** `find` matches the **rendered text** of a block (what the user sees, not the
+    markdown source), must match exactly one block, and is at most 500 characters; `heading`
+    matches a heading's rendered text exactly. No match or several matches return an error.
+  - **Where the label goes.** Only inside the sandbox frame, never in the host's header or banner
+    area. It sits in the margin beside the block or just above it, never over text, in a fixed
+    "agent note" style with an agent icon and an `Agent:` prefix, visibly different from host UI
+    and the §3.2 banner. Text via `textContent`, at most 80 characters. So "✅ Verified by
+    Katashiro" still reads as something the agent said.
+  - **What the glow may change.** Outline and background only, never text color, opacity or
+    visibility, so a highlight cannot hide or wash out content. `durationMs` is capped at 10 s, and
+    calls are rate-limited per canvas.
+  - **While the user edits,** it does not scroll or take focus; the header shows *"Agent wants to
+    show you a section"* and the user clicks to go there.
+  - **`kind:"html"` refuses it.** The host sends the new `highlight{…}` message only to
+    `canvas-frame.html`.
 - **Effects are ours, not agent CSS.** `canvas-frame.html` runs no agent code (§3.2), so the agent
   cannot inject CSS there; it picks from fixed effects (glow, underline, label) and gives a text
-  anchor. Labels are rendered with `textContent`, capped at 80 characters. An `html` canvas is
-  agent code already and can style itself.
+  anchor. An `html` canvas is agent code already and can style itself.
 
 ---
 
