@@ -2059,6 +2059,36 @@
       }
     },
 
+    "katashiro.client_info": {
+      description:
+        "Describe this Katashiro client: version and build (release tag / git sha, or \"dev\" for an " +
+        "unstamped unpacked load), install type, extension id, Chrome version, the panel's window " +
+        "(id, incognito), act mode, and which optional permissions are granted. Use it when you " +
+        "need to know which Katashiro build or capabilities you are talking to — e.g. before " +
+        "relying on a recently added tool, or when reporting a bug. Read-only; no page access.",
+      // sessionScope: describes the panel/extension, not the active page — works on chrome:// too.
+      sessionScope: true,
+      inputSchema: { type: "object", properties: {} },
+      redact: redactDefault,
+      async call(_args, ctx) {
+        if (typeof ctx.clientInfo !== "function") return errText("client info is not available in this host (no side panel)");
+        const i = (await ctx.clientInfo()) || {};
+        const opt = i.optionalPermissions || {};
+        const optText = Object.keys(opt).length
+          ? Object.entries(opt).map(([k, v]) => `${k} ${v ? "granted" : "not granted"}`).join(", ")
+          : "none";
+        const lines = [
+          `Katashiro ${i.version || "?"} (build: ${i.build || "dev"}${i.sha && i.sha !== i.build ? `, sha ${i.sha}` : ""}${i.builtAt ? `, built ${i.builtAt}` : ""})`,
+          `install: ${i.installType || "?"}; extension id ${i.extensionId || "?"}`,
+          `browser: ${i.browser || "?"}`,
+          `panel window: ${i.windowId == null ? "?" : i.windowId}${i.incognito ? " (incognito)" : ""}`,
+          `act mode: ${i.actMode ? "on (page writes allowed)" : "off (read-only)"}`,
+          `optional permissions: ${optText}`
+        ];
+        return okText(lines.join("\n"));
+      }
+    },
+
     "katashiro.get_selection": {
       description:
         "Return the text the user has currently selected (highlighted) in the active tab — across " +
@@ -2741,7 +2771,7 @@
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
       // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, windowId: deps.windowId, now: deps.now };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the

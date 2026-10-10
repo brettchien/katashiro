@@ -54,6 +54,45 @@ function connById(id) {
 
 // ACP constants
 const ACP_PROTOCOL_VERSION = 1;
+// Which build this is: manifest version + release tag / sha from build-info.json ("dev" when
+// absent — an unstamped unpacked load). Shared by the connection-screen badge and the ACP
+// initialize clientInfo (ADR build-provenance-and-version-display). Never rejects.
+const BUILD_INFO = (async () => {
+  const version = chrome.runtime.getManifest().version;
+  let detail = "dev", sha = null, builtAt = null;
+  try {
+    const res = await fetch(chrome.runtime.getURL("build-info.json"));
+    if (res.ok) {
+      const b = await res.json();
+      detail = b.tag || b.sha || "dev";
+      sha = b.sha || null;
+      builtAt = b.builtAt || null;
+    }
+  } catch (_) { /* absent in unpacked dev → dev */ }
+  return { version, detail, sha, builtAt };
+})();
+
+// katashiro.client_info: what this client is, read fresh per call (act mode / optional permissions
+// can change while the panel is open). No URLs, tokens or agent config — build + capability state.
+const OPTIONAL_PERMISSIONS = ["sessions"];
+async function clientInfoSnapshot() {
+  const { version, detail, sha, builtAt } = await BUILD_INFO;
+  let installType = null;
+  try { installType = (await chrome.management.getSelf()).installType; } catch (_) { /* unavailable */ }
+  const optionalPermissions = {};
+  for (const p of OPTIONAL_PERMISSIONS) {
+    try { optionalPermissions[p] = await chrome.permissions.contains({ permissions: [p] }); }
+    catch (_) { optionalPermissions[p] = false; }
+  }
+  const m = /Chrome\/([\d.]+)/.exec(navigator.userAgent || "");
+  return {
+    version, build: detail, sha, builtAt, installType,
+    extensionId: chrome.runtime.id,
+    browser: m ? `Chrome ${m[1]}` : null,
+    windowId: panelWindowId, incognito: historyStore === chrome.storage.session,
+    actMode, optionalPermissions,
+  };
+}
 const ACP_CWD = "/home/agent";
 // Default request timeout — guards a peer that goes silent WITHOUT closing the socket
 // (onclose rejects pending reqs, but a half-open connection never fires it), which would
@@ -159,6 +198,7 @@ class Conn {
       // chat_history reads this window's persisted scrollback; notify tags its toasts with the
       // window so the click handler below focuses the right one.
       chatHistory: () => historyMessages,
+      clientInfo: clientInfoSnapshot,
       windowId: panelWindowId,
     };
   }
@@ -293,10 +333,12 @@ class Conn {
   }
 
   handshake() {
-    this.acpRequest("initialize", {
-      protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: {},
-    })
+    BUILD_INFO
+      .then(({ version, detail }) => this.acpRequest("initialize", {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: RoomCore.acpClientInfo(version, detail),
+      }))
       .then((init) => {
         // Only send image blocks to an agent that declares it takes them; the gateway answers
         // `image: false` (and -32602 on an image block) until it supports them.
@@ -794,15 +836,7 @@ const actModeHintEl = document.getElementById("act-mode-hint");
 // unpacked dev shows "dev". Lets you confirm which build actually loaded after an Update + reopen.
 async function loadBuildInfo() {
   if (!buildBadgeEl) return;
-  const version = chrome.runtime.getManifest().version;
-  let detail = "dev";
-  try {
-    const res = await fetch(chrome.runtime.getURL("build-info.json"));
-    if (res.ok) {
-      const b = await res.json();
-      detail = b.tag || b.sha || "dev";
-    }
-  } catch (_) { /* absent in unpacked dev → dev */ }
+  const { version, detail } = await BUILD_INFO;
   buildBadgeEl.textContent = `v${version} · ${detail}`;
   buildBadgeEl.title = `Katashiro v${version}（build: ${detail}）`;
 }

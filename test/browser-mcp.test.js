@@ -171,7 +171,7 @@ test("notifications/initialized is a notification (no result)", async () => {
   assert.equal(res, undefined);
 });
 
-test("tools/list returns the 37 browser tools", async () => {
+test("tools/list returns the 38 browser tools", async () => {
   const { deps: d } = deps();
   const res = await BrowserMcp.handleMcpMessage("tools/list", {}, d);
   const names = res.tools.map((t) => t.name);
@@ -204,6 +204,7 @@ test("tools/list returns the 37 browser tools", async () => {
     "katashiro.press_key",
     "katashiro.hover",
     "katashiro.highlight",
+    "katashiro.client_info",
     "katashiro.get_selection",
     "katashiro.select_option",
     "katashiro.fill_form",
@@ -2822,4 +2823,36 @@ test("katashiro.chat_history declares integer limit/maxChars", () => {
   const props = BrowserMcp.TOOLS["katashiro.chat_history"].inputSchema.properties;
   assert.equal(props.limit.type, "integer");
   assert.equal(props.maxChars.type, "integer");
+});
+
+// --- client_info ---------------------------------------------------------------
+
+test("katashiro.client_info reports build, install, browser, window, act mode, optional permissions", async () => {
+  const { deps: d } = deps({ tabUrl: "chrome://newtab/", actMode: false });   // sessionScope, read-only
+  d.clientInfo = async () => ({
+    version: "2.6.1", build: "v2.6.1", sha: "8d98205", builtAt: "2026-10-10T07:35:10Z",
+    installType: "normal", extensionId: "abc", browser: "Chrome 155.0.1.2",
+    windowId: 7, incognito: true, actMode: false, optionalPermissions: { sessions: false }
+  });
+  const res = await callTool(d, "katashiro.client_info");
+  assert.equal(res.isError, undefined);
+  const text = res.content[0].text;
+  assert.match(text, /^Katashiro 2\.6\.1 \(build: v2\.6\.1, sha 8d98205, built 2026-10-10T07:35:10Z\)/);
+  assert.match(text, /install: normal; extension id abc/);
+  assert.match(text, /browser: Chrome 155\.0\.1\.2/);
+  assert.match(text, /panel window: 7 \(incognito\)/);
+  assert.match(text, /act mode: off/);
+  assert.match(text, /optional permissions: sessions not granted/);
+});
+
+test("katashiro.client_info: dev build without sha, and a host without the provider", async () => {
+  const { deps: d } = deps();
+  d.clientInfo = async () => ({ version: "2.6.1", build: "dev", sha: null, actMode: true, optionalPermissions: {} });
+  const text = (await callTool(d, "katashiro.client_info")).content[0].text;
+  assert.match(text, /^Katashiro 2\.6\.1 \(build: dev\)$/m);
+  assert.match(text, /act mode: on/);
+  assert.match(text, /optional permissions: none/);
+  delete d.clientInfo;
+  const res = await callTool(d, "katashiro.client_info");
+  assert.equal(res.isError, true);
 });
