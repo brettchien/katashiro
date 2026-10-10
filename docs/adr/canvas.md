@@ -252,7 +252,7 @@ below is built around that.
 | 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; a setting can turn it off |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off |
 | 3 | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
@@ -268,6 +268,8 @@ below is built around that.
   agent gathered (PRs, logs, prices); a collapsible timeline or checklist; a side-by-side option
   comparison with toggles; a small simulation or animated explainer; a quiz or flashcards. Static
   documents, decks, charts and diagrams do **not** need it; the safer kinds cover them.
+- **Click to run (§6 Q8).** An `html` canvas first renders without script in `canvas-frame.html`;
+  only the user's **Run scripts** click loads it into `canvas-html-frame.html`, once per revision.
 - Phase 2's `html` kind is the first to run agent script, only in `canvas-html-frame.html` (§3.2).
   Still no fetch and no eval, but not leak-proof (§3.2 residual risk).
 - **Mermaid supersedes the markdown ADR's dagre lean** `[MD-ADR §3.6]`. That lean existed because
