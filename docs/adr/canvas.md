@@ -284,6 +284,7 @@ below is built around that.
 | `katashiro.canvas_read({id, diff?})` | Returns the latest content (including **user edits**) with `{version, author, at, agentVersion}`; `diff: true` returns only the diff from the agent's last write to now |
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
+| `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10) |
 
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
 - Large payloads use a shell helper that posts to the facade (the `show_image` skill pattern), so
@@ -559,6 +560,12 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
     so a canvas is findable after its conversation scrolls away.
   - **Agent picks title and icon**: `canvas_open` takes an optional emoji `icon` for the card and
     the tab title.
+  - **Quick actions** (phase 2, seen in ChatGPT/Gemini/Mistral): one-click chips in the header
+    (shorter, longer, more formal, translate, fix code, add summary). A chip sends a prompt like
+    Send to agent; with a selection, it applies to the selection only. The agent then edits with
+    `canvas_patch`.
+  - **Assets view** (phase 2, seen in Perplexity Labs): a side list of the canvas's images, charts and
+    attachments, to preview or download one by one.
   - Not adopted: artifacts that call the model, connect to apps, or share storage between users,
     and publishing to a public link. Those need a backend and fall under §5 non-goals.
 - **Rules for every push into the prompt** (Send to agent, Ask agent, Send error). These messages
@@ -595,7 +602,7 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
   The print reload would discard unsaved editor content, so **export is disabled while the editor
   is dirty**, with a "Save first" prompt.
 - **pptx export** (phase 2–3): `pptxgenjs` from **our slide model** (titles, bullets, images,
-  code as monospace). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
+  code as monospace). **Text must stay editable** (titles, bullets and tables as real text boxes, never one image per slide, the NotebookLM complaint). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
   and themes, fragments and transitions are lost. `dom-to-pptx` is the higher-fidelity candidate,
   to evaluate then.
 - **pptx import** (phase 3+, not committed): `pptxtojson` → markdown slides, keeping titles, text and
@@ -687,6 +694,30 @@ sequenceDiagram
   (`script-src 'self'`, `connect-src 'none'`) makes loading from the internet impossible, not just
   unused. Updating a library is a Katashiro release, never a runtime download.
 
+### 3.10 Showing what changed (Brett, 2026-10-10)
+
+Borrowed from Gemini's *Show recent changes*, done live and with no version history (§3.5): the
+agent's last write is the baseline.
+
+- **Glow on every agent write (phase 1).** When an agent version renders, `canvas-frame.html`
+  compares it with the previous content at **block level** (paragraph, heading, list item, table
+  row, slide) and gives new or changed blocks a glow that fades over a few seconds; a removed
+  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly. If the
+  canvas was not open, the header shows *"3 changes since you last looked"* and a click replays
+  the glow.
+- **Compare in Split View (phase 1).** *Compare with agent's* opens a second, **read-only** tab
+  `canvas.html?id=…&view=agent` with the agent's last write and splits it with the current tab
+  (`tabs.createSplit`; both tabs are in the canvas group, so the §3.1 same-group rule holds). Both
+  panes glow the differing blocks. Closing the left tab, or *Revert to agent's*, ends the compare.
+  Without Split View (Chrome < 155) the same view opens as a normal tab.
+- **Agent pointing (phase 1).** `canvas_highlight` (§3.4) lets the agent say "look here" while it
+  explains: the host finds the block by text or heading, scrolls to it, and glows it with an
+  optional short label.
+- **Effects are ours, not agent CSS.** `canvas-frame.html` runs no agent code (§3.2), so the agent
+  cannot inject CSS there; it picks from fixed effects (glow, underline, label) and gives a text
+  anchor. Labels are rendered with `textContent`, capped at 80 characters. An `html` canvas is
+  agent code already and can style itself.
+
 ---
 
 ## Consequences
@@ -740,7 +771,8 @@ sequenceDiagram
 
 - **Phase 1 scope:** canvas tabs in a per-conversation tab group (with the Split View rule, §3.1),
   sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, revision counter + agent's last write,
-  card, PDF via print, and **Milkdown editing of `markdown` canvases** with the §3.5 concurrency.
+  card, PDF via print, **Milkdown editing of `markdown` canvases** with the §3.5 concurrency, and
+  showing changes: glow on agent writes, Compare in Split View, `canvas_highlight` (§3.10).
 - **No embedded third-party media (Brett, 2026-10-10).** YouTube and other external videos or
   iframes are shown as **links** only: a click goes through `openLink` (§3.2) and opens a new tab.
   Embedding would need `frame-src` to a third party from the sandbox, a new egress path, and
