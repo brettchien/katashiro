@@ -45,6 +45,15 @@ test("load gate: expected loads pass, any extra load is a navigation", () => {
   assert.equal(g.onLoad(), false);          // the frame navigated itself afterwards
 });
 
+test("load gate: reset drops loads owed to a removed frame", () => {
+  const g = C.createLoadGate();
+  g.expect();                               // frame 1, removed before it loaded
+  g.reset();
+  g.expect();                               // frame 2
+  assert.equal(g.onLoad(), true);
+  assert.equal(g.onLoad(), false);          // no leftover allowance from frame 1
+});
+
 test("nonce: 32 hex chars, different each time", () => {
   const a = C.newNonce(require("node:crypto").webcrypto);
   const b = C.newNonce(require("node:crypto").webcrypto);

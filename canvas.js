@@ -58,7 +58,11 @@
     noticeAction.hidden = !noticeActionFn;
     if (noticeActionFn) noticeAction.textContent = action.label;
   }
-  noticeAction.addEventListener("click", () => { if (noticeActionFn) noticeActionFn(); });
+  noticeAction.addEventListener("click", async () => {
+    if (!noticeActionFn || noticeAction.disabled) return;
+    noticeAction.disabled = true;                 // one push per click, not one per double click
+    try { await noticeActionFn(); } finally { noticeAction.disabled = false; }
+  });
 
   function setHeader(meta) {
     const t = String(meta.title || "Canvas").slice(0, TITLE_MAX);
@@ -87,18 +91,19 @@
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
     downloadBtn.hidden = !textKind;
     printBtn.hidden = !(textKind && !!frame && mode === "view");
-    printBtn.disabled = mode === "edit" && dirty;
-    printBtn.title = printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
+    printBtn.disabled = (mode === "edit" && dirty) || !!printing;
+    printBtn.title = printing ? "正在準備列印…" : printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
+    editBtn.disabled = !!printing;
   }
 
   // --- Pushes into the prompt (§3.7) -----------------------------------------------------------
   // Composed here (host, from storage), posted by the side panel as the user. The panel checks the
   // sender is this page and the conversation is its own.
-  async function pushToAgent(text) {
+  async function pushToAgent(text, note) {
     let r;
     try {
       r = await chrome.runtime.sendMessage({
-        type: "katashiro-canvas-push", conversationId: current.meta.conversationId, text, reqId: crypto.randomUUID(),
+        type: "katashiro-canvas-push", conversationId: current.meta.conversationId, text, note: note || "", reqId: crypto.randomUUID(),
       });
     } catch (_) { r = undefined; }
     if (!r) return { ok: false, error: "Katashiro 側邊面板沒有開（或不在同一個對話）" };
@@ -118,7 +123,7 @@
       const text = CanvasCore.composeCanvasPush({
         note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null,
       });
-      const r = await pushToAgent(text);
+      const r = await pushToAgent(text, note);
       if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
       await store.markSeen({ id: canvasId, version: c.meta.version });
       flash(`📤 已送給 ${r.agent || "agent"}（v${c.meta.version}）`);
@@ -159,11 +164,12 @@
   // host-caused load, so the gate allows it) and come back to the normal view after printing.
   let printing = null;                      // null | { sent }
   printBtn.addEventListener("click", () => {
-    if (!current || !frame) return;
+    if (!current || !frame || printing) return;
     if (mode === "edit" && dirty) { notice("先儲存再匯出 PDF。"); return; }
     if (current.meta.kind === "slides") {
       printing = { sent: false };
       mountFrame("?print-pdf");
+      updateButtons();
     } else {
       toFrame({ type: "print" });
     }
@@ -185,6 +191,7 @@
   }
 
   function mountFrame(query) {
+    if (!query) printing = null;              // any normal mount ends a print (§3.8)
     if (frame) frame.remove();
     frameReady = false;
     nonce = CanvasCore.newNonce();
@@ -196,12 +203,14 @@
     frame.addEventListener("load", () => {
       if (!gate.onLoad()) dropFrame("畫布內容嘗試離開這個頁面，已停止顯示。重新整理這個分頁即可重新載入。");
     });
+    gate.reset();
     gate.expect();
     frame.src = `canvas-frame.html${query || ""}#${nonce}`;
     mainEl.appendChild(frame);
   }
 
   function dropFrame(why) {
+    printing = null;
     if (frame) frame.remove();
     frame = null;
     frameReady = false;
@@ -317,7 +326,7 @@
   document.getElementById("conflict-back").addEventListener("click", () => { conflictEl.hidden = true; });
 
   function enterEdit() {
-    if (!current || current.meta.kind !== "markdown") return;
+    if (!current || current.meta.kind !== "markdown" || printing) return;
     mode = "edit";
     dirty = false;
     notice("");
@@ -381,6 +390,7 @@
         updateButtons();
         break;
       case "error":
+        if (printing) mountFrame();      // back to the normal view; a later render must never print()
         offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;

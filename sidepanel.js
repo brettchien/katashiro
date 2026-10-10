@@ -1956,7 +1956,9 @@ function sendMessage() {
 
 // Post a message as the user: show it, frame it, route it to the room. Shared by the input box and
 // the canvas's Send to agent / Send error (which compose their text in the canvas tab, §3.7).
-function postUserText(text, images, replyTo) {
+// `mentions` (optional): route by these @names instead of parsing `text` — a canvas push carries
+// canvas data that must not pick the recipients. Returns the agents it was enqueued to.
+function postUserText(text, images, replyTo, mentions) {
   images = images || [];
   const sentAt = Date.now();
   appendMessage({
@@ -1972,12 +1974,13 @@ function postUserText(text, images, replyTo) {
   }, text);
 
   loopGuard.onHuman();
-  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text });
+  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text, mentions });
+  const sentTo = [];
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(framed, images);
+    if (c) { c.enqueue(framed, images); sentTo.push(c); }
   });
-  return targets.length;
+  return sentTo;
 }
 
 // §3.7: a canvas tab asks this panel to post as the user (Send to agent / Send error). Only from
@@ -1987,13 +1990,17 @@ function postUserText(text, images, replyTo) {
 const seenPushIds = new Set();
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "katashiro-canvas-push") return false;
-  const canvasPage = chrome.runtime.getURL("canvas.html");
-  if (!sender || sender.id !== chrome.runtime.id || typeof sender.url !== "string" || !sender.url.startsWith(canvasPage)) {
+  let fromCanvas = false;
+  try {
+    const u = new URL(sender && sender.url);
+    fromCanvas = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html";
+  } catch (_) { /* no or bad url */ }
+  if (!fromCanvas) {
     sendResponse({ ok: false, error: "not from a Katashiro canvas" });
     return false;
   }
   if (msg.conversationId !== conversationId) return false;           // another window's panel answers
-  if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > 24 * 1024) {
+  if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.PUSH_TEXT_MAX || typeof msg.note !== "string") {
     sendResponse({ ok: false, error: "nothing to send, or too long" });
     return false;
   }
@@ -2001,8 +2008,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const active = connById(activeAgentUrl);
   if (!active || !active.acpReady) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
   seenPushIds.add(msg.reqId);
-  postUserText(msg.text);
-  sendResponse({ ok: true, agent: active.name });
+  // @mentions come from the user's note only, never from the diff / error text inside the fence.
+  const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
+  if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
+  sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、") });
   return false;
 });
 

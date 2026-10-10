@@ -72,6 +72,8 @@
     return {
       /** Call right before setting the iframe's src. */
       expect() { expected += 1; },
+      /** A new iframe replaces the old one: loads still owed to the removed frame never come. */
+      reset() { expected = 0; },
       /** Call on every iframe `load`; false = an unexpected navigation. */
       onLoad() {
         if (expected > 0) { expected -= 1; return true; }
