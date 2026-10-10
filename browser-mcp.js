@@ -2575,8 +2575,9 @@
 
     "katashiro.inject_css": {
       description:
-        "Apply a CSS stylesheet to the active tab (all frames) — e.g. hide distracting banners, enlarge " +
-        "text, make a layout readable. Use `!important` to win over the site's rules. Pass `clear: true` " +
+        "Apply a CSS stylesheet to the active tab (all frames) — e.g. outline or glow the elements you " +
+        "are pointing the user at, enlarge text, make a layout readable. Emphasise; never hide or fake " +
+        "page content, and clear it when done. Use `!important` to win over the site's rules. Pass `clear: true` " +
         "to remove every stylesheet katashiro injected in this tab. Visual only and temporary: it " +
         "changes no page data and is gone on reload. Sheets that fetch anything (`url()`, `@import`, " +
         "`image-set()`, `@font-face`, …) and CSS escapes (`\\`) are refused.",
