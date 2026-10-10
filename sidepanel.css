@@ -783,6 +783,24 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   display: block;
 }
 
+/* Image-only message (pasted image, no text): drop the bubble's padding and fill so the image is
+   the message, with a thin outline to separate it from the dark background. Beats .sent .bubble. */
+.sent .bubble.image-only,
+.received .bubble.image-only {
+  padding: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  border-radius: 12px;                                 /* match the image, so the reply-flash outline hugs it */
+}
+.bubble.image-only .bubble-image {
+  margin-top: 0;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+.bubble.image-only .bubble-image + .bubble-image { margin-top: 4px; }
+
 .chat-input-area {
   padding: 12px 16px 16px 16px;
   background: rgba(18, 24, 36, 0.9);
