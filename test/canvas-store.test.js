@@ -451,3 +451,14 @@ test("budget counts the agent copy: first user save adds it, normalize resizes i
   await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 4, content: "y".repeat(8) }), (e) => e.code === "quota");
   assert.equal(asked.length, 0);                      // only one canvas: nothing to evict, never asked
 });
+
+test("markSeen raises agentSeenVersion, never lowers it or passes the latest", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await s.userSave({ id, baseVersion: 1, content: "b" });
+  await s.markSeen({ id, version: 2 });
+  assert.equal((await s.read({ conversationId: "c", id })).agentSeenVersion, 2);
+  await s.markSeen({ id, version: 1 });
+  await s.markSeen({ id, version: 9 });
+  assert.equal((await s.read({ conversationId: "c", id })).agentSeenVersion, 2);
+});

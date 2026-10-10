@@ -18,6 +18,11 @@
   const titleEl = document.getElementById("canvas-title");
   const versionEl = document.getElementById("canvas-version");
   const noticeEl = document.getElementById("canvas-notice");
+  const noticeBar = document.getElementById("canvas-notice-bar");
+  const noticeAction = document.getElementById("canvas-notice-action");
+  const sendBtn = document.getElementById("canvas-send");
+  const downloadBtn = document.getElementById("canvas-download");
+  const printBtn = document.getElementById("canvas-print");
   const mainEl = document.getElementById("canvas-main");
   const deleteBtn = document.getElementById("canvas-delete");
   const editBtn = document.getElementById("canvas-edit");
@@ -44,10 +49,16 @@
   let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
   const gate = CanvasCore.createLoadGate();
 
-  function notice(text) {
+  // A notice line, optionally with one action button (e.g. Send error to agent).
+  let noticeActionFn = null;
+  function notice(text, action) {
     noticeEl.textContent = text;      // textContent: may carry frame-supplied text
-    noticeEl.hidden = !text;
+    noticeBar.hidden = !text;
+    noticeActionFn = action && text ? action.fn : null;
+    noticeAction.hidden = !noticeActionFn;
+    if (noticeActionFn) noticeAction.textContent = action.label;
   }
+  noticeAction.addEventListener("click", () => { if (noticeActionFn) noticeActionFn(); });
 
   function setHeader(meta) {
     const t = String(meta.title || "Canvas").slice(0, TITLE_MAX);
@@ -69,7 +80,94 @@
       try { const agent = await store.readAgentCopy(canvasId); canRevert = agent != null && agent !== current.content; } catch (_) { /* stays hidden */ }
     }
     revertBtn.hidden = !canRevert;
+    const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
+    const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
+    sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen);
+    sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
+    downloadBtn.hidden = !textKind;
+    printBtn.hidden = !(textKind && !!frame && mode === "view");
+    printBtn.disabled = mode === "edit" && dirty;
+    printBtn.title = printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
   }
+
+  // --- Pushes into the prompt (§3.7) -----------------------------------------------------------
+  // Composed here (host, from storage), posted by the side panel as the user. The panel checks the
+  // sender is this page and the conversation is its own.
+  async function pushToAgent(text) {
+    let r;
+    try {
+      r = await chrome.runtime.sendMessage({
+        type: "katashiro-canvas-push", conversationId: current.meta.conversationId, text, reqId: crypto.randomUUID(),
+      });
+    } catch (_) { r = undefined; }
+    if (!r) return { ok: false, error: "Katashiro 側邊面板沒有開（或不在同一個對話）" };
+    return r;
+  }
+
+  sendBtn.addEventListener("click", async () => {
+    if (!current) return;
+    const note = window.prompt("要附一句話給 agent 嗎？（可留空）", "");
+    if (note === null) return;
+    sendBtn.disabled = true;
+    try {
+      const c = current;
+      const agentText = await store.readAgentCopy(canvasId);
+      const diff = CanvasStore.unifiedDiff(agentText == null ? "" : agentText, c.content);
+      const head = `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.agentVersion} → v${c.meta.version}, edited by user]`;
+      const text = CanvasCore.composeCanvasPush({
+        note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null,
+      });
+      const r = await pushToAgent(text);
+      if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
+      await store.markSeen({ id: canvasId, version: c.meta.version });
+      flash(`📤 已送給 ${r.agent || "agent"}（v${c.meta.version}）`);
+    } finally {
+      sendBtn.disabled = false;
+    }
+  });
+
+  // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
+  function offerSendError(msg) {
+    const c = current;
+    notice(`顯示時發生錯誤：${CanvasCore.clipError(msg)}`, {
+      label: "送給 agent 修",
+      fn: async () => {
+        if (!c) return;
+        const text = CanvasCore.composeCanvasPush({
+          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) failed to render]`,
+          data: CanvasCore.clipError(msg),
+        });
+        const r = await pushToAgent(text);
+        notice(r.ok ? `📤 已把錯誤送給 ${r.agent || "agent"}` : `送出失敗：${CanvasCore.clipError(r.error)}`);
+      },
+    });
+  }
+
+  // --- Export (§3.8) --------------------------------------------------------------------------
+  downloadBtn.addEventListener("click", () => {
+    if (!current) return;
+    const url = URL.createObjectURL(new Blob([current.content], { type: "text/markdown;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = CanvasCore.safeFileName(current.meta.title, "md");
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  });
+
+  // PDF through the print dialog. Slides reload the frame with reveal's ?print-pdf layout first (a
+  // host-caused load, so the gate allows it) and come back to the normal view after printing.
+  let printing = null;                      // null | { sent }
+  printBtn.addEventListener("click", () => {
+    if (!current || !frame) return;
+    if (mode === "edit" && dirty) { notice("先儲存再匯出 PDF。"); return; }
+    if (current.meta.kind === "slides") {
+      printing = { sent: false };
+      mountFrame("?print-pdf");
+    } else {
+      toFrame({ type: "print" });
+    }
+  });
 
   async function load() {
     if (!CanvasStore.ID_RE.test(canvasId)) {
@@ -86,20 +184,20 @@
     return { meta: got[mk], content: got[lk] == null ? "" : got[lk] };
   }
 
-  function mountFrame() {
+  function mountFrame(query) {
     if (frame) frame.remove();
     frameReady = false;
     nonce = CanvasCore.newNonce();
     frame = document.createElement("iframe");
-    // allow-scripts only: no same-origin, popups, forms, modals or top navigation (§3.2).
-    frame.setAttribute("sandbox", "allow-scripts");
+    // allow-scripts + allow-modals (print, §3.8): no same-origin, popups, forms or top navigation (§3.2).
+    frame.setAttribute("sandbox", "allow-scripts allow-modals");
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.title = "canvas content";
     frame.addEventListener("load", () => {
       if (!gate.onLoad()) dropFrame("畫布內容嘗試離開這個頁面，已停止顯示。重新整理這個分頁即可重新載入。");
     });
     gate.expect();
-    frame.src = `canvas-frame.html#${nonce}`;
+    frame.src = `canvas-frame.html${query || ""}#${nonce}`;
     mainEl.appendChild(frame);
   }
 
@@ -263,7 +361,11 @@
       case "slide":
         finishGoto({ ok: true, index: m.index, total: m.total });
         break;
+      case "printed":
+        if (printing) { printing = null; mountFrame(); }        // back to the normal slides view
+        break;
       case "rendered":
+        if (printing && !printing.sent) { printing.sent = true; toFrame({ type: "print" }); }
         rendered = true;
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
@@ -279,7 +381,7 @@
         updateButtons();
         break;
       case "error":
-        notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
+        offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
       case "copy": {

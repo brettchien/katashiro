@@ -40,8 +40,8 @@ test("notifications is a required permission (katashiro.notify)", () => {
 test("canvas: the frame is a sandbox page with a no-network CSP; nothing is web-accessible", () => {
   assert.deepEqual(manifest.sandbox.pages, ["canvas-frame.html"]);
   const csp = manifest.content_security_policy.sandbox;
-  assert.match(csp, /^sandbox allow-scripts;/);                     // Chrome requires sandbox + allow-scripts
-  assert.doesNotMatch(csp, /allow-same-origin|allow-popups|allow-forms|allow-top-navigation|allow-modals/);
+  assert.match(csp, /^sandbox allow-scripts allow-modals;/);        // allow-modals: print() for PDF export (§3.8)
+  assert.doesNotMatch(csp, /allow-same-origin|allow-popups|allow-forms|allow-top-navigation|allow-downloads/);
   assert.doesNotMatch(csp, /unsafe-eval/);
   for (const d of ["default-src 'none'", "script-src 'self'", "connect-src 'none'", "frame-src 'none'",
     "worker-src 'none'", "form-action 'none'", "base-uri 'none'", "img-src data: blob:"]) {

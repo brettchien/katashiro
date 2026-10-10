@@ -212,6 +212,12 @@
       return;
     }
     if (m.type === "requestSave") { requestSave(); return; }
+    if (m.type === "print") {
+      // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
+      // reveal's print-pdf layout; give it a moment to lay the pages out.
+      setTimeout(() => { try { window.print(); } finally { post({ type: "printed" }); } }, deck.hidden ? 50 : 800);
+      return;
+    }
     if (m.type === "goto") {
       // canvas_goto: a slide number only (1-based), clamped to the deck.
       // Always answers (slide or error) so the host's pending goto never waits on us.

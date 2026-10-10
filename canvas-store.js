@@ -358,6 +358,17 @@
       return { ...meta, content: got[latestKey(id)] == null ? "" : got[latestKey(id)] };
     }
 
+    // Send to agent (§3.7): the agent has now been shown up to `version`.
+    async function markSeen({ id, version }) {
+      if (!ID_RE.test(String(id)) || !Number.isInteger(version)) return;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (cur && (cur.agentSeenVersion || 0) < version && version <= cur.version) {
+          await storage.set({ [metaKey(id)]: { ...cur, agentSeenVersion: version } });
+        }
+      });
+    }
+
     // The agent's last write (for Revert to agent's and the conflict view). Null if gone.
     async function readAgentCopy(id) {
       if (!ID_RE.test(String(id))) return null;
@@ -472,7 +483,7 @@
       });
     }
 
-    return { agentWrite, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
+    return { markSeen, agentWrite, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
   }
 
   function indexEntry(meta) {
