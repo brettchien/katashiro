@@ -426,11 +426,10 @@ test("acpClientInfo: name/title + version with the build as semver metadata", ()
 // Local-time Date components, so these hold in any TZ the suite runs under.
 const at = (mo, d, h, mi, s) => new Date(2026, mo - 1, d, h, mi, s).getTime();
 
-test("msgTime: HH:MM:SS today, MM/DD HH:MM:SS on another day", () => {
-  const now = at(10, 10, 16, 30, 0);
-  assert.equal(RoomCore.msgTime(at(10, 10, 16, 5, 12), now), "16:05:12");
-  assert.equal(RoomCore.msgTime(at(10, 10, 0, 0, 1), now), "00:00:01");
-  assert.equal(RoomCore.msgTime(at(10, 9, 22, 40, 5), now), "10/09 22:40:05");
+test("msgTime: always the full local date and time", () => {
+  assert.equal(RoomCore.msgTime(at(10, 10, 16, 5, 12)), "2026-10-10 16:05:12");
+  assert.equal(RoomCore.msgTime(at(10, 9, 22, 40, 5)), "2026-10-09 22:40:05");
+  assert.equal(RoomCore.msgTime(at(1, 2, 0, 0, 1)), "2026-01-02 00:00:01");
 });
 
 test("excerpt collapses whitespace and caps at 150 chars", () => {
@@ -445,18 +444,16 @@ test("messageId = conversation id + ms timestamp", () => {
 });
 
 test("promptHeader / framePrompt: plain message and a reply", () => {
-  const now = at(10, 10, 16, 30, 0);
-  assert.equal(RoomCore.promptHeader({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }, now), "[16:05:12 Brett]");
+  assert.equal(RoomCore.promptHeader({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }), "[2026-10-10 16:05:12 Brett]");
   const reply = { timestamp: at(10, 10, 16, 7, 30), senderName: "Brett",
     replyTo: { timestamp: at(10, 10, 16, 5, 40), senderName: "orca", text: "沒辦法直接知道，\nKatashiro 沒有回報" } };
-  assert.equal(RoomCore.promptHeader(reply, now), "[16:07:30 Brett ↩ 16:05:40 orca「沒辦法直接知道， Katashiro 沒有回報」]");
-  assert.equal(RoomCore.framePrompt(reply, "所以要加 sha", now), "[16:07:30 Brett ↩ 16:05:40 orca「沒辦法直接知道， Katashiro 沒有回報」]\n所以要加 sha");
-  assert.equal(RoomCore.framePrompt({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }, "", now), "[16:05:12 Brett]");
+  assert.equal(RoomCore.promptHeader(reply), "[2026-10-10 16:07:30 Brett ↩ 2026-10-10 16:05:40 orca「沒辦法直接知道， Katashiro 沒有回報」]");
+  assert.equal(RoomCore.framePrompt(reply, "所以要加 sha"), "[2026-10-10 16:07:30 Brett ↩ 2026-10-10 16:05:40 orca「沒辦法直接知道， Katashiro 沒有回報」]\n所以要加 sha");
+  assert.equal(RoomCore.framePrompt({ timestamp: at(10, 10, 16, 5, 12), senderName: "Brett" }, ""), "[2026-10-10 16:05:12 Brett]");
 });
 
 test("framed entries keep their boundaries through batchPrompts", () => {
-  const now = at(10, 10, 16, 30, 0);
-  const a = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 1, 0), senderName: "B" }, "one", now);
-  const b = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 2, 0), senderName: "B" }, "two", now);
-  assert.equal(RoomCore.batchPrompts([a, b]), "[16:01:00 B]\none\n\n[16:02:00 B]\ntwo");
+  const a = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 1, 0), senderName: "B" }, "one");
+  const b = RoomCore.framePrompt({ timestamp: at(10, 10, 16, 2, 0), senderName: "B" }, "two");
+  assert.equal(RoomCore.batchPrompts([a, b]), "[2026-10-10 16:01:00 B]\none\n\n[2026-10-10 16:02:00 B]\ntwo");
 });

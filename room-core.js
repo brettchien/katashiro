@@ -341,15 +341,13 @@
 
   // --- reply-to / message headers ------------------------------------------------------------
   // Messages are referred to by local time, not a #N counter — "#12" reads like a PR/issue number to
-  // an agent. Today's messages show HH:MM:SS; older ones get MM/DD in front. Local time (the user's
-  // clock); `now` is injectable for tests.
+  // an agent. Always the full date + time (YYYY-MM-DD HH:MM:SS, the user's local clock) — the same
+  // form chat_history uses, so a header matches a history line verbatim.
   const pad2 = (n) => String(n).padStart(2, "0");
-  function msgTime(ts, now) {
+  function msgTime(ts) {
     const d = new Date(ts);
-    const n = new Date(now == null ? Date.now() : now);
-    const hms = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-    const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
-    return sameDay ? hms : `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${hms}`;
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
   }
 
   // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.
@@ -366,19 +364,19 @@
 
   // The header a user message carries in the prompt, so a batched backlog keeps its boundaries and
   // a reply says what it answers:
-  //   [16:05:12 Brett]
-  //   [16:07:30 Brett ↩ 16:05:40 orca「沒辦法直接知道…」]
+  //   [2026-10-10 16:05:12 user]
+  //   [2026-10-10 16:07:30 user ↩ 2026-10-10 16:05:40 orca「沒辦法直接知道…」]
   // `replyTo` = { timestamp, senderName, text } of the quoted message (or null).
-  function promptHeader({ timestamp, senderName, replyTo }, now) {
-    let h = `${msgTime(timestamp, now)} ${senderName || "user"}`;
-    if (replyTo) h += ` ↩ ${msgTime(replyTo.timestamp, now)} ${replyTo.senderName || "?"}「${excerpt(replyTo.text)}」`;
+  function promptHeader({ timestamp, senderName, replyTo }) {
+    let h = `${msgTime(timestamp)} ${senderName || "user"}`;
+    if (replyTo) h += ` ↩ ${msgTime(replyTo.timestamp)} ${replyTo.senderName || "?"}「${excerpt(replyTo.text)}」`;
     return `[${h}]`;
   }
 
   // Header + body, as one prompt entry (batchPrompts then joins entries with blank lines).
-  function framePrompt(meta, text, now) {
+  function framePrompt(meta, text) {
     const body = text == null ? "" : String(text);
-    return body ? `${promptHeader(meta, now)}\n${body}` : promptHeader(meta, now);
+    return body ? `${promptHeader(meta)}\n${body}` : promptHeader(meta);
   }
 
   return {

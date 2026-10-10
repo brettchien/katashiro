@@ -2961,5 +2961,5 @@ test("katashiro.chat_history marks a reply with the time and sender it answers",
       replyTo: { id: "c_x:" + orig, senderName: "orca", timestamp: orig, text: "沒辦法直接知道" } }
   ];
   const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
-  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000)} user ↩ 16:05:40 orca: 所以要加 sha`), text);
+  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000)} user ↩ 2026-10-10 16:05:40 orca: 所以要加 sha`), text);
 });
