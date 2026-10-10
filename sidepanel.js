@@ -2252,7 +2252,10 @@ function attachReplyButton(contentEl, target) {
   b.textContent = "↩";
   b.title = "回覆這則";
   b.addEventListener("click", () => setReplyTarget(target));
-  contentEl.appendChild(b);
+  // Beside the message's time ("19:04 (TPE) ↩", Brett): never on top of the bubble's own controls
+  // (code-block copy) or the tool pills. Falls back to the content box if a row has no timestamp.
+  const ts = contentEl.querySelector(":scope > .timestamp");
+  (ts || contentEl).appendChild(b);
 }
 
 // The newest recorded message sent in the second this ISO stamp names, as a reply target.
