@@ -214,15 +214,22 @@
   const reducedMotion = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   // One timer per element and effect: a newer glow restarts it instead of being cut short by an old one.
   const markTimers = new WeakMap();
+  // ms = Infinity: held (no fade, no timer) — while a compare is open (Brett, 2026-10-11), until
+  // clearHeld().
   function mark(el, cls, ms) {
     let timers = markTimers.get(el);
     if (!timers) markTimers.set(el, (timers = new Map()));
     clearTimeout(timers.get(cls));
     el.classList.remove(cls);
+    if (ms === Infinity) { el.classList.add("ks-hold", cls); timers.delete(cls); return; }
     void el.offsetWidth;                          // restart the fade
     el.style.setProperty("--ks-ms", `${Math.round(ms)}ms`);
     el.classList.add(cls);
     timers.set(cls, setTimeout(() => { el.classList.remove(cls); timers.delete(cls); }, ms));
+  }
+  const MARK_CLASSES = ["ks-changed", "ks-removed-before", "ks-removed-after"];
+  function clearHeld() {
+    for (const el of document.querySelectorAll(".ks-hold")) el.classList.remove("ks-hold", ...MARK_CLASSES);
   }
   // New or changed blocks glow; a removed block leaves a thin marker on its neighbour (on a row's
   // cells: a table row draws no shadow of its own).
@@ -246,7 +253,7 @@
     const before = lastKeys;
     lastKeys = keys;
     if (!units.length) return;
-    if (typeof m.glowAgainst === "string") { glowDiff(units, unitsOfText(m.kind, m.glowAgainst).map((u) => u.key), GLOW_MS); return; }
+    if (typeof m.glowAgainst === "string") { glowDiff(units, unitsOfText(m.kind, m.glowAgainst).map((u) => u.key), m.glowHold === true ? Infinity : GLOW_MS); return; }
     if (m.glowPrev && before) {
       glowMemo = { version: m.version, before, until: Date.now() + GLOW_MS };
       glowDiff(units, before, GLOW_MS);
@@ -390,7 +397,10 @@
     if (m.type === "highlight") { if (Number.isInteger(m.reqId)) highlight(m); return; }
     if (m.type === "glow") {
       // Compare started (§3.10): glow the blocks that differ from the other side.
-      if (!editing && typeof m.against === "string" && (shownKind === "markdown" || shownKind === "slides")) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), GLOW_MS);
+      // hold: kept until the compare ends (glow{clear}); clear: drop held markers.
+      clearHeld();
+      if (m.clear === true) return;
+      if (!editing && typeof m.against === "string" && (shownKind === "markdown" || shownKind === "slides")) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), m.hold === true ? Infinity : GLOW_MS);
       return;
     }
     if (m.type !== "render") return;

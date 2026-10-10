@@ -308,6 +308,26 @@
     startRender(msg);
   }
 
+  // While this canvas's compare tab is open, the differing blocks stay marked here too (Brett,
+  // 2026-10-11): re-marked after every render (rendered{}), cleared when the last compare tab closes.
+  let comparing = false;
+  async function holdCompareGlow() {
+    const agentText = await store.readAgentCopy(canvasId);
+    if (!comparing || mode !== "view") return;
+    if (typeof agentText === "string" && current && agentText !== current.content) toFrame({ type: "glow", against: agentText, hold: true });
+    else toFrame({ type: "glow", clear: true });
+  }
+  async function compareStillOpen() {
+    try { return (await chrome.tabs.query({})).some((t) => CanvasTabs.isCompareTabFor(t, CANVAS_BASE, canvasId)); } catch (_) { return false; }
+  }
+  if (!compareView) {
+    chrome.tabs.onRemoved.addListener(async () => {
+      if (!comparing || (await compareStillOpen())) return;
+      comparing = false;
+      toFrame({ type: "glow", clear: true });
+    });
+  }
+
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
   // them reach a deck still being replaced), and fail at once with the reason while it is failed.
   let renderingVersion = 0;
@@ -325,7 +345,7 @@
   function sendCompareRender(c, content) {
     const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content };
     const same = c.content === c.latest;
-    if (!same && typeof c.latest === "string") msg.glowAgainst = c.latest;
+    if (!same && typeof c.latest === "string") { msg.glowAgainst = c.latest; msg.glowHold = true; }
     else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) msg.glowPrev = true;
     lastRenderedVersion = c.meta.agentVersion;
     notice(same ? "沒有差異：agent 最後寫的版本就是目前的版本（No differences）。" : "");
@@ -451,9 +471,9 @@
       if (!r) r = await openCompareHere();
       if (!r.ok) { notice(`無法開啟比較：${CanvasCore.clipError(r.error)}`); return; }
       if (r.note) flash(r.note);
-      // Both panes glow the differing blocks: this one now, the compare tab on its first render.
-      const agentText = await store.readAgentCopy(canvasId);
-      if (typeof agentText === "string" && mode === "view") toFrame({ type: "glow", against: agentText });
+      // Both panes mark the differing blocks, held while the compare is open.
+      comparing = true;
+      holdCompareGlow();
     } finally {
       compareBtn.disabled = false;
     }
@@ -523,6 +543,7 @@
         renderFailed = "";
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
+        if (comparing && !compareView) holdCompareGlow();     // re-mark on the new DOM
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
           awaitingNormalize = 0;
           store.applyNormalized({ id: canvasId, version: m.version, normalized: m.normalized }).catch(() => {});
