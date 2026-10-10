@@ -22,6 +22,9 @@ heaviest. Pick the lightest that works.
 2. If it may be off-screen, `katashiro.scroll` with that `ref`.
 3. `katashiro.highlight` with `{ref, snapshotId, label, durationMs}`.
 
+- Snapshots give `ref`s only to interactive elements. For a heading or paragraph, pass a CSS
+  `selector` instead (from `read_dom`), e.g. on GitHub markdown
+  `.markdown-heading:has(a[id^="user-content-310-"])`. `scroll` accepts the same selector.
 - `label`: a few words, max 80 characters ("Save button", "the 200 MB limit").
 - `durationMs`: default 4000, max 15000. Use longer while you explain in the same turn.
 - Read-only and harmless: the outline lives in Katashiro's own overlay, never changes the page,
