@@ -5,7 +5,7 @@
 // latest content IS the agent's last write; the separate `agent` body (§3.6) arrives with user
 // editing. Keys, all in one chrome.storage area:
 //   canvas:<conversationId>:index  [{ id, title, kind, version, bytes, updatedAt }]
-//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes }
+//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
@@ -245,9 +245,12 @@
       return Object.values(all).filter((v) => v && typeof v === "object");
     }
 
+    // What a canvas takes: the latest plus the agent copy kept beside it after a user save.
+    const footprint = (m) => (m.bytes || 0) + (m.agentBytes || 0);
+
     async function usage() {
       const metas = await allMetas();
-      return { total: metas.reduce((n, m) => n + (m.bytes || 0), 0), count: metas.length };
+      return { total: metas.reduce((n, m) => n + footprint(m), 0), count: metas.length };
     }
 
     // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
@@ -255,8 +258,9 @@
     // only after one confirmation. Throws QuotaError if declined or if that cannot free enough.
     async function ensureBudget(addBytes, keepId) {
       const metas = await allMetas();
-      const total = metas.reduce((n, m) => n + (m.bytes || 0), 0);
-      const own = (metas.find((m) => m.id === keepId) || {}).bytes || 0;
+      const total = metas.reduce((n, m) => n + footprint(m), 0);
+      const mine = metas.find((m) => m.id === keepId);
+      const own = mine ? footprint(mine) : 0;
       const over = total - own + addBytes - budgetBytes;
       if (over <= 0) return;
       const candidates = metas
@@ -267,8 +271,8 @@
       for (const m of candidates) {
         if (freed >= over) break;
         if (await isOpen(m.id)) continue;
-        evict.push({ id: m.id, title: m.title, bytes: m.bytes || 0, conversationId: m.conversationId });
-        freed += m.bytes || 0;
+        evict.push({ id: m.id, title: m.title, bytes: footprint(m), conversationId: m.conversationId });
+        freed += footprint(m);
       }
       if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
       // The confirmation waits on the user; a canvas opened meanwhile is kept (the write may then
@@ -298,7 +302,7 @@
         const newId = `cv_${randomHex()}`;
         const meta = {
           id: newId, conversationId, title: v.title, kind: v.kind,
-          version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes,
+          version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes, agentBytes: 0,
           normalized: v.kind !== "markdown",               // markdown waits for the editor's normalization
         };
         await putImage(v.image);
@@ -328,7 +332,7 @@
         }
         meta = {
           ...cur, title: v.title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
-          agentSeenVersion: cur.version + 1, bytes: v.bytes, normalized: v.kind !== "markdown",
+          agentSeenVersion: cur.version + 1, bytes: v.bytes, agentBytes: 0, normalized: v.kind !== "markdown",
         };
         await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
         await storage.remove(agentKey(id));                // the latest is the agent's write again
@@ -362,10 +366,6 @@
       return got[agentKey(id)] != null ? got[agentKey(id)] : (got[latestKey(id)] == null ? "" : got[latestKey(id)]);
     }
 
-    async function hasAgentCopy(id) {
-      return ID_RE.test(String(id)) && (await getOne(agentKey(id))) != null;
-    }
-
     // A user's explicit save (§3.5). Stale if the canvas moved on since baseVersion; a save equal to
     // the latest creates no version. The first user save keeps the agent's text as the agent copy.
     async function userSave({ id, baseVersion, content }) {
@@ -373,7 +373,10 @@
       if (typeof content !== "string") throw new Error("`content` must be a string");
       const bytes = utf8Bytes(content);
       if (bytes > CONTENT_MAX_BYTES) throw new Error(`content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
-      await ensureBudget(bytes, id);
+      // Afterwards the canvas holds this save plus an agent copy: the one it has, or (first save)
+      // the current latest, which becomes the copy.
+      const before = ID_RE.test(String(id)) ? await getOne(metaKey(id)) : null;
+      await ensureBudget(bytes + (before ? (before.agentBytes || before.bytes || 0) : 0), id);
       let result;
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));
@@ -385,7 +388,10 @@
         if (content === latest) { result = { version: cur.version, unchanged: true }; return; }
         const meta = { ...cur, version: cur.version + 1, author: "user", at: now(), bytes };
         const items = { [latestKey(id)]: content, [metaKey(id)]: meta };
-        if (got[agentKey(id)] == null) items[agentKey(id)] = latest;    // keep the agent's write
+        if (got[agentKey(id)] == null) {                                 // keep the agent's write
+          items[agentKey(id)] = latest;
+          meta.agentBytes = utf8Bytes(latest);
+        }
         await storage.set(items);
         await updateIndex(cur.conversationId, indexEntry(meta));
         result = { version: meta.version, unchanged: false };
@@ -421,8 +427,10 @@
         if (!cur || cur.kind !== "markdown" || cur.agentVersion !== version || cur.normalized) return;
         const got = await storage.get([latestKey(id), agentKey(id)]);
         const items = { [metaKey(id)]: { ...cur, normalized: true } };
-        if (got[agentKey(id)] != null) items[agentKey(id)] = normalized;
-        else if (cur.version === version) {
+        if (got[agentKey(id)] != null) {
+          items[agentKey(id)] = normalized;
+          items[metaKey(id)].agentBytes = utf8Bytes(normalized);
+        } else if (cur.version === version) {
           items[latestKey(id)] = normalized;
           items[metaKey(id)].bytes = utf8Bytes(normalized);
         }
@@ -464,7 +472,7 @@
       });
     }
 
-    return { agentWrite, read, readImage, readAgentCopy, hasAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
+    return { agentWrite, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
   }
 
   function indexEntry(meta) {

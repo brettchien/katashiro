@@ -40,6 +40,8 @@
   let dirty = false;
   let ownSaveVersion = 0;             // the version our own save produced (not "news" to show)
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
+  let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
+  let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
   const gate = CanvasCore.createLoadGate();
 
   function notice(text) {
@@ -144,13 +146,21 @@
     toFrame(msg);
   }
 
-  async function saveFromEditor(content, baseVersion) {
+  // Saves are serialized (refresh() waits on them). The frame gets back the content that was
+  // stored, so its baseline is what is saved, not what it holds when the reply arrives.
+  function saveFromEditor(content, baseVersion) {
+    const run = saving.then(() => doSave(content, baseVersion));
+    saving = run.catch(() => {});
+    return run;
+  }
+
+  async function doSave(content, baseVersion) {
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
-      if (r.unchanged) { notice("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version }); return; }
+      if (r.unchanged) { notice("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return; }
       ownSaveVersion = r.version;
       notice("");
-      toFrame({ type: "saved", version: r.version });
+      toFrame({ type: "saved", version: r.version, content });
     } catch (e) {
       if (e && e.code === "stale") return openConflict(content);
       notice(`儲存失敗：${CanvasCore.clipError((e && e.message) || e)}`);
@@ -162,6 +172,7 @@
     const c = await load();
     if (!c) return;
     current = c;
+    conflictBase = c.meta.version;
     document.getElementById("conflict-why").textContent =
       `你編輯的期間，這個畫布被${c.meta.author === "agent" ? " agent " : "另一個分頁"}更新成 v${c.meta.version}。選一個版本當作最新版。`;
     document.getElementById("conflict-mine").value = mine;      // .value: text, never HTML
@@ -172,7 +183,9 @@
 
   document.getElementById("conflict-keep").addEventListener("click", async () => {
     conflictEl.hidden = true;
-    if (pendingSave != null && current) await saveFromEditor(pendingSave, current.meta.version);
+    // Over the version shown, not current: one written while the view was up makes this stale
+    // again and reopens the conflict view on it, instead of being overwritten unseen.
+    if (pendingSave != null && conflictBase) await saveFromEditor(pendingSave, conflictBase);
   });
   document.getElementById("conflict-discard").addEventListener("click", () => {
     if (!window.confirm("放棄你尚未儲存的修改？\n\n這個動作無法復原。")) return;
@@ -263,6 +276,7 @@
   });
 
   async function refresh() {
+    await saving;                     // our own save's onChanged can beat its reply: know ownSaveVersion first
     const c = await load();
     if (!c) {
       // Deleted (here, in another tab, or evicted): stop showing stale content.

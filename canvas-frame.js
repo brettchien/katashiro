@@ -3,7 +3,7 @@
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
 //  in:  render{nonce, kind, version, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
-//  in:  edit{content, version}, saved{version}, requestSave, leaveEdit      (markdown editing, §3.5)
+//  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty} — each carrying the nonce from our URL fragment,
 //       which the host checks.
@@ -199,8 +199,10 @@
     if (m.type === "saved") {
       if (editing && Number.isInteger(m.version)) {
         editing.version = m.version;
-        editing.baseline = editing.crepe.getMarkdown();
-        if (editing.dirty) { editing.dirty = false; post({ type: "dirty", dirty: false }); }
+        // The baseline is what was saved; text typed while the save was in flight stays dirty.
+        if (typeof m.content === "string") editing.baseline = m.content;
+        const dirty = editing.crepe.getMarkdown() !== editing.baseline;
+        if (dirty !== editing.dirty) { editing.dirty = dirty; post({ type: "dirty", dirty }); }
       }
       return;
     }

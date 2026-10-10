@@ -432,3 +432,22 @@ test("remove also deletes the agent copy", async () => {
   await s.remove({ id });
   assert.deepEqual(Object.keys(storage.data), []);
 });
+
+test("budget counts the agent copy: first user save adds it, normalize resizes it, an agent write drops it", async () => {
+  const asked = [];
+  const { s } = store({ budgetBytes: 10, confirmEvict: async (i) => { asked.push(i); return false; } });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", content: "aaaa" });   // 4
+  await s.userSave({ id: a.id, baseVersion: 1, content: "uuuuu" });                      // 5 + copy 4
+  assert.equal((await s.usage()).total, 9);
+  await s.applyNormalized({ id: a.id, version: 1, normalized: "aa" });                   // copy → 2
+  assert.equal((await s.usage()).total, 7);
+  // a save that would only fit if the copy were free is refused
+  await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 2, content: "x".repeat(9) }), (e) => e.code === "quota");
+  await s.userSave({ id: a.id, baseVersion: 2, content: "x".repeat(8) });               // 8 + 2
+  assert.equal((await s.usage()).total, 10);
+  await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 3, title: "A", content: "bbb" });
+  assert.equal((await s.usage()).total, 3);
+  // the first save of a fresh agent write must make room for the copy too
+  await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 4, content: "y".repeat(8) }), (e) => e.code === "quota");
+  assert.equal(asked.length, 0);                      // only one canvas: nothing to evict, never asked
+});
