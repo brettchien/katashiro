@@ -154,17 +154,28 @@
     return run;
   }
 
+  // Returns true when the content is stored (saved, or already equal to the latest).
   async function doSave(content, baseVersion) {
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
-      if (r.unchanged) { notice("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return; }
+      if (r.unchanged) { flash("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
       ownSaveVersion = r.version;
-      notice("");
+      flash(`✓ 已儲存 v${r.version}`);
       toFrame({ type: "saved", version: r.version, content });
+      return true;
     } catch (e) {
-      if (e && e.code === "stale") return openConflict(content);
+      if (e && e.code === "stale") { await openConflict(content); return false; }
       notice(`儲存失敗：${CanvasCore.clipError((e && e.message) || e)}`);
+      return false;
     }
+  }
+
+  // A short-lived notice for "saved" feedback (Brett: a silent save looked like nothing happened).
+  let flashTimer = 0;
+  function flash(text) {
+    notice(text);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => { if (noticeEl.textContent === text) notice(""); }, 3000);
   }
 
   async function openConflict(mine) {
@@ -185,7 +196,13 @@
     conflictEl.hidden = true;
     // Over the version shown, not current: one written while the view was up makes this stale
     // again and reopens the conflict view on it, instead of being overwritten unseen.
-    if (pendingSave != null && conflictBase) await saveFromEditor(pendingSave, conflictBase);
+    // Resolving the conflict ends the edit (Brett): once "mine" is stored, go back to the view,
+    // where the result — and Revert to agent's — are visible.
+    if (pendingSave != null && conflictBase && (await saveFromEditor(pendingSave, conflictBase))) {
+      pendingSave = null;
+      await leaveEdit();
+      flash(`✓ 已儲存你的版本 v${current ? current.meta.version : ""}`);
+    }
   });
   document.getElementById("conflict-discard").addEventListener("click", () => {
     if (!window.confirm("放棄你尚未儲存的修改？\n\n這個動作無法復原。")) return;
