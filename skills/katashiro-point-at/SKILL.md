@@ -58,8 +58,10 @@ keep emphasis while the user scrolls.
 
 For canvases (documents and slides the agent rendered; see the Katashiro canvas ADR), use
 `katashiro.canvas_highlight` with `{id, find | heading, label, durationMs}`. It scrolls the canvas
-to the block and glows it. You cannot inject CSS into a canvas: the effects are fixed, and you only
-give a text anchor. Available once canvas phase 1 ships; check with `search_capabilities`.
+to the block and glows it. You cannot inject CSS into a canvas: the effects are fixed (outline and
+background only), and you only give a text anchor. `durationMs` is capped at 10 s and calls are
+rate-limited; it is refused on `html` canvases; while the user is editing, it does not scroll but
+asks the user ("Agent wants to show you a section"). Available once canvas phase 1 ships; check with `search_capabilities`.
 
 After you write a new canvas version the changed blocks glow on their own, so you don't need to
 highlight your own edits. Use `canvas_highlight` to point at something specific while you explain.
