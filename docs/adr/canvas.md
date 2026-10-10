@@ -116,14 +116,23 @@ below is built around that.
   itself (the initial `src`, and the print reload in §3.8). **Any other load means the frame
   navigated away:** the host removes the iframe, shows a warning, and sends nothing more. Without
   this, the next `render` (posted with `'*'`, the only option for an opaque origin) would go to the
-  attacker page.
-- **No navigation by links.** The frame calls `preventDefault` on every `a[href]` click and sends
-  `openLink{url}` instead. The host accepts only `http:`/`https:`, shows the full URL, and opens it
-  in a new tab after the user confirms. `target` attributes are stripped by DOMPurify.
-- **Nonce.** The host generates a random nonce per iframe and puts it in the `src` fragment. The
+  attacker page. Counting alone can misattribute a load if the frame navigates itself around a
+  host-caused reload, so **every host-caused load gets a fresh nonce**, and the host sends `render`
+  only after a `ready` carrying that new nonce.
+- **No navigation by links.** A capture-phase listener on the frame's `document` handles `click`
+  and `auxclick` (middle click), finds `event.target.closest('a, area')` (this covers SVG `<a>` from
+  mermaid or sanitized SVG), calls `preventDefault`, and sends `openLink{url}` instead. The host
+  accepts only `http:`/`https:`, shows the full URL, and opens it in a new tab after the user
+  confirms. `target` attributes are stripped by DOMPurify. Mermaid runs with
+  `securityLevel: 'strict'`, so its `click` directive is disabled.
+- **Nonce.** The host generates a random nonce per load and puts it in the `src` fragment. The
   frame reads it once and includes it in every message; the host drops messages without it. This
   holds in `canvas-frame.html`, which runs no agent script. In `canvas-html-frame.html` agent script
   can read the hash, so there it is only a second check behind the load gate.
+- **Messages before the gate fires.** After a navigation, the new document's script runs before the
+  iframe's `load` event, so an attacker page can post first. That is why the allow-lists below stay
+  harmless on their own, and why the host renders `error{msg}` only with `textContent`, capped at
+  500 characters.
 - **Host → frame:** `postMessage({type:"render", nonce, kind, content, version})`. The frame never
   fetches anything; everything it shows arrives in this message.
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
@@ -215,13 +224,18 @@ below is built around that.
 - Each save is a version `{n, author: "agent" | "user", at, content}`.
 - **Optimistic concurrency, agent side.** An agent update carries `baseVersion` (required with
   `id`). If the canvas has moved on (the user edited it), the call is **rejected** with a
-  structured error, not the whole document: `{error: "stale", current, author, diffFromBase}`
-  (`diffFromBase` is a unified diff from `baseVersion` to `current`). The agent can rebase on the
-  diff without re-reading up to 2 MB. A user's edit is never silently overwritten.
-- **`canvas_patch` rebases itself.** Each `find` is matched against the **latest** version, not
-  `baseVersion`. If every `find` still matches exactly once, the patch applies on top of the
-  user's edit. Only a `find` that is missing or ambiguous rejects the call (with the error above).
-  The common case, "the user edited section A, the agent patches section B", does not conflict.
+  structured error, not the whole document:
+  `{error: "stale", currentVersion, author, diffFromBase}`. `currentVersion` is the latest version
+  number, and `diffFromBase` is a unified diff from `baseVersion` to it. The agent can rebase on the
+  diff without re-reading up to 2 MB. If `baseVersion` has been evicted (§3.6), `diffFromBase` is
+  `null` and the agent calls `canvas_read`. A user's edit is never silently overwritten.
+- **`canvas_patch` rebases itself.** All `find`s are matched against **one snapshot of the latest
+  version**, not `baseVersion` and not each other's output. Each must match exactly once, and the
+  matched ranges must not overlap. Then all replacements apply together; otherwise none do and the
+  call is rejected (with the error above), so one `replace` can never create a match for the next.
+  On success after the canvas has moved on, the result carries `rebasedOver: {version, author}` so
+  the agent knows the user edited in between. The common case, "the user edited section A, the
+  agent patches section B", does not conflict.
 - **User side: unsaved edits are never eaten.** If the user has unsaved changes when an agent
   version arrives, the frame does not re-render. The host stores the agent's version and shows
   *"Agent saved vN — view / keep editing"*. When the user then saves, their `save{baseVersion}` is
@@ -248,9 +262,10 @@ below is built around that.
   (each canvas keeps its first and latest), then whole canvases, least recently opened first.
 - **Keyed by `conversationId` from day one** (already minted by #61), so multi-conversation needs no
   migration. Until it lands, the window's conversation owns its canvases.
-- **Incognito** uses `storage.session`, mirroring the chat history (#54). That is about 10 MB, so the
-  same eviction applies against a 10 MB budget. If the new version alone does not fit, the tool
-  call fails with `{error: "quota"}` and the card says so; nothing is half-written.
+- **Incognito** uses `storage.session`, mirroring the chat history (#54). Its ~10 MB quota is
+  **shared with that chat history**, so the canvas budget is the quota minus what the history
+  already uses (`getBytesInUse`), with the same eviction. If the new version alone does not fit,
+  the tool call fails with `{error: "quota"}` and the card says so; nothing is half-written.
 - If `chrome.storage.local` becomes slow at this size, move version bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
 
