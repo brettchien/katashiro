@@ -2976,13 +2976,14 @@ const CanvasStore = require("../canvas-store.js");
 function withCanvas(d, opts = {}) {
   const data = {};
   const storage = {
-    async get(keys) { const out = {}; for (const k of [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]); return out; },
+    async get(keys) { const out = {}; for (const k of keys == null ? Object.keys(data) : [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]); return out; },
     async set(items) { for (const [k, v] of Object.entries(items)) data[k] = structuredClone(v); },
+    async remove(keys) { for (const k of [].concat(keys)) delete data[k]; },
   };
   let n = 0;
   const writes = [];
   d.canvas = {
-    store: CanvasStore.createCanvasStore({ storage, lock: (_n, fn) => fn(), randomHex: () => (++n).toString(16).padStart(12, "0") }),
+    store: CanvasStore.createCanvasStore({ storage, lock: (_n, fn) => fn(), randomHex: () => (++n).toString(16).padStart(12, "0"), budgetBytes: opts.budgetBytes }),
     conversationId: () => opts.conversationId || "c_test",
     onWrite: async (res) => { writes.push(res); return opts.note || ""; },
   };
@@ -3036,4 +3037,75 @@ test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated 
     assert.equal(BrowserMcp.TOOLS[name].sessionScope, true);
     assert.ok(!BrowserMcp.TOOLS[name].write);
   }
+});
+
+// --- screenshot of Katashiro's own canvas tab ---------------------------------------
+
+test("katashiro.screenshot may capture Katashiro's own canvas tab; other extension pages stay refused", async () => {
+  const base = "chrome-extension://kata/canvas.html";
+  for (const [url, allowed] of [
+    [`${base}?id=cv_000000000001`, true],
+    [base, true],
+    ["chrome-extension://kata/sidepanel.html", false],
+    ["chrome-extension://other/canvas.html?id=x", false],
+    [`${base}x?id=1`, false],
+    ["chrome://settings", false],
+  ]) {
+    const { deps: d, calls } = deps({ dataUrl: "data:image/jpeg;base64,QUJD", tabUrl: url });
+    d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
+    const res = await callTool(d, "katashiro.screenshot", {});
+    assert.equal(calls.captureVisibleTab.length, allowed ? 1 : 0, url);
+    assert.equal(!!res.isError, !allowed, url);
+  }
+});
+
+test("DOM tools stay refused on the canvas tab (only screenshot is ownCanvas)", async () => {
+  const { deps: d } = deps({ tabUrl: "chrome-extension://kata/canvas.html?id=cv_000000000001" });
+  d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
+  const res = await callTool(d, "katashiro.snapshot", {});
+  assert.equal(res.isError, true);
+  assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.ownCanvas).map(([n]) => n), ["katashiro.screenshot"]);
+});
+
+test("katashiro.canvas_open: over budget with no room returns a quota JSON error", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d, { budgetBytes: 3 });
+  const r = await callTool(d, "katashiro.canvas_open", { title: "T", content: "four" });
+  assert.equal(r.isError, true);
+  assert.equal(JSON.parse(r.content[0].text).error, "quota");
+});
+
+test("katashiro.show_image: a panel memory cap is reported as such, not as a decode failure (#60)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withShowImage(d, () => { throw Object.assign(new Error("at most 10 images per reply"), { code: "cap" }); });
+  const res = await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png" });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /^show_image refused: at most 10 images per reply/);
+});
+
+test("katashiro.notify: a failed create gives the slot back only if no later call took it (#57)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  let clock = 1_000_000;
+  d.now = () => clock;
+  d.windowId = 4242;                                   // its own window key: lastNotify is module-level
+  let releaseA;
+  const created = [];
+  d.chrome.notifications = {
+    create: (id) => {
+      created.push(id);
+      if (created.length === 1) return new Promise((_r, rej) => { releaseA = () => rej(new Error("A failed")); });
+      return Promise.resolve(id);
+    },
+  };
+  const a = callTool(d, "katashiro.notify", { message: "A" });          // claims the slot, then hangs
+  await new Promise((r) => setTimeout(r, 0));
+  clock += 11_000;                                                       // past the 10 s cooldown
+  const c = await callTool(d, "katashiro.notify", { message: "C" });    // claims the slot, succeeds
+  assert.equal(c.isError, undefined, JSON.stringify(c));
+  releaseA();
+  const ra = await a;
+  assert.equal(ra.isError, true);
+  clock += 1_000;                                                        // C was 1 s ago
+  const repeat = await callTool(d, "katashiro.notify", { message: "C" });
+  assert.match(repeat.content[0].text, /same notification as the previous one/);   // C's slot survived A's rollback
 });

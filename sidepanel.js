@@ -448,9 +448,9 @@ class Conn {
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
     const batch = this.promptQueue.splice(0);
-    let text = RoomCore.batchPrompts(batch);
-    // (A retried batch already carries the note — don't stack a second one.)
-    if (text && RoomCore.needsReplyHint(batch) && !text.endsWith(RoomCore.REPLY_HINT)) text += `\n\n${RoomCore.REPLY_HINT}`;
+    // The reply hint exactly once, at the end — also when a retried prompt (which carries it) is
+    // batched with newer messages (#62).
+    let text = RoomCore.batchWithReplyHint(batch);
     let images = [];
     if (this.pendingImages.length && !this.canImage) {
       const n = this.pendingImages.splice(0).length;
@@ -670,6 +670,13 @@ class Conn {
   // inside the in-flight turn — between the tool strip and the reply bubble — or, between turns,
   // as a standalone message from this agent. Memory-only like pasted images; history gets a marker.
   async showImage({ dataUrl, caption }) {
+    // Memory cap (#60): shown images live in the DOM as data: URLs (≤ 5 MB each, ×4/3 as base64).
+    if (this.turnActive && this.stream && (this.stream.imageCount || 0) >= SHOW_IMAGE_PER_TURN) {
+      throw Object.assign(new Error(`at most ${SHOW_IMAGE_PER_TURN} images per reply`), { code: "cap" });
+    }
+    if (shownImageChars + dataUrl.length > SHOW_IMAGE_SESSION_CHARS) {
+      throw Object.assign(new Error("this panel already holds ~50 MB of shown images; ask the user to reload the panel"), { code: "cap" });
+    }
     let src = dataUrl;                                   // a data: URL browser-mcp.js built from validated base64
     let im = new Image();
     im.src = src;
@@ -707,8 +714,14 @@ class Conn {
       s.imageCount = (s.imageCount || 0) + 1;
       maybeScroll();
     } else {
-      appendMessage({ senderId: this.id, senderName: this.name, text: caption, images: [src] });
+      // Between turns: its own message (so history keeps the "image not saved" marker), rendered
+      // like the in-turn figure (#60): click to open, caption as text — not markdown.
+      appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src], historyCaption: caption });
+      const row = messagesList.lastElementChild;
+      const placed = row && row.querySelector(".bubble-image");
+      if (placed) placed.replaceWith(fig);
     }
+    shownImageChars += src.length;
     return { width: im.naturalWidth, height: im.naturalHeight };
   }
 
@@ -815,13 +828,16 @@ class Conn {
     // A reply with "↩ <time>" markers becomes one message per part — the first part fills this
     // turn's bubble, each later part is its own row — every part quoting (clickable) the message it
     // answers, with its own id, ↩ button and history record, so a reload replays them split too.
-    const doneAt = Date.now();
+    const doneAt = uniqueMsgMs(Date.now());
     const split = RoomCore.replyParts(s.text);
     const first = split[0];
     const firstReply = first.replyTo ? replyTargetFor(first.replyTo) : null;
     renderMarkdownInto(s.bubble, first.text);
     if (firstReply && s.contentEl) s.contentEl.insertBefore(replyQuoteEl(firstReply), s.bubble);
     const row = s.bubble.closest(".message");
+    // The row showed the time streaming STARTED; the id, quotes and chat_history use doneAt (#62).
+    const tsEl = s.contentEl && s.contentEl.querySelector(":scope > .timestamp");
+    if (tsEl) tsEl.textContent = formatTime(doneAt);
     const firstId = RoomCore.messageId(conversationId, doneAt);
     if (row && s.contentEl) {
       row.dataset.msgId = firstId;
@@ -834,7 +850,7 @@ class Conn {
     });
     split.slice(1).forEach((p, i) => {
       appendMessage({
-        senderId: this.id, senderName: this.name, text: p.text, timestamp: doneAt + i + 1,   // +1 ms: distinct ids
+        senderId: this.id, senderName: this.name, text: p.text, timestamp: uniqueMsgMs(doneAt + i + 1),   // distinct ids
         replyTo: p.replyTo ? replyTargetFor(p.replyTo) : null,
       });
     });
@@ -1189,7 +1205,8 @@ function saveHistory() {
   if (!historyKey) return;
   const sessions = {};
   room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages } });
+  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages, savedAt: Date.now() } })
+    .catch(() => { /* quota (10 MB in incognito) — the on-screen chat is unaffected */ });
 }
 
 // Append a record to the persisted scrollback (skipped while restoring). System/status notices are
@@ -1206,26 +1223,34 @@ function replayMessage(rec) {
   else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || null });
 }
 
-// Drop the scrollback of windows that no longer exist (closed, or ids from a previous browser run).
-// Only numeric window keys are pruned; the "default" fallback key is left alone. Best effort.
-// Always prunes storage.local (the on-disk copy), whichever store this window uses. getAll() lists
+// History of windows that no longer exist (#56). After a browser restart every window id changes,
+// so instead of pruning those keys at once, a window with no history of its own ADOPTS the most
+// recently saved orphan — its scrollback, conversationId and ACP session ids, so the agent's
+// session resumes too — and orphans older than 7 days are pruned. Several restored windows each
+// adopt one (the lock makes "pick + move" atomic across panels). Only numeric window keys count;
+// "default" is left alone. storage.local only: incognito history is never adopted. getAll() lists
 // only normal + popup windows by default, so ask for every type — a panel in an app/devtools window
-// would otherwise prune its own key on each open.
+// would otherwise treat its own key as orphaned. Best effort: never blocks the panel.
 const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
-async function pruneOrphanHistory() {
+const HISTORY_ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+async function adoptOrPruneOrphanHistory(ownKey, { adoptAllowed }) {
   try {
-    const [all, wins] = await Promise.all([
-      chrome.storage.local.get(null),
-      chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
-    ]);
-    const live = new Set(wins.map((w) => String(w.id)));
-    const stale = Object.keys(all).filter((k) => {
-      if (!k.startsWith(HISTORY_PREFIX)) return false;
-      const id = k.slice(HISTORY_PREFIX.length);
-      return /^\d+$/.test(id) && !live.has(id);
+    await navigator.locks.request("history:adopt", async () => {
+      const [entries, wins] = await Promise.all([
+        CanvasStore.getMatching(chrome.storage.local, (k) => k.startsWith(HISTORY_PREFIX)),
+        chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
+      ]);
+      const plan = RoomCore.planHistoryAdoption({
+        entries, liveIds: new Set(wins.map((w) => String(w.id))), ownKey, prefix: HISTORY_PREFIX,
+        now: Date.now(), keepMs: HISTORY_ORPHAN_KEEP_MS,
+      });
+      if (plan.adopt && adoptAllowed) {
+        await chrome.storage.local.set({ [ownKey]: entries[plan.adopt] });
+        await chrome.storage.local.remove(plan.adopt);
+      }
+      if (plan.prune.length) await chrome.storage.local.remove(plan.prune);
     });
-    if (stale.length) await chrome.storage.local.remove(stale);
-  } catch (_) { /* pruning is housekeeping — never block the panel on it */ }
+  } catch (_) { /* housekeeping — never block the panel on it */ }
 }
 
 // Load per-window history + saved session ids and replay the scrollback. Runs BEFORE the room is
@@ -1236,7 +1261,7 @@ async function loadHistory() {
   panelWindowId = win.id;
   historyKey = `${HISTORY_PREFIX}${win.id}`;
   if (win.incognito) historyStore = chrome.storage.session;
-  await pruneOrphanHistory();
+  await adoptOrPruneOrphanHistory(historyKey, { adoptAllowed: !win.incognito });
   const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
   savedSessions = data.sessions || {};
@@ -1392,11 +1417,13 @@ settingsView.addEventListener("click", (e) => {
 // Clear the on-screen scrollback + this window's persisted mirror (storage.local). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
-// just not the cleared bubbles. Guarded by a confirm since storage.local is the only copy.
+// just not the cleared bubbles. Guarded by a confirm since the stored copy (storage.local, or
+// storage.session in an incognito window) is the only one.
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   messagesList.replaceChildren();
   historyMessages.length = 0;
+  shownImageChars = 0;           // the shown images left the DOM with the messages
   saveHistory();                 // persist the now-empty scrollback (session ids untouched)
   if (jumpLatestBtn) jumpLatestBtn.hidden = true;
   appendSystemMessage("已清除聊天畫面（agent 端記憶仍保留）。");
@@ -2062,6 +2089,13 @@ function formatTime(timestamp) {
 const canvasStore = CanvasStore.createCanvasStore({
   storage: chrome.storage.local,
   lock: (name, fn) => navigator.locks.request(name, fn),
+  // Over the 200 MB budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
+  // panel (the agent's write arrives here; no canvas tab may be open).
+  isOpen: async (id) => !!(await findCanvasTab(id)),
+  confirmEvict: async ({ evict }) => window.confirm(
+    `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
+    evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
+    (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
 });
 
 function canvasTabUrl(id) {
@@ -2110,7 +2144,17 @@ function canvasCard({ id, version, title }) {
   return card;
 }
 
+// Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
+let lastMsgMs = 0;
+function uniqueMsgMs(t) {
+  lastMsgMs = RoomCore.nextUniqueMs(lastMsgMs, t);
+  return lastMsgMs;
+}
+
 // --- show_image helpers ---------------------------------------------------------
+const SHOW_IMAGE_PER_TURN = 10;                          // #60 memory cap
+const SHOW_IMAGE_SESSION_CHARS = 50 * 1024 * 1024 * 4 / 3; // ~50 MB of images, as data: URL chars
+let shownImageChars = 0;
 const SVG_RASTER_MAX_EDGE = 4096;                       // px, after the 2× scale
 const SVG_DEFAULT_SIZE = { width: 1200, height: 800 };  // an SVG with no intrinsic size
 
@@ -2274,7 +2318,7 @@ function jumpToMessage(id) {
   setTimeout(() => row.classList.remove("flash"), 1500);
 }
 
-function appendMessage({ senderId, senderName, text, timestamp, images, replyTo }) {
+function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -2331,7 +2375,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo 
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
     replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
-    text: Composer.historyText(text, Array.isArray(images) ? images.length : 0), // images are memory-only
+    // images are memory-only; a shown image's caption (rendered as a figcaption) is kept as text
+    text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0),
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.

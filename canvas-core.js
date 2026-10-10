@@ -10,6 +10,7 @@
 
   const ERROR_MAX = 500;      // error{msg} is shown with textContent, capped (§3.2)
   const URL_MAX = 2048;
+  const COPY_MAX = 1024 * 1024;
 
   // What canvas-frame.html may send (§3.2 per-frame allow-list). MVP: no editor, so no save /
   // selection yet. Anything else is dropped.
@@ -18,6 +19,9 @@
     rendered: (m) => Number.isInteger(m.version),
     error: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
+    // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
+    // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
+    copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
   };
 
   /**

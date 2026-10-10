@@ -195,6 +195,14 @@
   // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
   // pre-reject pages with no scriptable web origin (chrome://, about:, the Web Store, file://, PDF
   // viewer) here, so those return a clear message instead of a raw Chrome error.
+  // Katashiro's own canvas page (canvas.html?id=…), by exact extension URL prefix.
+  function isOwnCanvasTab(chrome, tab) {
+    const getURL = chrome && chrome.runtime && chrome.runtime.getURL;
+    if (typeof getURL !== "function" || !tab || typeof tab.url !== "string") return false;
+    const base = getURL("canvas.html");
+    return tab.url === base || tab.url.startsWith(`${base}?`);
+  }
+
   function pageOrigin(url) {
     try {
       const u = new URL(url || "");
@@ -1042,12 +1050,14 @@
 
     "katashiro.screenshot": {
       description:
-        "Capture a screenshot (image) of the active tab. EXPENSIVE and slow to reason over — use " +
+        "Capture a screenshot (image) of the active tab (a web page, or one of Katashiro's own canvas " +
+        "tabs — switch_tab to it to check how a canvas you wrote looks). EXPENSIVE and slow to reason over — use " +
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
         "read text or to confirm an action succeeded (action tools already return the new snapshot). " +
         "Also returns an `imageId`: pass it to `paste_image` (paste into an editor, e.g. a Jira " +
         "description) or `upload_file` (`files: [{ imageId }]`) to put this screenshot into another " +
         "page — the image stays in the extension, you never handle its bytes.",
+      ownCanvas: true,                   // may capture Katashiro's own canvas tab (see callBrowserTool)
       inputSchema: { type: "object", properties: {} },
       redact: redactDefault,
       /** @param {object} _args (none) */
@@ -2565,8 +2575,9 @@
 
     "katashiro.inject_css": {
       description:
-        "Apply a CSS stylesheet to the active tab (all frames) — e.g. hide distracting banners, enlarge " +
-        "text, make a layout readable. Use `!important` to win over the site's rules. Pass `clear: true` " +
+        "Apply a CSS stylesheet to the active tab (all frames) — e.g. outline or glow the elements you " +
+        "are pointing the user at, enlarge text, make a layout readable. Emphasise; never hide or fake " +
+        "page content, and clear it when done. Use `!important` to win over the site's rules. Pass `clear: true` " +
         "to remove every stylesheet katashiro injected in this tab. Visual only and temporary: it " +
         "changes no page data and is gone on reload. Sheets that fetch anything (`url()`, `@import`, " +
         "`image-set()`, `@font-face`, …) and CSS escapes (`\\`) are refused.",
@@ -2657,6 +2668,7 @@
         try {
           dims = await ctx.showImage({ dataUrl: `data:${mimeType};base64,${data}`, caption });
         } catch (e) {
+          if (e && e.code === "cap") return errText(`show_image refused: ${e.message}`);
           return errText(`could not display the image — it does not decode as ${mimeType}`);
         }
         const size = dims && dims.width ? `${dims.width}×${dims.height} ` : "";
@@ -2705,6 +2717,7 @@
           if (e && e.code === "stale") {
             return errText(JSON.stringify({ error: "stale", currentVersion: e.currentVersion, author: e.author, message: e.message }));
           }
+          if (e && e.code === "quota") return errText(JSON.stringify({ error: "quota", message: e.message }));
           return errText(`canvas_open: ${(e && e.message) || e}`);
         }
         let opened = "";
@@ -2811,8 +2824,9 @@
         "ready or failed, a decision is needed. Do not use it for routine progress or for a reply " +
         "the user is already watching. Clicking the notification focuses the browser window that " +
         "hosts this panel. `title` ≤ 80 chars, `message` ≤ 300 chars. At most one per 10 s per " +
-        "window, and repeating the previous title+message is refused for 60 s. A success means the browser " +
-        "accepted it, not that the user saw it — OS settings (notifications off, Focus) can hide it.",
+        "window, and repeating the previous title+message is refused for 60 s. A success means " +
+        "the browser accepted it, not that the user saw it — OS settings (notifications off, Focus) " +
+        "can hide it.",
       // Not a page write: it does not act with the user's site authority, so act mode does not
       // gate it. sessionScope: it needs no active tab.
       sessionScope: true,
@@ -2848,7 +2862,8 @@
         }
         // Claim the slot before awaiting: parallel calls in one turn would otherwise all pass the
         // check above before any of them recorded itself. A failed create gives the slot back.
-        lastNotify.set(windowKey, { at: now, key });
+        const mine = { at: now, key };
+        lastNotify.set(windowKey, mine);
         // The id prefix carries the panel's window so its onClicked handler focuses the right window
         // (every open panel hears every click; each only claims its own).
         const id = `${NOTIFY_ID_PREFIX}${windowKey}:${now}-${++notifySeq}`;
@@ -2860,8 +2875,12 @@
             message
           });
         } catch (e) {
-          if (last) lastNotify.set(windowKey, last);
-          else lastNotify.delete(windowKey);
+          // Give the slot back only if it is still ours: if create hung past the cooldown, a later
+          // call may have claimed it since, and restoring `last` would overwrite that call (#57).
+          if (lastNotify.get(windowKey) === mine) {
+            if (last) lastNotify.set(windowKey, last);
+            else lastNotify.delete(windowKey);
+          }
           throw e;
         }
         return okText(`notification sent: ${title ? `${title} — ` : ""}${message}`);
@@ -2979,7 +2998,10 @@
     const tab = await activeTab(chrome);
     // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
-    if (!pageOrigin(tab.url)) return errText(ORIGIN_UNSUPPORTED);
+    // One exception: a tool marked ownCanvas (screenshot) may look at Katashiro's OWN canvas tab
+    // (canvas.html, ADR canvas), so the agent can check what it rendered. Never another extension's
+    // page, never any other page of ours; DOM tools stay refused there (no script can be injected).
+    if (!pageOrigin(tab.url) && !(tool.ownCanvas && isOwnCanvasTab(chrome, tab))) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
     return withTabContext(await tool.call(args, ctx), tab);

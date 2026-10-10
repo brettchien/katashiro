@@ -19,6 +19,11 @@
   const versionEl = document.getElementById("canvas-version");
   const noticeEl = document.getElementById("canvas-notice");
   const mainEl = document.getElementById("canvas-main");
+  const deleteBtn = document.getElementById("canvas-delete");
+  const store = CanvasStore.createCanvasStore({
+    storage: chrome.storage.local,
+    lock: (name, fn) => navigator.locks.request(name, fn),
+  });
 
   let frame = null;
   let nonce = "";
@@ -99,6 +104,11 @@
       case "error":
         notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
         break;
+      case "copy": {
+        const reply = (ok) => frame && frame.contentWindow.postMessage({ type: "copied", nonce, reqId: m.reqId, ok }, "*");
+        navigator.clipboard.writeText(m.text).then(() => reply(true), () => reply(false));
+        break;
+      }
       case "openLink": {
         const url = CanvasCore.safeLinkUrl(m.url);
         if (!url) { notice("已擋下一個非 http(s) 的連結。"); break; }
@@ -118,7 +128,12 @@
 
   async function refresh() {
     const c = await load();
-    if (!c) return;
+    if (!c) {
+      // Deleted (here, in another tab, or evicted): stop showing stale content.
+      if (frame) dropFrame("這個畫布已被刪除。");
+      deleteBtn.hidden = true;
+      return;
+    }
     current = c;
     setHeader(c.meta);
     sendRender();
@@ -130,5 +145,18 @@
     current = c;
     setHeader(c.meta);
     mountFrame();
+    deleteBtn.hidden = false;
+    store.touch(canvasId).catch(() => {});      // "last opened", for eviction order (§3.6)
   })();
+
+  // #70: delete. No history to fall back on, so it says it cannot be undone.
+  deleteBtn.addEventListener("click", async () => {
+    const title = current ? current.meta.title : "";
+    if (!window.confirm(`刪除畫布「${String(title).slice(0, 60)}」？\n\n這個動作無法復原。`)) return;
+    try {
+      await store.remove({ id: canvasId });
+    } catch (e) {
+      notice(`刪除失敗：${CanvasCore.clipError((e && e.message) || e)}`);
+    }
+  });
 })();

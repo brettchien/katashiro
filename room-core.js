@@ -435,7 +435,60 @@
     return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
   }
 
+  // #56: after a browser restart every window id changes, so this window's history key is empty
+  // while the previous run's keys sit orphaned (their window ids no longer exist). Plan which orphan
+  // this window adopts — the most recently saved one, only if this window has no history key at all
+  // — and which orphans are old enough to prune. Pure: the caller does the storage work under a lock.
+  //   entries: { [key]: { savedAt?, messages? } } (only HISTORY keys), liveIds: Set of window id strings
+  function planHistoryAdoption({ entries, liveIds, ownKey, prefix, now, keepMs }) {
+    const own = entries[ownKey];
+    // Only a window with no key at all adopts. A cleared chat keeps its key (messages: [] but the
+    // same sessions + conversationId) and must not be swapped for another window's conversation.
+    const ownEmpty = !own;
+    const orphans = Object.keys(entries).filter((k) => {
+      if (k === ownKey || !k.startsWith(prefix)) return false;
+      const id = k.slice(prefix.length);
+      return /^\d+$/.test(id) && !liveIds.has(id);
+    });
+    const savedAt = (k) => Number((entries[k] && entries[k].savedAt) || 0);
+    let adopt = null;
+    if (ownEmpty) {
+      for (const k of orphans) {
+        const e = entries[k];
+        if (!e || !Array.isArray(e.messages) || !e.messages.length) continue;
+        if (adopt === null || savedAt(k) > savedAt(adopt)) adopt = k;
+      }
+    }
+    const prune = orphans.filter((k) => k !== adopt && now - savedAt(k) > keepMs);
+    return { adopt, prune };
+  }
+
+  // #62: the batch text with the reply hint exactly once, at the end. A retried prompt already
+  // carries the hint; if new messages were queued after it, endsWith() no longer saw it and the
+  // hint ended up twice (once mid-prompt). Strip it from every item, then add it once if needed.
+  function batchWithReplyHint(batch) {
+    const suffix = `\n\n${REPLY_HINT}`;
+    const items = (Array.isArray(batch) ? batch : []).map((t) => {
+      let s = t == null ? "" : String(t);
+      while (s.endsWith(suffix)) s = s.slice(0, -suffix.length);
+      return s === REPLY_HINT ? "" : s;
+    });
+    const text = batchPrompts(items);
+    // A retried item had the hint for a reason (it batched several messages): keep it.
+    const hadHint = (Array.isArray(batch) ? batch : []).some((t) => String(t == null ? "" : t).endsWith(suffix));
+    return text && (hadHint || needsReplyHint(items)) ? `${text}${suffix}` : text;
+  }
+
+  // #62: message ids are <conversationId>:<ms>; two messages finishing in the same ms (a split
+  // reply's parts, two agents) must not share one. Returns t, or last + 1 if t is not after last.
+  function nextUniqueMs(last, t) {
+    return t > last ? t : last + 1;
+  }
+
   return {
+    batchWithReplyHint,
+    nextUniqueMs,
+    planHistoryAdoption,
     splitReplySegments,
     replyParts,
     uiTime,

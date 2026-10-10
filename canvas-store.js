@@ -38,6 +38,14 @@
 
   // A stale write: the canvas moved on since the caller's baseVersion (§3.5). A structured error,
   // not the whole document; `diffFromBase` arrives with user editing (MVP has one writer kind).
+  // Over the byte budget and the user declined (or could not be asked) to drop old canvases (§3.6).
+  class QuotaError extends Error {
+    constructor(needed, budget) {
+      super(`canvas storage is full (${needed} bytes needed over the ${budget}-byte budget) and nothing was removed`);
+      this.code = "quota";
+    }
+  }
+
   class StaleError extends Error {
     constructor(meta, baseVersion) {
       super(`canvas "${meta.title}" is at version ${meta.version}, not ${baseVersion} — call canvas_read and write on top of the latest`);
@@ -53,11 +61,32 @@
    * @param {(name: string, fn: () => Promise<any>) => Promise<any>} deps.lock
    * @param {() => number} [deps.now]
    * @param {() => string} [deps.randomHex]  12 hex chars for a new id
+   * @param {number} [deps.budgetBytes]  total canvas bytes allowed (default 200 MB, §3.6)
+   * @param {(id: string) => Promise<boolean>} [deps.isOpen]  is this canvas open in a tab (never evicted)
+   * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
+   *        asked once when a write would go over budget; true = remove `evict` and write
    */
+  // The entries whose key passes `test`, without pulling every value into memory: getKeys()
+  // (Chrome 130+) lists keys only, so canvas contents (up to the budget) are not read just to be
+  // filtered out. Older Chrome (or a storage without getKeys) falls back to one get(null) scan.
+  async function getMatching(storage, test) {
+    if (typeof storage.getKeys === "function") {
+      const keys = (await storage.getKeys()).filter(test);
+      return keys.length ? (await storage.get(keys)) || {} : {};
+    }
+    const all = (await storage.get(null)) || {};
+    const out = {};
+    for (const [k, v] of Object.entries(all)) if (test(k)) out[k] = v;
+    return out;
+  }
+
   function createCanvasStore(deps) {
     const storage = deps.storage;
     const lock = deps.lock;
     const now = deps.now || (() => Date.now());
+    const budgetBytes = deps.budgetBytes || BUDGET_BYTES;
+    const isOpen = deps.isOpen || (async () => false);
+    const confirmEvict = deps.confirmEvict || (async () => false);
     const randomHex = deps.randomHex || (() => {
       const b = new Uint8Array(6);
       globalThis.crypto.getRandomValues(b);
@@ -82,6 +111,43 @@
       return { title: t, kind: k, content, bytes };
     }
 
+    // Every canvas's meta, across conversations (for the budget). Reads only the meta keys.
+    async function allMetas() {
+      const all = await getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k));
+      return Object.values(all).filter((v) => v && typeof v === "object");
+    }
+
+    async function usage() {
+      const metas = await allMetas();
+      return { total: metas.reduce((n, m) => n + (m.bytes || 0), 0), count: metas.length };
+    }
+
+    // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
+    // budget: least recently opened first, never one open in a tab nor the one being written, and
+    // only after one confirmation. Throws QuotaError if declined or if that cannot free enough.
+    async function ensureBudget(addBytes, keepId) {
+      const metas = await allMetas();
+      const total = metas.reduce((n, m) => n + (m.bytes || 0), 0);
+      const own = (metas.find((m) => m.id === keepId) || {}).bytes || 0;
+      const over = total - own + addBytes - budgetBytes;
+      if (over <= 0) return;
+      const candidates = metas
+        .filter((m) => m.id !== keepId)
+        .sort((a, b) => (a.openedAt || a.at || 0) - (b.openedAt || b.at || 0));
+      const evict = [];
+      let freed = 0;
+      for (const m of candidates) {
+        if (freed >= over) break;
+        if (await isOpen(m.id)) continue;
+        evict.push({ id: m.id, title: m.title, bytes: m.bytes || 0, conversationId: m.conversationId });
+        freed += m.bytes || 0;
+      }
+      if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
+      // The confirmation waits on the user; a canvas opened meanwhile is kept (the write may then
+      // run slightly over budget — it is a soft cap).
+      for (const e of evict) if (!(await isOpen(e.id))) await remove({ id: e.id });
+    }
+
     async function updateIndex(conversationId, entry) {
       await lock("canvas:index", async () => {
         const list = (await getOne(indexKey(conversationId))) || [];
@@ -99,6 +165,7 @@
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       const v = validate({ title, kind, content });
       const at = now();
+      await ensureBudget(v.bytes, id || null);
       if (id == null || id === "") {
         const newId = `cv_${randomHex()}`;
         const meta = {
@@ -139,12 +206,41 @@
       return (await getOne(indexKey(conversationId))) || [];
     }
 
-    return { agentWrite, read, list };
+    // Delete a canvas (#70): its bodies and meta, then its index entry. Same lock order as writes.
+    // With conversationId, only a canvas of that conversation.
+    async function remove({ conversationId, id }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      await lock(`canvas:${id}`, async () => {
+        const meta = await getOne(metaKey(id));
+        if (!meta) return;
+        if (conversationId && meta.conversationId !== conversationId) throw new Error(`no canvas "${id}" in this conversation`);
+        await storage.remove([metaKey(id), latestKey(id)]);
+        await lock("canvas:index", async () => {
+          const key = indexKey(meta.conversationId);
+          const list = ((await getOne(key)) || []).filter((e) => e.id !== id);
+          if (list.length) await storage.set({ [key]: list });
+          else await storage.remove(key);
+        });
+      });
+    }
+
+    // The canvas tab was opened (LRU order for eviction). Not a content change: version untouched.
+    async function touch(id) {
+      if (!ID_RE.test(String(id))) return;
+      await lock(`canvas:${id}`, async () => {
+        const meta = await getOne(metaKey(id));
+        if (meta) await storage.set({ [metaKey(id)]: { ...meta, openedAt: now() } });
+      });
+    }
+
+    return { agentWrite, read, list, remove, touch, usage };
   }
 
   function indexEntry(meta) {
     return { id: meta.id, title: meta.title, kind: meta.kind, version: meta.version, bytes: meta.bytes, updatedAt: meta.at };
   }
 
-  return { createCanvasStore, StaleError, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
+
+  return { createCanvasStore, getMatching, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });
