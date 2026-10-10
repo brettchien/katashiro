@@ -380,7 +380,7 @@
     if (deleted) { notice("這個畫布已被刪除，無法儲存。請先把內容複製出來。"); return false; }
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
-      if (r.unchanged) { flash("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
+      if (r.unchanged) { flash("沒有內容變更，不需要儲存（markdown 不保留多餘的空行）。"); toFrame({ type: "saved", version: r.version, content }); return true; }
       ownSaveVersion = r.version;
       flash(`✓ 已儲存 v${r.version}`);
       toFrame({ type: "saved", version: r.version, content });

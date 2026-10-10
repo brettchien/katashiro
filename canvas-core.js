@@ -187,7 +187,8 @@
    * Milkdown writes an empty paragraph as a line with only "<br />" (to keep the blank line). The
    * canvas renders markdown with html:false, so it would show as the literal text "<br />", and it
    * piles up on every save. Treat such a line as a blank line: drop it (outside code fences, at any indent) and
-   * collapse the run of blank lines it leaves. Idempotent.
+   * collapse the run of blank lines it leaves. Idempotent. Extra blank lines are not kept (Brett,
+   * 2026-10-11: markdown has no empty paragraph; a save of only blank lines says so, no version).
    */
   function cleanEditorMarkdown(text) {
     const lines = String(text == null ? "" : text).split("\n");
