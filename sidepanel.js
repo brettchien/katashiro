@@ -716,7 +716,7 @@ class Conn {
     } else {
       // Between turns: its own message (so history keeps the "image not saved" marker), rendered
       // like the in-turn figure (#60): click to open, caption as text — not markdown.
-      appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src] });
+      appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src], historyCaption: caption });
       const row = messagesList.lastElementChild;
       const placed = row && row.querySelector(".bubble-image");
       if (placed) placed.replaceWith(fig);
@@ -1236,12 +1236,10 @@ const HISTORY_ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
 async function adoptOrPruneOrphanHistory(ownKey, { adoptAllowed }) {
   try {
     await navigator.locks.request("history:adopt", async () => {
-      const [all, wins] = await Promise.all([
-        chrome.storage.local.get(null),
+      const [entries, wins] = await Promise.all([
+        CanvasStore.getMatching(chrome.storage.local, (k) => k.startsWith(HISTORY_PREFIX)),
         chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
       ]);
-      const entries = {};
-      for (const [k, v] of Object.entries(all)) if (k.startsWith(HISTORY_PREFIX)) entries[k] = v;
       const plan = RoomCore.planHistoryAdoption({
         entries, liveIds: new Set(wins.map((w) => String(w.id))), ownKey, prefix: HISTORY_PREFIX,
         now: Date.now(), keepMs: HISTORY_ORPHAN_KEEP_MS,
@@ -1425,6 +1423,7 @@ function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   messagesList.replaceChildren();
   historyMessages.length = 0;
+  shownImageChars = 0;           // the shown images left the DOM with the messages
   saveHistory();                 // persist the now-empty scrollback (session ids untouched)
   if (jumpLatestBtn) jumpLatestBtn.hidden = true;
   appendSystemMessage("已清除聊天畫面（agent 端記憶仍保留）。");
@@ -2319,7 +2318,7 @@ function jumpToMessage(id) {
   setTimeout(() => row.classList.remove("flash"), 1500);
 }
 
-function appendMessage({ senderId, senderName, text, timestamp, images, replyTo }) {
+function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -2376,7 +2375,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo 
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
     replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
-    text: Composer.historyText(text, Array.isArray(images) ? images.length : 0), // images are memory-only
+    // images are memory-only; a shown image's caption (rendered as a figcaption) is kept as text
+    text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0),
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.

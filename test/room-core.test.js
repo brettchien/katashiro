@@ -538,6 +538,15 @@ test("planHistoryAdoption: a window with its own history adopts nothing; orphans
   assert.deepEqual(plan.prune, ["history:11"]);
 });
 
+test("planHistoryAdoption: a cleared chat (own key, messages: []) keeps its own conversation", () => {
+  const entries = {
+    "history:5": { conversationId: "mine", sessions: { a: "s1" }, messages: [], savedAt: 2000 },
+    "history:9": { conversationId: "closed", sessions: { a: "s9" }, messages: [{ t: 1 }], savedAt: 1000 },
+  };
+  const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["5"]), ownKey: "history:5", prefix: "history:", now: 3000, keepMs: 7 * 864e5 });
+  assert.deepEqual(plan, { adopt: null, prune: [] });
+});
+
 test("planHistoryAdoption: a live window's key is never adopted or pruned", () => {
   const entries = { "history:5": { savedAt: 1, messages: [{ text: "x" }] } };
   const plan = RoomCore.planHistoryAdoption({ entries, liveIds: new Set(["5"]), ownKey: "history:6", prefix: "history:", now: 10 ** 13, keepMs: 1 });

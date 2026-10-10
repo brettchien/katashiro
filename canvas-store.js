@@ -66,6 +66,20 @@
    * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
    *        asked once when a write would go over budget; true = remove `evict` and write
    */
+  // The entries whose key passes `test`, without pulling every value into memory: getKeys()
+  // (Chrome 130+) lists keys only, so canvas contents (up to the budget) are not read just to be
+  // filtered out. Older Chrome (or a storage without getKeys) falls back to one get(null) scan.
+  async function getMatching(storage, test) {
+    if (typeof storage.getKeys === "function") {
+      const keys = (await storage.getKeys()).filter(test);
+      return keys.length ? (await storage.get(keys)) || {} : {};
+    }
+    const all = (await storage.get(null)) || {};
+    const out = {};
+    for (const [k, v] of Object.entries(all)) if (test(k)) out[k] = v;
+    return out;
+  }
+
   function createCanvasStore(deps) {
     const storage = deps.storage;
     const lock = deps.lock;
@@ -97,12 +111,10 @@
       return { title: t, kind: k, content, bytes };
     }
 
-    // Every canvas's meta, across conversations (for the budget). One storage.get(null) scan.
+    // Every canvas's meta, across conversations (for the budget). Reads only the meta keys.
     async function allMetas() {
-      const all = (await storage.get(null)) || {};
-      return Object.entries(all)
-        .filter(([k, v]) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k) && v && typeof v === "object")
-        .map(([, v]) => v);
+      const all = await getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k));
+      return Object.values(all).filter((v) => v && typeof v === "object");
     }
 
     async function usage() {
@@ -131,7 +143,9 @@
         freed += m.bytes || 0;
       }
       if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
-      for (const e of evict) await remove({ id: e.id });
+      // The confirmation waits on the user; a canvas opened meanwhile is kept (the write may then
+      // run slightly over budget — it is a soft cap).
+      for (const e of evict) if (!(await isOpen(e.id))) await remove({ id: e.id });
     }
 
     async function updateIndex(conversationId, entry) {
@@ -228,5 +242,5 @@
 
   const BUDGET_BYTES = 200 * 1024 * 1024;   // §3.6, Brett: start with 200 MB
 
-  return { createCanvasStore, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, getMatching, StaleError, QuotaError, BUDGET_BYTES, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

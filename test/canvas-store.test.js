@@ -206,3 +206,34 @@ test("budget: when even evicting everything allowed is not enough, it fails with
   await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "Big", content: "x".repeat(6) }), (e) => e.code === "quota");
   assert.equal(asked.length, 0);
 });
+
+test("budget: a canvas opened while the confirmation was up is kept", async () => {
+  const open = new Set();
+  let a;
+  const { s } = store({
+    budgetBytes: 10,
+    isOpen: async (id) => open.has(id),
+    confirmEvict: async () => { open.add(a.id); return true; },   // user opens it before answering
+  });
+  a = await s.agentWrite({ conversationId: "c", title: "A", content: "aaaa" });
+  await s.agentWrite({ conversationId: "c", title: "B", content: "bbbb" });
+  await s.agentWrite({ conversationId: "d", title: "C", content: "cccc" });  // over → asks to evict A
+  assert.equal((await s.usage()).count, 3);           // A survived; soft cap, slightly over
+});
+
+test("getMatching: with getKeys only the matching keys are read; without it one full scan is filtered", async () => {
+  const storage = memStorage();
+  Object.assign(storage.data, { "history:1": { m: 1 }, "canvas:cv_000000000000:latest": { big: true }, "history:2": { m: 2 } });
+  const read = [];
+  const get = storage.get.bind(storage);
+  storage.get = async (keys) => { read.push(keys); return get(keys); };
+  const isHistory = (k) => k.startsWith("history:");
+  const want = { "history:1": { m: 1 }, "history:2": { m: 2 } };
+  assert.deepEqual(await CanvasStore.getMatching(storage, isHistory), want);
+  assert.deepEqual(read, [null]);
+  read.length = 0;
+  storage.getKeys = async () => Object.keys(storage.data);
+  assert.deepEqual(await CanvasStore.getMatching(storage, isHistory), want);
+  assert.deepEqual(read, [["history:1", "history:2"]]);
+  assert.deepEqual(await CanvasStore.getMatching(storage, () => false), {});
+});

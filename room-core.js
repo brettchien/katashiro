@@ -437,12 +437,14 @@
 
   // #56: after a browser restart every window id changes, so this window's history key is empty
   // while the previous run's keys sit orphaned (their window ids no longer exist). Plan which orphan
-  // this window adopts — the most recently saved one, only if this window has no history of its own
+  // this window adopts — the most recently saved one, only if this window has no history key at all
   // — and which orphans are old enough to prune. Pure: the caller does the storage work under a lock.
   //   entries: { [key]: { savedAt?, messages? } } (only HISTORY keys), liveIds: Set of window id strings
   function planHistoryAdoption({ entries, liveIds, ownKey, prefix, now, keepMs }) {
     const own = entries[ownKey];
-    const ownEmpty = !own || !Array.isArray(own.messages) || own.messages.length === 0;
+    // Only a window with no key at all adopts. A cleared chat keeps its key (messages: [] but the
+    // same sessions + conversationId) and must not be swapped for another window's conversation.
+    const ownEmpty = !own;
     const orphans = Object.keys(entries).filter((k) => {
       if (k === ownKey || !k.startsWith(prefix)) return false;
       const id = k.slice(prefix.length);
