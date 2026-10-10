@@ -3008,6 +3008,25 @@ test("katashiro.canvas_open creates, then updates with baseVersion; not act-gate
   assert.match(r4.content[0].text, /^cv_000000000001  v2  markdown  \d+ B  .*  Plan$/);
 });
 
+test("katashiro.canvas_open beside:\"current\" reaches the panel; any other value is refused before writing", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const { writes } = withCanvas(d);
+  const opts = [];
+  d.canvas.onWrite = async (res, o) => { writes.push(res); opts.push(o); return o && o.beside ? "shown beside \"Docs\" in Split View" : ""; };
+  const r1 = await callTool(d, "katashiro.canvas_open", { title: "Plan", content: "# Plan", beside: "current" });
+  assert.match(r1.content[0].text, /^created canvas "Plan" — id cv_000000000001, version 1 \(shown beside "Docs" in Split View\)/);
+  assert.deepEqual(opts[0], { beside: "current" });
+  await callTool(d, "katashiro.canvas_open", { id: "cv_000000000001", baseVersion: 1, title: "Plan", content: "# v2" });
+  assert.deepEqual(opts[1], { beside: null });
+  const bad = await callTool(d, "katashiro.canvas_open", { title: "X", content: "x", beside: "left" });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /`beside` must be "current"/);
+  assert.equal(writes.length, 2);
+  const schema = BrowserMcp.TOOLS["katashiro.canvas_open"].inputSchema.properties.beside;
+  assert.deepEqual(schema.enum, ["current"]);
+  assert.deepEqual(BrowserMcp.TOOLS["katashiro.canvas_open"].redact({ title: "P", beside: "current" }), { title: "P", beside: "current" });
+});
+
 test("katashiro.canvas_open: a stale write returns a structured JSON error", async () => {
   const { deps: d } = deps({ actMode: false });
   withCanvas(d);

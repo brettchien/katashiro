@@ -94,7 +94,7 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 
 - The panel is ~400 px wide. Slides and documents need the full tab width.
 - **One Chrome tab per canvas, gathered in a native tab group per conversation** (title = the
-  conversation title, or "Canvas" until multi-conversation lands; fixed color), in the panel's
+  conversation title, or "Canvas" until multi-conversation lands; fixed color: blue), in the panel's
   window. Canvases stay together and out of the user's page tabs; the group collapses to one chip.
   This needs no tab UI of our own: drag, pin, close and Split View are Chrome's.
 - The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Clicking it focuses that
@@ -105,12 +105,19 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   rule; Chrome's own rejection has not been tested live). So "canvas beside this page" temporarily
   moves the canvas tab **out of its group** (into the page's group, if any), splits, and moves it
   back when the split ends or the page closes. Two canvases split directly, being in the same group.
-  Agent form: `canvas_open(…, beside: "current")`.
+  Agent form: `canvas_open(…, beside: "current")`: "this page" is the active tab of the panel's
+  window. Refused (the canvas tab is just brought to the front, and the result says why) if that
+  tab is not a web page (`chrome://`, an extension page, a compare tab), either tab is already
+  split, they are in different windows, or only one is pinned — Katashiro does not unsplit, pin or
+  move windows for the user. Without `tabs.createSplit` (Chrome < 155) the tab is only focused.
+  If the canvas group is gone when the tab moves back (it was the group's only tab, and Chrome
+  removes an empty group), the group is recreated.
 - If the user drags a canvas tab out of the group or deletes the group, Katashiro does not fight
   it: the next `canvas_open` in that conversation recreates the group, and stray canvas tabs are
   found again by URL (ignoring compare tabs, `view=agent`, §3.10).
 - With multi-conversation, switching conversation collapses the old conversation's group and
-  expands the new one's.
+  expands the new one's. **Not in phase 1** (§6 Q5): per-conversation group titles and
+  collapse-on-switch wait for multi-conversation.
 - **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
   column like GitHub's file view. Documents fill the viewport with modest side padding (~24 px);
   tables and code blocks take all the width they need, and slides scale to the tab. The host
@@ -120,7 +127,11 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 - Where the data lives and how each party reaches it: §3.9.
 
 **Implementation rules for tab and group moves** (Chrome tab APIs are async and the MV3 service
-worker can be suspended at any point):
+worker can be suspended at any point). Phase 1 runs these moves in the side panel
+(`canvas-tabs.js` decides, `sidepanel.js` calls Chrome), which is alive whenever an agent can call
+`canvas_open`; the split bookkeeping is in panel memory, so a panel reload forgets it and that
+canvas tab stays in the page's group. Moving it to the service worker with `storage.session` is
+the rule below, not yet done:
 - **One queue per conversation.** Every group operation (create the group, add a tab, split
   in/out) runs in a per-conversation queue, and the `groupId` lives in `storage.session`. Two quick
   `canvas_open` calls therefore create one group, not two.
@@ -130,8 +141,10 @@ worker can be suspended at any point):
   `tabs.onUpdated`) must be tested; if not, the move back happens lazily on the next `canvas_open`
   or when the tab is focused.
 - **Move back only if nothing changed.** The tab is returned to its group only if it is still where
-  Katashiro put it and the original group still exists. If the user dragged it elsewhere, closed
-  the group, or moved it to another window, it stays put, and the next `canvas_open` sorts it out.
+  Katashiro put it and the original group still exists (the canvas group itself is recreated:
+  Chrome drops a group whose last tab left, which the split move alone causes for a lone canvas).
+  If the user dragged it elsewhere, closed another group it was in, or moved it to another window,
+  it stays put, and the next `canvas_open` sorts it out.
 - **Re-check after every await.** A move sequence (ungroup → split) re-reads tab state after each
   step; if a tab or group has gone (the user closed the page mid-move), it rolls back to the
   previous state instead of assuming the last step succeeded.
@@ -285,7 +298,7 @@ below is built around that.
 
 | Tool | Does |
 |---|---|
-| `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live; **`baseVersion` is then required** (no blind writes). |
+| `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?, beside?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live; **`baseVersion` is then required** (no blind writes). `beside: "current"` also shows it in Split View beside the user's current page (§3.1); the result says where it went or why not |
 | `katashiro.canvas_read({id, diff?})` | Returns the latest content (including **user edits**) with `{version, author, at, agentVersion}`; `diff: true` returns only the diff from the agent's last write to now |
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |

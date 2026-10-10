@@ -208,7 +208,7 @@ class Conn {
       canvas: {
         store: canvasStore,
         conversationId: () => conversationId,
-        onWrite: (res) => this.onCanvasWrite(res),
+        onWrite: (res, opts) => this.onCanvasWrite(res, opts),
         waitNormalized: (id, version, raw) => waitCanvasNormalized(id, version, raw),
         // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel.
         confirmDelete: ({ title, version, author }) => Promise.resolve(window.confirm(
@@ -759,9 +759,10 @@ class Conn {
   }
 
   // katashiro.canvas_open saved a canvas: put its card in this turn (or, between turns, as its own
-  // row), and open a NEW canvas in a background tab. An update needs no tab work: an open canvas
-  // tab re-renders itself from storage.onChanged. Returns a short note for the tool result.
-  async onCanvasWrite({ id, version, created, title }) {
+  // row), and open a NEW canvas in a background tab of the canvas group (§3.1). An update needs no
+  // tab work: an open canvas tab re-renders itself from storage.onChanged. beside:"current" also
+  // shows it in Split View next to the user's page. Returns a short note for the tool result.
+  async onCanvasWrite({ id, version, created, title }, { beside = null } = {}) {
     const card = canvasCard({ id, version, title });
     if (this.turnActive) {
       if (!this.stream || !this.stream.bubble) this.startStream();
@@ -773,6 +774,8 @@ class Conn {
       messagesList.appendChild(row);
     }
     maybeScroll();
+    canvasTabQueue(sweepCanvasRestores).catch(() => {});
+    if (beside === "current") return showCanvasBeside(id, created);
     if (!created) return (await findCanvasTab(id)) ? "its open tab updated" : "";
     await openCanvasTab(id, { active: false });
     return "opened in a background tab";
@@ -2226,7 +2229,8 @@ async function findCanvasTab(id) {
   return tabs.find((t) => t.url === want || t.pendingUrl === want) || null;
 }
 
-// Focus the canvas's tab, or open it (in the panel's window, after the active tab).
+// Focus the canvas's tab, or open it (in the panel's window, after the active tab) and put it in
+// the conversation's canvas group (§3.1). A tab found by URL stays wherever the user left it.
 async function openCanvasTab(id, { active = true } = {}) {
   const existing = await findCanvasTab(id);
   if (existing) {
@@ -2238,7 +2242,182 @@ async function openCanvasTab(id, { active = true } = {}) {
   }
   const opts = { url: canvasTabUrl(id), active };
   if (typeof panelWindowId === "number") opts.windowId = panelWindowId;
-  return chrome.tabs.create(opts);
+  const tab = await chrome.tabs.create(opts);
+  // Grouping is cosmetic: a failure (old Chrome, no tabGroups, the tab already closed) never fails
+  // the open. Re-read so callers see the tab's group.
+  try {
+    await canvasTabQueue(() => addToCanvasGroup(tab));
+    return (await chrome.tabs.get(tab.id)) || tab;
+  } catch (_) {
+    return tab;
+  }
+}
+
+// --- canvas tab group + Split View (§3.1; decisions in canvas-tabs.js) -----------------------
+// One queue for every group / split move, so two quick canvas_open calls create one group, not
+// two (§3.1 "one queue per conversation" — a panel holds one conversation).
+let canvasTabChain = Promise.resolve();
+function canvasTabQueue(fn) {
+  const run = canvasTabChain.then(fn, fn);
+  canvasTabChain = run.catch(() => {});
+  return run;
+}
+
+const canGroupTabs = () => !!(chrome.tabGroups && typeof chrome.tabGroups.update === "function" && typeof chrome.tabs.group === "function");
+const canSplitTabs = () => typeof chrome.tabs.createSplit === "function";
+
+// The conversation's group id: in memory, mirrored to storage.session (survives a panel reload,
+// not a browser restart — group ids do not either). Always verified before reuse.
+const canvasGroupIds = new Map();                       // conversationId → groupId
+const canvasGroupKey = (conv) => `katashiro.canvasGroup.${conv}`;
+async function storedCanvasGroupId() {
+  if (canvasGroupIds.has(conversationId)) return canvasGroupIds.get(conversationId);
+  try {
+    const k = canvasGroupKey(conversationId);
+    const got = await chrome.storage.session.get(k);
+    if (Number.isInteger(got[k])) canvasGroupIds.set(conversationId, got[k]);
+  } catch (_) { /* no storage.session: memory only */ }
+  return canvasGroupIds.has(conversationId) ? canvasGroupIds.get(conversationId) : null;
+}
+async function rememberCanvasGroupId(groupId) {
+  canvasGroupIds.set(conversationId, groupId);
+  try { await chrome.storage.session.set({ [canvasGroupKey(conversationId)]: groupId }); } catch (_) { /* memory only */ }
+}
+
+// Put a tab in the canvas group of its window: reuse the stored group if it still exists there,
+// else create one (title "Canvas", fixed color). Returns the group id, or null without tabGroups.
+async function addToCanvasGroup(tab) {
+  if (!canGroupTabs()) return null;
+  const stored = await storedCanvasGroupId();
+  let groups = [];
+  if (stored != null) { try { groups = [await chrome.tabGroups.get(stored)]; } catch (_) { /* gone */ } }
+  const plan = CanvasTabs.planCanvasGroup({ storedGroupId: stored, groups, windowId: tab.windowId });
+  if (plan.action === "reuse") {
+    await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tab.id] });
+    return plan.groupId;
+  }
+  const groupId = await chrome.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
+  await rememberCanvasGroupId(groupId);
+  try { await chrome.tabGroups.update(groupId, { title: CanvasTabs.GROUP_TITLE, color: CanvasTabs.GROUP_COLOR }); } catch (_) { /* cosmetic */ }
+  return groupId;
+}
+
+// Canvas tabs moved out of their group for a split: canvasTabId → { movedToGroupId, windowId,
+// returnGroupId, canvasGroup, pageTabId }. In memory only: a panel reload forgets them, and those
+// tabs simply stay in the page's group (acceptable; §3.1 lets the next canvas_open sort it out).
+const canvasSplitMoves = new Map();
+
+const getTab = (tabId) => chrome.tabs.get(tabId).catch(() => null);
+
+// The split ended or the page closed: put the canvas tab back, if nothing else moved it.
+async function restoreCanvasTab(tabId) {
+  const record = canvasSplitMoves.get(tabId);
+  if (!record) return;
+  const tab = await getTab(tabId);
+  if (tab && CanvasTabs.inSplit(tab)) return;          // still split: keep the record
+  canvasSplitMoves.delete(tabId);
+  let groups = [];
+  if (record.returnGroupId !== CanvasTabs.TAB_GROUP_NONE) {
+    try { groups = [await chrome.tabGroups.get(record.returnGroupId)]; } catch (_) { /* gone */ }
+  }
+  const plan = CanvasTabs.planRestore({ canvasTab: tab, record, groups });
+  if (plan.action === "group") await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tabId] });
+  else if (plan.action === "ungroup") await chrome.tabs.ungroup([tabId]);
+  else if (plan.action === "recreate") await addToCanvasGroup(tab);
+}
+
+// Lazy fallback (§3.1): if Chrome sent no "split ended" event, the next canvas_open moves back
+// whatever is no longer split.
+async function sweepCanvasRestores() {
+  for (const tabId of [...canvasSplitMoves.keys()]) {
+    try { await restoreCanvasTab(tabId); } catch (_) { /* best effort */ }
+  }
+}
+
+// Whether tabs.onUpdated reports splitViewId changes has not been tested live; the sweep above
+// covers it if not. A closed page ends its split, so its canvas tab goes back too.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (!canvasSplitMoves.has(tabId) || !("splitViewId" in changeInfo)) return;
+  canvasTabQueue(() => restoreCanvasTab(tabId)).catch(() => {});
+});
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (canvasSplitMoves.delete(tabId)) return;          // the canvas tab itself closed
+  for (const [canvasTabId, r] of canvasSplitMoves) {
+    if (r.pageTabId === tabId) canvasTabQueue(() => restoreCanvasTab(canvasTabId)).catch(() => {});
+  }
+});
+
+// canvas_open(…, beside: "current"): Split View with the active tab of the panel's window.
+// Returns the note for the tool result — never throws (the canvas is saved either way).
+async function showCanvasBeside(id, created) {
+  try {
+    if (!canSplitTabs()) {
+      await openCanvasTab(id, { active: true });
+      return "Split View is unavailable in this browser (needs Chrome 155+); its tab was brought to the front instead";
+    }
+    const canvasTab = await openCanvasTab(id, { active: false });
+    const note = await canvasTabQueue(() => splitCanvasWithActive(canvasTab));
+    if (note.ok) return note.text;
+    await openCanvasTab(id, { active: true });
+    return `${created ? "opened" : "its tab was brought to the front"}, not in Split View: ${note.text}`;
+  } catch (e) {
+    return `not shown in Split View: ${(e && e.message) || e}`;
+  }
+}
+
+async function splitCanvasWithActive(canvasTab) {
+  const query = { active: true };
+  if (typeof panelWindowId === "number") query.windowId = panelWindowId;
+  const [page] = await chrome.tabs.query(query);
+  const canvasBase = chrome.runtime.getURL("canvas.html");
+  const plan = CanvasTabs.planBeside({ canvasTab, pageTab: page, canvasBase });
+  if (!plan.ok) return { ok: false, text: plan.reason };
+  // Re-read after every await (§3.1): the user may close or move either tab mid-sequence.
+  const fresh = async () => [await getTab(canvasTab.id), await getTab(page.id)];
+  let record = null;
+  const rollback = async () => {
+    if (!record) return;
+    canvasSplitMoves.set(canvasTab.id, record);
+    try { await restoreCanvasTab(canvasTab.id); } catch (_) { /* best effort */ }
+  };
+  const regroup = async (c, p) => {
+    const g = CanvasTabs.groupOf(p);
+    if (CanvasTabs.groupOf(c) === g) return;
+    if (g === CanvasTabs.TAB_GROUP_NONE) await chrome.tabs.ungroup([c.id]);
+    else await chrome.tabs.group({ groupId: g, tabIds: [c.id] });
+  };
+  try {
+    if (plan.regroup) {
+      const stored = await storedCanvasGroupId();
+      record = {
+        movedToGroupId: plan.regroup.groupId, windowId: canvasTab.windowId, pageTabId: page.id,
+        returnGroupId: plan.restore.returnGroupId,
+        canvasGroup: plan.restore.returnGroupId !== CanvasTabs.TAB_GROUP_NONE && plan.restore.returnGroupId === stored,
+      };
+      await regroup(canvasTab, page);
+    }
+    let [c, p] = await fresh();
+    if (!c || !p) { await rollback(); return { ok: false, text: "a tab closed while moving it" }; }
+    const to = CanvasTabs.adjacentIndex(p, c);
+    if (to != null) {
+      await chrome.tabs.move(c.id, { index: to });
+      [c, p] = await fresh();
+      if (!c || !p) { await rollback(); return { ok: false, text: "a tab closed while moving it" }; }
+      await regroup(c, p);                              // a move can pull a tab into / out of a group
+      [c, p] = await fresh();
+      if (!c || !p) { await rollback(); return { ok: false, text: "a tab closed while moving it" }; }
+    }
+    const blocked = CanvasTabs.splitBlocker(c, p);
+    if (blocked) { await rollback(); return { ok: false, text: blocked }; }
+    await chrome.tabs.createSplit([p.id, c.id]);
+  } catch (e) {
+    await rollback();
+    return { ok: false, text: `could not create the split: ${(e && e.message) || e}` };
+  }
+  if (record) canvasSplitMoves.set(canvasTab.id, record);
+  // The page title is page content: bounded, quoted, and only ever a label.
+  const t = String(page.title || page.url || "the page").slice(0, 80);
+  return { ok: true, text: `shown beside "${t}" in Split View` };
 }
 
 // The chat card for a canvas write: "📄 <title> · v<N> — 開啟". Title is agent text → textContent.

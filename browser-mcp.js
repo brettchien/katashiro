@@ -569,6 +569,7 @@
     if (a.mimeType != null) out.mimeType = a.mimeType;
     if (typeof a.data === "string") out.data = `<${b64Bytes(a.data.replace(/^data:[^,]*,/, "").replace(/\s+/g, ""))} bytes>`;
     if (typeof a.caption === "string") out.caption = a.caption.length > 80 ? `${a.caption.slice(0, 80)}…` : a.caption;
+    if (a.beside != null) out.beside = String(a.beside).slice(0, 20);
     return out;
   }
 
@@ -2721,7 +2722,9 @@
         "and returns { id, version: 1 }. To change it, pass `id` and `baseVersion` (the version you " +
         "last wrote or read) with the FULL new content; if the canvas moved on since, the call is " +
         "refused as stale — canvas_read, then write again on top of the latest. A card in your reply " +
-        "lets the user open it. Links in the canvas open in a new tab only after the user confirms.",
+        "lets the user open it. Links in the canvas open in a new tab only after the user confirms. " +
+        "`beside: \"current\"` shows the canvas in Chrome's Split View next to the page the user is on " +
+        "(the active tab of their window; Chrome 155+) — the result says whether it worked or why not.",
       sessionScope: true,
       inputSchema: {
         type: "object",
@@ -2734,15 +2737,17 @@
           mimeType: { type: "string", enum: SHOW_IMAGE_MIME_TYPES, description: "image: required with raw base64 data" },
           caption: { type: "string", description: "image: short text under the image (≤ 200 chars)" },
           id: { type: "string", description: "update this canvas (from a previous canvas_open / canvas_list)" },
-          baseVersion: { type: "integer", description: "required with id: the version you last wrote or read" }
+          baseVersion: { type: "integer", description: "required with id: the version you last wrote or read" },
+          beside: { type: "string", enum: ["current"], description: "\"current\": show the canvas in Split View beside the user's current page" }
         },
         required: ["title"]
       },
       redact: redactCanvasOpen,
-      /** @param {{ title?: string, content?: string, kind?: string, id?: string, baseVersion?: number }} args */
+      /** @param {{ title?: string, content?: string, kind?: string, id?: string, baseVersion?: number, beside?: string }} args */
       async call(args, ctx) {
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        if (args.beside != null && args.beside !== "current") return errText("`beside` must be \"current\"");
         let image;
         if (args.kind === "image") {
           const r = canvasImageArg(args, ctx);
@@ -2765,7 +2770,7 @@
         }
         let opened = "";
         if (typeof c.onWrite === "function") {
-          try { opened = (await c.onWrite(res)) || ""; } catch (_) { /* the canvas is saved either way */ }
+          try { opened = (await c.onWrite(res, { beside: args.beside || null })) || ""; } catch (_) { /* the canvas is saved either way */ }
         }
         let text = `${res.created ? "created" : "updated"} canvas "${res.title}" — id ${res.id}, version ${res.version}${opened ? ` (${opened})` : ""}`;
         // markdown: the editor normalizes it (§3.5) and the STORED text is the normalized one. Wait
