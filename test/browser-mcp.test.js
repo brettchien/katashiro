@@ -215,6 +215,7 @@ test("tools/list returns the 39 browser tools", async () => {
     "katashiro.show_image",
     "katashiro.canvas_open",
     "katashiro.canvas_read",
+    "katashiro.canvas_delete",
     "katashiro.canvas_list",
     "katashiro.chat_history",
     "katashiro.notify"
@@ -3160,4 +3161,27 @@ test("canvas_open stale after a user edit returns diffFromBase; canvas_read reco
   assert.match(e.diffFromBase, /-b\n\+B/);
   await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" });
   assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).agentSeenVersion, 2);
+});
+
+test("katashiro.canvas_delete asks the user; yes deletes, no keeps (any canvas, Brett)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Keep", content: "a" });
+  await d.canvas.store.userSave({ id: "cv_000000000001", baseVersion: 1, content: "user edit" });
+  const asked = [];
+  d.canvas.confirmDelete = async (info) => { asked.push(info); return false; };
+  const no = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  assert.match(no.content[0].text, /^declined/);
+  assert.equal(asked[0].author, "user");                       // a user-edited canvas is allowed too, if confirmed
+  assert.equal((await d.canvas.store.list({ conversationId: "c_test" })).length, 1);
+  d.canvas.confirmDelete = async () => true;
+  const yes = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  assert.match(yes.content[0].text, /^deleted canvas "Keep"/);
+  assert.equal((await d.canvas.store.list({ conversationId: "c_test" })).length, 0);
+  const gone = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  assert.equal(gone.isError, true);
+  delete d.canvas.confirmDelete;
+  await callTool(d, "katashiro.canvas_open", { title: "X", content: "b" });
+  const noAsk = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000002" });
+  assert.match(noAsk.content[0].text, /no way to ask the user/);   // never deletes without asking
 });

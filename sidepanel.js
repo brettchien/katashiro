@@ -208,6 +208,9 @@ class Conn {
         conversationId: () => conversationId,
         onWrite: (res) => this.onCanvasWrite(res),
         waitNormalized: (id, version, raw) => waitCanvasNormalized(id, version, raw),
+        // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel.
+        confirmDelete: ({ title, version, author }) => Promise.resolve(window.confirm(
+          `${this.name} 要刪除畫布「${String(title).slice(0, 60)}」（v${version}${author === "user" ? "，含你的修改" : ""}）。\n\n允許嗎？這個動作無法復原。`)),
       },
       windowId: panelWindowId,
     };

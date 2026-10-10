@@ -2808,6 +2808,41 @@
       }
     },
 
+    "katashiro.canvas_delete": {
+      description:
+        "Delete a canvas of this conversation (its content and images). The user is asked to confirm " +
+        "in the side panel first; if they decline, nothing is deleted and you get \"declined\". It " +
+        "cannot be undone (there is no version history), so say why you want to delete it.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: { id: { type: "string", description: "canvas id" } },
+        required: ["id"]
+      },
+      redact: redactDefault,
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        let meta;
+        try {
+          meta = await c.store.read({ conversationId: c.conversationId(), id: args.id });
+        } catch (e) {
+          return errText(`canvas_delete: ${(e && e.message) || e}`);
+        }
+        if (typeof c.confirmDelete !== "function") return errText("canvas_delete: no way to ask the user here");
+        let ok = false;
+        try { ok = await c.confirmDelete({ id: meta.id, title: meta.title, kind: meta.kind, version: meta.version, author: meta.author }); }
+        catch (_) { ok = false; }
+        if (!ok) return okText(`declined: the user kept canvas "${meta.title}" (${meta.id})`);
+        try {
+          await c.store.remove({ conversationId: c.conversationId(), id: meta.id });
+        } catch (e) {
+          return errText(`canvas_delete: ${(e && e.message) || e}`);
+        }
+        return okText(`deleted canvas "${meta.title}" (${meta.id})`);
+      }
+    },
+
     "katashiro.canvas_list": {
       description: "List this conversation's canvases: id, title, kind, version, size, last update.",
       sessionScope: true,
