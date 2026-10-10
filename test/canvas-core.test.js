@@ -155,6 +155,12 @@ test("countImages: inline, block and reference images, not inside code fences", 
   assert.equal(C.countImages("![r][ref]\n\n[ref]: x.png"), 1);
   assert.equal(C.countImages("```md\n![in code](x.png)\n```\n![out](y.png)"), 1);
   assert.equal(C.countImages("[link](x) and !important and ![not closed"), 0);
+  // #89: shortcut / collapsed refs only when defined; brackets in alt; no space before "("
+  assert.equal(C.countImages("![logo]\n\n[logo]: x.png"), 1);
+  assert.equal(C.countImages("![Logo][]\n\n[logo]: x.png"), 1);
+  assert.equal(C.countImages("![a][nope] and ![b]"), 0);
+  assert.equal(C.countImages("![a [b] c](x.png)"), 1);
+  assert.equal(C.countImages("![a] (x.png)"), 0);
 });
 test("losesImages: true only when the normalized text has fewer images", () => {
   assert.equal(C.losesImages("a\n\n![b](x.png)\n", "a\n"), true);

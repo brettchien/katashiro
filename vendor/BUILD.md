@@ -84,6 +84,8 @@ never by the panel.
 - Milkdown's `html` node renders raw HTML as text (`textContent`), never `innerHTML` (§3.5).
 - Verified: no `eval(`; two `Function("return this")`-style global fallbacks (KaTeX/lodash), which
   the frame's CSP would block and which are not reached in a browser. ~2.7 MB minified.
+- KaTeX comes along as a crepe dependency (7.22.3 pins `^0.19.0`; the 7.22.2 bundle had 0.18.10). It is
+  in the bundle but never runs: `Feature.Latex` is off and `latex.css` is left out.
 
 ## Reproducible rebuild
 

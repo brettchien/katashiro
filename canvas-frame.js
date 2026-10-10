@@ -73,6 +73,11 @@
     editorRoot.replaceChildren();
     const crepe = new M.Crepe(crepeOptions(M, editorRoot, content));
     await crepe.create();
+    // #89: the editor must not open on a text it would lose images from — saving would store that.
+    if (CanvasCore.losesImages(content, editorText(crepe))) {
+      try { crepe.destroy(); } catch (_) { /* already gone */ }
+      throw new Error("the editor would drop images from this canvas, so editing is off for it");
+    }
     const state = { crepe, version, baseline: editorText(crepe), dirty: false };
     editing = state;
     crepe.on((listener) => listener.markdownUpdated((_ctx, md) => {
@@ -89,11 +94,13 @@
     if (!editing) return;
     post({ type: "save", content: editorText(editing.crepe), baseVersion: editing.version });
   }
+  // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
   function stopEdit() {
-    if (!editing) return;
-    const { crepe } = editing;
-    editing = null;
-    try { crepe.destroy(); } catch (_) { /* already gone */ }
+    if (editing) {
+      const { crepe } = editing;
+      editing = null;
+      try { crepe.destroy(); } catch (_) { /* already gone */ }
+    }
     editorRoot.replaceChildren();
     editorRoot.hidden = true;
     doc.hidden = false;
