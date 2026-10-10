@@ -66,3 +66,20 @@ test("vendored markdown bundles are eval-free (MV3 script-src 'self')", () => {
     assert.equal(/\beval\(|new Function\(/.test(src), false, `${f} must be eval-free`);
   }
 });
+
+test("GFM task lists: [ ] / [x] list items get a read-only checkbox; other text is untouched", () => {
+  const h = md.render("- [ ] todo\n- [x] done\n- [X] DONE\n- plain\n- [ ]no-space\n\n[ ] not a list item");
+  assert.match(h, /<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" disabled> todo<\/li>/);
+  assert.match(h, /<li class="task-list-item"><input type="checkbox" class="task-list-item-checkbox" checked disabled> done<\/li>/);
+  assert.match(h, /checked disabled> DONE/);
+  assert.match(h, /<li>plain<\/li>/);
+  assert.match(h, /<li>\[ \]no-space<\/li>/);
+  assert.match(h, /<p>\[ \] not a list item<\/p>/);
+  assert.equal((h.match(/<input/g) || []).length, 3);
+});
+
+test("task lists never let message text into the checkbox markup (html stays escaped)", () => {
+  const h = md.render('- [x] <img src=x onerror=alert(1)> "quoted"');
+  assert.match(h, /checked disabled> &lt;img src=x onerror=alert\(1\)&gt; &quot;quoted&quot;/);
+  assert.doesNotMatch(h, /<img/);
+});
