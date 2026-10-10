@@ -809,16 +809,15 @@ async function loadBuildInfo() {
 loadBuildInfo();
 
 // Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
-// exactly like chrome://extensions' reload button. It closes the side panel in EVERY window and wipes
-// chrome.storage.session — every window's scrollback and resumable ACP session ids; synced settings
-// survive. Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a
+// exactly like chrome://extensions' reload button. It closes the side panel in EVERY window; each
+// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive. Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a
 // short delay so the notification leaves before the page dies (pagehide's cancel is best effort).
 const reloadExtensionBtn = document.getElementById("reload-extension-btn");
 const RELOAD_CANCEL_GRACE_MS = 150;
 if (reloadExtensionBtn) {
   reloadExtensionBtn.addEventListener("click", () => {
     const busy = room.some((c) => c.turnActive);
-    const msg = "重新載入 Katashiro？\n\n所有視窗的側邊欄都會關掉，所有視窗的對話紀錄和 ACP session 都不會保留（設定會保留）。" +
+    const msg = "重新載入 Katashiro？\n\n所有視窗的側邊欄都會關掉，重新打開即可（對話紀錄、ACP session 和設定都會保留）。" +
       (busy ? "\n\nagent 正在回覆，會被中斷。" : "");
     if (!confirm(msg)) return;
     room.forEach((c) => c.cancelTurn());             // no-op unless a turn is in flight on an open socket
@@ -837,7 +836,7 @@ setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 // storage and sends a DELETE for every synced key to the server (Chromium
 // SyncStorageBackend::DeleteStorage → SyncableSettingsStorage::Clear → ACTION_DELETE). Upgrade an
 // unpacked install with chrome://extensions ↻ reload, which keeps storage — never remove + re-add.
-// Session ids + scrollback stay in storage.session (per-window, ephemeral — never synced).
+// Session ids + scrollback stay in storage.local (per-window, never synced).
 // NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
 // ws://localhost) may need adjusting on another machine.
 const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken", "screenshotConfig"];
@@ -1008,15 +1007,20 @@ function persist() {
   });
 }
 
-// --- Chat history (per-window, chrome.storage.session) ------------------------
+// --- Chat history (per-window, chrome.storage.local) --------------------------
 // The side panel is a plain extension page: closing it tears down the DOM, losing the scrollback.
-// Persist the messages AND each agent's resumable ACP session id to chrome.storage.session, keyed
+// Persist the messages AND each agent's resumable ACP session id to chrome.storage.local, keyed
 // by window, so reopening the panel restores the same conversation and resumes the same session
 // (the "已續接 …" path). Keyed by window so two windows keep separate history + sessions — the
 // per-window isolation, but now restorable (the old shared-by-url seed was the thing that mixed
-// tunnels; a per-window key does not). storage.session clears on browser close, so conversations
-// are never written to disk.
+// tunnels; a per-window key does not). storage.local (not storage.session) so the scrollback also
+// survives an extension reload / update — that is what lets a restarted agent recover the
+// conversation via `chat_history`. It IS written to disk (the Chrome profile), never synced.
+// Window ids are only stable for one browser run: after a browser restart the old keys belong to no
+// window, so loadHistory() prunes every `history:<id>` whose window is gone.
 const HISTORY_CAP = 200;
+const HISTORY_PREFIX = "history:";
+const historyStore = chrome.storage.local;
 let historyKey = null;                    // "history:<windowId>"
 let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
 let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
@@ -1034,7 +1038,7 @@ function saveHistory() {
   if (!historyKey) return;
   const sessions = {};
   room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  chrome.storage.session.set({ [historyKey]: { sessions, messages: historyMessages } });
+  historyStore.set({ [historyKey]: { sessions, messages: historyMessages } });
 }
 
 // Append a record to the persisted scrollback (skipped while restoring). System/status notices are
@@ -1051,14 +1055,30 @@ function replayMessage(rec) {
   else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp });
 }
 
+// Drop the scrollback of windows that no longer exist (closed, or ids from a previous browser run).
+// Only numeric window keys are pruned; the "default" fallback key is left alone. Best effort.
+async function pruneOrphanHistory() {
+  try {
+    const [all, wins] = await Promise.all([historyStore.get(null), chrome.windows.getAll()]);
+    const live = new Set(wins.map((w) => String(w.id)));
+    const stale = Object.keys(all).filter((k) => {
+      if (!k.startsWith(HISTORY_PREFIX)) return false;
+      const id = k.slice(HISTORY_PREFIX.length);
+      return /^\d+$/.test(id) && !live.has(id);
+    });
+    if (stale.length) await historyStore.remove(stale);
+  } catch (_) { /* pruning is housekeeping — never block the panel on it */ }
+}
+
 // Load per-window history + saved session ids and replay the scrollback. Runs BEFORE the room is
 // built so each conn seeds its acpSessionId (→ session/resume restores the same conversation) and
 // the restored messages sit above the reconnect notices.
 async function loadHistory() {
   const wid = await currentWindowId();
   panelWindowId = wid;
-  historyKey = `history:${wid}`;
-  const got = await chrome.storage.session.get(historyKey);
+  historyKey = `${HISTORY_PREFIX}${wid}`;
+  await pruneOrphanHistory();
+  const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
   savedSessions = data.sessions || {};
   const msgs = Array.isArray(data.messages) ? data.messages : [];
@@ -1209,10 +1229,10 @@ settingsView.addEventListener("click", (e) => {
   if (e.target === settingsView) switchView("chat");
 });
 
-// Clear the on-screen scrollback + this window's persisted mirror (storage.session). The agents'
+// Clear the on-screen scrollback + this window's persisted mirror (storage.local). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
-// just not the cleared bubbles. Guarded by a confirm since storage.session is the only copy.
+// just not the cleared bubbles. Guarded by a confirm since storage.local is the only copy.
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   messagesList.replaceChildren();
@@ -1564,7 +1584,7 @@ function deleteAgent(i) {
 
 // --- Pasted-image staging ----------------------------------------------------
 // Screenshots pasted into the composer are staged as ACP image content blocks and previewed
-// before send. Kept in memory only (never persisted to history) to avoid bloating storage.session.
+// before send. Kept in memory only (never persisted to history) to avoid bloating storage.local.
 // Composer owns the rules (accepted types, paste classification, the per-turn size budget).
 const attachPreview = document.getElementById("attach-preview");
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;              // refuse to even decode beyond this
