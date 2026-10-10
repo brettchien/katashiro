@@ -317,6 +317,7 @@
   // While this canvas's compare tab is open, the differing blocks stay marked here too (Brett,
   // 2026-10-11): re-marked after every render (rendered{}), cleared when the last compare tab closes.
   let comparing = false;
+  let compareGen = 0;                       // bumped when a compare starts: a stale "closed" check yields
   async function holdCompareGlow() {
     const agentText = await store.readAgentCopy(canvasId);
     if (!comparing || mode !== "view") return;
@@ -326,12 +327,20 @@
   async function compareStillOpen() {
     try { return (await chrome.tabs.query({})).some((t) => CanvasTabs.isCompareTabFor(t, CANVAS_BASE, canvasId)); } catch (_) { return false; }
   }
+  // Ends the compare when no compare tab is left: one closed, or navigated elsewhere. A compare
+  // started (Compare clicked again) while the query ran wins over the stale answer.
+  async function endCompareIfClosed() {
+    if (!comparing) return;
+    const gen = compareGen;
+    if ((await compareStillOpen()) || gen !== compareGen || !comparing) return;
+    comparing = false;
+    toFrame({ type: "glow", clear: true });
+  }
   if (!compareView) {
-    chrome.tabs.onRemoved.addListener(async () => {
-      if (!comparing || (await compareStillOpen())) return;
-      comparing = false;
-      toFrame({ type: "glow", clear: true });
-    });
+    chrome.tabs.onRemoved.addListener(endCompareIfClosed);
+    chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
+    // A reloaded canvas tab picks up a compare tab that is still open; rendered{} then marks.
+    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; if (rendered) holdCompareGlow(); } });
   }
 
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
@@ -478,6 +487,7 @@
       if (!r.ok) { notice(`無法開啟比較：${CanvasCore.clipError(r.error)}`); return; }
       if (r.note) flash(r.note);
       // Both panes mark the differing blocks, held while the compare is open.
+      compareGen++;
       comparing = true;
       holdCompareGlow();
     } finally {
