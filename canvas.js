@@ -43,6 +43,7 @@
   // editor: a clean editor gives way, a dirty one keeps going and the save meets the conflict view.
   let mode = "view";
   let dirty = false;
+  let deleted = false;                // the canvas is gone from storage (only kept on screen for unsaved edits)
   let ownSaveVersion = 0;             // the version our own save produced (not "news" to show)
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
   let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
@@ -76,9 +77,9 @@
   async function updateButtons() {
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
     editBtn.hidden = !(editable && mode === "view");
-    saveBtn.hidden = mode !== "edit";
+    saveBtn.hidden = mode !== "edit" || deleted;
     saveBtn.disabled = !dirty;
-    cancelBtn.hidden = mode !== "edit";
+    cancelBtn.hidden = mode !== "edit" || deleted;
     let canRevert = false;
     if (current && mode === "view" && current.meta.author === "user") {
       try { const agent = await store.readAgentCopy(canvasId); canRevert = agent != null && agent !== current.content; } catch (_) { /* stays hidden */ }
@@ -265,6 +266,7 @@
 
   // Returns true when the content is stored (saved, or already equal to the latest).
   async function doSave(content, baseVersion) {
+    if (deleted) { notice("這個畫布已被刪除，無法儲存。請先把內容複製出來。"); return false; }
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
       if (r.unchanged) { flash("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
@@ -449,9 +451,20 @@
     await saving;                     // our own save's onChanged can beat its reply: know ownSaveVersion first
     const c = await load();
     if (!c) {
-      // Deleted (here, in another tab, or evicted): stop showing stale content.
-      if (frame) dropFrame("這個畫布已被刪除。");
+      // Deleted (here, in another tab, or by the agent after the user confirmed; eviction never takes
+      // an open canvas): close this tab, so nothing can edit or re-save a canvas that no longer exists.
+      // Unsaved edits are the exception: they stay on screen, with every action gone, to be copied out.
+      deleted = true;
+      current = null;
       deleteBtn.hidden = true;
+      if (mode === "edit" && dirty) {
+        notice("這個畫布已被刪除。你還沒儲存的內容留在編輯器裡，複製出來後關閉分頁即可。");
+        updateButtons();
+        return;
+      }
+      if (frame) dropFrame("這個畫布已被刪除。");
+      updateButtons();
+      closeThisTab();
       return;
     }
     const prev = current;
@@ -473,6 +486,13 @@
       return;
     }
     sendRender();
+  }
+
+  // Close this canvas tab. Fails quietly (the tab then just shows the "deleted" notice).
+  function closeThisTab() {
+    try {
+      chrome.tabs.getCurrent((tab) => { if (tab && tab.id != null) chrome.tabs.remove(tab.id, () => void chrome.runtime.lastError); });
+    } catch (_) { /* stays open */ }
   }
 
   (async () => {
