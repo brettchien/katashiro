@@ -49,6 +49,13 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   check of the tunnel without a browser, see `scripts/acp-ws-smoke.py` (tunnel section) in the
   openab repo, which drives the gateway with a mock extension.
 - Contract: `docs/mcp-over-acp-tunnel-contract.md` in the openab repo.
+- **Canvas folder mirror (ADR §3.6):** Settings → 畫布存到資料夾 → 📁 選擇資料夾, pick an empty
+  folder, then let the agent write a canvas: `<folder>/c_…/<title>.md` appears, plus
+  `.katashiro/<id>.json`. Edit the `.md` in an editor and save in the canvas: the file is left
+  alone, a `<title>.katashiro-<UTC time>.md` appears beside it, and the canvas header shows
+  "📁 檔案在 Katashiro 外被修改過". Delete the `.md` and reopen the canvas tab: "資料夾裡的檔案不見了";
+  the next save writes it again. Restart Chrome: the canvas header shows **📁 Reconnect folder**
+  (unless Chrome kept the grant); saves made before reconnecting are written after it.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt. Run `chrome.storage.local.remove("canvas:budgetBytes")`

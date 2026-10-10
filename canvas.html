@@ -13,6 +13,9 @@
     <span class="canvas-icon" aria-hidden="true">📄</span>
     <h1 id="canvas-title" class="canvas-title">Canvas</h1>
     <span id="canvas-version" class="canvas-version"></span>
+    <!-- Folder mirror (§3.6): this canvas's file state, and Reconnect folder when Chrome asks again. -->
+    <span id="canvas-file" class="canvas-file" hidden></span>
+    <button id="canvas-reconnect" class="canvas-btn" type="button" hidden>📁 Reconnect folder</button>
     <button id="canvas-edit" class="canvas-btn" type="button" title="編輯（Milkdown）" hidden>✏️ 編輯</button>
     <button id="canvas-save" class="canvas-btn primary" type="button" title="儲存（Ctrl/⌘+S）" hidden>💾 儲存</button>
     <button id="canvas-cancel" class="canvas-btn" type="button" title="結束編輯" hidden>結束編輯</button>
@@ -43,6 +46,7 @@
     </div>
   </div>
   <script src="canvas-store.js"></script>
+  <script src="canvas-mirror.js"></script>
   <script src="canvas-core.js"></script>
   <script src="canvas-tabs.js"></script>
   <script src="canvas.js"></script>

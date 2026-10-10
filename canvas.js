@@ -35,9 +35,18 @@
   const revertBtn = document.getElementById("canvas-revert");
   const compareBtn = document.getElementById("canvas-compare");
   const conflictEl = document.getElementById("canvas-conflict");
+  const fileEl = document.getElementById("canvas-file");
+  const reconnectBtn = document.getElementById("canvas-reconnect");
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
+  });
+  // Folder mirror (§3.6): this tab writes its own saves to the folder, so it stays current with
+  // the side panel closed. Only while Chrome already grants access; Reconnect folder asks.
+  const mirror = CanvasMirror.createCanvasMirror({
+    storage: chrome.storage.local,
+    lock: (name, fn) => navigator.locks.request(name, fn),
+    getRoot: () => CanvasMirror.grantedRoot(),
   });
 
   let frame = null;
@@ -417,7 +426,11 @@
   });
   revertBtn.addEventListener("click", async () => {
     if (!current) return;
-    if (!window.confirm("還原成 agent 最後寫的版本？\n\n你目前的內容會被取代，這個動作無法復原。")) return;
+    // §3.5: "cannot be undone" unless the folder mirror holds the current text (then git can).
+    const undo = mirrorHoldsLatest()
+      ? "Katashiro 裡無法復原；目前的內容已寫進資料夾，若你有把資料夾 commit 進 git，可以從 git 找回（資料夾裡的檔案接著會被這次還原改寫）。"
+      : "這個動作無法復原。";
+    if (!window.confirm(`還原成 agent 最後寫的版本？\n\n你目前的內容會被取代。${undo}`)) return;
     try { await store.revertToAgent({ id: canvasId, baseVersion: current.meta.version }); }
     catch (e) { notice(`還原失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
     closeCompareTabs();                     // Revert to agent's also ends a compare (§3.10)
@@ -649,8 +662,64 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
-    if (!changes[CanvasStore.metaKey(canvasId)] && !changes[CanvasStore.latestKey(canvasId)]) return;
-    refresh();
+    const mc = changes[CanvasStore.metaKey(canvasId)];
+    if (!mc && !changes[CanvasStore.latestKey(canvasId)]) return;
+    // Only the folder mirror's bookkeeping changed: update the file status, no re-render.
+    if (mc && !changes[CanvasStore.latestKey(canvasId)] && CanvasMirror.onlyMirrorFieldsChanged(mc.oldValue, mc.newValue)) {
+      if (current) current.meta = { ...current.meta, file: mc.newValue.file, fileSyncedVersion: mc.newValue.fileSyncedVersion };
+      updateFileStatus();
+      return;
+    }
+    refresh().then(() => syncFile());           // storage first, then the file (§3.6)
+  });
+
+  // --- Folder mirror (§3.6) --------------------------------------------------------------------
+  let folder = { configured: false };          // CanvasMirror.folderStatus(), refreshed with the header
+  let shownFileState = null;
+  async function updateFileStatus() {
+    const meta = current && current.meta;
+    folder = { configured: false };
+    if (meta && !meta.noMirror) { try { folder = await CanvasMirror.folderStatus(); } catch (_) { /* no folder */ } }
+    const granted = folder.configured && folder.permission === "granted";
+    // Until the user reconnects, writes stay in storage and are flushed on reconnect.
+    reconnectBtn.hidden = !(folder.configured && !granted) || deleted;
+    reconnectBtn.title = folder.configured ? `資料夾「${folder.name}」需要重新授權；在那之前修改只存在 Katashiro 裡，連上後會補寫` : "";
+    const d = granted && meta && meta.file && meta.file.folder === folder.folderId ? CanvasMirror.describeState(meta.file) : null;
+    fileEl.hidden = !d;
+    if (d) {
+      fileEl.textContent = d.text;            // textContent: the conflict file name derives from an agent title
+      fileEl.title = d.title;
+      fileEl.classList.toggle("warn", d.level === "warn");
+    }
+    const state = d ? meta.file.state : null;
+    if (d && d.level === "warn" && state !== shownFileState) notice(d.title);
+    shownFileState = state;
+  }
+  // The folder has this canvas's current text (the destructive dialogs can say so, §3.5).
+  function mirrorHoldsLatest() {
+    const m = current && current.meta;
+    return !!(m && m.file && folder.configured && folder.permission === "granted" && m.file.folder === folder.folderId &&
+      m.file.state === "ok" && m.fileSyncedVersion === m.version);
+  }
+  function syncFile(opts) {
+    if (deleted) return Promise.resolve();
+    return mirror.sync(canvasId, opts).catch(() => {}).then(updateFileStatus);
+  }
+  reconnectBtn.addEventListener("click", async () => {
+    reconnectBtn.disabled = true;
+    try {
+      if (await CanvasMirror.requestAccess()) {
+        await mirror.syncAll();               // flush every canvas saved while disconnected
+        flash("📁 資料夾已重新連線，補寫完成");
+      } else {
+        notice("沒有取得資料夾的權限；畫布照常存在 Katashiro 裡。");
+      }
+    } catch (e) {
+      notice(`重新連線失敗：${CanvasCore.clipError((e && e.message) || e)}`);
+    } finally {
+      reconnectBtn.disabled = false;
+      updateFileStatus();
+    }
   });
 
   async function refresh() {
@@ -710,12 +779,15 @@
     if (compareView) return;
     deleteBtn.hidden = false;
     store.touch(canvasId).catch(() => {});      // "last opened", for eviction order (§3.6)
+    // Catch up this canvas, and notice a file changed or deleted outside Katashiro (never imported).
+    syncFile({ check: true });
   })();
 
   // #70: delete. No history to fall back on, so it says it cannot be undone.
   deleteBtn.addEventListener("click", async () => {
     const title = current ? current.meta.title : "";
-    if (!window.confirm(`刪除畫布「${String(title).slice(0, 60)}」？\n\n這個動作無法復原。`)) return;
+    const kept = current && current.meta.file ? "\n資料夾裡的檔案不會被刪除。" : "";
+    if (!window.confirm(`刪除畫布「${String(title).slice(0, 60)}」？\n\n這個動作無法復原。${kept}`)) return;
     try {
       await store.remove({ id: canvasId });
     } catch (e) {

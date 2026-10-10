@@ -7,6 +7,8 @@
 //   canvas:<conversationId>:index  [{ id, title, kind, version, bytes, updatedAt }]
 //   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
+// meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
+// and noMirror (created in an incognito window: never written to the folder).
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
 // canvas's own (`canvas:<id>`) and, nested inside it for the index, `canvas:index` — always in
@@ -139,6 +141,8 @@
    * @param {(id: string) => Promise<boolean>} [deps.isOpen]  is this canvas open in a tab (never evicted)
    * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
    *        asked once when a write would go over budget; true = remove `evict` and write
+   * @param {() => boolean} [deps.noMirror]  true = canvases created now are never mirrored to the
+   *        folder (an incognito window, §3.6)
    */
   // The entries whose key passes `test`, without pulling every value into memory: getKeys()
   // (Chrome 130+) lists keys only, so canvas contents (up to the budget) are not read just to be
@@ -313,6 +317,7 @@
           version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes, agentBytes: 0,
           normalized: v.kind !== "markdown",               // markdown waits for the editor's normalization
         };
+        if (deps.noMirror && deps.noMirror()) meta.noMirror = true;
         await putImage(v.image);
         await lock(`canvas:${newId}`, async () => {
           await storage.set({ [latestKey(newId)]: v.content, [metaKey(newId)]: meta });

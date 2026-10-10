@@ -1141,6 +1141,8 @@ loadConfig().then(async (r) => {
 
     switchView("chat");
     await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
+    // Folder mirror catch-up (§3.6): canvases saved while the folder was not connected.
+    if (panelIncognito === false) canvasMirror.syncAll().catch(() => {});
     buildRoom();
     connectAll();
     updateRoster();
@@ -1226,6 +1228,9 @@ function newConversationId() {
   return "c_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
 let restoring = false;                    // true while replaying — suppresses re-recording
+// This panel's window is incognito (null until loadHistory knows): an incognito panel never
+// writes canvases to the folder mirror, and its canvases are marked noMirror (ADR §3.6).
+let panelIncognito = null;
 
 function currentWindow() {
   return new Promise((resolve) => {
@@ -1298,6 +1303,7 @@ async function loadHistory() {
   panelWindowId = win.id;
   historyKey = `${HISTORY_PREFIX}${win.id}`;
   if (win.incognito) historyStore = chrome.storage.session;
+  panelIncognito = win.incognito;
   await adoptOrPruneOrphanHistory(historyKey, { adoptAllowed: !win.incognito });
   const got = await historyStore.get(historyKey);
   const data = (got && got[historyKey]) || {};
@@ -1438,6 +1444,7 @@ settingsBtn.addEventListener("click", () => {
   renderAgentList();
   if (jevTokenInput) jevTokenInput.value = jevToken;
   renderScreenshotConfig();
+  renderCanvasFolder();
   switchView("settings");
 });
 
@@ -2176,7 +2183,104 @@ const canvasStore = CanvasStore.createCanvasStore({
     `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
     evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
     (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
+  // Incognito (or not known yet): never mirrored to the folder (§3.6).
+  noMirror: () => panelIncognito !== false,
 });
+
+// --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
+// The panel writes the agent's saves (and anything else that changes a canvas while it is open);
+// canvas tabs write their own saves, so the folder stays current with the panel closed. Both are
+// serialized by the canvas:<id> lock, and a sync with nothing new is a no-op. Writes happen only
+// while Chrome already grants access: the panel never prompts on its own (that needs a click).
+const canvasMirror = CanvasMirror.createCanvasMirror({
+  storage: chrome.storage.local,
+  lock: (name, fn) => navigator.locks.request(name, fn),
+  getRoot: async () => (panelIncognito === false ? CanvasMirror.grantedRoot() : null),
+});
+const canvasMirrorPending = new Set();
+let canvasMirrorRunning = false;
+async function runCanvasMirror() {
+  if (canvasMirrorRunning) return;
+  canvasMirrorRunning = true;
+  try {
+    while (canvasMirrorPending.size) {
+      const id = canvasMirrorPending.values().next().value;
+      canvasMirrorPending.delete(id);
+      try { await canvasMirror.sync(id); } catch (_) { /* recorded in meta.file by the mirror */ }
+    }
+  } finally {
+    canvasMirrorRunning = false;
+  }
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || panelIncognito !== false) return;
+  for (const [k, ch] of Object.entries(changes)) {
+    const m = /^canvas:(cv_[0-9a-f]{12}):(meta|latest)$/.exec(k);
+    if (!m || ch.newValue === undefined) continue;            // deleted: the files stay (§3.6)
+    // The mirror's own bookkeeping is not a content change.
+    if (m[2] === "meta" && !changes[CanvasStore.latestKey(m[1])] && CanvasMirror.onlyMirrorFieldsChanged(ch.oldValue, ch.newValue)) continue;
+    canvasMirrorPending.add(m[1]);
+  }
+  if (canvasMirrorPending.size) runCanvasMirror();
+});
+
+// Settings → 畫布存到資料夾. Picking and reconnecting need this click (File System Access).
+const canvasFolderStatusEl = document.getElementById("canvas-folder-status");
+const canvasFolderPickBtn = document.getElementById("canvas-folder-pick");
+const canvasFolderReconnectBtn = document.getElementById("canvas-folder-reconnect");
+const canvasFolderStopBtn = document.getElementById("canvas-folder-stop");
+async function renderCanvasFolder(extra = "") {
+  if (!canvasFolderStatusEl) return;
+  const show = (pick, reconnect, stop) => {
+    canvasFolderPickBtn.hidden = !pick;
+    canvasFolderReconnectBtn.hidden = !reconnect;
+    canvasFolderStopBtn.hidden = !stop;
+  };
+  if (panelIncognito !== false) { canvasFolderStatusEl.textContent = "無痕視窗不會把畫布寫進資料夾。"; show(false, false, false); return; }
+  if (typeof globalThis.showDirectoryPicker !== "function") { canvasFolderStatusEl.textContent = "這個瀏覽器不支援選擇資料夾（File System Access）。"; show(false, false, false); return; }
+  const st = await CanvasMirror.folderStatus();
+  if (!st.configured) {
+    canvasFolderStatusEl.textContent = `未設定：畫布只存在這個 Chrome 設定檔裡。${extra}`;
+    canvasFolderPickBtn.textContent = "📁 選擇資料夾";
+    show(true, false, false);
+  } else if (st.permission === "granted") {
+    canvasFolderStatusEl.textContent = `✅ 寫入中：「${st.name}」${extra}`;
+    canvasFolderPickBtn.textContent = "📁 換資料夾";
+    show(true, false, true);
+  } else {
+    canvasFolderStatusEl.textContent = `⚠️ 「${st.name}」需要重新授權（瀏覽器重開後常見）。在那之前畫布照常存在 Katashiro 裡，連上後會補寫進資料夾。${extra}`;
+    canvasFolderPickBtn.textContent = "📁 換資料夾";
+    show(true, true, true);
+  }
+}
+async function afterCanvasFolderConnected() {
+  await renderCanvasFolder("（正在補寫…）");
+  let counts = {};
+  try { counts = await canvasMirror.syncAll(); } catch (_) { /* per-canvas state is in meta */ }
+  const wrote = (counts.write || 0) + (counts.conflict || 0) + (counts.adopt || 0);
+  const failed = counts.error || 0;
+  await renderCanvasFolder(wrote || failed ? `（寫入 ${wrote} 個畫布${failed ? `，${failed} 個失敗` : ""}）` : "");
+}
+if (canvasFolderPickBtn) {
+  canvasFolderPickBtn.addEventListener("click", async () => {
+    try {
+      await CanvasMirror.pickFolder();                  // the picker must open within this click
+    } catch (e) {
+      if (!e || e.name !== "AbortError") await renderCanvasFolder(`（沒有設定成功：${String((e && e.message) || e).slice(0, 120)}）`);
+      return;
+    }
+    await afterCanvasFolderConnected();
+  });
+  canvasFolderReconnectBtn.addEventListener("click", async () => {
+    if (await CanvasMirror.requestAccess()) await afterCanvasFolderConnected();
+    else await renderCanvasFolder("（沒有取得權限）");
+  });
+  canvasFolderStopBtn.addEventListener("click", async () => {
+    if (!confirm("停止把畫布寫進資料夾？資料夾裡已經寫好的檔案會保留。")) return;
+    try { await CanvasMirror.stopMirror(); } catch (_) { /* nothing stored */ }
+    await renderCanvasFolder();
+  });
+}
 
 // §3.5: after an agent markdown write, wait (briefly) for an open canvas tab to normalize it, then
 // return { diff } — raw → stored text ("" if unchanged) — or null if no tab rendered it in time.

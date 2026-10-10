@@ -544,6 +544,44 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
 - **Not in incognito**: incognito panels never write to the folder (it would persist what
   incognito promises not to).
 
+**Phase 1 implementation (PR 7).** `canvas-mirror.js` decides (slugs, path check, write plan,
+conflict names; unit-tested on a fake directory handle) and makes the few File System Access
+calls; the handle lives in IndexedDB `katashiro-canvas-mirror`. Settings → *畫布存到資料夾* picks,
+reconnects or stops (the files stay; picking the same folder again keeps its hashes). The panel
+syncs a canvas on every `storage.onChanged` of its content or meta (so agent writes and
+normalization), each canvas tab syncs its own saves and has *Reconnect folder*; both take the
+`canvas:<id>` lock, and a sync whose content hash equals the last one synced does nothing. Writes
+happen only while Chrome already grants access; nobody prompts without a click. Where this ADR
+is silent, the conservative choice:
+- The mirror state is `meta.file` (`{folder, convSlug, slug, slugBase, hash, syncedHash,
+  jsonHash, conflictName, conflictHash, state}`) plus `meta.fileSyncedVersion`; `folder` is an id
+  minted per picked folder, so another folder starts over (no hashes, new slugs). Canvases created
+  in an incognito window carry `meta.noMirror` and are never written, by any page.
+- Until multi-conversation gives conversations a title, the conversation slug is the slugged
+  `conversationId` (`c_…`). Slugs are also capped at 160 UTF-8 bytes, so a conflict file name stays
+  under the common 255-byte limit.
+- **One conflict file per episode:** while the main file stays changed, later saves rewrite the same
+  `.katashiro-<time>.md` as long as it is still exactly what Katashiro wrote there; once the user
+  edits it too, a new one is made. If the disk already holds exactly the new content, it is adopted
+  (nothing written), even for a file Katashiro never wrote.
+- **File missing** is detected when a canvas tab opens (and on any sync): the canvas is marked,
+  never deleted, and the next save writes the file again (`state: "recreated"`), since the "no
+  file" rule above allows it and storage is the working copy. Outside changes are only detected on
+  open in phase 1 (no focus check, diff or import; read-back stays phase 2).
+- Deleting or evicting a canvas leaves its files. A rename removes the old `.md` only when its hash
+  matches; old `.assets` files always stay, as do assets of a replaced image. An existing asset
+  file is never overwritten (content-addressed: it is either ours or left alone).
+- Image canvases are written as `![caption](<slug>.assets/<sha256>.<ext>)`; an SVG or
+  unrecognised image is not written, and the `.md` says it is kept in Katashiro only.
+- The Revert-to-agent's dialog drops "cannot be undone" only while the folder holds this exact
+  revision, and then says the old text survives only if the folder was committed to git (the
+  write-through overwrites the file right after). *Discard mine* always says it cannot be undone:
+  unsaved text never reached the folder.
+- To verify in real Chrome: `showDirectoryPicker` from the side panel; whether a grant survives a
+  browser restart for an extension origin (persistent permissions); `requestPermission` after an
+  IndexedDB read still inside the click's activation; whether File System Access follows a symlink
+  planted in the folder; Chrome's refusal of some names or folders (e.g. the home folder).
+
 ### 3.7 Chat integration
 
 - The card sits in the agent's turn, `📄 <title> · v<N>`, N being the revision that turn wrote.
@@ -843,7 +881,8 @@ agent's last write is the baseline.
 - **Phase 1 scope:** canvas tabs in a per-conversation tab group (with the Split View rule, §3.1),
   sandbox frame, `markdown`/`slides`/`image`, `canvas_open`/`canvas_read`/`canvas_list`, revision counter + agent's last write,
   card, PDF via print, **Milkdown editing of `markdown` canvases** with the §3.5 concurrency, and
-  showing changes: glow on agent writes, Compare in Split View, `canvas_highlight` (§3.10).
+  showing changes: glow on agent writes, Compare in Split View, `canvas_highlight` (§3.10), and the
+  optional local folder mirror, write-through only (§3.6, §6 Q6; read-back and import are phase 2).
 - **No embedded third-party media (Brett, 2026-10-10).** YouTube and other external videos or
   iframes are shown as **links** only: a click goes through `openLink` (§3.2) and opens a new tab.
   Embedding would need `frame-src` to a third party from the sandbox, a new egress path, and
