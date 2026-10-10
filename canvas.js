@@ -81,14 +81,19 @@
     saveBtn.disabled = !dirty;
     cancelBtn.hidden = mode !== "edit" || deleted;
     let canRevert = false;
+    let sameAsAgent = false;            // saved edits that end up as the agent's text: nothing to send
     if (current && mode === "view" && current.meta.author === "user") {
-      try { const agent = await store.readAgentCopy(canvasId); canRevert = agent != null && agent !== current.content; } catch (_) { /* stays hidden */ }
+      try {
+        const agent = await store.readAgentCopy(canvasId);
+        canRevert = agent != null && agent !== current.content;
+        sameAsAgent = agent != null && agent === current.content;
+      } catch (_) { /* stays hidden */ }
     }
     revertBtn.hidden = !canRevert;
     const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
-    sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen);
+    sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
     downloadBtn.hidden = !textKind;
     printBtn.hidden = !(textKind && !!frame && mode === "view");
@@ -120,6 +125,13 @@
       const c = current;
       const agentText = await store.readAgentCopy(canvasId);
       const diff = CanvasStore.unifiedDiff(agentText == null ? "" : agentText, c.content);
+      if (diff === "") {
+        // Saved, but the text is the agent's again (e.g. only blank lines the editor drops): a push
+        // would be a header with no diff.
+        await store.markSeen({ id: canvasId, version: c.meta.version });
+        flash("文字跟 agent 最後寫的版本一樣，沒有變更要送。");
+        return;
+      }
       const head = `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.agentVersion} → v${c.meta.version}, edited by user]`;
       const text = CanvasCore.composeCanvasPush({
         note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null, lang: "diff",
