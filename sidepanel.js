@@ -2304,7 +2304,7 @@ async function addToCanvasGroup(tab) {
 
 // Canvas tabs moved out of their group for a split: canvasTabId → { movedToGroupId, windowId,
 // returnGroupId, canvasGroup, pageTabId }. In memory only: a panel reload forgets them, and those
-// tabs simply stay in the page's group (acceptable; §3.1 lets the next canvas_open sort it out).
+// tabs simply stay in the page's group (acceptable, §3.1).
 const canvasSplitMoves = new Map();
 
 const getTab = (tabId) => chrome.tabs.get(tabId).catch(() => null);
@@ -2315,15 +2315,17 @@ async function restoreCanvasTab(tabId) {
   if (!record) return;
   const tab = await getTab(tabId);
   if (tab && CanvasTabs.inSplit(tab)) return;          // still split: keep the record
-  canvasSplitMoves.delete(tabId);
   let groups = [];
   if (record.returnGroupId !== CanvasTabs.TAB_GROUP_NONE) {
     try { groups = [await chrome.tabGroups.get(record.returnGroupId)]; } catch (_) { /* gone */ }
   }
   const plan = CanvasTabs.planRestore({ canvasTab: tab, record, groups });
+  // The record is dropped only once the move worked: a rejected call (e.g. "Tabs cannot be edited
+  // right now" while the user drags a tab) keeps it, so the next sweep tries again.
   if (plan.action === "group") await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tabId] });
   else if (plan.action === "ungroup") await chrome.tabs.ungroup([tabId]);
   else if (plan.action === "recreate") await addToCanvasGroup(tab);
+  if (canvasSplitMoves.get(tabId) === record) canvasSplitMoves.delete(tabId);
 }
 
 // Lazy fallback (§3.1): if Chrome sent no "split ended" event, the next canvas_open moves back
@@ -2380,22 +2382,26 @@ async function splitCanvasWithActive(canvasTab) {
     canvasSplitMoves.set(canvasTab.id, record);
     try { await restoreCanvasTab(canvasTab.id); } catch (_) { /* best effort */ }
   };
+  // Follows the page's group as it is now (the user may have dragged the page elsewhere), and the
+  // record always names the group the canvas tab was put in, so planRestore still recognises it.
+  const from = CanvasTabs.groupOf(canvasTab);
   const regroup = async (c, p) => {
     const g = CanvasTabs.groupOf(p);
     if (CanvasTabs.groupOf(c) === g) return;
-    if (g === CanvasTabs.TAB_GROUP_NONE) await chrome.tabs.ungroup([c.id]);
-    else await chrome.tabs.group({ groupId: g, tabIds: [c.id] });
-  };
-  try {
-    if (plan.regroup) {
+    if (!record) {
       const stored = await storedCanvasGroupId();
       record = {
-        movedToGroupId: plan.regroup.groupId, windowId: canvasTab.windowId, pageTabId: page.id,
-        returnGroupId: plan.restore.returnGroupId,
-        canvasGroup: plan.restore.returnGroupId !== CanvasTabs.TAB_GROUP_NONE && plan.restore.returnGroupId === stored,
+        windowId: canvasTab.windowId, pageTabId: page.id, returnGroupId: from,
+        canvasGroup: from !== CanvasTabs.TAB_GROUP_NONE && from === stored,
       };
-      await regroup(canvasTab, page);
     }
+    record.movedToGroupId = CanvasTabs.groupOf(c);      // where Katashiro's moves have left it so far
+    if (g === CanvasTabs.TAB_GROUP_NONE) await chrome.tabs.ungroup([c.id]);
+    else await chrome.tabs.group({ groupId: g, tabIds: [c.id] });
+    record.movedToGroupId = g;                          // only once Chrome has moved it
+  };
+  try {
+    if (plan.regroup) await regroup(canvasTab, page);
     let [c, p] = await fresh();
     if (!c || !p) { await rollback(); return { ok: false, text: "a tab closed while moving it" }; }
     const to = CanvasTabs.adjacentIndex(p, c);
