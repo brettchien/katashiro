@@ -235,7 +235,7 @@ below is built around that.
   never edits, other canvases or anything from the panel. A fake login form there **can** send what
   the user types. The host therefore shows a permanent banner on every canvas, *"Agent-generated
   content — Katashiro never asks for passwords or keys here"*, and the `html` kind sits behind a
-  setting that is off by default (§6 Q2).
+  setting the user can turn off (§6 Q2; on by default per Brett).
 
 ### 3.3 Content kinds, in phases
 
@@ -245,7 +245,7 @@ below is built around that.
 | 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); setting, off by default |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; a setting can turn it off |
 | 3 | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
@@ -741,12 +741,13 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 
 1. ~~**Surface:** a canvas tab, or a resizable drawer inside the panel?~~ **Decided (Brett,
    2026-10-10):** a tab per canvas, grouped per conversation (§3.1). Editor: Milkdown (§2, §3.5).
-2. **`html` kind:** do we want agent-authored script at all (phase 2), or stop at
-   markdown/slides/chart/mermaid?
-   *Recommended: phase 2 stops at `chart` (and `mermaid` in phase 3). If `html` is built later, it
-   ships only with §3.2 in full (own frame, refused `save`/`selection`, load gate, the stated
-   WebRTC/navigation leak), behind a setting that is off by default.*
-3. **Caps:** is a 200 MB byte budget right (§3.6)? With no history it is mostly an image budget.
+2. ~~**`html` kind:** agent-authored script at all?~~ **Decided (Brett, 2026-10-10):** yes, the
+   agent can use `html` (phase 2). It ships only with §3.2 in full (own frame, refused
+   `save`/`selection`, load gate, the stated WebRTC/navigation leak, the banner). Jellyfish
+   recommended the setting off by default; Brett's call is on by default, and the user can turn it off.
+3. ~~**Caps:** is a 200 MB byte budget right?~~ **Decided (Brett, 2026-10-10):** start with 200 MB
+   (§3.6) and revisit with real usage (`getBytesInUse` is shown in Settings). There is no cap on the
+   number of canvases; only bytes count.
 4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
    **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
    `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
