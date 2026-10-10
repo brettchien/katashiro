@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Canvas — Katashiro</title>
+  <link rel="stylesheet" href="canvas.css">
+</head>
+<body>
+  <!-- Trusted host (ADR docs/adr/canvas.md §3.2): title, version, banner. It never renders agent
+       content itself; that happens in the sandboxed canvas-frame.html below. -->
+  <header class="canvas-header">
+    <span class="canvas-icon" aria-hidden="true">📄</span>
+    <h1 id="canvas-title" class="canvas-title">Canvas</h1>
+    <span id="canvas-version" class="canvas-version"></span>
+    <span class="canvas-banner">Agent-generated content — Katashiro never asks for passwords or keys here.</span>
+  </header>
+  <div id="canvas-notice" class="canvas-notice" hidden></div>
+  <main id="canvas-main" class="canvas-main"></main>
+  <script src="canvas-store.js"></script>
+  <script src="canvas-core.js"></script>
+  <script src="canvas.js"></script>
+</body>
+</html>

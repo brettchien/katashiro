@@ -1,0 +1,78 @@
+/* Canvas host page (canvas.html): a slim header and a full-width frame (ADR §3.1). */
+:root {
+  --bg: #0f172a;
+  --bg-header: #111827;
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --warn: #f59e0b;
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+.canvas-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  flex: 0 0 auto;
+}
+
+.canvas-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.canvas-version {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-banner {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.canvas-notice {
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, 0.12);
+  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  color: var(--warn);
+  font-size: 13px;
+  white-space: pre-wrap;
+}
+.canvas-notice[hidden] { display: none; }
+
+.canvas-main {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+.canvas-main iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: var(--bg);
+}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <!-- Second CSP layer (ADR §3.2): even though the manifest sandbox policy is the loosest any
+       frame needs, this page runs no agent script, so a DOMPurify bypass still cannot run script. -->
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>canvas</title>
+  <link rel="stylesheet" href="canvas-frame.css">
+</head>
+<body>
+  <!-- Manifest sandbox page: opaque origin, no chrome.* APIs, no storage, no network. Everything it
+       shows arrives in a `render` message from canvas.html. -->
+  <article id="doc" class="doc"></article>
+  <script src="vendor/markdown-it.iife.js"></script>
+  <script src="vendor/dompurify.iife.js"></script>
+  <script src="vendor/highlight.iife.js"></script>
+  <script src="markdown.js"></script>
+  <script src="canvas-frame.js"></script>
+</body>
+</html>

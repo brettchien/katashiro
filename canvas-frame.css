@@ -1,0 +1,57 @@
+/* canvas-frame.css — the canvas document, full width (ADR §3.1: no centered column). Loaded by the
+   sandboxed canvas-frame.html; no url()/@import (the sandbox CSP would block them anyway). */
+:root { color-scheme: dark; }
+html, body { margin: 0; background: #0f172a; color: #e2e8f0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.doc { padding: 16px 24px 48px; word-break: break-word; }
+.doc h1, .doc h2, .doc h3, .doc h4 { line-height: 1.3; margin: 1.4em 0 0.5em; }
+.doc h1 { font-size: 1.8em; border-bottom: 1px solid rgba(255, 255, 255, 0.1); padding-bottom: 0.3em; }
+.doc h2 { font-size: 1.4em; border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 0.2em; }
+.doc h3 { font-size: 1.15em; }
+.doc > :first-child { margin-top: 0; }
+.doc a { color: #60a5fa; }
+.doc code { background: rgba(255, 255, 255, 0.08); padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
+.doc blockquote { margin: 0.8em 0; padding: 0.2em 1em; border-left: 3px solid #475569; color: #94a3b8; }
+.doc table { border-collapse: collapse; margin: 0.8em 0; display: block; overflow-x: auto; }
+.doc th, .doc td { border: 1px solid rgba(255, 255, 255, 0.15); padding: 6px 12px; text-align: left; }
+.doc th { background: rgba(255, 255, 255, 0.05); }
+.doc img { max-width: 100%; }
+.doc hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 1.5em 0; }
+
+.doc pre.hljs {
+  position: relative;
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: #0d1117;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.doc pre.hljs code { background: none; padding: 0; color: #c9d1d9; }
+.copy-btn {
+  position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;
+  color: #94a3b8; background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; cursor: pointer; opacity: 0;
+}
+.doc pre.hljs:hover .copy-btn { opacity: 1; }
+
+
+/* highlight.js token colors — GitHub-dark-ish, curated subset (self-hosted, no CDN) */
+.hljs-comment, .hljs-quote { color: #8b949e; font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: #ff7b72; }
+.hljs-string, .hljs-meta .hljs-string { color: #a5d6ff; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: #79c0ff; }
+.hljs-title, .hljs-title.function_, .hljs-section, .hljs-name { color: #d2a8ff; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable { color: #ffa657; }
+.hljs-type, .hljs-class .hljs-title, .hljs-built_in { color: #ffa657; }
+.hljs-tag { color: #7ee787; }
+.hljs-regexp, .hljs-link { color: #a5d6ff; }
+.hljs-meta { color: #79c0ff; }
+.hljs-addition { color: #7ee787; background: rgba(46, 160, 67, 0.15); }
+.hljs-deletion { color: #ffa198; background: rgba(248, 81, 73, 0.15); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }

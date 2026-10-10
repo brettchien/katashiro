@@ -42,3 +42,15 @@ test("release zip includes the manifest's entry points and icons", () => {
   ];
   for (const f of files) assert.ok(shipped(entries, f), `${f} is referenced by manifest.json but missing from the release zip`);
 });
+
+test("release zip includes the canvas pages and everything they load (ADR canvas)", () => {
+  const entries = zipEntries();
+  const manifest = JSON.parse(read("manifest.json"));
+  for (const page of ["canvas.html", ...((manifest.sandbox && manifest.sandbox.pages) || [])]) {
+    assert.ok(shipped(entries, page), `${page} is missing from the release zip`);
+    const html = read(page);
+    const refs = [...html.matchAll(/<(?:script src|link rel="stylesheet" href)="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(refs.length > 0, `${page} loads nothing?`);
+    for (const r of refs) assert.ok(shipped(entries, r), `${r} is loaded by ${page} but missing from the release zip`);
+  }
+});
