@@ -98,6 +98,19 @@ test("editing messages (§3.5): save, dirty, rendered.normalized — typed and b
   assert.equal(ok({ type: "dirty", nonce: "n1", dirty: "yes" }), null);
   assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, normalized: "- a" }));
   assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, normalized: 7 }), null);
+  assert.ok(ok({ type: "editFailed", nonce: "n1", msg: "no editor" }));
+  assert.equal(ok({ type: "editFailed", nonce: "n1" }), null);
+});
+
+test("modeAfterFrameMessage (#91): only editFailed ends a clean edit mode", () => {
+  const after = (type, mode, dirty) => C.modeAfterFrameMessage(type, { mode, dirty });
+  assert.equal(after("editFailed", "edit", false), "view");
+  assert.equal(after("editFailed", "edit", true), "edit");     // never over unsaved edits
+  assert.equal(after("editFailed", "view", false), "view");
+  // a CSP error from an image inside an open editor must not end edit mode (Save would vanish)
+  assert.equal(after("error", "edit", false), "edit");
+  assert.equal(after("error", "edit", true), "edit");
+  assert.equal(after("dirty", "edit", false), "edit");
 });
 
 test("cleanEditorMarkdown: Milkdown's <br /> empty-paragraph lines become blank lines, not inside fences", () => {
@@ -155,6 +168,13 @@ test("countImages: inline, block and reference images, not inside code fences", 
   assert.equal(C.countImages("![r][ref]\n\n[ref]: x.png"), 1);
   assert.equal(C.countImages("```md\n![in code](x.png)\n```\n![out](y.png)"), 1);
   assert.equal(C.countImages("[link](x) and !important and ![not closed"), 0);
+  // #89: shortcut / collapsed refs only when defined; brackets in alt; no space before "("
+  assert.equal(C.countImages("![logo]\n\n[logo]: x.png"), 1);
+  assert.equal(C.countImages("![Logo][]\n\n[logo]: x.png"), 1);
+  assert.equal(C.countImages("![a][nope] and ![b]"), 0);
+  assert.equal(C.countImages("![a [b] c](x.png)"), 1);
+  assert.equal(C.countImages("![a] (x.png)"), 0);
+  assert.equal(C.countImages("![a](x)\n\n    ![b](y)"), 2);            // indented code counts like text
 });
 test("losesImages: true only when the normalized text has fewer images", () => {
   assert.equal(C.losesImages("a\n\n![b](x.png)\n", "a\n"), true);

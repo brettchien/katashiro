@@ -27,6 +27,9 @@
     printed: () => true,
     slide: (m) => Number.isInteger(m.index) && Number.isInteger(m.total) && m.index >= 1 && m.total >= 1,
     error: (m) => typeof m.msg === "string",
+    // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
+    // CSP violations while an editor is open and must not end edit mode.
+    editFailed: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
@@ -45,6 +48,12 @@
     if (!Object.prototype.hasOwnProperty.call(FRAME_TYPES, m.type)) return null;
     if (!FRAME_TYPES[m.type](m)) return null;
     return m;
+  }
+
+  // The host's edit mode after a frame message: only editFailed ends it, and never over unsaved
+  // edits. A plain error (e.g. a CSP-blocked image inside an open editor) leaves it alone.
+  function modeAfterFrameMessage(type, { mode, dirty }) {
+    return type === "editFailed" && mode === "edit" && !dirty ? "view" : mode;
   }
 
   // openLink: http(s) only, absolute, bounded. Returns the normalized URL or null.
@@ -123,20 +132,40 @@
   }
 
   /**
-   * #86 safety net: how many markdown images (`![alt](…)` / `![alt][ref]`) a text has outside code
-   * fences. Normalization must never lose one (Milkdown 7.22.2 silently dropped images without a
-   * title); if the normalized text has fewer, the frame keeps the agent's text as it is.
+   * #86 safety net: how many markdown images a text has outside code fences — inline `![alt](…)`,
+   * and reference `![alt][ref]` / `![ref][]` / `![ref]` when `[ref]: …` is defined. Normalization
+   * must never lose one (Milkdown 7.22.2 silently dropped images without a title); if the normalized
+   * text has fewer, the frame keeps the agent's text as it is.
+   * A best-effort count, not a CommonMark parser (#89): alt text may hold one level of balanced
+   * brackets but not a line break, a `[ref]: …` definition must keep its destination on the same
+   * line, and indented code is counted like text (the serializer turns it
+   * into a fence, so such a canvas just stays unnormalized — the safe direction).
    */
   function countImages(text) {
-    let n = 0;
+    const lines = String(text == null ? "" : text).split("\n");
+    const label = (l) => l.trim().replace(/\s+/g, " ").toLowerCase();
+    const outsideFences = [];
     let fence = null;
-    for (const line of String(text == null ? "" : text).split("\n")) {
+    for (const line of lines) {
       const f = /^\s*(`{3,}|~{3,})/.exec(line);
       if (f) {
         if (fence === null) { fence = f[1]; continue; }
         if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) { fence = null; continue; }
       }
-      if (fence === null) n += (line.match(/!\[[^\]\n]*\]\s?[(\[]/g) || []).length;
+      if (fence === null) outsideFences.push(line);
+    }
+    const defs = new Set();
+    for (const line of outsideFences) {
+      const d = /^ {0,3}\[([^\]\n]+)\]:\s*\S/.exec(line);
+      if (d) defs.add(label(d[1]));
+    }
+    let n = 0;
+    const re = /!\[((?:[^[\]\n]|\[[^[\]\n]*\])*)\](\(|\[([^\]\n]*)\])?/g;
+    for (const line of outsideFences) {
+      for (const m of line.matchAll(re)) {
+        if (m[2] === "(") n++;
+        else if (defs.has(label(m[3] ? m[3] : m[1]))) n++;      // ![a][ref], ![ref][], ![ref]
+      }
     }
     return n;
   }
@@ -207,5 +236,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
