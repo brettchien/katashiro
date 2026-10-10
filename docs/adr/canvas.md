@@ -111,7 +111,13 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   found again by URL.
 - With multi-conversation, switching conversation collapses the old conversation's group and
   expands the new one's.
+- **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
+  column like GitHub's file view. Documents fill the viewport with modest side padding (~24 px);
+  tables and code blocks take all the width they need, and slides scale to the tab. The host
+  header (title, version, Edit/Save, Send to agent, export) is one slim bar so the content keeps
+  the height too.
 - The panel never renders canvas content itself.
+- Where the data lives and how each party reaches it: §3.9.
 
 **Implementation rules for tab and group moves** (Chrome tab APIs are async and the MV3 service
 worker can be suspended at any point):
@@ -250,6 +256,11 @@ below is built around that.
   Instead we split on `---`, render each slide with markdown-it + DOMPurify (the chat's sink), and
   hand reveal finished `<section>` elements. Per-slide attributes, if ever needed, come from a small
   allow-list we parse ourselves.
+- **What `html` is for** (anything that needs interaction, not just display): a cost or capacity
+  calculator with sliders (e.g. Fargate Spot vs on-demand); a sortable, filterable table of data the
+  agent gathered (PRs, logs, prices); a collapsible timeline or checklist; a side-by-side option
+  comparison with toggles; a small simulation or animated explainer; a quiz or flashcards. Static
+  documents, decks, charts and diagrams do **not** need it; the safer kinds cover them.
 - Phase 2's `html` kind is the first to run agent script, only in `canvas-html-frame.html` (§3.2).
   Still no fetch and no eval, but not leak-proof (§3.2 residual risk).
 - **Mermaid supersedes the markdown ADR's dagre lean** `[MD-ADR §3.6]`. That lean existed because
@@ -347,8 +358,15 @@ below is built around that.
   - `canvas:<id>:meta` — title, kind, `conversationId`, version list (`n`, author, time, bytes).
   - `canvas:<id>:v<n>` — one version's content.
 - **The cap is a byte budget, not a count.** "50 canvases × 20 versions × 2 MB" would allow 2 GB.
-  The budget is 200 MB total (a setting). Over budget, the host drops the oldest versions first
+  The budget is 200 MB total (a setting; sizing below and §6 Q3). Over budget, the host drops the oldest versions first
   (each canvas keeps its first and latest), then whole canvases, least recently opened first.
+- **Sizing.** Text is small: a long markdown document is ~20–100 KB per version, a slide deck's
+  markdown ~50–300 KB, so even 2 000 text versions stay under ~200 MB. **Images dominate**: one
+  5 MB image re-saved in 20 versions alone would be 100 MB. So images are stored **once, by content
+  hash** (`canvas:img:<sha256>`, reference-counted), and versions refer to them; a version that
+  only changes text costs only text. With that, 200 MB holds roughly 30 distinct full-size images
+  plus years of text. It is a setting, `chrome.storage.local` with `unlimitedStorage` sits on the
+  user's disk, and `getBytesInUse` is shown in Settings so the user sees what it costs.
 - **Keyed by `conversationId` from day one** (already minted by #61), so multi-conversation needs no
   migration. Until it lands, the window's conversation owns its canvases.
 - **Incognito** uses `storage.session`, mirroring the chat history (#54). Its ~10 MB quota is
@@ -363,6 +381,27 @@ below is built around that.
 - The card sits in the agent's turn. Clicking it opens the canvas at the version that turn created.
 - **Reply-to** (#61) may quote a canvas version, rendering `↩ 📄 title v3`.
 - `chat_history` records `[canvas "title" v3]` placeholders, not the content (as with images).
+- **"Send to agent" button (Brett, 2026-10-10; §6 Q4).** User edits are **not** announced
+  automatically. The agent reads them itself with `canvas_read` when it needs to (its tool
+  description says so). When the user wants the agent to look now, the canvas header's **Send to
+  agent** button posts one chat message, through the panel, as the user:
+  `[canvas "X" v5 → v7, edited by user]` plus a unified diff from the last version the agent wrote,
+  capped at 20 KB (beyond that, the line says so and the agent calls `canvas_read`), plus an
+  optional note the user types. It is enabled only when there are saved user versions the agent has
+  not been sent, and only for `canvas-frame.html` canvases (never on behalf of the `html` frame).
+- **Ideas adopted from Anthropic's artifacts** `[Artifacts]`:
+  - **Edit with agent on a selection** (phase 2): highlight text in the canvas, click *Ask agent*,
+    type the request. It is sent like Send to agent, with the selected text quoted, so the agent
+    knows exactly which part to change (`selection{}`, §3.2).
+  - **Try fixing** (phase 1): when a frame reports `error{}` (a bad mermaid diagram, a reveal
+    error, a CSP violation), the error banner has a *Send error to agent* button with the message.
+  - **Download as markdown** (phase 1) beside PDF; Word export can come later.
+  - **Canvas gallery** (phase 2): one page listing every canvas across conversations, with search,
+    so a canvas is findable after its conversation scrolls away.
+  - **Agent picks title and icon**: `canvas_open` takes an optional emoji `icon` for the card and
+    the tab title.
+  - Not adopted: artifacts that call the model, connect to apps, or share storage between users,
+    and publishing to a public link. Those need a backend and fall under §5 non-goals.
 
 ### 3.8 Export and import
 
@@ -381,6 +420,62 @@ below is built around that.
   to evaluate then.
 - **pptx import** (phase 3+, not committed): `pptxtojson` → markdown slides, keeping titles, text and
   images. **Layout will not survive.** It is positioned as "bring the content in", not "round-trip".
+
+### 3.9 Data flow — where canvas data lives and who can reach it
+
+```mermaid
+flowchart LR
+  subgraph AC["Agent container (e.g. Orca on ECS)"]
+    AG["Agent<br/>(Claude via claude-agent-acp)"]
+    FA["oab MCP facade<br/>127.0.0.1:8848"]
+  end
+  subgraph OA["openab"]
+    GW["gateway<br/>ACP server"]
+  end
+  subgraph BR["Brett's Chrome (one profile)"]
+    subgraph EXT["Katashiro extension origin chrome-extension://…"]
+      SP["Side panel<br/>ACP WebSocket + browser MCP server<br/>(executes canvas_* tools)"]
+      ST[("chrome.storage.local<br/>canvas:* index / meta / versions / images")]
+      CV["canvas.html tab(s)<br/>host: header, versions, Edit/Save,<br/>Send to agent"]
+    end
+    FR["canvas-frame.html<br/>sandbox iframe, opaque origin<br/>renders + Milkdown editor"]
+    WEB["Web pages"]
+  end
+  AG -- "canvas_open / read / list / patch" --> FA
+  FA -- "katashiro.* capability" --> GW
+  GW -- "MCP-over-ACP tunnel (wss)" --> SP
+  SP -- "write / read" --> ST
+  ST -- "storage.onChanged" --> CV
+  CV -- "user save → new version" --> ST
+  CV -- "postMessage render (nonce)" --> FR
+  FR -- "postMessage save / error / openLink<br/>(allow-listed)" --> CV
+  CV -- "Send to agent → chat message" --> SP
+  SP -- "session/prompt" --> GW
+  GW --> AG
+  WEB -. "no access: not web_accessible" .-> CV
+```
+
+- **The only copy lives in the user's Chrome profile** (`chrome.storage.local`, or
+  `storage.session` in incognito). openab does not store canvases. The agent container holds only
+  what passed through the agent's context (what it wrote, or read with `canvas_read`), like any
+  tool result. Nothing goes to a cloud service.
+- **Write path, agent → canvas:** agent tool call → facade → gateway → the panel's ACP socket → the
+  panel's browser MCP server validates it and writes a new version → open canvas tabs see
+  `storage.onChanged` and re-render (or show "Agent saved vN" if the user is editing, §3.5).
+- **Read path, canvas → agent:** `canvas_read` takes the same route back, with the panel reading
+  storage. **Send to agent** is the push path: the canvas tab asks the panel to post a user chat
+  message (§3.7).
+- **Who can reach the data:** extension pages of Katashiro (panel, `canvas.html`) only. Sandbox
+  frames never touch storage; they see one canvas's content, handed to them by `postMessage`. Web
+  pages and other extensions cannot (no `web_accessible_resources`, §3.2).
+- **Panel closed or agent disconnected:** canvas tabs still open, render and edit from storage, and
+  saves are kept. Agent tools fail with "Katashiro side panel not open", like `show_image` today;
+  the agent sees the user's edits on its next `canvas_read`.
+- **Libraries are local.** Every engine (markdown-it, DOMPurify, reveal.js, Milkdown, later Chart.js
+  and mermaid) is vendored into the extension (`vendor/`, pinned and reproducible via
+  `scripts/vendor-build/`) and loaded from the extension's own origin. The sandbox CSP
+  (`script-src 'self'`, `connect-src 'none'`) makes loading from the internet impossible, not just
+  unused. Updating a library is a Katashiro release, never a runtime download.
 
 ---
 
@@ -450,9 +545,9 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    ships only with §3.2 in full (own frame, refused `save`/`selection`, load gate, the stated
    WebRTC/navigation leak), behind a setting that is off by default.*
 3. **Caps:** is a 200 MB byte budget right (§3.6)?
-4. **Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?
-   *Recommended: auto-note one metadata line (`v5→v6 by user`), never the content. This relies on
-   the `html` frame being unable to send `save` (§3.2); otherwise a forged save would be noted too.*
+4. ~~**Edit visibility:** auto-note user edits in the next prompt, or only via `canvas_read`?~~
+   **Decided (Brett, 2026-10-10):** no automatic note. The agent reads edits itself via
+   `canvas_read`, and the user can push them with the **Send to agent** button (§3.7).
 5. **Order:** canvas phase 1 before multi-conversation (conversationId already exists), or after?
    *Recommended: phase 1 first, with storage keyed by `conversationId` from day one (§3.6).*
 
