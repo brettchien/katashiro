@@ -339,7 +339,55 @@
     return { name: "katashiro", title: "Katashiro", version: `${v}+${b}` };
   }
 
+  // --- reply-to / message headers ------------------------------------------------------------
+  // Messages are referred to by local time, not a #N counter — "#12" reads like a PR/issue number to
+  // an agent. Today's messages show HH:MM:SS; older ones get MM/DD in front. Local time (the user's
+  // clock); `now` is injectable for tests.
+  const pad2 = (n) => String(n).padStart(2, "0");
+  function msgTime(ts, now) {
+    const d = new Date(ts);
+    const n = new Date(now == null ? Date.now() : now);
+    const hms = `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    const sameDay = d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
+    return sameDay ? hms : `${pad2(d.getMonth() + 1)}/${pad2(d.getDate())} ${hms}`;
+  }
+
+  // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.
+  const REPLY_EXCERPT_MAX = 150;
+  function excerpt(text, max = REPLY_EXCERPT_MAX) {
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+    return s.length > max ? `${s.slice(0, max)}…` : s;
+  }
+
+  // A message's stable id: the conversation it belongs to + its millisecond timestamp.
+  function messageId(conversationId, ts) {
+    return `${conversationId || "c"}:${ts}`;
+  }
+
+  // The header a user message carries in the prompt, so a batched backlog keeps its boundaries and
+  // a reply says what it answers:
+  //   [16:05:12 Brett]
+  //   [16:07:30 Brett ↩ 16:05:40 orca「沒辦法直接知道…」]
+  // `replyTo` = { timestamp, senderName, text } of the quoted message (or null).
+  function promptHeader({ timestamp, senderName, replyTo }, now) {
+    let h = `${msgTime(timestamp, now)} ${senderName || "user"}`;
+    if (replyTo) h += ` ↩ ${msgTime(replyTo.timestamp, now)} ${replyTo.senderName || "?"}「${excerpt(replyTo.text)}」`;
+    return `[${h}]`;
+  }
+
+  // Header + body, as one prompt entry (batchPrompts then joins entries with blank lines).
+  function framePrompt(meta, text, now) {
+    const body = text == null ? "" : String(text);
+    return body ? `${promptHeader(meta, now)}\n${body}` : promptHeader(meta, now);
+  }
+
   return {
+    msgTime,
+    excerpt,
+    messageId,
+    promptHeader,
+    framePrompt,
+    REPLY_EXCERPT_MAX,
     acpClientInfo,
     escapeAttr,
     wrapRelay,

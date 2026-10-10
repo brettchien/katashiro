@@ -2670,11 +2670,13 @@ test("katashiro.chat_history returns the transcript oldest first, numbered, with
   const res = await callTool(d, "katashiro.chat_history");
   assert.equal(res.isError, undefined);
   const text = res.content[0].text;
-  assert.match(text, /^3 of 3 messages/);
-  assert.match(text, /#1 2026-10-10T07:00:00\.000Z Brett \(user\): is the build done\?/);
-  assert.match(text, /#2 2026-10-10T07:01:00\.000Z Orca: x{50}/);
-  assert.match(text, /#3 2026-10-10T07:02:00\.000Z \[error\] Orca: turn failed/);
-  assert.ok(text.indexOf("#1 ") < text.indexOf("#3 "));
+  assert.match(text, /^3 of 3 messages \(oldest first, user's local time\)/);
+  const L = (i) => BrowserMcp.localStamp(HISTORY[i].timestamp);
+  assert.ok(text.includes(`${L(0)} user: is the build done?`));
+  assert.ok(text.includes(`${L(1)} Orca: ${"x".repeat(50)}`));
+  assert.ok(text.includes(`${L(2)} [error] Orca: turn failed`));
+  assert.ok(text.indexOf(L(0)) < text.indexOf(L(2)));
+  assert.doesNotMatch(text, /#\d+ /);                          // no #N counters (they read like PR numbers)
 });
 
 test("katashiro.chat_history: limit keeps the most recent N, maxChars truncates per message", async () => {
@@ -2683,9 +2685,9 @@ test("katashiro.chat_history: limit keeps the most recent N, maxChars truncates 
   const res = await callTool(d, "katashiro.chat_history", { limit: 2, maxChars: 10 });
   const text = res.content[0].text;
   assert.match(text, /^2 of 3 messages/);
-  assert.doesNotMatch(text, /#1 /);                             // global numbering is kept
-  assert.match(text, /#2 .* Orca: x{10}… \[40 more chars\]/);
-  assert.match(text, /#3 /);
+  assert.ok(!text.includes("is the build done"));               // the oldest one is left out
+  assert.match(text, / Orca: x{10}… \[40 more chars\]/);
+  assert.match(text, /\[error\] Orca: turn faile… \[1 more chars\]/);
 });
 
 test("katashiro.chat_history works with a chrome:// active tab (sessionScope)", async () => {
@@ -2943,4 +2945,21 @@ test("katashiro.show_image accepts SVG (the panel rasterizes it)", async () => {
   const res = await callTool(d, "katashiro.show_image", { data: svg, mimeType: "image/svg+xml" });
   assert.equal(res.isError, undefined, JSON.stringify(res));
   assert.equal(shown[0].dataUrl, `data:image/svg+xml;base64,${svg}`);
+});
+
+test("localStamp: local date-time with the UTC offset", () => {
+  const ts = new Date(2026, 9, 10, 16, 5, 12).getTime();
+  assert.match(BrowserMcp.localStamp(ts), /^2026-10-10 16:05:12 [+-]\d{2}:\d{2}$/);
+});
+
+test("katashiro.chat_history marks a reply with the time and sender it answers", async () => {
+  const { deps: d } = deps();
+  const orig = new Date(2026, 9, 10, 16, 5, 40).getTime();
+  d.chatHistory = () => [
+    { kind: "received", senderName: "orca", text: "沒辦法直接知道", timestamp: orig },
+    { kind: "sent", senderName: "You", text: "所以要加 sha", timestamp: orig + 110000,
+      replyTo: { id: "c_x:" + orig, senderName: "orca", timestamp: orig, text: "沒辦法直接知道" } }
+  ];
+  const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
+  assert.ok(text.includes(`${BrowserMcp.localStamp(orig + 110000)} user ↩ 16:05:40 orca: 所以要加 sha`), text);
 });
