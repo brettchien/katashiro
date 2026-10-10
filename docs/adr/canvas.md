@@ -423,36 +423,54 @@ below is built around that.
 
 ### 3.9 Data flow — where canvas data lives and who can reach it
 
+**Components** (who holds what):
+
 ```mermaid
-flowchart LR
-  subgraph AC["Agent container (e.g. Orca on ECS)"]
-    AG["Agent<br/>(Claude via claude-agent-acp)"]
-    FA["oab MCP facade<br/>127.0.0.1:8848"]
-  end
-  subgraph OA["openab"]
-    GW["gateway<br/>ACP server"]
-  end
-  subgraph BR["Brett's Chrome (one profile)"]
-    subgraph EXT["Katashiro extension origin chrome-extension://…"]
-      SP["Side panel<br/>ACP WebSocket + browser MCP server<br/>(executes canvas_* tools)"]
-      ST[("chrome.storage.local<br/>canvas:* index / meta / versions / images")]
-      CV["canvas.html tab(s)<br/>host: header, versions, Edit/Save,<br/>Send to agent"]
-    end
-    FR["canvas-frame.html<br/>sandbox iframe, opaque origin<br/>renders + Milkdown editor"]
+flowchart TB
+  AG["Agent (e.g. Orca on ECS)<br/>calls canvas_* tools"]
+  OA["openab: MCP facade + gateway<br/>(relays only, stores nothing)"]
+  subgraph CH["Brett's Chrome profile"]
+    SP["Side panel<br/>ACP socket + browser MCP server<br/>runs canvas_* tools"]
+    ST[("chrome.storage.local<br/>the only copy of canvases")]
+    CV["canvas.html tab<br/>header, versions, Edit/Save,<br/>Send to agent"]
+    FR["canvas-frame.html<br/>sandbox iframe: render + editor<br/>no storage, no network"]
     WEB["Web pages"]
   end
-  AG -- "canvas_open / read / list / patch" --> FA
-  FA -- "katashiro.* capability" --> GW
-  GW -- "MCP-over-ACP tunnel (wss)" --> SP
-  SP -- "write / read" --> ST
-  ST -- "storage.onChanged" --> CV
-  CV -- "user save → new version" --> ST
-  CV -- "postMessage render (nonce)" --> FR
-  FR -- "postMessage save / error / openLink<br/>(allow-listed)" --> CV
-  CV -- "Send to agent → chat message" --> SP
-  SP -- "session/prompt" --> GW
-  GW --> AG
-  WEB -. "no access: not web_accessible" .-> CV
+  AG <-->|"tool calls (MCP)"| OA
+  OA <-->|"MCP-over-ACP tunnel (wss)"| SP
+  SP <-->|"read / write"| ST
+  CV <-->|"read / write, onChanged"| ST
+  CV <-->|"postMessage (nonce, allow-list)"| FR
+  WEB -.->|"blocked: not web_accessible"| CV
+```
+
+**Paths** (write, user edit, read, push):
+
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant O as openab
+  participant P as Side panel
+  participant S as storage.local
+  participant C as canvas.html
+  participant F as sandbox frame
+  A->>O: canvas_open(title, kind, content)
+  O->>P: tunnel: tools/call
+  P->>S: write meta + v1
+  P-->>A: {id, version: 1}
+  S-->>C: onChanged
+  C->>F: render v1
+  Note over F: user clicks Edit, then Save
+  F->>C: save{content, baseVersion: 1}
+  C->>S: write v2 (author: user)
+  A->>O: canvas_read(id)
+  O->>P: tunnel: tools/call
+  P->>S: read latest
+  P-->>A: v2 + history
+  Note over C: user clicks Send to agent
+  C->>P: post user message (diff v1→v2)
+  P->>O: session/prompt
+  O->>A: prompt
 ```
 
 - **The only copy lives in the user's Chrome profile** (`chrome.storage.local`, or
