@@ -132,6 +132,16 @@
             <input type="number" id="screenshot-store-max" class="agent-input" min="1" max="50" step="1" value="10">
           </div>
 
+          <!-- Canvas folder mirror (ADR docs/adr/canvas.md §3.6): File System Access, handle in IndexedDB -->
+          <div class="input-group">
+            <label>畫布存到資料夾（選填）</label>
+            <span class="mode-hint">畫布平常只存在這個 Chrome 設定檔裡（不同步、移除 extension 就沒了）。選一個資料夾後，每次 agent 或你儲存畫布，最新內容都會寫成 .md 檔（圖片放在旁邊的 .assets 資料夾），可以自己用 git、Dropbox 或 Time Machine 保存歷史。資料夾裡的檔案在 Katashiro 外被改過時不會被覆寫，而是另存一個 .katashiro-&lt;時間&gt;.md；檔案的修改不會自動讀回畫布。無痕視窗不會寫入。</span>
+            <span class="mode-hint" id="canvas-folder-status"></span>
+            <button id="canvas-folder-pick" class="secondary-btn" type="button">📁 選擇資料夾</button>
+            <button id="canvas-folder-reconnect" class="secondary-btn" type="button" hidden>🔌 重新連線資料夾</button>
+            <button id="canvas-folder-stop" class="secondary-btn" type="button" hidden>停止寫入資料夾</button>
+          </div>
+
           <!-- Jev grounding (optional, BYO-key): OpenRouter token for the Jev decisions API -->
           <div class="input-group">
             <label for="jev-token-input">Jev grounding（選填）</label>
@@ -177,6 +187,7 @@
   <script src="markdown.js"></script>
   <script src="jev-grounding.js"></script>
   <script src="canvas-store.js"></script>
+  <script src="canvas-mirror.js"></script>
   <script src="canvas-core.js"></script>
   <script src="canvas-tabs.js"></script>
   <script src="browser-mcp.js"></script>

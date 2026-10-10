@@ -47,6 +47,17 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Folder mirror state (§3.6): muted when written, amber when the file needs attention. */
+.canvas-file {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.canvas-file.warn {
+  color: var(--warn);
+}
+
 .canvas-banner {
   margin-left: auto;
   color: var(--muted);
