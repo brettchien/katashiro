@@ -50,6 +50,7 @@ Under this system:
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
+- `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [Agent skills](#-agent-skills)).
 - `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
 - `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
 
@@ -230,6 +231,21 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 
 ```bash
 node --test test/*.test.js   # no Chrome required (chrome.*/crypto/socket are mocked)
+```
+
+## 🧩 Agent skills
+
+Skills in [`skills/`](skills/) teach an agent (running under OpenAB, chatting through Katashiro)
+how to use Katashiro features that need more than a single tool call.
+
+| Skill | What it does |
+|---|---|
+| [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show the user an image in the panel — a screenshot by `imageId`, or an image file via `scripts/show-image.sh`, which posts it to the OpenAB facade so the bytes never pass through the model. |
+
+Install for Claude Code by copying (or symlinking) the folder into the agent's skills directory:
+
+```bash
+cp -r skills/katashiro-show-image ~/.claude/skills/
 ```
 
 ## 📚 Documentation
