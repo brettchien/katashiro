@@ -409,6 +409,11 @@ three half-open cases therefore have three different bounds, and only the first 
 - **silent-turn half-open** — no prompt signal; **only** hard upper bound is the 10-min R3
   `ACP_PROMPT_TIMEOUT_MS` (shortening it is the one future lever). Do **not** model `onclose` as a faster
   backstop here.
+  *(2026-10: the fixed 10-min `ACP_PROMPT_TIMEOUT_MS` is gone. `session/prompt` now times out after
+  `TURN_IDLE_TIMEOUT_MS` (10 min) with no turn activity — a `session/update` for the session, or tunnel
+  traffic — or `TURN_MAX_TIMEOUT_MS` (35 min) after the start; see `RoomCore.turnDeadline`. The
+  silent-turn half-open bound is therefore still 10 min; a gateway keepalive forwarded to the client
+  would let the idle bound shrink.)*
 - **non-silent half-open** (frames flowing / a live outbound send) — `onclose` fires promptly on the RST.
 - **idle half-open** — caught by the idle probe in **~125 s** (a 60 s-interval probe, then one more after
   another interval, to reach the ≥2 debounce). Worth watching for during live testing.

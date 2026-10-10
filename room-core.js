@@ -203,6 +203,22 @@
     return "error";
   }
 
+  // Turn timeout: a turn ends on silence, not on length. It times out `idleMs` after
+  // the last sign of life (start, or the latest activity: a session/update for its session, or the
+  // agent driving our MCP tunnel) — or at `maxMs` after the start, whichever comes first. A long
+  // tool-heavy turn keeps streaming tool events and so keeps going; `maxMs` sits above the core's
+  // own prompt hard timeout (30 min) so the client is never the first to give up on a live turn.
+  // Note: one long tool call (a build, a sleep) is silent end to end, so `idleMs` must outlast it.
+  const TURN_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+  const TURN_MAX_TIMEOUT_MS = 35 * 60 * 1000;
+  // → { at, reason }: when the turn times out and why ("idle" | "max"), given what we know now.
+  function turnDeadline(f) {
+    const o = f || {};
+    const idleAt = Math.max(o.startedAt || 0, o.lastActivityAt || 0) + o.idleMs;
+    const maxAt = (o.startedAt || 0) + o.maxMs;
+    return idleAt < maxAt ? { at: idleAt, reason: "idle" } : { at: maxAt, reason: "max" };
+  }
+
   // Heartbeat state-machine decisions (ADR §8.6), extracted pure so the #17 regression point is
   // unit-testable — the logic lives here; sidepanel.js only wires it to the socket + timer.
 
@@ -507,6 +523,9 @@
     batchPrompts,
     isDeadProbeReason,
     promptFailureAction,
+    turnDeadline,
+    TURN_IDLE_TIMEOUT_MS,
+    TURN_MAX_TIMEOUT_MS,
     hasStoredConfig,
     shouldPersistOnStartup,
     shouldAdoptRemoteConfig,

@@ -98,7 +98,8 @@ const ACP_CWD = "/home/agent";
 // (onclose rejects pending reqs, but a half-open connection never fires it), which would
 // otherwise wedge that conn's queue with turnActive stuck true.
 const ACP_REQUEST_TIMEOUT_MS = 60000;
-const ACP_PROMPT_TIMEOUT_MS = 600000; // 10 min — agent turns stream long before resolving
+// session/prompt times out on silence, not length (RoomCore.turnDeadline): TURN_IDLE_TIMEOUT_MS
+// after the last activity of the turn, or TURN_MAX_TIMEOUT_MS after its start.
 const RECONNECT_INTERVAL_MS = 5000;
 const TUNNEL_FRESH_MS = 60000;        // an inbound mcp/message keeps the tunnel "活躍" this long (§8.3)
 const HEARTBEAT_DEAD_THRESHOLD = 2;   // consecutive missed idle probes before a destructive reconnect (§8.6)
@@ -149,6 +150,7 @@ class Conn {
     this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
     this.alive = false;                                  // last heartbeat verdict (socket responding?)
     this.lastRecvAt = 0;                                 // ts of the last inbound frame (passive liveness §8.6)
+    this.lastTurnActivityAt = 0;                         // ts of the last sign of life of the current turn
     this.lastTunnelMsgAt = 0;                            // ts of the last inbound mcp/message (tunnel freshness §8.3)
     this.missedProbes = 0;                               // consecutive idle-probe timeouts (debounce §8.6)
   }
@@ -227,16 +229,25 @@ class Conn {
   }
 
   // Send a JSON-RPC request on THIS conn's socket; resolve when its response arrives.
-  acpRequest(method, params, timeoutMs = ACP_REQUEST_TIMEOUT_MS) {
+  // `deadline()`, if given, replaces the fixed timeout: it returns { at, reason } and is asked again
+  // whenever the timer fires, so activity in between pushes the deadline out (session/prompt).
+  acpRequest(method, params, timeoutMs = ACP_REQUEST_TIMEOUT_MS, deadline = null) {
     return new Promise((resolve, reject) => {
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
         reject("socket not open");
         return;
       }
       const id = this.nextReqId++;
-      const timer = setTimeout(() => {
-        if (this.pendingReqs.delete(id)) reject(`request timed out: ${method}`);
-      }, timeoutMs);
+      const startedAt = Date.now();
+      const next = deadline || (() => ({ at: startedAt + timeoutMs, reason: null }));
+      let timer;
+      const arm = () => {
+        const d = next();
+        const wait = d.at - Date.now();
+        if (wait > 0) { timer = setTimeout(arm, wait); return; }
+        if (this.pendingReqs.delete(id)) reject(`request timed out: ${method}${d.reason ? ` (${d.reason})` : ""}`);
+      };
+      arm();
       this.pendingReqs.set(id, {
         resolve: (v) => { clearTimeout(timer); resolve(v); },
         reject: (e) => { clearTimeout(timer); reject(e); },
@@ -408,6 +419,12 @@ class Conn {
     this.missedProbes = 0;
     if (this.alive !== true) this.markAlive(true);       // markAlive no-ops when already alive (no render spam)
     if (msg.method === "mcp/message") { this.lastTunnelMsgAt = this.lastRecvAt; updateRoster(); }
+    // Turn activity (pushes the turn's idle deadline out): any update for our session — text, tool
+    // events, or whatever else the gateway sends — and the agent driving our browser tunnel.
+    if ((msg.method === "session/update" && msg.params && msg.params.sessionId === this.acpSessionId) ||
+        (typeof msg.method === "string" && msg.method.startsWith("mcp/"))) {
+      this.lastTurnActivityAt = this.lastRecvAt;
+    }
 
     // Response to one of our requests.
     if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
@@ -476,10 +493,15 @@ class Conn {
     updateStopButton();
     this.startStream();
 
+    const startedAt = Date.now();
+    this.lastTurnActivityAt = startedAt;
     this.acpRequest("session/prompt", {
       sessionId: this.acpSessionId,
       prompt: Composer.promptBlocks(text, images),
-    }, ACP_PROMPT_TIMEOUT_MS)
+    }, 0, () => RoomCore.turnDeadline({
+      startedAt, lastActivityAt: this.lastTurnActivityAt,
+      idleMs: RoomCore.TURN_IDLE_TIMEOUT_MS, maxMs: RoomCore.TURN_MAX_TIMEOUT_MS,
+    }))
       .then((res) => {
         this.turnActive = false;
         updateStopButton();
@@ -513,7 +535,10 @@ class Conn {
             this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
           }
           this.finalizeStream();
-          appendErrorMessage(this.name, "回合逾時（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。", () => this.retryLast());
+          const why = /\(max\)/.test(String(err))
+            ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
+            : `回合 ${RoomCore.TURN_IDLE_TIMEOUT_MS / 60000} 分鐘沒有任何動靜`;
+          appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast());
         } else {
           this.finalizeStream("error");                  // render any partial reply, then a distinct
           appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
