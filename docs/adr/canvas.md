@@ -1,6 +1,6 @@
 # ADR: Canvas — agent-rendered documents, slides and diagrams beside the chat
 
-- **Status:** Proposed 2026-10-10
+- **Status:** Accepted 2026-10-10 (Brett; all §6 questions decided)
 - **Date:** 2026-10-10
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [chat markdown rendering](./chat-markdown-rendering.md) (§3.1 vendoring, §3.6 diagram
