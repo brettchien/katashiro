@@ -747,6 +747,9 @@ agent's last write is the baseline.
 - **Effects are ours, not agent CSS.** `canvas-frame.html` runs no agent code (§3.2), so the agent
   cannot inject CSS there; it picks from fixed effects (glow, underline, label) and gives a text
   anchor. An `html` canvas is agent code already and can style itself.
+- **Skill (Brett, 2026-10-10).** `skills/katashiro-point-at` (#67) teaches agents when and how to
+  point: `katashiro.highlight` on the displayed page first, `katashiro.inject_css` for several
+  elements (cleared afterwards), and `canvas_highlight` on canvases.
 
 ---
 
