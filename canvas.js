@@ -369,18 +369,19 @@
 
   // Saves are serialized (refresh() waits on them). The frame gets back the content that was
   // stored, so its baseline is what is saved, not what it holds when the reply arrives.
-  function saveFromEditor(content, baseVersion) {
-    const run = saving.then(() => doSave(content, baseVersion));
+  function saveFromEditor(content, baseVersion, droppedBlank = false) {
+    const run = saving.then(() => doSave(content, baseVersion, droppedBlank));
     saving = run.catch(() => {});
     return run;
   }
 
   // Returns true when the content is stored (saved, or already equal to the latest).
-  async function doSave(content, baseVersion) {
+  // droppedBlank: the editor had empty paragraphs that markdown cannot keep (cleanEditorMarkdown).
+  async function doSave(content, baseVersion, droppedBlank) {
     if (deleted) { notice("這個畫布已被刪除，無法儲存。請先把內容複製出來。"); return false; }
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
-      if (r.unchanged) { flash("沒有變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
+      if (r.unchanged) { flash(droppedBlank ? "沒有內容變更，不需要儲存（markdown 不保留多餘的空行）。" : "沒有內容變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
       ownSaveVersion = r.version;
       flash(`✓ 已儲存 v${r.version}`);
       toFrame({ type: "saved", version: r.version, content });
@@ -566,7 +567,7 @@
         }
         break;
       case "save":
-        if (mode === "edit") saveFromEditor(m.content, m.baseVersion);
+        if (mode === "edit") saveFromEditor(m.content, m.baseVersion, m.droppedBlank === true);
         break;
       case "dirty":
         dirty = m.dirty;

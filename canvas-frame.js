@@ -94,7 +94,10 @@
   }
   function requestSave() {
     if (!editing) return;
-    post({ type: "save", content: editorText(editing.crepe), baseVersion: editing.version });
+    const raw = editing.crepe.getMarkdown();
+    const content = CanvasCore.cleanEditorMarkdown(raw);
+    // droppedBlank: cleaning removed empty paragraphs, so an "unchanged" reply can say why.
+    post({ type: "save", content, baseVersion: editing.version, droppedBlank: content !== raw });
   }
   // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
   function stopEdit() {
