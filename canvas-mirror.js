@@ -480,7 +480,8 @@
           if (plan.action === "write") {
             await writeAt(root.dir, md, textBytes, ctx);
             next.hash = newHash;
-            next.state = plan.missing ? "recreated" : "ok";
+            // A missing file is written only on the user's 重新寫入 (1B): plain "ok" then (Brett, 2026-10-11).
+            next.state = "ok";
           } else if (plan.action === "adopt") {
             next.hash = newHash;
             next.state = "ok";
