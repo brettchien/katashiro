@@ -2976,13 +2976,14 @@ const CanvasStore = require("../canvas-store.js");
 function withCanvas(d, opts = {}) {
   const data = {};
   const storage = {
-    async get(keys) { const out = {}; for (const k of [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]); return out; },
+    async get(keys) { const out = {}; for (const k of keys == null ? Object.keys(data) : [].concat(keys)) if (k in data) out[k] = structuredClone(data[k]); return out; },
     async set(items) { for (const [k, v] of Object.entries(items)) data[k] = structuredClone(v); },
+    async remove(keys) { for (const k of [].concat(keys)) delete data[k]; },
   };
   let n = 0;
   const writes = [];
   d.canvas = {
-    store: CanvasStore.createCanvasStore({ storage, lock: (_n, fn) => fn(), randomHex: () => (++n).toString(16).padStart(12, "0") }),
+    store: CanvasStore.createCanvasStore({ storage, lock: (_n, fn) => fn(), randomHex: () => (++n).toString(16).padStart(12, "0"), budgetBytes: opts.budgetBytes }),
     conversationId: () => opts.conversationId || "c_test",
     onWrite: async (res) => { writes.push(res); return opts.note || ""; },
   };
@@ -3064,4 +3065,12 @@ test("DOM tools stay refused on the canvas tab (only screenshot is ownCanvas)", 
   const res = await callTool(d, "katashiro.snapshot", {});
   assert.equal(res.isError, true);
   assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.ownCanvas).map(([n]) => n), ["katashiro.screenshot"]);
+});
+
+test("katashiro.canvas_open: over budget with no room returns a quota JSON error", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d, { budgetBytes: 3 });
+  const r = await callTool(d, "katashiro.canvas_open", { title: "T", content: "four" });
+  assert.equal(r.isError, true);
+  assert.equal(JSON.parse(r.content[0].text).error, "quota");
 });

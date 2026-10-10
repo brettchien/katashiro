@@ -2062,6 +2062,13 @@ function formatTime(timestamp) {
 const canvasStore = CanvasStore.createCanvasStore({
   storage: chrome.storage.local,
   lock: (name, fn) => navigator.locks.request(name, fn),
+  // Over the 200 MB budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
+  // panel (the agent's write arrives here; no canvas tab may be open).
+  isOpen: async (id) => !!(await findCanvasTab(id)),
+  confirmEvict: async ({ evict }) => window.confirm(
+    `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
+    evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
+    (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
 });
 
 function canvasTabUrl(id) {

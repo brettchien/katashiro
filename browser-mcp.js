@@ -2715,6 +2715,7 @@
           if (e && e.code === "stale") {
             return errText(JSON.stringify({ error: "stale", currentVersion: e.currentVersion, author: e.author, message: e.message }));
           }
+          if (e && e.code === "quota") return errText(JSON.stringify({ error: "quota", message: e.message }));
           return errText(`canvas_open: ${(e && e.message) || e}`);
         }
         let opened = "";
