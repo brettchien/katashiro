@@ -660,6 +660,7 @@ test("agentPatch runs under the canvas lock: a user save and a patch from the sa
     assert.equal(u.reason.code, "stale");
     assert.equal(content, "head\nmiddle\nTAIL");
   }
+});
 
 test("allMetas: every canvas across conversations (the gallery, §3.7), metas only, deletes gone", async () => {
   const { s, storage } = store();
