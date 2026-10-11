@@ -376,6 +376,18 @@ test("budget: an agent write may ask its own confirmEvict (the asking agent's tu
   assert.equal(storeAsked.length, 0);
 });
 
+test("budget: eviction sweeps images once after all removals, not once per canvas (#115 review)", async () => {
+  const names = [];
+  const inner = memLock();
+  const { s } = store({ budgetBytes: 12, confirmEvict: async () => true, lock: (name, fn) => { names.push(name); return inner(name, fn); } });
+  for (const t of ["A", "B", "C"]) await s.agentWrite({ conversationId: "c", title: t, content: "xxxx" });   // 12
+  names.length = 0;
+  await s.agentWrite({ conversationId: "d", title: "D", content: "y".repeat(12) });   // evicts all three
+  assert.equal((await s.usage()).count, 1);
+  // canvas:index: one per removal, one sweep, one index update for D
+  assert.equal(names.filter((n) => n === "canvas:index").length, 3 + 1 + 1);
+});
+
 test("budget: when even evicting everything allowed is not enough, it fails without asking", async () => {
   const asked = [];
   const { s } = store({ budgetBytes: 5, confirmEvict: async (i) => { asked.push(i); return true; } });

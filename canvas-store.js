@@ -379,8 +379,11 @@
       if (freed < over || !(await ask({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
       // The confirmation waits on the user (up to 2 minutes, #80); a canvas opened or changed
       // meanwhile is kept — the user agreed to drop what they were shown (the write may then run
-      // slightly over budget — it is a soft cap).
-      for (const e of evict) if (!(await isOpen(e.id))) await remove({ id: e.id, expectVersion: e.version });
+      // slightly over budget — it is a soft cap). One image sweep after all of them, not one per
+      // canvas (#115 review, as removeIncognitoLeftovers).
+      let removed = 0;
+      for (const e of evict) if (!(await isOpen(e.id)) && (await remove({ id: e.id, expectVersion: e.version, sweep: false })).removed) removed++;
+      if (removed) await sweepAfter();
     }
 
     async function updateIndex(conversationId, entry) {
