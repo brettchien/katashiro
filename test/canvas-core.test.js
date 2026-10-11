@@ -225,58 +225,54 @@ test("diffBlocks: changed blocks glow, removed blocks leave a marker, a replacem
   assert.deepEqual(C.diffBlocks(null, undefined), { changed: [], removedAt: [] });
 });
 
-test("show changes: an agent write makes what the tab showed before the baseline, until the next one", () => {
-  // shown / next: { agentVersion, kind, content } (agentVersion = the version the agent last wrote).
-  const md = (agentVersion, content) => ({ agentVersion, kind: "markdown", content });
+test("show changes: the held markers compare the previous version with the latest, any author (§3.10, Brett 2026-10-11)", () => {
   assert.equal(C.SHOW_CHANGES_KEY, "canvas:showChanges");
-  // Agent v2 over what was shown (v1): v1's text is the baseline.
-  assert.equal(C.changesBaseAfter(null, md(1, "a"), md(2, "b")), "a");
-  // A user save (agentVersion unchanged), or the §3.5 normalization re-render, keeps it.
-  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "c")), "a");
-  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "b2")), "a");
-  // The next agent write replaces it with what was shown just before that write.
-  assert.equal(C.changesBaseAfter("a", md(2, "c"), md(4, "d")), "c");
-  // An agent write never rendered here (written while editing, then the user saved on top):
-  // the next render is a user save, but agentVersion moved → what was shown before is the baseline.
-  assert.equal(C.changesBaseAfter("a", md(4, "d"), md(5, "f")), "d");
-  // Nothing shown yet (tab just loaded): no baseline.
-  assert.equal(C.changesBaseAfter(null, null, md(5, "e")), null);
-  // Not text, or the kind changed: none.
-  assert.equal(C.changesBaseAfter("a", { agentVersion: 1, kind: "image", content: {} }, { agentVersion: 2, kind: "image", content: {} }), null);
-  assert.equal(C.changesBaseAfter("a", md(1, "a"), { agentVersion: 2, kind: "slides", content: "x" }), null);
-});
-
-test("show changes: what the held markers compare with", () => {
-  const base = { on: true, comparing: false, editing: false, kind: "slides", base: null, author: "agent", content: "now", agentCopy: null };
-  // The baseline kept in this tab wins.
-  assert.deepEqual(C.heldChanges({ ...base, base: "before" }), { against: "before", from: "write" });
-  assert.deepEqual(C.heldChanges({ ...base, base: "before", author: "user", agentCopy: "agent" }), { against: "before", from: "write" });
-  // No baseline (reloaded): the user's edits since the agent's last write.
-  assert.deepEqual(C.heldChanges({ ...base, author: "user", agentCopy: "agent" }), { against: "agent", from: "agentCopy" });
-  // No baseline and the latest is the agent's: nothing to compare with.
-  assert.deepEqual(C.heldChanges(base), { against: null, from: "none" });
-  assert.deepEqual(C.heldChanges({ ...base, author: "user" }), { against: null, from: "none" });     // no agent copy
-  assert.deepEqual(C.heldChanges({ ...base, base: "now" }), { against: null, from: "same" });
+  const base = { on: true, comparing: false, editing: false, kind: "slides", previous: "before", content: "now" };
+  assert.deepEqual(C.heldChanges(base), { against: "before", from: "previous" });
+  // No previous version (v1, or trimmed): nothing to compare with; the same text: nothing to mark.
+  assert.deepEqual(C.heldChanges({ ...base, previous: null }), { against: null, from: "none" });
+  assert.deepEqual(C.heldChanges({ ...base, previous: "now" }), { against: null, from: "same" });
   // Off, a compare open (its markers win), editing, or not text: nothing held.
   for (const o of [{ on: false }, { comparing: true }, { editing: true }, { kind: "image" }]) {
-    assert.deepEqual(C.heldChanges({ ...base, base: "before", ...o }), { against: null, from: "off" });
+    assert.deepEqual(C.heldChanges({ ...base, ...o }), { against: null, from: "off" });
   }
 });
 
 test("show changes: the button title follows editing and the compare, not only the last heldChanges (#110)", () => {
-  const t = (o) => C.showChangesTitle({ on: true, from: "write", editing: false, comparing: false, ...o });
+  const t = (o) => C.showChangesTitle({ on: true, from: "previous", editing: false, comparing: false, ...o });
   assert.match(t({ on: false }), /^顯示變更（關）/);
   assert.match(t({ on: false, editing: true, comparing: true }), /^顯示變更（關）/);
-  // the last answer was "write" (marking), then the user clicked ✏️ Edit / ⇆ Compare
+  // the last answer was "previous" (marking), then the user clicked ✏️ Edit / ⇆ Compare
   assert.match(t({ editing: true }), /編輯時不標示/);
   assert.match(t({ comparing: true }), /比較開著時/);
   assert.match(t({ editing: true, comparing: true }), /編輯時不標示/);
   // back in the view
-  assert.match(t({}), /一直標示/);
-  assert.match(t({ from: "same" }), /一直標示/);
-  assert.match(t({ from: "agentCopy" }), /agent 最後寫入之後/);
-  assert.match(t({ from: "none" }), /沒有 agent 寫入前的版本/);
-  assert.match(t({ from: "off" }), /一直標示/);                // e.g. computed while a compare was open
+  assert.match(t({}), /上一版到目前版本/);
+  assert.match(t({ from: "same" }), /跟上一版內容相同/);
+  assert.match(t({ from: "none" }), /沒有上一版/);
+  assert.match(t({ from: "off" }), /上一版到目前版本/);          // e.g. computed while a compare was open
+});
+
+test("↶ / ↷ buttons: view mode on markdown and slides, never in a compare tab; disabled without a step or while one runs", () => {
+  const b = (o) => C.historyButtons({ kind: "markdown", mode: "view", compareView: false, deleted: false, canUndo: true, canRedo: false, busy: false, ...o });
+  let r = b({});
+  assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [true, false, true]);
+  assert.match(r.redo.title, /只在按過 ↶ 之後/);
+  r = b({ canUndo: false, canRedo: true, kind: "slides" });
+  assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [true, true, false]);
+  assert.match(r.undo.title, /沒有更舊的版本/);
+  for (const o of [{ mode: "edit" }, { compareView: true }, { deleted: true }, { kind: "mermaid" }, { kind: "image" }]) {
+    r = b({ canRedo: true, ...o });
+    assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [false, true, true], JSON.stringify(o));
+  }
+  r = b({ canRedo: true, busy: true });
+  assert.deepEqual([r.undo.disabled, r.redo.disabled], [true, true]);
+});
+
+test("↶ / ↷ flash: which version's content, saved as which", () => {
+  assert.equal(C.historyStepNote("undo", { from: 7, version: 9, unchanged: false }), "↶ 回到 v7 的內容（存成 v9）");
+  assert.equal(C.historyStepNote("redo", { from: 8, version: 10, unchanged: false }), "↷ 回到 v8 的內容（存成 v10）");
+  assert.match(C.historyStepNote("undo", { version: 3, unchanged: true }), /^↶ 沒有內容不同的版本/);
 });
 
 test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {
@@ -417,10 +413,8 @@ test("mermaid: diagramErrorText numbers the diagram, keeps mermaid's message, an
 test("mermaid: a text kind for glow and 顯示變更 (one block), unlike image", () => {
   assert.equal(C.textKind("mermaid"), true);
   assert.equal(C.textKind("image"), false);
-  const shown = { agentVersion: 1, kind: "mermaid", content: "graph TD\nA-->B" };
-  assert.equal(C.changesBaseAfter(null, shown, { agentVersion: 2, kind: "mermaid", content: "graph TD\nA-->C" }), "graph TD\nA-->B");
-  const h = C.heldChanges({ on: true, comparing: false, editing: false, kind: "mermaid", base: "graph TD\nA-->B", author: "agent", content: "graph TD\nA-->C", agentCopy: null });
-  assert.deepEqual(h, { against: "graph TD\nA-->B", from: "write" });
+  const h = C.heldChanges({ on: true, comparing: false, editing: false, kind: "mermaid", previous: "graph TD\nA-->B", content: "graph TD\nA-->C" });
+  assert.deepEqual(h, { against: "graph TD\nA-->B", from: "previous" });
 });
 
 // --- canvas_patch's exact ranges (§3.10, #107) -------------------------------------------------

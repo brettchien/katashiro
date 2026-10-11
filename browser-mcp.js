@@ -2922,7 +2922,7 @@
             text += "\n(those changes are not shown — canvas_read to see them)";
           } else {
             const cut = diffFromBase.length > CANVAS_DIFF_MAX;
-            text += `\ndiffFromBase (what changed between your last write and v${version}, before your edits):\n${diffFromBase.slice(0, CANVAS_DIFF_MAX)}` +
+            text += `\ndiffFromBase (what changed between your baseVersion v${args.baseVersion} and v${version}, before your edits):\n${diffFromBase.slice(0, CANVAS_DIFF_MAX)}` +
               (cut ? "\n(diff truncated — canvas_read for the rest)" : "");
           }
         }

@@ -1,12 +1,17 @@
 // canvas-store.js — persistence for Katashiro canvases (ADR docs/adr/canvas.md §3.5, §3.6).
 //
-// A canvas keeps no version history: only its latest content plus a revision counter (`version`)
-// and the version the agent last wrote (`agentVersion`). The MVP stores agent writes only, so the
-// latest content IS the agent's last write; the separate `agent` body (§3.6) arrives with user
-// editing. Keys, all in one chrome.storage area:
+// A canvas keeps its last N versions, full content each (§3.5 history, Brett 2026-10-11; N = 10 by
+// default, the canvas:historyMax setting). `version` counts every save; the latest is the newest
+// history entry, and the agent's last write (`agentVersion`) is pinned: never trimmed while it is
+// the agent copy. Keys, all in one chrome.storage area:
 //   canvas:<conversationId>:index  [{ id, title, kind, version, bytes, updatedAt }]
-//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
+//   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes,
+//                                    history: [{ v, author, at, bytes, image?, imageBytes? }] (oldest first,
+//                                    the last is the latest), walk? (↶ / ↷, walkCandidates) }
 //   canvas:<id>:latest             the latest content (string)
+//   canvas:<id>:v:<n>              every other version in history
+//   canvas:<id>:agent              only before history: the agent's last write while it differed from
+//                                  the latest (meta.agentBytes its size). The next write migrates it.
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
 // filesByFolder. patchRanges: what the latest canvas_patch changed (§3.10, #107). noMirror marks
 // a canvas an incognito window stored before Katashiro stopped running in incognito (#109); none is
@@ -54,16 +59,123 @@
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
   const metaKey = (id) => `canvas:${id}:meta`;
   const latestKey = (id) => `canvas:${id}:latest`;
-  // The agent's last write, kept only once the latest differs from it (a user save, §3.5/§3.6).
-  // Invariant: no agent key ⇒ the latest IS the agent's last write.
+  // Before history (§3.5): the agent's last write, kept only once the latest differed from it.
+  // Read on canvases not written since; their next write moves it into the history.
   const agentKey = (id) => `canvas:${id}:agent`;
+  // A version in history other than the latest.
+  const versionKey = (id, v) => `canvas:${id}:v:${v}`;
 
   function utf8Bytes(s) {
     return new TextEncoder().encode(s).length;
   }
 
+  // --- Version history (§3.5, Brett 2026-10-11) ------------------------------------------------
+  // Pure: the store and the canvas tab (button states) share them, and the tests drive them alone.
+  const HISTORY_MAX_KEY = "canvas:historyMax";   // the setting (sidepanel Settings), in chrome.storage.local
+  const HISTORY_DEFAULT = 10;
+  const HISTORY_MIN = 1;
+  const HISTORY_MAX = 50;
+
+  // The setting's stored value → N: a whole number in 1–50; anything that is not a number → 10.
+  function historyLimit(raw) {
+    if (raw == null || raw === "" || typeof raw === "boolean" || typeof raw === "object") return HISTORY_DEFAULT;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return HISTORY_DEFAULT;
+    return Math.min(HISTORY_MAX, Math.max(HISTORY_MIN, Math.round(n)));
+  }
+
+  const hasHistory = (meta) => !!meta && Array.isArray(meta.history) && meta.history.length > 0;
+
+  // A canvas's history, oldest first. A canvas stored before history (lazy migration) reads as the
+  // versions it does have: its agent copy (kept while a user save was on top) and its latest.
+  function historyOf(meta) {
+    if (!meta) return [];
+    if (hasHistory(meta)) return meta.history;
+    const out = [];
+    if (Number.isInteger(meta.agentVersion) && meta.agentVersion >= 1 && meta.agentVersion < meta.version) {
+      out.push({ v: meta.agentVersion, author: "agent", at: 0, bytes: meta.agentBytes || 0 });
+    }
+    out.push({ v: meta.version, author: meta.author, at: meta.at || 0, bytes: meta.bytes || 0 });
+    return out;
+  }
+
+  // Where version `v` of this canvas is stored, or null when it is not in history.
+  function contentKey(meta, v) {
+    if (!meta || !historyOf(meta).some((h) => h.v === v)) return null;
+    if (v === meta.version) return latestKey(meta.id);
+    return hasHistory(meta) ? versionKey(meta.id, v) : agentKey(meta.id);
+  }
+
+  // Every key holding a version of this canvas (the image sweep reads them all).
+  const contentKeys = (meta) => historyOf(meta).map((h) => contentKey(meta, h.v));
+
+  // The version before the latest (◐ 顯示變更's baseline, §3.10), or null (v1, or trimmed).
+  function previousVersion(meta) {
+    const h = historyOf(meta);
+    return h.length >= 2 ? h[h.length - 2].v : null;
+  }
+
+  /**
+   * Append `entry` (the new latest) and trim to the last `max` versions, never dropping `pin` (the
+   * agent's last write) → { history, dropped: [v] }. Only writes trim (§3.5): never the budget.
+   */
+  function appendHistory(history, entry, { max, pin } = {}) {
+    const all = [...(history || []).filter((h) => h && h.v < entry.v), entry];
+    const from = Math.max(0, all.length - historyLimit(max));
+    const keep = (h, i) => i >= from || h.v === pin;
+    return { history: all.filter(keep), dropped: all.filter((h, i) => !keep(h, i)).map((h) => h.v) };
+  }
+
+  // What a history takes (§3.6 budget): every version a full copy; an image canvas's image counted
+  // once per distinct image (its versions share it by hash).
+  function historyFootprint(history) {
+    let n = 0;
+    const images = new Map();
+    for (const h of history || []) {
+      const img = h.image ? (h.imageBytes || 0) : 0;
+      n += Math.max(0, (h.bytes || 0) - img);
+      if (h.image) images.set(h.image, img);
+    }
+    for (const b of images.values()) n += b;
+    return n;
+  }
+  const footprint = (meta) => historyFootprint(historyOf(meta));
+
+  // The ↶ / ↷ walk (§3.5): meta.walk = { path, pos, head }. path[0] is the version the walk started
+  // from (the latest then), path[1…] the older versions in history then, newest first; pos = the
+  // path entry whose content the latest shows; head = the version the last step wrote. It holds
+  // only while head is still the latest: any other save ends it (the store drops it too).
+  function activeWalk(meta) {
+    const w = meta && meta.walk;
+    if (!w || w.head !== meta.version || !Array.isArray(w.path) || !Number.isInteger(w.pos) || w.pos < 0 || w.pos >= w.path.length) return null;
+    return w;
+  }
+
+  /**
+   * The versions a step may take its content from, in the order to try → { path, candidates:
+   * [{ v, pos }] }. dir "undo" (↶) goes older, starting a walk at the latest when none runs; "redo"
+   * (↷) goes back toward where the walk started and needs a running walk. Versions no longer in
+   * history are skipped (trimmed meanwhile; the pinned agent write stays reachable).
+   */
+  function walkCandidates(meta, dir) {
+    if (!meta) return { path: [], candidates: [] };
+    const hist = historyOf(meta);
+    const have = new Set(hist.map((h) => h.v));
+    let w = activeWalk(meta);
+    if (!w) {
+      if (dir !== "undo") return { path: [], candidates: [] };
+      w = { path: [meta.version, ...hist.filter((h) => h.v < meta.version).map((h) => h.v).reverse()], pos: 0 };
+    }
+    const d = dir === "undo" ? 1 : -1;
+    const candidates = [];
+    for (let p = w.pos + d; p >= 0 && p < w.path.length; p += d) if (have.has(w.path[p])) candidates.push({ v: w.path[p], pos: p });
+    return { path: w.path.slice(), candidates };
+  }
+  const canUndo = (meta) => walkCandidates(meta, "undo").candidates.length > 0;
+  const canRedo = (meta) => walkCandidates(meta, "redo").candidates.length > 0;
+
   // A stale write: the canvas moved on since the caller's baseVersion (§3.5). A structured error,
-  // not the whole document; `diffFromBase` arrives with user editing (MVP has one writer kind).
+  // not the whole document; `diffFromBase` (baseVersion → latest) when that version is in history.
   // Over the byte budget and the user declined (or could not be asked) to drop old canvases (§3.6).
   class QuotaError extends Error {
     constructor(needed, budget) {
@@ -308,13 +420,14 @@
       await lock("canvas:index", () => storage.set({ [k]: { mimeType: img.mimeType, data: img.data, savedAt: now() } }));
     }
 
-    // Mark-and-sweep (§3.6): delete images no image canvas references, except ones written in the
-    // last 10 minutes (a write referencing them may still be on its way). Under canvas:index.
+    // Mark-and-sweep (§3.6): delete images no version of any image canvas references (every version
+    // in its history, §3.5), except ones written in the last 10 minutes (a write referencing them
+    // may still be on its way). Under canvas:index.
     async function sweepImages() {
       await lock("canvas:index", async () => {
         const metas = await getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k));
-        const imageIds = Object.values(metas).filter((m) => m && m.kind === "image").map((m) => m.id);
-        const bodies = imageIds.length ? (await storage.get(imageIds.map(latestKey))) || {} : {};
+        const keys = Object.values(metas).filter((m) => m && m.kind === "image").flatMap(contentKeys);
+        const bodies = keys.length ? (await storage.get(keys)) || {} : {};
         const live = new Set();
         for (const v of Object.values(bodies)) {
           try { const r = JSON.parse(v); if (r && r.image) live.add(r.image); } catch (_) { /* not an image ref */ }
@@ -346,15 +459,27 @@
       return Object.values(all).filter((v) => v && typeof v === "object");
     }
 
-    // What a canvas takes: the latest plus the agent copy kept beside it after a user save.
-    const footprint = (m) => (m.bytes || 0) + (m.agentBytes || 0);
+    // N for the next trim (§3.5): fixed by the caller (tests), else the setting, read on every write
+    // so a change needs no reload.
+    async function historyMaxNow() {
+      if (deps.historyMax != null) return historyLimit(deps.historyMax);
+      return historyLimit(((await storage.get(HISTORY_MAX_KEY)) || {})[HISTORY_MAX_KEY]);
+    }
+
+    // What canvas `before` will take once a version of `entry` (bytes, image?, imageBytes?) is
+    // written on top, trimmed (`pin` = the agentVersion it will have); a new canvas: the entry.
+    function projected(before, entry, max, pin) {
+      if (!before) return entry.bytes;
+      return historyFootprint(appendHistory(historyOf(before), { ...entry, v: before.version + 1 }, { max, pin }).history);
+    }
 
     async function usage() {
       const metas = await allMetas();
       return { total: metas.reduce((n, m) => n + footprint(m), 0), count: metas.length, budget: await budget() };
     }
 
-    // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
+    // Make room for `addBytes` (what the canvas being written takes afterwards, history included:
+    // `projected`; what it uses now is not counted). Over
     // budget: least recently opened first, never one open in a tab nor the one being written, and
     // only after one confirmation. Throws QuotaError if declined or if that cannot free enough.
     async function ensureBudget(addBytes, keepId, ask = confirmEvict) {
@@ -403,13 +528,16 @@
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       const v = await validate({ title, kind, content, image, caption });
       const at = now();
-      await ensureBudget(v.bytes, id || null, ask || confirmEvict);
+      // A history entry's image fields (§3.6: the footprint counts one image once per canvas).
+      const img = v.image ? { image: v.image.hash, imageBytes: b64Bytes(v.image.data) } : null;
       if (id == null || id === "") {
+        await ensureBudget(v.bytes, null, ask || confirmEvict);
         const newId = `cv_${randomHex()}`;
         const meta = {
           id: newId, conversationId, title: v.title, kind: v.kind,
-          version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes, agentBytes: 0,
+          version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes,
           normalized: v.kind !== "markdown",               // markdown waits for the editor's normalization
+          history: [{ v: 1, author: "agent", at, bytes: v.bytes, ...img }],
         };
         await putImage(v.image);
         await lock(`canvas:${newId}`, async () => {
@@ -420,6 +548,9 @@
       }
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (!Number.isInteger(baseVersion)) throw new Error("updating a canvas needs `baseVersion` (the version you last read or wrote)");
+      const max = await historyMaxNow();
+      const before = await getOne(metaKey(id));
+      await ensureBudget(projected(before, { bytes: v.bytes, ...img }, max, before ? before.version + 1 : 0), id, ask || confirmEvict);
       let meta;
       await putImage(v.image);
       await lock(`canvas:${id}`, async () => {
@@ -428,43 +559,88 @@
         if (cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
         if (cur.kind !== v.kind) throw new Error(`canvas "${id}" is ${cur.kind}; a canvas cannot change kind`);
         if (cur.version !== baseVersion) throw await staleFor(cur, baseVersion);
-        meta = await storeAgentVersion(cur, { title: v.title, content: v.content, bytes: v.bytes, at });
+        meta = await storeAgentVersion(cur, { title: v.title, content: v.content, bytes: v.bytes, at, img, max });
       });
-      if (v.kind === "image") await sweepAfter();       // the previous image may be unreferenced now
+      if (v.kind === "image") await sweepAfter();       // an image no version references any more may go
       return { id, version: meta.version, created: false, title: meta.title };
     }
 
-    // The stale error for a write based on `baseVersion` (under the canvas lock). diffFromBase
-    // exists only when the base is the agent's own last write (§3.5).
+    // The stale error for a write based on `baseVersion` (under the canvas lock), with
+    // diffFromBase when that version is still in history (§3.5).
     async function staleFor(cur, baseVersion) {
-      return new StaleError(cur, baseVersion, await diffFromAgentCopy(cur, baseVersion));
+      return new StaleError(cur, baseVersion, await diffFromBase(cur, baseVersion));
     }
 
-    // Unified diff from the agent's last write to the latest (`latest` if already read), or null
-    // when baseVersion is not that write or the agent copy is gone. Under the canvas lock.
-    async function diffFromAgentCopy(cur, baseVersion, latest) {
-      if (baseVersion !== cur.agentVersion) return null;
-      const got = await storage.get([agentKey(cur.id), latestKey(cur.id)]);
-      if (got[agentKey(cur.id)] == null) return null;
-      return unifiedDiff(got[agentKey(cur.id)], latest != null ? latest : (got[latestKey(cur.id)] || ""));
+    // Unified diff from version `baseVersion` to the latest (`latest` if already read), or null when
+    // that version is not in history (trimmed, or never was). Under the canvas lock.
+    async function diffFromBase(cur, baseVersion, latest) {
+      const key = contentKey(cur, baseVersion);
+      if (!key) return null;
+      const got = await storage.get([key, latestKey(cur.id)]);
+      if (got[key] == null) return null;
+      return unifiedDiff(got[key], latest != null ? latest : (got[latestKey(cur.id)] || ""));
+    }
+
+    /**
+     * A new version on top of `cur`, under the canvas lock: every save goes through here (§3.5
+     * history). `content` becomes the latest and the old latest moves to `canvas:<id>:v:<n>`, both
+     * in one set() with the meta (onChanged fires once; a lock-free reader never sees them apart).
+     * The history is then trimmed to the last `max` versions, the agent's last write (the new
+     * meta's agentVersion) pinned, and the trimmed versions' keys removed. A canvas stored before
+     * history migrates here: its agent copy moves from `canvas:<id>:agent` into the history.
+     * `fields`: the meta fields this save sets (author, at, bytes, …; patchRanges only from a patch);
+     * `img`: the new version's image fields; `walk`: only from ↶ / ↷ (any other save ends a walk);
+     * `latest`: the current latest, if the caller has read it already.
+     * @returns the new meta
+     */
+    async function commit(cur, { content, fields, img, walk, max, latest }) {
+      const id = cur.id;
+      const version = cur.version + 1;
+      const meta = { ...cur, ...fields, version };
+      if (!fields.patchRanges) delete meta.patchRanges;
+      delete meta.agentBytes;                            // the history has every version's size
+      delete meta.walk;
+      if (walk) meta.walk = { path: walk.path, pos: walk.pos, head: version };
+      const legacy = !hasHistory(cur);
+      const entry = { v: version, author: meta.author, at: meta.at, bytes: meta.bytes, ...img };
+      const { history, dropped } = appendHistory(historyOf(cur), entry, { max, pin: meta.agentVersion });
+      const kept = new Set(history.map((h) => h.v));
+      const legacyAgent = legacy && cur.agentVersion < cur.version ? cur.agentVersion : null;
+      const want = [];
+      if (latest === undefined && kept.has(cur.version)) want.push(latestKey(id));
+      if (legacyAgent != null && kept.has(legacyAgent)) want.push(agentKey(id));
+      const got = want.length ? (await storage.get(want)) || {} : {};
+      const items = { [latestKey(id)]: content, [metaKey(id)]: meta };
+      if (kept.has(cur.version)) {
+        const old = latest !== undefined ? latest : got[latestKey(id)];
+        items[versionKey(id, cur.version)] = old == null ? "" : old;
+      }
+      let hist = history;
+      if (legacyAgent != null && kept.has(legacyAgent)) {
+        if (got[agentKey(id)] != null) items[versionKey(id, legacyAgent)] = got[agentKey(id)];
+        else hist = hist.filter((h) => h.v !== legacyAgent);   // the copy is gone: no entry without content
+      }
+      meta.history = hist;
+      const gone = dropped.filter((v) => v !== cur.version && v !== legacyAgent).map((v) => versionKey(id, v));
+      if (legacy) gone.push(agentKey(id));
+      await storage.set(items);
+      if (gone.length) await storage.remove(gone);
+      await updateIndex(cur.conversationId, indexEntry(meta));
+      return meta;
     }
 
     // An agent version on top of `cur` (under the canvas lock): the next revision, authored by the
-    // agent, which the agent has seen; markdown waits for normalization again (§3.5). Content and
-    // meta in one set(); the agent copy goes (the latest is the agent's write again).
-    // patchRanges: what a canvas_patch changed, in this text (planPatch), so the canvas tab glows
-    // exactly that (§3.10, #107); any other write drops the previous patch's.
-    async function storeAgentVersion(cur, { title, content, bytes, at, ranges }) {
-      const id = cur.id;
-      const meta = {
-        ...cur, title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
-        agentSeenVersion: cur.version + 1, bytes, agentBytes: 0, normalized: cur.kind !== "markdown",
+    // agent, which the agent has seen; markdown waits for normalization again (§3.5). It is the new
+    // agent copy, so it is pinned and the previous agent write trims like any version.
+    // ranges: what a canvas_patch changed, in this text (planPatch), kept as meta.patchRanges so the
+    // canvas tab glows exactly that (§3.10, #107); any other write drops the previous patch's.
+    async function storeAgentVersion(cur, { title, content, bytes, at, ranges, img, max, latest }) {
+      const fields = {
+        title, author: "agent", at, agentVersion: cur.version + 1, agentSeenVersion: cur.version + 1, bytes,
+        normalized: cur.kind !== "markdown",
       };
-      if (ranges) meta.patchRanges = ranges; else delete meta.patchRanges;
-      await storage.set({ [latestKey(id)]: content, [metaKey(id)]: meta });
-      await storage.remove(agentKey(id));
-      await updateIndex(cur.conversationId, indexEntry(meta));
-      return meta;
+      if (ranges) fields.patchRanges = ranges;
+      return commit(cur, { content, fields, img, max, latest });
     }
 
     /**
@@ -476,7 +652,7 @@
      * matched ranges change.
      * @returns {Promise<{ id, version, created: false, title, kind, content, ranges, rebasedOver }>}
      *   rebasedOver = { version, author, diffFromBase } of the latest when it was past baseVersion,
-     *   else null; diffFromBase as in a stale error (null unless baseVersion was the agent's write).
+     *   else null; diffFromBase as in a stale error (null once baseVersion is out of history).
      */
     async function agentPatch({ conversationId, id, baseVersion, edits, confirmEvict: ask }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
@@ -488,12 +664,13 @@
       // (another conversation's canvas, an image or html one), needs no room. The locked run can
       // still succeed where the dry run missed (a normalization landing in between): that write
       // skips the budget and may go over by one canvas — a soft cap, as with agentWrite (§3.6).
+      const max = await historyMaxNow();
       {
         const got = await storage.get([metaKey(id), latestKey(id)]);
         const m = got[metaKey(id)];
         const patchable = m && m.conversationId === conversationId && PATCH_KINDS.includes(m.kind);
         const dry = patchable ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
-        if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id, ask || confirmEvict);
+        if (dry && dry.ok) await ensureBudget(projected(m, { bytes: utf8Bytes(dry.text) }, max, m.version + 1), id, ask || confirmEvict);
       }
       let result;
       await lock(`canvas:${id}`, async () => {
@@ -515,13 +692,13 @@
         }
         const bytes = utf8Bytes(plan.text);
         if (bytes > CONTENT_MAX_BYTES) throw new Error(`the patched content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
-        // Rebased: the result carries what the agent did not write (agent copy → latest, before this
+        // Rebased: the result carries what the agent did not write (baseVersion → latest, before this
         // patch), so the agentSeenVersion stored below is true. diffFromBase is null when the base is
-        // not the agent's last write (that text is gone) or the diff is too large; the result then
-        // tells the agent to canvas_read.
+        // no longer in history (that text is gone) or the diff is too large; the result then tells
+        // the agent to canvas_read.
         const rebasedOver = cur.version === baseVersion ? null
-          : { version: cur.version, author: cur.author, diffFromBase: await diffFromAgentCopy(cur, baseVersion, latest) };
-        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges });
+          : { version: cur.version, author: cur.author, diffFromBase: await diffFromBase(cur, baseVersion, latest) };
+        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges, max, latest });
         result = {
           id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges, rebasedOver,
         };
@@ -556,85 +733,145 @@
       });
     }
 
-    // The agent's last write (for Revert to agent's and the conflict view). Null if gone.
+    // The agent's last write (for Revert to agent's and the conflict view): its history entry, the
+    // latest while it is the latest. Null if there is no such canvas.
     async function readAgentCopy(id) {
       if (!ID_RE.test(String(id))) return null;
-      const got = await storage.get([metaKey(id), latestKey(id), agentKey(id)]);
-      if (!got[metaKey(id)]) return null;
-      return got[agentKey(id)] != null ? got[agentKey(id)] : (got[latestKey(id)] == null ? "" : got[latestKey(id)]);
+      const meta = await getOne(metaKey(id));
+      if (!meta) return null;
+      const key = contentKey(meta, meta.agentVersion) || latestKey(id);
+      const got = await storage.get([key, latestKey(id)]);
+      return got[key] != null ? got[key] : (got[latestKey(id)] == null ? "" : got[latestKey(id)]);
     }
 
+    // The version before the latest (◐ 顯示變更, §3.10) → { version, content }, or null when there
+    // is none in history (v1, or trimmed with N = 1). Lock-free like read(): content and meta are
+    // written in one set(), so this may only see a version that has just been replaced.
+    async function readPrevious(id) {
+      if (!ID_RE.test(String(id))) return null;
+      const meta = await getOne(metaKey(id));
+      const v = previousVersion(meta);
+      if (v == null) return null;
+      const content = await getOne(contentKey(meta, v));
+      return content == null ? null : { version: v, content };
+    }
+
+    // The history setting as the store applies it (for the canvas tab's dialogs).
+    const getHistoryMax = () => historyMaxNow();
+
     // A user's explicit save (§3.5). Stale if the canvas moved on since baseVersion; a save equal to
-    // the latest creates no version. The first user save keeps the agent's text as the agent copy.
+    // the latest creates no version. The version it replaces stays in history; the agent's last
+    // write stays pinned.
     async function userSave({ id, baseVersion, content }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (typeof content !== "string") throw new Error("`content` must be a string");
       const bytes = utf8Bytes(content);
       if (bytes > CONTENT_MAX_BYTES) throw new Error(`content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
-      // Afterwards the canvas holds this save plus an agent copy: the one it has, or (first save)
-      // the current latest, which becomes the copy.
-      const before = ID_RE.test(String(id)) ? await getOne(metaKey(id)) : null;
-      await ensureBudget(bytes + (before ? (before.agentBytes || before.bytes || 0) : 0), id);
+      const max = await historyMaxNow();
+      const before = await getOne(metaKey(id));
+      await ensureBudget(projected(before, { bytes }, max, before && before.agentVersion), id);
       let result;
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));
         if (!cur) throw new Error(`no canvas "${id}"`);
         if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`a ${cur.kind} canvas cannot be edited`);
         if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
-        const got = await storage.get([latestKey(id), agentKey(id)]);
-        const latest = got[latestKey(id)] == null ? "" : got[latestKey(id)];
+        const stored = await getOne(latestKey(id));
+        const latest = stored == null ? "" : stored;
         if (content === latest) { result = { version: cur.version, unchanged: true }; return; }
-        const meta = { ...cur, version: cur.version + 1, author: "user", at: now(), bytes };
-        const items = { [latestKey(id)]: content, [metaKey(id)]: meta };
-        if (got[agentKey(id)] == null) {                                 // keep the agent's write
-          items[agentKey(id)] = latest;
-          meta.agentBytes = utf8Bytes(latest);
-        }
-        await storage.set(items);
-        await updateIndex(cur.conversationId, indexEntry(meta));
+        const meta = await commit(cur, { content, fields: { author: "user", at: now(), bytes }, max, latest });
         result = { version: meta.version, unchanged: false };
       });
       return result;
     }
 
-    // Revert to agent's (§3.5): the agent's last write becomes the latest again, as a user save.
+    // Revert to agent's (§3.5): the agent's last write becomes the latest again, as a user save (a
+    // new version: what it replaces stays in history, so ↶ brings it back).
     async function revertToAgent({ id, baseVersion }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      const max = await historyMaxNow();
+      const before = await getOne(metaKey(id));
+      const agentEntry = before && historyOf(before).find((h) => h.v === before.agentVersion);
+      if (agentEntry && before.agentVersion !== before.version) {
+        await ensureBudget(projected(before, { bytes: agentEntry.bytes }, max, before.agentVersion), id);
+      }
       let result;
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));
         if (!cur) throw new Error(`no canvas "${id}"`);
         if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
-        const got = await storage.get([latestKey(id), agentKey(id)]);
-        const agent = got[agentKey(id)];
-        if (agent == null || agent === got[latestKey(id)]) { result = { version: cur.version, unchanged: true }; return; }
-        const meta = { ...cur, version: cur.version + 1, author: "user", at: now(), bytes: utf8Bytes(agent) };
-        await storage.set({ [latestKey(id)]: agent, [metaKey(id)]: meta });
-        await updateIndex(cur.conversationId, indexEntry(meta));
+        const key = contentKey(cur, cur.agentVersion);
+        const got = await storage.get(key ? [key, latestKey(id)] : [latestKey(id)]);
+        const agent = key ? got[key] : null;
+        const latest = got[latestKey(id)] == null ? "" : got[latestKey(id)];
+        if (agent == null || agent === latest) { result = { version: cur.version, unchanged: true }; return; }
+        const meta = await commit(cur, { content: agent, fields: { author: "user", at: now(), bytes: utf8Bytes(agent) }, max, latest });
         result = { version: meta.version, unchanged: false };
       });
       return result;
     }
 
+    /**
+     * ↶ (dir "undo") / ↷ ("redo"), §3.5: save the content of the next version along the walk
+     * (walkCandidates) as a new version — author "user", stale check, mirror and budget as a user
+     * save; version numbers only go up. A candidate whose content equals the latest is skipped (a
+     * step that would change nothing). → { version, from, unchanged } (from = the version whose
+     * content it saved); unchanged when no candidate differs from the latest.
+     */
+    async function stepHistory(dir, { id, baseVersion }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      if (!Number.isInteger(baseVersion)) throw new Error("a step needs `baseVersion` (the version shown)");
+      const max = await historyMaxNow();
+      const before = await getOne(metaKey(id));
+      const first = before && walkCandidates(before, dir).candidates[0];
+      const firstEntry = first && historyOf(before).find((h) => h.v === first.v);
+      if (firstEntry) await ensureBudget(projected(before, { bytes: firstEntry.bytes }, max, before.agentVersion), id);
+      let result;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`a ${cur.kind} canvas cannot be edited`);
+        if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
+        const { path, candidates } = walkCandidates(cur, dir);
+        const stored = await getOne(latestKey(id));
+        const latest = stored == null ? "" : stored;
+        for (const c of candidates) {
+          const text = await getOne(contentKey(cur, c.v));
+          if (text == null || text === latest) continue;
+          const meta = await commit(cur, { content: text, fields: { author: "user", at: now(), bytes: utf8Bytes(text) }, walk: { path, pos: c.pos }, max, latest });
+          result = { version: meta.version, from: c.v, unchanged: false };
+          return;
+        }
+        result = { version: cur.version, unchanged: true };
+      });
+      return result;
+    }
+    const undo = (args) => stepHistory("undo", args);
+    const redo = (args) => stepHistory("redo", args);
+
     // The editor's normalization of an agent markdown write (§3.5). Applies only to that agent
-    // version: the agent copy always; the latest only while it still IS that version.
+    // version: its history entry (the agent copy) always — the latest while it still IS that
+    // version, else canvas:<id>:v:<n> (or the agent key, before history) — and that entry's size.
     async function applyNormalized({ id, version, normalized }) {
       if (typeof normalized !== "string" || utf8Bytes(normalized) > CONTENT_MAX_BYTES) return { applied: false };
       let result = { applied: false };
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));
         if (!cur || cur.kind !== "markdown" || cur.agentVersion !== version || cur.normalized) return;
-        const got = await storage.get([latestKey(id), agentKey(id)]);
-        const items = { [metaKey(id)]: { ...cur, normalized: true } };
-        delete items[metaKey(id)].patchRanges;          // offsets into the text before normalization
-        if (got[agentKey(id)] != null) {
-          items[agentKey(id)] = normalized;
-          items[metaKey(id)].agentBytes = utf8Bytes(normalized);
-        } else if (cur.version === version) {
-          items[latestKey(id)] = normalized;
-          items[metaKey(id)].bytes = utf8Bytes(normalized);
+        const meta = { ...cur, normalized: true };
+        delete meta.patchRanges;                        // offsets into the text before normalization
+        const items = { [metaKey(id)]: meta };
+        const key = contentKey(cur, version);
+        const old = key ? await getOne(key) : undefined;
+        if (old != null) {
+          const bytes = utf8Bytes(normalized);
+          items[key] = normalized;
+          if (key === latestKey(id)) meta.bytes = bytes;
+          if (key === agentKey(id)) meta.agentBytes = bytes;
+          if (hasHistory(cur)) meta.history = cur.history.map((h) => (h.v === version ? { ...h, bytes } : h));
         }
         await storage.set(items);
-        result = { applied: true, changed: (got[agentKey(id)] != null ? got[agentKey(id)] : got[latestKey(id)]) !== normalized };
+        result = { applied: true, changed: old != null && old !== normalized };
       });
       return result;
     }
@@ -670,7 +907,14 @@
         result = { removed: false, version: meta.version };
         if (expectVersion != null && meta.version !== expectVersion) return;
         result = { removed: true, version: meta.version };
-        await storage.remove([metaKey(id), latestKey(id), agentKey(id)]);
+        // Its whole history (§3.5). With getKeys, also any version key a write left behind when it
+        // stopped between storing the new version and removing the trimmed ones.
+        const keys = new Set([metaKey(id), latestKey(id), agentKey(id), ...contentKeys(meta)]);
+        if (typeof storage.getKeys === "function") {
+          const prefix = `canvas:${id}:v:`;
+          for (const k of await storage.getKeys()) if (k.startsWith(prefix)) keys.add(k);
+        }
+        await storage.remove([...keys]);
         await lock("canvas:index", async () => {
           const key = indexKey(meta.conversationId);
           const list = ((await getOne(key)) || []).filter((e) => e.id !== id);
@@ -691,7 +935,7 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, getHistoryMax, userSave, revertToAgent, undo, redo, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
   }
 
   // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
@@ -709,10 +953,13 @@
   //   chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })
   // and chrome.storage.local.remove("canvas:budgetBytes") to go back. Values under 1 MB are ignored;
   // values over 200 MB are capped at 200 MB (the override only lowers the budget). Every scan of
-  // canvas:* keys matches exact shapes (cv_ ids, the img: prefix), so none of them sees this key; a
+  // canvas:* keys matches exact shapes (cv_ ids, the img: prefix), so none of them sees this key (nor
+  // HISTORY_MAX_KEY); a
   // future "delete every canvas:* key" would drop it too, which just restores 200 MB.
   const BUDGET_OVERRIDE_KEY = "canvas:budgetBytes";
   const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
-  return { createCanvasStore, incognitoLeftovers, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, incognitoLeftovers,
+    historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint, walkCandidates, canUndo, canRedo,
+    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

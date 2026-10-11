@@ -120,7 +120,7 @@ test("ids are validated and confined to their conversation", async () => {
   await assert.rejects(() => s.agentWrite({ conversationId: "c", id: "cv_ffffffffffff", baseVersion: 1, title: "T", content: "b" }), /no canvas/);
 });
 
-test("content and meta land in one set(), so onChanged fires once with a consistent pair", async () => {
+test("content, meta and the version moved into history land in one set(), so onChanged fires once with a consistent pair", async () => {
   const calls = [];
   const storage = memStorage();
   const set = storage.set;
@@ -129,7 +129,7 @@ test("content and meta land in one set(), so onChanged fires once with a consist
   const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
   await s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "T", content: "b" });
   const body = calls.filter((ks) => ks.some((k) => k.startsWith(`canvas:${id}:`)));
-  assert.deepEqual(body, [[`canvas:${id}:latest`, `canvas:${id}:meta`], [`canvas:${id}:latest`, `canvas:${id}:meta`]]);
+  assert.deepEqual(body, [[`canvas:${id}:latest`, `canvas:${id}:meta`], [`canvas:${id}:latest`, `canvas:${id}:meta`, `canvas:${id}:v:1`]]);
 });
 
 test("the index is updated while the canvas lock is still held, so its version cannot go backwards", async () => {
@@ -338,16 +338,16 @@ test("budget: under it nothing is asked; over it the least recently opened, unop
   answer = false;
   await assert.rejects(() => s.agentWrite({ conversationId: "d", title: "D", content: "dddd" }), (e) => e.code === "quota");
   assert.equal((await s.usage()).count, 2);           // nothing written, nothing removed
-  // rewriting an existing canvas only counts the difference
+  // rewriting an existing canvas counts what it takes afterwards: its history (§3.5), C = 4 + 2
   await s.agentWrite({ conversationId: "d", id: c.id, baseVersion: 1, title: "C", content: "cc" });
-  assert.equal((await s.usage()).total, 6);
+  assert.equal((await s.usage()).total, 10);
 });
 
 test("budget: a canvas changed while the eviction confirm waits is kept (#80)", async () => {
   let s;
   let a;
   ({ s } = store({
-    budgetBytes: 10,
+    budgetBytes: 11,                                  // A's rewrite (4 + 3 with its history) fits without asking
     // the user is still deciding when A gets rewritten (no lock is held while asking)
     confirmEvict: async () => { await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "A", content: "aaa" }); return true; },
   }));
@@ -371,7 +371,7 @@ test("budget: an agent write may ask its own confirmEvict (the asking agent's tu
   assert.equal(storeAsked.length, 0);
   assert.equal((await s.usage()).count, 2);           // the agent's yes evicted A
   const c = (await s.list({ conversationId: "d" }))[0];
-  await s.agentPatch({ conversationId: "d", id: c.id, baseVersion: 1, edits: [{ find: "cccc", replace: "c".repeat(9) }], confirmEvict: ask });
+  await s.agentPatch({ conversationId: "d", id: c.id, baseVersion: 1, edits: [{ find: "cccc", replace: "c".repeat(5) }], confirmEvict: ask });   // C: 4 + 5 with history
   assert.equal(agentAsked.length, 2);                 // canvas_patch asks the agent's too
   assert.equal(storeAsked.length, 0);
 });
@@ -493,7 +493,7 @@ test("image canvas: validation (type, base64, size, caption, needs an image)", a
 
 test("image sweep: replacing or deleting frees an image nobody references, after the grace period", async () => {
   let clock = 1_000_000;
-  const { s, storage } = store({ now: () => clock });
+  const { s, storage } = store({ now: () => clock, historyMax: 1 });   // N = 1: the replaced version leaves history
   const a = await s.agentWrite({ conversationId: "c", title: "T", kind: "image", image: { mimeType: "image/png", data: PNG } });
   const pngKey = `canvas:img:${await CanvasStore.sha256OfBase64(PNG)}`;
   clock += 11 * 60 * 1000;                                              // past the 10-minute grace
@@ -578,10 +578,10 @@ test("user save: needs the current version, keeps the agent's text as the agent 
   assert.equal(r.content, "user text");
   assert.equal(r.author, "user");
   assert.equal(r.agentVersion, 1);
-  assert.equal(storage.data[CanvasStore.agentKey(id)], "agent text");
+  assert.equal(storage.data[CanvasStore.versionKey(id, 1)], "agent text");   // v1 moved into history
   assert.equal(await s.readAgentCopy(id), "agent text");
   await s.userSave({ id, baseVersion: 2, content: "user text 2" });
-  assert.equal(storage.data[CanvasStore.agentKey(id)], "agent text");   // still the AGENT's write
+  assert.equal(await s.readAgentCopy(id), "agent text");               // still the AGENT's write
 });
 
 test("stale agent write after a user edit carries diffFromBase (agent copy → latest)", async () => {
@@ -606,6 +606,7 @@ test("an agent write drops the agent copy (latest is the agent's again); agentSe
   await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "c" });
   assert.ok(!(CanvasStore.agentKey(id) in storage.data));
   assert.equal(await s.readAgentCopy(id), "c");
+  assert.equal(storage.data[CanvasStore.versionKey(id, 2)], "b");     // the user's save stays in history
 });
 
 test("revert to agent's: the agent copy becomes the latest as a user save", async () => {
@@ -636,7 +637,7 @@ test("applyNormalized: markdown only, that agent version only; latest only while
   await s.applyNormalized({ id: b.id, version: 1, normalized: "- y" });
   r = await s.read({ conversationId: "c", id: b.id });
   assert.equal(r.content, "user");
-  assert.equal(storage.data[CanvasStore.agentKey(b.id)], "- y");
+  assert.equal(storage.data[CanvasStore.versionKey(b.id, 1)], "- y");
   // slides are stored as sent
   const sl = await s.agentWrite({ conversationId: "c", title: "S", kind: "slides", content: "* z" });
   assert.equal((await s.read({ conversationId: "c", id: sl.id })).normalized, true);
@@ -651,22 +652,24 @@ test("remove also deletes the agent copy", async () => {
   assert.deepEqual(Object.keys(storage.data), []);
 });
 
-test("budget counts the agent copy: first user save adds it, normalize resizes it, an agent write drops it", async () => {
+test("budget counts the whole history (§3.6): every version, normalization resizes its entry, the setting trims on the next write", async () => {
   const asked = [];
-  const { s } = store({ budgetBytes: 10, confirmEvict: async (i) => { asked.push(i); return false; } });
+  const { s, storage } = store({ budgetBytes: 10, confirmEvict: async (i) => { asked.push(i); return false; } });
   const a = await s.agentWrite({ conversationId: "c", title: "A", content: "aaaa" });   // 4
-  await s.userSave({ id: a.id, baseVersion: 1, content: "uuuuu" });                      // 5 + copy 4
+  await s.userSave({ id: a.id, baseVersion: 1, content: "uuuuu" });                      // 4 + 5
   assert.equal((await s.usage()).total, 9);
-  await s.applyNormalized({ id: a.id, version: 1, normalized: "aa" });                   // copy → 2
+  await s.applyNormalized({ id: a.id, version: 1, normalized: "aa" });                   // v1 → 2
   assert.equal((await s.usage()).total, 7);
-  // a save that would only fit if the copy were free is refused
-  await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 2, content: "x".repeat(9) }), (e) => e.code === "quota");
-  await s.userSave({ id: a.id, baseVersion: 2, content: "x".repeat(8) });               // 8 + 2
-  assert.equal((await s.usage()).total, 10);
+  // History is never trimmed to make room: a save that only fits without v2 is refused
+  await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 2, content: "x".repeat(4) }), (e) => e.code === "quota");
+  await s.userSave({ id: a.id, baseVersion: 2, content: "x" });                          // 2 + 5 + 1
+  assert.equal((await s.usage()).total, 8);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 3, title: "A", content: "bbb" }), (e) => e.code === "quota");
+  // N = 2 (the setting, read on every write): the same write trims to v3 + v4 and fits
+  await storage.set({ [CanvasStore.HISTORY_MAX_KEY]: 2 });
   await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 3, title: "A", content: "bbb" });
-  assert.equal((await s.usage()).total, 3);
-  // the first save of a fresh agent write must make room for the copy too
-  await assert.rejects(() => s.userSave({ id: a.id, baseVersion: 4, content: "y".repeat(8) }), (e) => e.code === "quota");
+  assert.equal((await s.usage()).total, 4);
+  assert.deepEqual((await s.read({ id: a.id })).history.map((h) => h.v), [3, 4]);
   assert.equal(asked.length, 0);                      // only one canvas: nothing to evict, never asked
 });
 
@@ -775,15 +778,19 @@ test("agentPatch: after a user edit elsewhere it rebases and keeps the user's te
   assert.equal(await s.readAgentCopy(id), "## A\nUSER a\n## B\npatched b");     // the latest is the agent's write
 });
 
-test("agentPatch: rebased from a base older than the agent's last write has diffFromBase null", async () => {
-  const { s } = store();
-  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "x\ny" });
-  await s.userSave({ id, baseVersion: 1, content: "X\ny" });                    // v2
-  await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "y", replace: "Y" }] });   // v3, agent
-  await s.userSave({ id, baseVersion: 3, content: "X!\nY" });                   // v4
-  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "Y", replace: "Z" }] });
-  assert.equal(r.version, 5);
-  assert.deepEqual(r.rebasedOver, { version: 4, author: "user", diffFromBase: null });
+test("agentPatch: rebased from a base older than the agent's last write diffs from it while it is in history, null once trimmed", async () => {
+  for (const [historyMax, diff] of [[10, true], [2, false]]) {
+    const { s } = store({ historyMax });
+    const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "x\ny" });
+    await s.userSave({ id, baseVersion: 1, content: "X\ny" });                    // v2
+    await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "y", replace: "Y" }] });   // v3, agent
+    await s.userSave({ id, baseVersion: 3, content: "X!\nY" });                   // v4 (N = 2: v2 trimmed)
+    const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "Y", replace: "Z" }] });
+    assert.equal(r.version, 5);
+    assert.deepEqual([r.rebasedOver.version, r.rebasedOver.author], [4, "user"]);
+    if (diff) assert.equal(r.rebasedOver.diffFromBase, "@@ -1,2 +1,2 @@\n-X\n-y\n+X!\n+Y");   // v2 → v4
+    else assert.equal(r.rebasedOver.diffFromBase, null);
+  }
 });
 
 test("agentPatch: a patch the store will refuse (other conversation, image) never reaches the budget", async () => {
@@ -893,4 +900,306 @@ test("kind mermaid (Brett 2026-10-11): stored as sent (no normalization), patcha
   await assert.rejects(() => s.userSave({ id: r.id, baseVersion: 2, content: "graph TD" }), /a mermaid canvas cannot be edited/);
   // A canvas never changes kind.
   await assert.rejects(() => s.agentWrite({ conversationId: "c", id: r.id, baseVersion: 2, title: "Flow", kind: "markdown", content: "x" }), /kind/);
+});
+
+// --- Version history (§3.5, Brett 2026-10-11) -----------------------------------------------------
+
+test("historyLimit: the setting → 1–50 whole versions; anything that is not a number → 10", () => {
+  const L = CanvasStore.historyLimit;
+  assert.equal(CanvasStore.HISTORY_DEFAULT, 10);
+  for (const junk of [undefined, null, "", "abc", NaN, Infinity, true, {}, []]) assert.equal(L(junk), 10, String(junk));
+  assert.deepEqual([L(1), L(10), L(50), L(0), L(-3), L(51), L(1000), L(2.4), L(2.6), L("7")], [1, 10, 50, 1, 1, 50, 50, 2, 3, 7]);
+});
+
+test("appendHistory: keeps the last N, never the pinned agent write; reports what it dropped", () => {
+  const h = (...vs) => vs.map((v) => ({ v, bytes: v }));
+  const A = CanvasStore.appendHistory;
+  assert.deepEqual(A(h(1, 2), { v: 3 }, { max: 10, pin: 1 }), { history: [{ v: 1, bytes: 1 }, { v: 2, bytes: 2 }, { v: 3 }], dropped: [] });
+  let r = A(h(1, 2, 3), { v: 4 }, { max: 2, pin: 4 });
+  assert.deepEqual([r.history.map((x) => x.v), r.dropped], [[3, 4], [1, 2]]);
+  r = A(h(1, 2, 3), { v: 4 }, { max: 2, pin: 1 });                     // the agent's write, older than the last N: kept
+  assert.deepEqual([r.history.map((x) => x.v), r.dropped], [[1, 3, 4], [2]]);
+  r = A(h(5), { v: 6 }, { max: 1, pin: 6 });                           // N = 1: the latest only
+  assert.deepEqual([r.history.map((x) => x.v), r.dropped], [[6], [5]]);
+  r = A(h(1, 2), { v: 3 }, { max: "junk", pin: 3 });                    // N through historyLimit
+  assert.deepEqual(r.history.map((x) => x.v), [1, 2, 3]);
+});
+
+test("historyOf / contentKey / previousVersion: history metas, and canvases stored before history (lazy migration)", () => {
+  const id = "cv_00000000000a";
+  const withHist = { id, version: 5, agentVersion: 3, history: [{ v: 3 }, { v: 4 }, { v: 5 }] };
+  assert.equal(CanvasStore.contentKey(withHist, 5), CanvasStore.latestKey(id));
+  assert.equal(CanvasStore.contentKey(withHist, 3), CanvasStore.versionKey(id, 3));
+  assert.equal(CanvasStore.contentKey(withHist, 2), null);              // not in history
+  assert.deepEqual(CanvasStore.contentKeys(withHist), [`canvas:${id}:v:3`, `canvas:${id}:v:4`, `canvas:${id}:latest`]);
+  assert.equal(CanvasStore.previousVersion(withHist), 4);
+  // Before history: a user save on top of the agent's write kept the agent key.
+  const legacy = { id, version: 4, author: "user", at: 9, bytes: 5, agentVersion: 2, agentBytes: 3 };
+  assert.deepEqual(CanvasStore.historyOf(legacy), [{ v: 2, author: "agent", at: 0, bytes: 3 }, { v: 4, author: "user", at: 9, bytes: 5 }]);
+  assert.equal(CanvasStore.contentKey(legacy, 2), CanvasStore.agentKey(id));
+  assert.equal(CanvasStore.previousVersion(legacy), 2);
+  assert.equal(CanvasStore.footprint(legacy), 8);                       // latest + agent copy, as before
+  const legacyAgent = { id, version: 2, author: "agent", bytes: 5, agentVersion: 2, agentBytes: 0 };
+  assert.deepEqual(CanvasStore.historyOf(legacyAgent).map((h) => h.v), [2]);
+  assert.equal(CanvasStore.previousVersion(legacyAgent), null);
+  assert.deepEqual(CanvasStore.historyOf(null), []);
+});
+
+test("historyFootprint: every version a full copy; an image counted once per distinct image", () => {
+  const F = CanvasStore.historyFootprint;
+  assert.equal(F([{ v: 1, bytes: 10 }, { v: 2, bytes: 20 }]), 30);
+  assert.equal(F([
+    { v: 1, bytes: 60 + 1000, image: "aa", imageBytes: 1000 },
+    { v: 2, bytes: 62 + 1000, image: "aa", imageBytes: 1000 },          // caption changed, same image
+    { v: 3, bytes: 60 + 500, image: "bb", imageBytes: 500 },
+  ]), 60 + 62 + 60 + 1000 + 500);
+  assert.equal(F([]), 0);
+});
+
+test("walkCandidates: ↶ starts a walk at the latest and goes older; ↷ only inside a walk; trimmed versions skipped", () => {
+  const W = CanvasStore.walkCandidates;
+  const meta = { version: 8, history: [5, 6, 7, 8].map((v) => ({ v })) };
+  assert.deepEqual(W(meta, "undo"), { path: [8, 7, 6, 5], candidates: [{ v: 7, pos: 1 }, { v: 6, pos: 2 }, { v: 5, pos: 3 }] });
+  assert.deepEqual(W(meta, "redo").candidates, []);
+  assert.equal(CanvasStore.canUndo(meta), true);
+  assert.equal(CanvasStore.canRedo(meta), false);
+  // After two ↶ (v9 = 7, v10 = 6), with v5 trimmed meanwhile.
+  const walked = { version: 10, history: [6, 7, 8, 9, 10].map((v) => ({ v })), walk: { path: [8, 7, 6, 5], pos: 2, head: 10 } };
+  assert.deepEqual(W(walked, "undo").candidates, []);                    // v5 is gone
+  assert.deepEqual(W(walked, "redo").candidates, [{ v: 7, pos: 1 }, { v: 8, pos: 0 }]);
+  assert.equal(CanvasStore.canUndo(walked), false);
+  assert.equal(CanvasStore.canRedo(walked), true);
+  // A walk whose head is no longer the latest (any other save) is over: ↶ starts afresh.
+  const ended = { ...walked, version: 11, history: [...walked.history, { v: 11 }] };
+  assert.deepEqual(W(ended, "undo").path, [11, 10, 9, 8, 7, 6]);
+  assert.equal(CanvasStore.canRedo(ended), false);
+  // A gap (trimmed) is skipped, so the pinned agent write stays reachable.
+  const pinned = { version: 9, history: [{ v: 2 }, { v: 8 }, { v: 9 }] };
+  assert.deepEqual(W(pinned, "undo").candidates.map((c) => c.v), [8, 2]);
+  assert.equal(CanvasStore.canUndo({ version: 1, history: [{ v: 1 }] }), false);
+  assert.deepEqual(W(null, "undo"), { path: [], candidates: [] });
+});
+
+test("history through every write path: versions, authors, contents in v:<n> keys, the agent's write pinned beyond N", async () => {
+  const { s, storage } = store({ historyMax: 2 });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a1" });           // v1 agent
+  await s.userSave({ id, baseVersion: 1, content: "u2" });                                         // v2 user
+  await s.userSave({ id, baseVersion: 2, content: "u3" });                                         // v3 user
+  await s.userSave({ id, baseVersion: 3, content: "u4" });                                         // v4 user
+  let m = await s.read({ id });
+  // N = 2 plus the pinned agent write v1, older than the last two
+  assert.deepEqual(m.history.map((h) => [h.v, h.author, h.bytes]), [[1, "agent", 2], [3, "user", 2], [4, "user", 2]]);
+  assert.equal(storage.data[CanvasStore.versionKey(id, 1)], "a1");
+  assert.ok(!(CanvasStore.versionKey(id, 2) in storage.data), "v2 trimmed, its key removed");
+  assert.equal(storage.data[CanvasStore.versionKey(id, 3)], "u3");
+  assert.ok(!(CanvasStore.versionKey(id, 4) in storage.data), "the latest is only under :latest");
+  assert.equal(await s.readAgentCopy(id), "a1");
+  await s.revertToAgent({ id, baseVersion: 4 });                                                   // v5 = a1, user
+  m = await s.read({ id });
+  assert.deepEqual(m.history.map((h) => [h.v, h.author]), [[1, "agent"], [4, "user"], [5, "user"]]);
+  assert.equal(m.content, "a1");
+  await s.agentPatch({ conversationId: "c", id, baseVersion: 5, edits: [{ find: "a1", replace: "p6" }] });   // v6 agent: the new pin
+  m = await s.read({ id });
+  assert.deepEqual(m.history.map((h) => [h.v, h.author]), [[5, "user"], [6, "agent"]]);
+  assert.equal(m.agentVersion, 6);
+  assert.ok(!(CanvasStore.versionKey(id, 1) in storage.data), "the old agent write is no longer pinned");
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 6, title: "T", content: "a7" });       // v7 agent
+  m = await s.read({ id });
+  assert.deepEqual(m.history.map((h) => h.v), [6, 7]);
+  assert.equal(m.agentBytes, undefined);                                // sizes live in the history
+  const vKeys = Object.keys(storage.data).filter((k) => k.startsWith(`canvas:${id}:v:`));
+  assert.deepEqual(vKeys, [CanvasStore.versionKey(id, 6)]);
+});
+
+test("stale diffFromBase from any version still in history, not only the agent's own write", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a\nb\nc" });
+  await s.userSave({ id, baseVersion: 1, content: "a\nB\nc" });          // v2, user
+  await s.userSave({ id, baseVersion: 2, content: "a\nB\nC" });          // v3, user
+  // The agent read v2 (a user version) and writes on it: the diff is v2 → v3.
+  await assert.rejects(
+    () => s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "x" }),
+    (e) => e.code === "stale" && e.currentVersion === 3 && e.diffFromBase === "@@ -1,3 +1,3 @@\n a\n B\n-c\n+C"
+  );
+  // A base never stored, or trimmed out, gives no diff.
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", id, baseVersion: 9, title: "T", content: "x" }), (e) => e.code === "stale" && e.diffFromBase === null);
+  const small = store({ historyMax: 1 });
+  const w = await small.s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await small.s.userSave({ id: w.id, baseVersion: 1, content: "b" });
+  await small.s.userSave({ id: w.id, baseVersion: 2, content: "c" });    // N = 1: v2 gone, v1 pinned
+  await assert.rejects(() => small.s.agentWrite({ conversationId: "c", id: w.id, baseVersion: 2, title: "T", content: "x" }), (e) => e.code === "stale" && e.diffFromBase === null);
+  await assert.rejects(() => small.s.agentWrite({ conversationId: "c", id: w.id, baseVersion: 1, title: "T", content: "x" }), (e) => e.code === "stale" && /-a\n\+c/.test(e.diffFromBase));
+});
+
+test("readPrevious: the version before the latest, any author; null on v1", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "one" });
+  assert.equal(await s.readPrevious(id), null);
+  await s.userSave({ id, baseVersion: 1, content: "two" });
+  assert.deepEqual(await s.readPrevious(id), { version: 1, content: "one" });
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "three" });
+  assert.deepEqual(await s.readPrevious(id), { version: 2, content: "two" });      // a user version
+  assert.equal(await s.readPrevious("nope"), null);
+});
+
+test("↶ / ↷ save new versions along one walk; any other save ends it", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "c1" });
+  for (let v = 1; v < 4; v++) await s.userSave({ id, baseVersion: v, content: `c${v + 1}` });   // v4 = c4
+  const content = async () => (await s.read({ id })).content;
+  assert.deepEqual(await s.undo({ id, baseVersion: 4 }), { version: 5, from: 3, unchanged: false });
+  assert.equal(await content(), "c3");
+  assert.deepEqual(await s.undo({ id, baseVersion: 5 }), { version: 6, from: 2, unchanged: false });
+  assert.equal(await content(), "c2");
+  let m = await s.read({ id });
+  assert.deepEqual([m.author, m.agentVersion, m.walk], ["user", 1, { path: [4, 3, 2, 1], pos: 2, head: 6 }]);
+  assert.equal(CanvasStore.canRedo(m), true);
+  assert.deepEqual(await s.redo({ id, baseVersion: 6 }), { version: 7, from: 3, unchanged: false });
+  assert.deepEqual(await s.redo({ id, baseVersion: 7 }), { version: 8, from: 4, unchanged: false });
+  assert.equal(await content(), "c4");
+  m = await s.read({ id });
+  assert.equal(CanvasStore.canRedo(m), false);                          // back where the walk started
+  assert.deepEqual(await s.redo({ id, baseVersion: 8 }), { version: 8, unchanged: true });
+  await assert.rejects(() => s.undo({ id, baseVersion: 7 }), (e) => e.code === "stale" && e.currentVersion === 8);
+  // Back down, then a user save: the walk is over, ↷ has nothing, ↶ starts from the new latest.
+  await s.undo({ id, baseVersion: 8 });                                 // v9 = c3
+  await s.userSave({ id, baseVersion: 9, content: "mine" });            // v10
+  m = await s.read({ id });
+  assert.equal(m.walk, undefined);
+  assert.equal(CanvasStore.canRedo(m), false);
+  assert.deepEqual(await s.undo({ id, baseVersion: 10 }), { version: 11, from: 9, unchanged: false });
+  assert.equal(await content(), "c3");
+  // An agent write ends a walk too.
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 11, title: "T", content: "agent" });
+  assert.equal((await s.read({ id })).walk, undefined);
+});
+
+test("↶ skips versions with the latest's content, is unchanged with nothing older, and is for markdown / slides only", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  assert.deepEqual(await s.undo({ id, baseVersion: 1 }), { version: 1, unchanged: true });      // v1: nothing older
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "T", content: "b" });     // v2
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "T", content: "b" });     // v3, same text
+  assert.deepEqual(await s.undo({ id, baseVersion: 3 }), { version: 4, from: 1, unchanged: false });   // v2 = "b" skipped
+  assert.equal((await s.read({ id })).content, "a");
+  const mm = await s.agentWrite({ conversationId: "c", title: "M", kind: "mermaid", content: "graph TD" });
+  await s.agentWrite({ conversationId: "c", id: mm.id, baseVersion: 1, title: "M", kind: "mermaid", content: "graph LR" });
+  await assert.rejects(() => s.undo({ id: mm.id, baseVersion: 2 }), /a mermaid canvas cannot be edited/);
+  await assert.rejects(() => s.undo({ id: "x", baseVersion: 1 }), /not a canvas id/);
+});
+
+test("↶ under trimming: each step is a version, so the walk reaches back about N/2; the pinned agent write stays reachable", async () => {
+  const { s } = store({ historyMax: 4 });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "c1" });      // pinned
+  for (let v = 1; v < 6; v++) await s.userSave({ id, baseVersion: v, content: `c${v + 1}` });   // v6 = c6
+  const froms = [];
+  for (let v = 6; ; v++) {
+    const r = await s.undo({ id, baseVersion: v });
+    if (r.unchanged) break;
+    froms.push(r.from);
+  }
+  // history v1 (pin) + v3..v6: v5, then v4 — by then v3 is trimmed — then the pinned v1
+  assert.deepEqual(froms, [5, 4, 1]);
+  const m = await s.read({ id });
+  assert.equal(m.content, "c1");
+  assert.equal(CanvasStore.canUndo(m), false);
+});
+
+test("↶ / ↷ and Revert check the budget like a user save (a new full version)", async () => {
+  const asked = [];
+  const { s } = store({ budgetBytes: 12, confirmEvict: async (i) => { asked.push(i); return true; } });
+  const other = await s.agentWrite({ conversationId: "c", title: "O", content: "oooo" });      // 4
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "aa" });       // 2
+  await s.userSave({ id, baseVersion: 1, content: "bbb" });                                     // 2 + 3
+  await s.userSave({ id, baseVersion: 2, content: "c" });                                       // 2 + 3 + 1 (+ O 4 = 10)
+  assert.equal(asked.length, 0);
+  await s.undo({ id, baseVersion: 3 });                                                         // + 3 = 13 > 12: evicts O
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].evict.map((e) => e.id), [other.id]);
+  assert.equal((await s.usage()).total, 9);
+});
+
+test("lazy migration: a canvas stored before history reads as agent copy + latest, and its next write moves the agent key into history", async () => {
+  const { s, storage } = store();
+  const id = "cv_00000000beef";
+  Object.assign(storage.data, {
+    [CanvasStore.metaKey(id)]: { id, conversationId: "c", title: "Old", kind: "markdown", version: 3, author: "user", at: 5, agentVersion: 2, agentSeenVersion: 2, bytes: 4, agentBytes: 5, normalized: true },
+    [CanvasStore.latestKey(id)]: "mine",
+    [CanvasStore.agentKey(id)]: "agent",
+    [CanvasStore.indexKey("c")]: [{ id, title: "Old", kind: "markdown", version: 3, bytes: 4, updatedAt: 5 }],
+  });
+  assert.equal(await s.readAgentCopy(id), "agent");
+  assert.deepEqual(await s.readPrevious(id), { version: 2, content: "agent" });
+  assert.equal((await s.usage()).total, 9);
+  assert.equal(CanvasStore.canUndo(storage.data[CanvasStore.metaKey(id)]), true);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Old", content: "x" }), (e) => /-agent\n\+mine/.test(e.diffFromBase));
+  await s.userSave({ id, baseVersion: 3, content: "mine 2" });
+  const m = await s.read({ id });
+  assert.deepEqual(m.history.map((h) => [h.v, h.author, h.bytes]), [[2, "agent", 5], [3, "user", 4], [4, "user", 6]]);
+  assert.equal(m.agentBytes, undefined);
+  assert.ok(!(CanvasStore.agentKey(id) in storage.data), "the agent key is migrated");
+  assert.equal(storage.data[CanvasStore.versionKey(id, 2)], "agent");
+  assert.equal(storage.data[CanvasStore.versionKey(id, 3)], "mine");
+  assert.equal(await s.readAgentCopy(id), "agent");
+  assert.equal((await s.usage()).total, 15);
+  // ↶ walks into the migrated versions
+  assert.deepEqual(await s.undo({ id, baseVersion: 4 }), { version: 5, from: 3, unchanged: false });
+});
+
+test("lazy migration: a pre-history canvas whose latest is the agent's write, and the normalization of a migrated agent copy", async () => {
+  const { s, storage } = store();
+  const id = "cv_00000000cafe";
+  Object.assign(storage.data, {
+    [CanvasStore.metaKey(id)]: { id, conversationId: "c", title: "Old", kind: "markdown", version: 1, author: "agent", at: 5, agentVersion: 1, agentSeenVersion: 1, bytes: 3, agentBytes: 0, normalized: false },
+    [CanvasStore.latestKey(id)]: "* a",
+  });
+  assert.equal(await s.readPrevious(id), null);
+  await s.userSave({ id, baseVersion: 1, content: "mine" });
+  assert.deepEqual((await s.read({ id })).history.map((h) => h.v), [1, 2]);
+  // normalization arrives late: the agent's version, now in v:1, and its history size
+  assert.deepEqual(await s.applyNormalized({ id, version: 1, normalized: "- a\n" }), { applied: true, changed: true });
+  const m = await s.read({ id });
+  assert.equal(storage.data[CanvasStore.versionKey(id, 1)], "- a\n");
+  assert.equal(m.content, "mine");
+  assert.deepEqual(m.history.map((h) => h.bytes), [4, 4]);
+});
+
+test("image sweep scans every version in history: an image an older version shows is kept until that version is trimmed", async () => {
+  let clock = 1_000_000;
+  const { s, storage } = store({ now: () => clock, historyMax: 2 });
+  const a = await s.agentWrite({ conversationId: "c", title: "T", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  const pngKey = `canvas:img:${await CanvasStore.sha256OfBase64(PNG)}`;
+  clock += 11 * 60 * 1000;
+  await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "T", kind: "image", image: { mimeType: "image/gif", data: GIF } });
+  assert.ok(pngKey in storage.data, "v1 (in history) still shows the PNG");
+  await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 2, title: "T", kind: "image", image: { mimeType: "image/gif", data: GIF }, caption: "again" });
+  assert.ok(!(pngKey in storage.data), "v1 trimmed (N = 2): the PNG goes");
+  // The footprint counts the GIF once although two versions show it.
+  const m = await s.read({ id: a.id });
+  const gifBytes = Buffer.from(GIF, "base64").length;
+  assert.equal(CanvasStore.footprint(m), m.history.reduce((n, h) => n + h.bytes - h.imageBytes, 0) + gifBytes);
+});
+
+test("remove deletes the whole history, and with getKeys a version key a broken write left behind", async () => {
+  const { s, storage } = store();
+  storage.getKeys = async () => Object.keys(storage.data);
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  await s.userSave({ id, baseVersion: 1, content: "b" });
+  await s.userSave({ id, baseVersion: 2, content: "c" });
+  storage.data[CanvasStore.versionKey(id, 99)] = "orphan";
+  await s.remove({ id });
+  assert.deepEqual(Object.keys(storage.data), []);
+});
+
+test("↶ and a user save from the same base under the lock: exactly one wins, history stays consistent", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "one" });
+  await s.userSave({ id, baseVersion: 1, content: "two" });
+  const results = await Promise.allSettled([s.undo({ id, baseVersion: 2 }), s.userSave({ id, baseVersion: 2, content: "three" })]);
+  assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+  assert.equal(results.filter((r) => r.status === "rejected" && r.reason.code === "stale").length, 1);
+  const m = await s.read({ id });
+  assert.equal(m.version, 3);
+  assert.deepEqual(m.history.map((h) => h.v), [1, 2, 3]);
+  for (const h of m.history) assert.ok(typeof storage.data[CanvasStore.contentKey(m, h.v)] === "string", `v${h.v} has content`);
 });

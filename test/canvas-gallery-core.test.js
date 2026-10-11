@@ -132,3 +132,14 @@ test("mermaid canvases: their own icon and label, and their source is searchable
   assert.equal(G.KIND_LABELS.mermaid, "Mermaid 圖表");
   assert.ok(G.TEXT_KINDS.has("mermaid"));
 });
+
+test("buildRows: with CanvasStore.footprint the size is the whole version history (§3.5, §3.6)", () => {
+  const CanvasStore = require("../canvas-store.js");
+  const history = [{ v: 2, bytes: 1024 }, { v: 3, bytes: 1024 }, { v: 4, bytes: 2048 }];
+  const [r] = G.buildRows([meta({ id: "cv_000000000001", version: 4, bytes: 2048, history })], { now: NOW, footprint: CanvasStore.footprint });
+  assert.equal(r.bytes, 4096);
+  assert.equal(r.size, "4.0 KB");
+  // A canvas stored before history: latest + agent copy, as before.
+  const [old] = G.buildRows([meta({ id: "cv_000000000002", version: 2, agentVersion: 1, bytes: 100, agentBytes: 50 })], { now: NOW, footprint: CanvasStore.footprint });
+  assert.equal(old.bytes, 150);
+});

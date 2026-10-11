@@ -65,16 +65,17 @@
    * then id, so the order is stable). Malformed metas are skipped, and so are canvases an incognito
    * window stored before Katashiro stopped running there (`noMirror`, #109): they are not listed
    * until the onInstalled cleanup (background.js) removes them. `size` is what the canvas
-   * takes against the budget: latest + the agent copy kept after a user save (§3.6).
+   * takes against the budget: its whole version history (§3.5, §3.6) — `footprint` (CanvasStore.footprint
+   * in the page); without it, latest + the agent copy, what a canvas took before history.
    */
-  function buildRows(metas, { now }) {
+  function buildRows(metas, { now, footprint }) {
     const rows = [];
     for (const m of metas || []) {
       if (!m || typeof m !== "object" || typeof m.id !== "string") continue;
       if (m.noMirror) continue;
       const kind = String(m.kind || "markdown");
       const at = Number.isFinite(m.at) ? m.at : 0;
-      const bytes = (m.bytes || 0) + (m.agentBytes || 0);
+      const bytes = typeof footprint === "function" ? footprint(m) : (m.bytes || 0) + (m.agentBytes || 0);
       const title = String(m.title || "Canvas").slice(0, TITLE_MAX);
       rows.push({
         id: m.id,

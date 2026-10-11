@@ -34,6 +34,8 @@
   const saveBtn = document.getElementById("canvas-save");
   const cancelBtn = document.getElementById("canvas-cancel");
   const revertBtn = document.getElementById("canvas-revert");
+  const undoBtn = document.getElementById("canvas-undo");
+  const redoBtn = document.getElementById("canvas-redo");
   const compareBtn = document.getElementById("canvas-compare");
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
@@ -79,6 +81,7 @@
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
   let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
   let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
+  let stepping = false;               // a ↶ / ↷ step is being stored (§3.5)
   const gate = CanvasCore.createLoadGate();
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
@@ -113,7 +116,7 @@
   async function updateButtons() {
     if (compareView) {
       // The compare tab is not the canvas (§3.10): nothing here can change it.
-      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, askBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, undoBtn, redoBtn, sendBtn, askBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
       return;
     }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
@@ -131,6 +134,16 @@
       } catch (_) { /* stays hidden */ }
     }
     revertBtn.hidden = !canRevert;
+    // ↶ / ↷ (§3.5): enabled from the walk in meta (CanvasStore), like Revert only in view mode.
+    const hb = CanvasCore.historyButtons({
+      kind: current && current.meta.kind, mode, compareView, deleted, busy: stepping,
+      canUndo: !!current && CanvasStore.canUndo(current.meta), canRedo: !!current && CanvasStore.canRedo(current.meta),
+    });
+    undoBtn.hidden = redoBtn.hidden = !hb.show;
+    undoBtn.disabled = hb.undo.disabled;
+    undoBtn.title = hb.undo.title;
+    redoBtn.disabled = hb.redo.disabled;
+    redoBtn.title = hb.redo.title;
     // markdown, slides and mermaid (a diagram source: download as .mmd, print, glow; never edited here).
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
@@ -281,15 +294,18 @@
     }
     const mk = CanvasStore.metaKey(canvasId);
     const lk = CanvasStore.latestKey(canvasId);
-    const ak = CanvasStore.agentKey(canvasId);
-    const got = await chrome.storage.local.get([mk, lk, ak]);
+    const got = await chrome.storage.local.get([mk, lk]);
     if (!got[mk]) {
       notice("找不到這個畫布（可能已被刪除）。");
       return null;
     }
     const latest = got[lk] == null ? "" : got[lk];
-    // A compare tab shows the agent's last write (the agent copy exists only while it differs).
-    if (compareView) return { meta: got[mk], content: got[ak] != null ? got[ak] : latest, latest };
+    // A compare tab shows the agent's last write: its history entry (§3.5), the latest while it is.
+    if (compareView) {
+      const ak = CanvasStore.contentKey(got[mk], got[mk].agentVersion);
+      const agent = ak && ak !== lk ? (await chrome.storage.local.get(ak))[ak] : null;
+      return { meta: got[mk], content: agent != null ? agent : latest, latest };
+    }
     return { meta: got[mk], content: latest };
   }
 
@@ -371,9 +387,6 @@
       if (ranges) msg.glowRanges = ranges;
     }
     lastRenderedVersion = c.meta.version;
-    const shown = { agentVersion: c.meta.agentVersion, kind: c.meta.kind, content };
-    changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, shown);
-    lastShown = shown;
     startRender(msg);
   }
 
@@ -402,25 +415,26 @@
   }
 
   // 顯示變更 (§3.10, Brett 2026-10-11): one switch for every canvas tab (chrome.storage.local). While
-  // on, the latest agent write's markers are held, re-applied after every render until the next
-  // agent write; the baseline is what this tab showed before that write (CanvasCore.changesBaseAfter),
-  // or after a reload the agent copy when the user saved since. A compare's markers win while open.
+  // on, the markers are held and re-applied after every render. The baseline is the previous
+  // version in history (§3.5): previous → latest, any author, so a reloaded tab marks the same. A
+  // compare's markers win while it is open.
   let showChanges = false;
-  let changesBase = null;                   // the text this tab showed before the latest agent write
-  let lastShown = null;                     // { agentVersion, kind, content } of the last render here
   let heldFrom = "off";                     // what the held markers compare with (for the title)
   let heldSeq = 0;
   async function applyHeldChanges() {
     if (compareView || comparing || !rendered || printing || !current) return;
     const seq = ++heldSeq, c = current;
-    let agentCopy = null;
-    if (showChanges && changesBase == null && c.meta.author === "user") {
-      try { agentCopy = await store.readAgentCopy(canvasId); } catch (_) { /* nothing to compare with */ }
+    let previous = null;
+    if (showChanges && CanvasCore.textKind(c.meta.kind)) {
+      try {
+        const p = await store.readPrevious(canvasId);
+        // Read lock-free: only if it is still the version before the one shown.
+        if (p && p.version === CanvasStore.previousVersion(c.meta)) previous = p.content;
+      } catch (_) { /* nothing to compare with */ }
     }
     if (seq !== heldSeq || c !== current || comparing || !rendered) return;   // superseded meanwhile
     const h = CanvasCore.heldChanges({
-      on: showChanges, comparing, editing: mode !== "view", kind: c.meta.kind,
-      base: changesBase, author: c.meta.author, content: c.content, agentCopy,
+      on: showChanges, comparing, editing: mode !== "view", kind: c.meta.kind, previous, content: c.content,
     });
     heldFrom = h.from;
     updateShowChangesBtn();
@@ -592,15 +606,42 @@
   }
   revertBtn.addEventListener("click", async () => {
     if (!current) return;
-    // §3.5: "cannot be undone" unless the folder mirror holds the current text (then git can).
-    const undo = mirrorHoldsLatest()
-      ? "Katashiro 裡無法復原；目前的內容已寫進資料夾，若你有把資料夾 commit 進 git，可以從 git 找回（資料夾裡的檔案接著會被這次還原改寫）。"
-      : "這個動作無法復原。";
+    // §3.5: Revert is a new version, so ↶ brings the replaced text back — unless N = 1 trims it;
+    // then "cannot be undone", except when the folder mirror holds the current text (then git can).
+    let max = CanvasStore.HISTORY_DEFAULT;
+    try { max = await store.getHistoryMax(); } catch (_) { /* the default */ }
+    const undo = max >= 2
+      ? "之後可以按 ↶ 回到你目前的內容。"
+      : mirrorHoldsLatest()
+        ? "Katashiro 裡無法復原（版本紀錄只保留 1 版）；目前的內容已寫進資料夾，若你有把資料夾 commit 進 git，可以從 git 找回（資料夾裡的檔案接著會被這次還原改寫）。"
+        : "這個動作無法復原（版本紀錄只保留 1 版）。";
     if (!window.confirm(`還原成 agent 最後寫的版本？\n\n你目前的內容會被取代。${undo}`)) return;
     try { await store.revertToAgent({ id: canvasId, baseVersion: current.meta.version }); }
     catch (e) { notice(`還原失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
     closeCompareTabs();                     // Revert to agent's also ends a compare (§3.10)
   });
+
+  // --- ↶ / ↷ (§3.5, Brett 2026-10-11) ---------------------------------------------------------
+  // Each step saves the content of the next version along the walk as a new version (the store
+  // keeps the walk in meta); the header flashes which version's content it saved as which. No
+  // confirmation: nothing is lost, the replaced text stays in history.
+  async function stepHistory(dir) {
+    if (!current || compareView || mode !== "view" || stepping || deleted) return;
+    stepping = true;
+    updateButtons();
+    try {
+      const r = await store[dir]({ id: canvasId, baseVersion: current.meta.version });
+      flash(CanvasCore.historyStepNote(dir, r));
+    } catch (e) {
+      if (e && e.code === "stale") notice(`畫布剛被更新成 v${e.currentVersion}，請再按一次。`);
+      else notice(`${dir === "undo" ? "↶" : "↷"} 失敗：${CanvasCore.clipError((e && e.message) || e)}`);
+    } finally {
+      stepping = false;
+      updateButtons();
+    }
+  }
+  undoBtn.addEventListener("click", () => stepHistory("undo"));
+  redoBtn.addEventListener("click", () => stepHistory("redo"));
 
   // --- Compare with agent's (§3.10) -------------------------------------------------------------
   // The side panel does the tab moves (it holds the §3.1 split records and the canvas group); it
@@ -997,7 +1038,7 @@
     CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html")).catch(() => {});
   });
 
-  // #70: delete. No history to fall back on, so it says it cannot be undone.
+  // #70: delete. Its history goes with it (§3.5), so it says it cannot be undone.
   deleteBtn.addEventListener("click", async () => {
     const title = current ? current.meta.title : "";
     const kept = current && current.meta.file ? "\n資料夾裡的檔案不會被刪除。" : "";

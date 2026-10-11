@@ -44,7 +44,7 @@
     let metas;
     try { metas = await store.allMetas(); }
     catch (e) { notice(`讀取畫布失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
-    rows = G.buildRows(metas, { now: Date.now() });
+    rows = G.buildRows(metas, { now: Date.now(), footprint: CanvasStore.footprint });
     const live = new Set(rows.map((r) => r.id));
     for (const id of contents.keys()) if (!live.has(id)) contents.delete(id);
     await search();
