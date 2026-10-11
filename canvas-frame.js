@@ -230,8 +230,8 @@
   const reducedMotion = () => !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   // One timer per element and effect: a newer glow restarts it instead of being cut short by an old one.
   const markTimers = new WeakMap();
-  // ms = Infinity: held (no fade, no timer) — while a compare is open (Brett, 2026-10-11), until
-  // clearHeld().
+  // ms = Infinity: held (no fade, no timer) — while a compare is open or 顯示變更 is on (Brett,
+  // 2026-10-11), until clearHeld().
   function mark(el, cls, ms) {
     let timers = markTimers.get(el);
     if (!timers) markTimers.set(el, (timers = new Map()));
@@ -436,8 +436,8 @@
     if (m.type === "leaveEdit") { stopEdit(); return; }
     if (m.type === "highlight") { if (Number.isInteger(m.reqId)) highlight(m); return; }
     if (m.type === "glow") {
-      // Compare started (§3.10): glow the blocks that differ from the other side.
-      // hold: kept until the compare ends (glow{clear}); clear: drop held markers.
+      // Compare started, or 顯示變更 (§3.10): glow the blocks that differ from `against`.
+      // hold: kept until the next glow{} (the host re-sends it after each render); clear: drop held markers.
       clearHeld();
       if (m.clear === true) return;
       if (!editing && typeof m.against === "string" && (shownKind === "markdown" || shownKind === "slides")) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), m.hold === true ? Infinity : GLOW_MS);

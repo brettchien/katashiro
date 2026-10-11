@@ -267,6 +267,39 @@
     return { changed, removedAt };
   }
 
+  // Show changes (§3.10, Brett 2026-10-11): one global switch in the header; while on, the
+  // markers of the latest agent write are held (no fade) and re-applied after every render.
+  const SHOW_CHANGES_KEY = "canvas:showChanges";
+  const textKind = (k) => k === "markdown" || k === "slides";
+
+  /**
+   * The baseline after a render: `shown` = { version, kind, content } last rendered in this tab
+   * (null at load), `next` = { version, kind, author, content } about to render. An agent write
+   * newer than what was shown makes the shown text the baseline (what the tab showed before it);
+   * anything else keeps `base` (string | null), until the next agent write replaces it.
+   */
+  function changesBaseAfter(base, shown, next) {
+    if (!next || !textKind(next.kind)) return null;
+    if (shown && shown.kind !== next.kind) return null;
+    if (next.author === "agent" && shown && typeof shown.content === "string" && next.version > shown.version) return shown.content;
+    return typeof base === "string" ? base : null;
+  }
+
+  /**
+   * What the held markers compare the shown canvas with → { against: string | null, from }.
+   * from: "off" (switch off, a compare is open, editing, or not text), "write" (the baseline kept in
+   * this tab), "agentCopy" (no baseline, e.g. after a reload, but the user saved after the agent:
+   * their edits since the agent's last write), "same" (nothing differs), "none" (nothing to compare).
+   */
+  function heldChanges({ on, comparing, editing, kind, base, author, content, agentCopy }) {
+    if (!on || comparing || editing || !textKind(kind)) return { against: null, from: "off" };
+    let against = null, from = "none";
+    if (typeof base === "string") { against = base; from = "write"; }
+    else if (author === "user" && typeof agentCopy === "string") { against = agentCopy; from = "agentCopy"; }
+    if (against !== null && against === content) return { against: null, from: "same" };
+    return { against, from };
+  }
+
   /**
    * canvas_highlight anchoring (§3.10): `blocks` = [{ text, heading }] in document order (rendered
    * text, what the user sees). `find` must be inside exactly one block; `heading` must equal one
@@ -345,5 +378,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { SELECTION_MAX, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

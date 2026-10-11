@@ -74,3 +74,13 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   the canvas like its chat card (its open tab, else a new tab in the Canvas group); with the panel
   closed it opens ungrouped beside the gallery and says so. 🗑 asks first, then the canvas's open
   tab closes and the row disappears; an agent write elsewhere updates the list live.
+- **◐ 顯示變更 (ADR §3.10):** open a markdown canvas in two tabs (or two canvases) and click
+  **◐ 顯示變更** in one: it turns green (`aria-pressed="true"`) in both. Ask the agent to change a
+  paragraph: the changed block stays outlined (a removed one keeps its red line) instead of fading
+  after ~4 s; save an edit of your own: the markers stay and now include your edit. A second agent
+  write replaces them with that write's changes. Turn it off: the markers go, and the next agent
+  write fades as before; turn it on again: they come back at once. Reload the tab: after an agent
+  write nothing is marked (the switch's title says why); after a save of yours on top of it, your
+  edits since the agent are marked. While ✏️ editing nothing is marked; with ⇆ Compare open its
+  markers show instead, and these come back when the compare tab closes. The compare tab has no
+  switch; image canvases neither. Reload Chrome: the switch keeps its state.
