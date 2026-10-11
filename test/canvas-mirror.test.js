@@ -272,6 +272,85 @@ test("normalization without a version change is still mirrored (content hash, no
   assert.equal(await readText(env.dir, "c/n.md"), "- a\n");
 });
 
+// #98: one agent markdown write = one file write while a canvas tab will normalize it.
+function holdEnv({ rendering = true } = {}) {
+  const env = setup();
+  let t = 0;
+  const timers = [];
+  const retried = [];
+  env.hold = M.createNormalizeHold({
+    rendering: async () => rendering, retry: (id) => retried.push(id), waitMs: 5000, now: () => t,
+    setTimer: (fn, ms) => { const h = { fn, at: t + ms, cleared: false }; timers.push(h); return h; },
+    clearTimer: (h) => { if (h) h.cleared = true; },
+  });
+  env.tick = (ms) => { t += ms; for (const h of timers) if (!h.cleared && !h.fired && h.at <= t) { h.fired = true; h.fn(); } };
+  env.timers = timers;
+  env.retried = retried;
+  env.mirror = M.createCanvasMirror({
+    storage: env.storage, lock: memLock(), now: () => Date.UTC(2026, 9, 10), getRoot: async () => ({ dir: env.dir, folderId: env.folderId }),
+    holdForNormalization: env.hold.hold,
+  });
+  return env;
+}
+
+test("awaitsNormalization: only the agent's own markdown write, not normalized yet", () => {
+  const m = { kind: "markdown", normalized: false, author: "agent", version: 2, agentVersion: 2 };
+  assert.equal(M.awaitsNormalization(m), true);
+  assert.equal(M.awaitsNormalization({ ...m, normalized: true }), false);
+  assert.equal(M.awaitsNormalization({ ...m, kind: "slides" }), false);
+  assert.equal(M.awaitsNormalization({ ...m, author: "user", version: 3 }), false);     // a user save on top
+  assert.equal(M.awaitsNormalization(null), false);
+});
+
+test("normalization hold: a canvas tab open → the file is written once, normalized (#98)", async () => {
+  const env = holdEnv();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "N", content: "* a\n" });
+  assert.equal((await env.mirror.sync(id)).action, "held");
+  assert.equal(await readText(env.dir, "c/n.md"), null);
+  assert.equal((await env.mirror.sync(id)).action, "held");                   // any other sync meanwhile too
+  await env.store.applyNormalized({ id, version: 1, normalized: "- a\n" });
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  assert.equal(await readText(env.dir, "c/n.md"), "- a\n");
+  assert.ok(env.timers.every((h) => h.cleared));                               // the fallback is cancelled
+  env.tick(10_000);
+  assert.deepEqual(env.retried, []);
+});
+
+test("normalization hold: bounded — past the wait the raw text is written; a user save is not held", async () => {
+  const env = holdEnv();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "N", content: "* a\n" });
+  assert.equal((await env.mirror.sync(id)).action, "held");
+  env.tick(4999);
+  assert.deepEqual(env.retried, []);
+  env.tick(1);
+  assert.deepEqual(env.retried, [id]);                                         // the caller syncs again…
+  assert.equal((await env.mirror.sync(id)).action, "write");                   // …and it writes
+  assert.equal(await readText(env.dir, "c/n.md"), "* a\n");
+  // A newer agent version waits again; the user's save on top of it does not.
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "N", content: "* b\n" });
+  assert.equal((await env.mirror.sync(id)).action, "held");
+  await env.store.userSave({ id, baseVersion: 2, content: "mine\n" });
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  assert.equal(await readText(env.dir, "c/n.md"), "mine\n");
+});
+
+test("normalization hold: no canvas tab → written at once; slides and 重新寫入 never wait; the start check only without a file", async () => {
+  const env = holdEnv({ rendering: false });
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "N", content: "* a\n" });
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  const on = holdEnv();
+  const s = await on.store.agentWrite({ conversationId: "c", title: "S", kind: "slides", content: "# a" });
+  assert.equal((await on.mirror.sync(s.id)).action, "write");
+  // A new canvas: its tab's start check waits too (nothing on disk to check yet)…
+  const m = await on.store.agentWrite({ conversationId: "c", title: "M", content: "* a\n" });
+  assert.equal((await on.mirror.sync(m.id, { check: true })).action, "held");
+  assert.equal((await on.mirror.sync(m.id, { rewrite: true })).action, "write");
+  // …but with a file there, the start check runs (it looks for outside changes).
+  await on.store.agentWrite({ conversationId: "c", id: m.id, baseVersion: 1, title: "M", content: "* b\n" });
+  assert.notEqual((await on.mirror.sync(m.id, { check: true })).action, "held");
+  assert.equal(await readText(on.dir, "c/m.md"), "* b\n");
+});
+
 test("changed outside Katashiro: never overwritten; the latest goes to one conflict file per episode", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c_abc", title: "Plan", content: "v1\n" });

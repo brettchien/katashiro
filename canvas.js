@@ -52,10 +52,18 @@
   });
   // Folder mirror (§3.6): this tab writes its own saves to the folder, so it stays current with
   // the side panel closed. Only while Chrome already grants access; Reconnect folder asks.
+  // An agent markdown write this tab is about to normalize is written once, normalized (#98): the
+  // sync waits for it, bounded (CanvasMirror.createNormalizeHold). A dirty editor renders nothing,
+  // so then there is nothing to wait for here.
+  const normalizeHold = CanvasMirror.createNormalizeHold({
+    rendering: () => !(mode === "edit" && dirty),
+    retry: () => { syncFile(); },
+  });
   const mirror = CanvasMirror.createCanvasMirror({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
     getRoot: () => CanvasMirror.grantedRoot(),
+    holdForNormalization: normalizeHold.hold,
   });
 
   let frame = null;

@@ -304,6 +304,49 @@
     return (meta.filesByFolder && meta.filesByFolder[folderId]) || null;
   }
 
+  // --- Waiting for normalization (#98) ----------------------------------------------------------
+  // An agent markdown write is stored raw (normalized:false) and a canvas tab that renders it stores
+  // the editor's normalization moments later, without a version bump (§3.5). Mirrored right away,
+  // that is two file writes for one agent write (Dropbox / file watchers see both). So while a canvas
+  // tab is open the mirror waits for the normalized text, a bounded time: past it (the tab is being
+  // edited, normalization failed, …) the raw text is written as before. No tab: written at once.
+  const NORMALIZE_WAIT_MS = 5000;           // a little over the tool result's 4 s wait (sidepanel.js)
+
+  /** The latest is an agent markdown write still waiting for the editor's normalization. */
+  function awaitsNormalization(meta) {
+    return !!meta && meta.kind === "markdown" && meta.normalized === false && meta.author === "agent" && meta.version === meta.agentVersion;
+  }
+
+  /**
+   * The bounded wait, per canvas and agent version. hold(id, meta) → true while the mirror should
+   * not write yet: from the first sync of that version (if `rendering(id, meta)` says a canvas tab
+   * will normalize it) until `waitMs` later, when `retry(id)` runs a sync that writes. Any other state
+   * (normalized, a user save, a newer version) ends the hold.
+   * @param {{ rendering: (id, meta) => Promise<boolean> | boolean, retry: (id) => void, waitMs?: number,
+   *   now?: () => number, setTimer?: Function, clearTimer?: Function }} opts
+   */
+  function createNormalizeHold({ rendering, retry, waitMs = NORMALIZE_WAIT_MS, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
+    const holds = new Map();                 // id → { version, until, timer }
+    function release(id) {
+      const h = holds.get(id);
+      if (h) { clearTimer(h.timer); holds.delete(id); }
+    }
+    async function hold(id, meta) {
+      if (!awaitsNormalization(meta)) { release(id); return false; }
+      const h = holds.get(id);
+      if (h && h.version === meta.agentVersion) return now() < h.until;
+      release(id);
+      let wait = false;
+      try { wait = !!(await rendering(id, meta)); } catch (_) { /* unknown: write now */ }
+      if (!wait) return false;
+      const cur = holds.get(id);                // a concurrent hold() for this version got here first
+      if (cur && cur.version === meta.agentVersion) return now() < cur.until;
+      holds.set(id, { version: meta.agentVersion, until: now() + waitMs, timer: setTimer(() => retry(id), waitMs) });
+      return true;
+    }
+    return { hold, release };
+  }
+
   /**
    * @param {object} deps
    * @param {{ get, set }} deps.storage       chrome.storage.local (the canvas store's area)
@@ -312,6 +355,9 @@
    *        is granted now (no prompt); null = no folder or not connected → nothing is written
    * @param {() => number} [deps.now]
    * @param {(bytes: Uint8Array) => Promise<string>} [deps.sha256]
+   * @param {(id: string, meta: object) => Promise<boolean> | boolean} [deps.holdForNormalization]
+   *        asked on every sync but 重新寫入 and a start check of a file (#98); true = write nothing now
+   *        (sync returns { action: "held" }), a later sync writes it. createNormalizeHold().hold.
    */
   function createCanvasMirror(deps) {
     const storage = deps.storage;
@@ -441,6 +487,14 @@
         if (!meta || meta.noMirror) return { action: "skipped" };
         const content = got[latestKey(id)] == null ? "" : got[latestKey(id)];
         const prev = fileFor(meta, root.folderId);
+        // #98: an agent markdown write an open canvas tab is about to normalize is written once,
+        // normalized, rather than raw and then again; the hold is bounded (createNormalizeHold).
+        // Never for 重新寫入 (it writes what is stored). The check at a tab's start only when there
+        // is no file yet (a new canvas: its tab opens right after canvas_open): with a file, it looks
+        // for outside changes, which a later sync with unchanged text would not.
+        if (!rewrite && (!check || !prev) && deps.holdForNormalization && (await deps.holdForNormalization(id, meta))) {
+          return { action: "held" };
+        }
         // Back to a folder used before: its remembered state becomes meta.file, so no shortcut.
         const returning = !!prev && prev !== meta.file;
         let file = prev;
@@ -659,7 +713,7 @@
   }
 
   return {
-    createCanvasMirror, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
+    createCanvasMirror, createNormalizeHold, awaitsNormalization, NORMALIZE_WAIT_MS, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
     onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, mermaidMarkdown, stateOf, describeState, mdPath, assetPath, jsonPath,
     folderStatus, grantedRoot, requestAccess, pickFolder, stopMirror, NOT_A_FILE, SLUG_MAX, SLUG_MAX_BYTES,
   };

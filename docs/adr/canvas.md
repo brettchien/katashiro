@@ -645,6 +645,15 @@ is silent, the conservative choice:
   still covers a file that appears there after the slug is assigned.
 - `fileSyncedVersion` also moves on when a new version has the same content as the file (an agent
   rewrite with the same text), so the Revert dialog does not under-promise.
+- **One file write per agent markdown write (#98).** Such a write is stored raw and normalized by a
+  canvas tab moments later without a version bump (§3.5); mirrored at once, the file would be
+  written twice. So while a canvas tab of it is open, the panel's and the tab's syncs hold the
+  write (`{action:"held"}`, `CanvasMirror.createNormalizeHold`) until the normalization lands, at
+  most 5 s (just over the tool result's 4 s wait); past that the raw text is written as before, and
+  the normalization is a second write. A new canvas waits too (`canvas_open` opens its tab right
+  after the write; the tab's start check holds while there is no file yet). With no canvas tab open,
+  or a tab with unsaved edits (it renders nothing), it is written at once. A user save is never
+  held, nor 📁 重新寫入, nor the start check of an existing file (it looks for outside changes).
 - Until multi-conversation gives conversations a title, the conversation slug is the slugged
   `conversationId` (`c_…`). Slugs are also capped at 160 UTF-8 bytes, so a conflict file name stays
   under the common 255-byte limit.

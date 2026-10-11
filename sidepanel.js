@@ -2210,10 +2210,18 @@ function confirmEvictCard({ evict }, conn) {
 // canvas tabs write their own saves, so the folder stays current with the panel closed. Both are
 // serialized by the canvas:<id> lock, and a sync with nothing new is a no-op. Writes happen only
 // while Chrome already grants access: the panel never prompts on its own (that needs a click).
+// #98: while a canvas tab is open, an agent markdown write is mirrored once, after that tab's
+// normalization (bounded wait, CanvasMirror.createNormalizeHold); with none open, at once as before.
+// A new canvas (v1) waits too: canvas_open opens its tab right after the write (onCanvasWrite).
+const canvasNormalizeHold = CanvasMirror.createNormalizeHold({
+  rendering: async (id, meta) => meta.version === 1 || !!(await findCanvasTab(id)),
+  retry: (id) => { canvasMirrorPending.add(id); runCanvasMirror(); },
+});
 const canvasMirror = CanvasMirror.createCanvasMirror({
   storage: chrome.storage.local,
   lock: (name, fn) => navigator.locks.request(name, fn),
   getRoot: () => CanvasMirror.grantedRoot(),
+  holdForNormalization: canvasNormalizeHold.hold,
 });
 const canvasMirrorPending = new Set();
 let canvasMirrorRunning = false;
