@@ -128,6 +128,7 @@
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
     compareBtn.hidden = !(canRevert && textKind && !!frame);
     showChangesBtn.hidden = !textKind;
+    updateShowChangesBtn();             // editing changes its title (#110)
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
@@ -379,6 +380,7 @@
     const gen = compareGen;
     if ((await compareStillOpen()) || gen !== compareGen || !comparing) return;
     comparing = false;
+    updateShowChangesBtn();
     applyHeldChanges();                     // clears the compare's markers; 顯示變更's come back if on
   }
 
@@ -407,14 +409,11 @@
     updateShowChangesBtn();
     toFrame(h.against === null ? { type: "glow", clear: true } : { type: "glow", against: h.against, hold: true });
   }
+  // Also from updateButtons and wherever a compare starts or ends (#110): entering edit or a
+  // compare changes what the title should say without a new heldChanges answer.
   function updateShowChangesBtn() {
     showChangesBtn.setAttribute("aria-pressed", String(showChanges));
-    showChangesBtn.title = !showChanges
-      ? "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）"
-      : heldFrom === "agentCopy" ? "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）"
-      : heldFrom === "off" && mode !== "view" ? "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉"
-      : heldFrom === "none" ? "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示"
-      : "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+    showChangesBtn.title = CanvasCore.showChangesTitle({ on: showChanges, from: heldFrom, editing: mode !== "view", comparing });
   }
   function setShowChanges(on) {
     if (on === showChanges) return;
@@ -435,7 +434,7 @@
     chrome.tabs.onRemoved.addListener(endCompareIfClosed);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
     // A reloaded canvas tab picks up a compare tab that is still open; rendered{} then marks.
-    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; if (rendered) holdCompareGlow(); } });
+    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; updateShowChangesBtn(); if (rendered) holdCompareGlow(); } });
   }
 
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
@@ -599,6 +598,7 @@
       // Both panes mark the differing blocks, held while the compare is open.
       compareGen++;
       comparing = true;
+      updateShowChangesBtn();
       holdCompareGlow();
     } finally {
       compareBtn.disabled = false;

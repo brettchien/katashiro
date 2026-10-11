@@ -263,6 +263,22 @@ test("show changes: what the held markers compare with", () => {
   }
 });
 
+test("show changes: the button title follows editing and the compare, not only the last heldChanges (#110)", () => {
+  const t = (o) => C.showChangesTitle({ on: true, from: "write", editing: false, comparing: false, ...o });
+  assert.match(t({ on: false }), /^顯示變更（關）/);
+  assert.match(t({ on: false, editing: true, comparing: true }), /^顯示變更（關）/);
+  // the last answer was "write" (marking), then the user clicked ✏️ Edit / ⇆ Compare
+  assert.match(t({ editing: true }), /編輯時不標示/);
+  assert.match(t({ comparing: true }), /比較開著時/);
+  assert.match(t({ editing: true, comparing: true }), /編輯時不標示/);
+  // back in the view
+  assert.match(t({}), /一直標示/);
+  assert.match(t({ from: "same" }), /一直標示/);
+  assert.match(t({ from: "agentCopy" }), /agent 最後寫入之後/);
+  assert.match(t({ from: "none" }), /沒有 agent 寫入前的版本/);
+  assert.match(t({ from: "off" }), /一直標示/);                // e.g. computed while a compare was open
+});
+
 test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {
   const prev = Array.from({ length: 1500 }, (_, i) => `p:${i}`);
   const next = ["p:0", ...Array.from({ length: 1000 }, (_, i) => `q:${i}`), "p:1499"];

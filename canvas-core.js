@@ -335,6 +335,20 @@
   }
 
   /**
+   * The 顯示變更 button's title for the state the tab is in now (#110): what the markers show, or why
+   * none show. Editing and an open compare win over `from` (heldChanges' last answer), which is
+   * not recomputed while either lasts.
+   */
+  function showChangesTitle({ on, from, editing, comparing }) {
+    if (!on) return "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）";
+    if (editing) return "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉";
+    if (comparing) return "顯示變更（開）：比較開著時標示的是跟 agent 版本的差異，關閉比較後恢復。按一下關閉";
+    if (from === "agentCopy") return "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）";
+    if (from === "none") return "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示";
+    return "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+  }
+
+  /**
    * canvas_highlight anchoring (§3.10): `blocks` = [{ text, heading }] in document order (rendered
    * text, what the user sees). `find` must be inside exactly one block; `heading` must equal one
    * heading's text. Whitespace is collapsed on both sides; matching is case-sensitive.
@@ -412,5 +426,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
