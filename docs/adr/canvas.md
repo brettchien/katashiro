@@ -649,7 +649,8 @@ is silent, the conservative choice:
 - **One conflict file per episode:** while the main file stays changed, later saves rewrite the same
   `.katashiro-<time>.md` as long as it is still exactly what Katashiro wrote there; once the user
   edits it too, a new one is made. If the disk already holds exactly the new content, it is adopted
-  (nothing written), even for a file Katashiro never wrote.
+  (nothing written). For a file Katashiro never wrote, this can only happen when the file appeared
+  at the path after the slug was assigned: a new slug skips any existing `.md` (above) (#98).
 - Known limit: between hashing the file and the swap file's move into place (`createWritable` →
   `close`) is a window of a few ms in which an outside write would be overwritten. File System
   Access has no compare-and-swap; the window is accepted.
