@@ -882,6 +882,21 @@ agent's last write is the baseline.
     *`canvas_patch` as implemented:* a patch is an agent version like any other, so it glows by
     the same block diff; the exact ranges are computed (`agentPatch` returns them) but not yet
     sent to the frame.
+  - *◐ 顯示變更 (Brett, 2026-10-11: "the difference disappears after some time").* A header switch
+    on markdown and slides canvases (not in a compare tab), stored once for all canvas tabs
+    (`canvas:showChanges` in `chrome.storage.local`; open tabs follow through `storage.onChanged`).
+    While on, the markers of the latest agent write are **held** (the compare's no-fade mode) and
+    re-applied after every render (`glow{against, hold}` on `rendered{}`), until the next agent
+    write replaces them with its own; turning it off clears them (later writes fade as before),
+    turning it on marks at once. **Baseline** (`CanvasCore.changesBaseAfter` / `heldChanges`): the
+    text this tab showed just before the latest agent write, kept in the host's memory (not the
+    frame's, so it survives a frame remount). Saves after that write keep the baseline, so the
+    markers then show the agent's change and the user's edits together, i.e. everything since
+    before the write. No history is stored (§3.5), so a reloaded tab has no such text: if the user
+    saved after the agent's last write, it marks the latest against the **agent copy** (the user's
+    edits since the agent); otherwise nothing is marked until the next agent write, and the
+    switch's title says so. While editing nothing is marked, and while a compare is open its
+    markers win; when it ends, these come back.
   - *Pointing:* the label is placed in the flow just above the block (before the table for a row,
     at the top of a list item), so it never covers text; it shifts the content below while shown.
 - **Skill (Brett, 2026-10-10).** `skills/katashiro-point-at` (#67) teaches agents when and how to
@@ -948,6 +963,10 @@ agent's last write is the baseline.
   iframes are shown as **links** only: a click goes through `openLink` (§3.2) and opens a new tab.
   Embedding would need `frame-src` to a third party from the sandbox, a new egress path, and
   YouTube's embed may also require a Referer that an opaque-origin frame does not send.
+- **No cloud publishing (Brett, 2026-10-11).** Publishing a canvas to the cloud is not a Katashiro
+  feature: it is the agent's own capability (`canvas_read` → the agent's own storage and
+  credentials), so Katashiro binds to no host. Agents should confirm with the user before
+  publishing, since it sends canvas content (including user edits) outside the browser.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 

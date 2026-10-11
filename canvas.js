@@ -36,6 +36,7 @@
   const revertBtn = document.getElementById("canvas-revert");
   const compareBtn = document.getElementById("canvas-compare");
   const endCompareBtn = document.getElementById("canvas-end-compare");
+  const showChangesBtn = document.getElementById("canvas-show-changes");
   // The compare tab's own way out (Brett, 2026-10-11): closing it ends the compare (§3.10).
   if (compareView) {
     endCompareBtn.hidden = false;
@@ -104,7 +105,7 @@
   async function updateButtons() {
     if (compareView) {
       // The compare tab is not the canvas (§3.10): nothing here can change it.
-      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, askBtn, compareBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, askBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
       return;
     }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
@@ -125,6 +126,7 @@
     const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
     compareBtn.hidden = !(canRevert && textKind && !!frame);
+    showChangesBtn.hidden = !textKind;
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
@@ -338,9 +340,13 @@
     if (!frame || !frameReady || current !== c) return;         // superseded while reading
     const msg = { type: "render", kind: c.meta.kind, version: c.meta.version, content };
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
-    // Glow on every agent write (§3.10): the frame compares with what it showed before.
-    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion) msg.glowPrev = true;
+    // Glow on every agent write (§3.10): the frame compares with what it showed before. With 顯示變更
+    // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
+    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) msg.glowPrev = true;
     lastRenderedVersion = c.meta.version;
+    const shown = { agentVersion: c.meta.agentVersion, kind: c.meta.kind, content };
+    changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, shown);
+    lastShown = shown;
     startRender(msg);
   }
 
@@ -364,8 +370,58 @@
     const gen = compareGen;
     if ((await compareStillOpen()) || gen !== compareGen || !comparing) return;
     comparing = false;
-    toFrame({ type: "glow", clear: true });
+    applyHeldChanges();                     // clears the compare's markers; 顯示變更's come back if on
   }
+
+  // 顯示變更 (§3.10, Brett 2026-10-11): one switch for every canvas tab (chrome.storage.local). While
+  // on, the latest agent write's markers are held, re-applied after every render until the next
+  // agent write; the baseline is what this tab showed before that write (CanvasCore.changesBaseAfter),
+  // or after a reload the agent copy when the user saved since. A compare's markers win while open.
+  let showChanges = false;
+  let changesBase = null;                   // the text this tab showed before the latest agent write
+  let lastShown = null;                     // { agentVersion, kind, content } of the last render here
+  let heldFrom = "off";                     // what the held markers compare with (for the title)
+  let heldSeq = 0;
+  async function applyHeldChanges() {
+    if (compareView || comparing || !rendered || printing || !current) return;
+    const seq = ++heldSeq, c = current;
+    let agentCopy = null;
+    if (showChanges && changesBase == null && c.meta.author === "user") {
+      try { agentCopy = await store.readAgentCopy(canvasId); } catch (_) { /* nothing to compare with */ }
+    }
+    if (seq !== heldSeq || c !== current || comparing || !rendered) return;   // superseded meanwhile
+    const h = CanvasCore.heldChanges({
+      on: showChanges, comparing, editing: mode !== "view", kind: c.meta.kind,
+      base: changesBase, author: c.meta.author, content: c.content, agentCopy,
+    });
+    heldFrom = h.from;
+    updateShowChangesBtn();
+    toFrame(h.against === null ? { type: "glow", clear: true } : { type: "glow", against: h.against, hold: true });
+  }
+  function updateShowChangesBtn() {
+    showChangesBtn.setAttribute("aria-pressed", String(showChanges));
+    showChangesBtn.title = !showChanges
+      ? "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）"
+      : heldFrom === "agentCopy" ? "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）"
+      : heldFrom === "off" && mode !== "view" ? "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉"
+      : heldFrom === "none" ? "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示"
+      : "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+  }
+  function setShowChanges(on) {
+    if (on === showChanges) return;
+    showChanges = on;
+    updateShowChangesBtn();
+    applyHeldChanges();                     // on: marks now; off: clears the held markers
+  }
+  if (!compareView) {
+    updateShowChangesBtn();
+    chrome.storage.local.get(CanvasCore.SHOW_CHANGES_KEY).then((got) => setShowChanges(got[CanvasCore.SHOW_CHANGES_KEY] === true), () => {});
+    showChangesBtn.addEventListener("click", () => {
+      setShowChanges(!showChanges);
+      chrome.storage.local.set({ [CanvasCore.SHOW_CHANGES_KEY]: showChanges }).catch(() => {});   // other canvas tabs follow
+    });
+  }
+
   if (!compareView) {
     chrome.tabs.onRemoved.addListener(endCompareIfClosed);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
@@ -603,6 +659,7 @@
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (comparing && !compareView) holdCompareGlow();     // re-mark on the new DOM
+        else if (showChanges) applyHeldChanges();
         if (typeof m.normalized === "string" && m.version === awaitingNormalize) {
           awaitingNormalize = 0;
           store.applyNormalized({ id: canvasId, version: m.version, normalized: m.normalized }).catch(() => {});
@@ -752,6 +809,8 @@
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local") return;
+    const sc = changes[CanvasCore.SHOW_CHANGES_KEY];
+    if (sc && !compareView) setShowChanges(sc.newValue === true);
     const mc = changes[CanvasStore.metaKey(canvasId)];
     if (!mc && !changes[CanvasStore.latestKey(canvasId)]) return;
     // Only the folder mirror's bookkeeping changed: update the file status, no re-render.

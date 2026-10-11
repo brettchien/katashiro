@@ -221,6 +221,44 @@ test("diffBlocks: changed blocks glow, removed blocks leave a marker, a replacem
   assert.deepEqual(C.diffBlocks(null, undefined), { changed: [], removedAt: [] });
 });
 
+test("show changes: an agent write makes what the tab showed before the baseline, until the next one", () => {
+  // shown / next: { agentVersion, kind, content } (agentVersion = the version the agent last wrote).
+  const md = (agentVersion, content) => ({ agentVersion, kind: "markdown", content });
+  assert.equal(C.SHOW_CHANGES_KEY, "canvas:showChanges");
+  // Agent v2 over what was shown (v1): v1's text is the baseline.
+  assert.equal(C.changesBaseAfter(null, md(1, "a"), md(2, "b")), "a");
+  // A user save (agentVersion unchanged), or the §3.5 normalization re-render, keeps it.
+  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "c")), "a");
+  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "b2")), "a");
+  // The next agent write replaces it with what was shown just before that write.
+  assert.equal(C.changesBaseAfter("a", md(2, "c"), md(4, "d")), "c");
+  // An agent write never rendered here (written while editing, then the user saved on top):
+  // the next render is a user save, but agentVersion moved → what was shown before is the baseline.
+  assert.equal(C.changesBaseAfter("a", md(4, "d"), md(5, "f")), "d");
+  // Nothing shown yet (tab just loaded): no baseline.
+  assert.equal(C.changesBaseAfter(null, null, md(5, "e")), null);
+  // Not text, or the kind changed: none.
+  assert.equal(C.changesBaseAfter("a", { agentVersion: 1, kind: "image", content: {} }, { agentVersion: 2, kind: "image", content: {} }), null);
+  assert.equal(C.changesBaseAfter("a", md(1, "a"), { agentVersion: 2, kind: "slides", content: "x" }), null);
+});
+
+test("show changes: what the held markers compare with", () => {
+  const base = { on: true, comparing: false, editing: false, kind: "slides", base: null, author: "agent", content: "now", agentCopy: null };
+  // The baseline kept in this tab wins.
+  assert.deepEqual(C.heldChanges({ ...base, base: "before" }), { against: "before", from: "write" });
+  assert.deepEqual(C.heldChanges({ ...base, base: "before", author: "user", agentCopy: "agent" }), { against: "before", from: "write" });
+  // No baseline (reloaded): the user's edits since the agent's last write.
+  assert.deepEqual(C.heldChanges({ ...base, author: "user", agentCopy: "agent" }), { against: "agent", from: "agentCopy" });
+  // No baseline and the latest is the agent's: nothing to compare with.
+  assert.deepEqual(C.heldChanges(base), { against: null, from: "none" });
+  assert.deepEqual(C.heldChanges({ ...base, author: "user" }), { against: null, from: "none" });     // no agent copy
+  assert.deepEqual(C.heldChanges({ ...base, base: "now" }), { against: null, from: "same" });
+  // Off, a compare open (its markers win), editing, or not text: nothing held.
+  for (const o of [{ on: false }, { comparing: true }, { editing: true }, { kind: "image" }]) {
+    assert.deepEqual(C.heldChanges({ ...base, base: "before", ...o }), { against: null, from: "off" });
+  }
+});
+
 test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {
   const prev = Array.from({ length: 1500 }, (_, i) => `p:${i}`);
   const next = ["p:0", ...Array.from({ length: 1000 }, (_, i) => `q:${i}`), "p:1499"];
