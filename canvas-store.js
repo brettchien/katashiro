@@ -8,8 +8,9 @@
 //   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
-// filesByFolder. noMirror marks a canvas an incognito window stored before Katashiro stopped running
-// in incognito (#109); none is created any more, and the update removes them (incognitoLeftovers).
+// filesByFolder. patchRanges: what the latest canvas_patch changed (§3.10, #107). noMirror marks
+// a canvas an incognito window stored before Katashiro stopped running in incognito (#109); none is
+// created any more, and the update removes them (incognitoLeftovers).
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
 // canvas's own (`canvas:<id>`) and, nested inside it for the index, `canvas:index` — always in
@@ -448,12 +449,15 @@
     // An agent version on top of `cur` (under the canvas lock): the next revision, authored by the
     // agent, which the agent has seen; markdown waits for normalization again (§3.5). Content and
     // meta in one set(); the agent copy goes (the latest is the agent's write again).
-    async function storeAgentVersion(cur, { title, content, bytes, at }) {
+    // patchRanges: what a canvas_patch changed, in this text (planPatch), so the canvas tab glows
+    // exactly that (§3.10, #107); any other write drops the previous patch's.
+    async function storeAgentVersion(cur, { title, content, bytes, at, ranges }) {
       const id = cur.id;
       const meta = {
         ...cur, title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
         agentSeenVersion: cur.version + 1, bytes, agentBytes: 0, normalized: cur.kind !== "markdown",
       };
+      if (ranges) meta.patchRanges = ranges; else delete meta.patchRanges;
       await storage.set({ [latestKey(id)]: content, [metaKey(id)]: meta });
       await storage.remove(agentKey(id));
       await updateIndex(cur.conversationId, indexEntry(meta));
@@ -514,7 +518,7 @@
         // tells the agent to canvas_read.
         const rebasedOver = cur.version === baseVersion ? null
           : { version: cur.version, author: cur.author, diffFromBase: await diffFromAgentCopy(cur, baseVersion, latest) };
-        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now() });
+        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges });
         result = {
           id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges, rebasedOver,
         };
@@ -618,6 +622,7 @@
         if (!cur || cur.kind !== "markdown" || cur.agentVersion !== version || cur.normalized) return;
         const got = await storage.get([latestKey(id), agentKey(id)]);
         const items = { [metaKey(id)]: { ...cur, normalized: true } };
+        delete items[metaKey(id)].patchRanges;          // offsets into the text before normalization
         if (got[agentKey(id)] != null) {
           items[agentKey(id)] = normalized;
           items[metaKey(id)].agentBytes = utf8Bytes(normalized);

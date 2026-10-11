@@ -301,6 +301,133 @@
     return { changed, removedAt };
   }
 
+  // --- canvas_patch's exact ranges (§3.10, #107) -----------------------------------------------
+  // A patch knows what it changed: planPatch's ranges, offsets in the new text. The frame glows
+  // exactly that text, not the blocks a diff guesses: it renders a copy of the text with marks
+  // around each range (markRanges), detached, finds the marks in each rendered block's text
+  // (takeMarks), and wraps the same characters of the shown block. Marks never go where they could
+  // change the document's structure (a block's leading syntax, a fence, a table's delimiter row, a
+  // separator), so the copy has the same blocks as the view; where a mark still changes a block's
+  // text (e.g. it split an escape), that block glows whole instead.
+  // The marks are rare Unicode punctuation (Buginese / Tai Tham signs), not private-use characters:
+  // CommonMark decides whether * and _ open or close emphasis by their neighbours, and a punctuation
+  // neighbour keeps `_em_` emphasis where a letter-like one would not.
+  const MARK_OPEN = "᨞", MARK_CLOSE = "᨟", MARK_POINT = "᪨";
+  const MARK_RE = /[᨞᨟᪨]/;
+  const PATCH_RANGES_MAX = 50;                // canvas-store PATCH_EDITS_MAX: one range per edit
+
+  /**
+   * The ranges to glow for this meta, or null. Only the agent's own latest write (a user save or a
+   * later write makes them stale; applyNormalized drops them when it rewrites the text), and only
+   * well-formed: sorted, non-overlapping, integer offsets.
+   */
+  function patchGlowRanges(meta) {
+    if (!meta || meta.author !== "agent" || meta.version !== meta.agentVersion) return null;
+    const r = meta.patchRanges;
+    if (!Array.isArray(r) || !r.length || r.length > PATCH_RANGES_MAX) return null;
+    let last = 0;
+    for (const x of r) {
+      if (!x || !Number.isInteger(x.start) || !Number.isInteger(x.end) || x.start < last || x.end < x.start) return null;
+      last = x.end;
+    }
+    return r.map((x) => ({ start: x.start, end: x.end }));
+  }
+
+  // Lines a mark must stay out of: one there would change what the line is. Blank, a fence, a
+  // thematic break / setext underline / slide separator, a table's delimiter row, a link reference
+  // definition, and Milkdown's "<br />" lines (cleanEditorMarkdown drops them).
+  const SKIP_LINE_RES = [
+    /^\s*$/, /^\s*(`{3,}|~{3,})/, /^ {0,3}(?:[-*_=][ \t]*)+$/, /^[\s|:]*-[\s|:-]*$/, /^ {0,3}\[[^\]]+\]:/, /^\s*<br\s*\/?>\s*$/i,
+  ];
+  const skipLine = (line) => SKIP_LINE_RES.some((re) => re.test(line));
+  // A line's leading syntax (indent, quote and list markers, a task box, a heading's #s, a table's
+  // first pipe) and trailing syntax (a heading's closing #s, a table's last pipe, a hard break's
+  // backslash or spaces): marks go inside them.
+  const LINE_HEAD_RE = /^[ \t]*(?:(?:>[ \t]?|[-+*][ \t]+|\d{1,9}[.)][ \t]+)[ \t]*)*(?:\[[ xX]\][ \t]+)?(?:#{1,6}(?:[ \t]+|$))?\|?[ \t]*/;
+  function lineBody(line) {
+    const head = LINE_HEAD_RE.exec(line)[0].length;
+    const heading = /^[ \t]*(?:>[ \t]?)*#{1,6}(?:[ \t]|$)/.test(line);
+    const tail = (heading ? /(?:[ \t]+#+)?[ \t\r]*$/ : /[ \t]*(?:\\|\|)?[ \t\r]*$/).exec(line.slice(head))[0].length;
+    return { from: head, to: Math.max(head, line.length - tail) };
+  }
+
+  /**
+   * `text` with MARK_OPEN / MARK_CLOSE around each range, per line and inside the line's syntax
+   * (lineBody), skipping lines a mark would change (skipLine); an empty range (a deletion) is one
+   * MARK_POINT at the nearest line body. null when the text already holds a mark character or a
+   * range is out of bounds (the caller then falls back to the block diff).
+   */
+  function markRanges(text, ranges) {
+    const src = String(text == null ? "" : text);
+    if (MARK_RE.test(src) || !Array.isArray(ranges)) return null;
+    const lines = [];
+    for (let at = 0; ;) {
+      const nl = src.indexOf("\n", at);
+      const end = nl === -1 ? src.length : nl;
+      const line = src.slice(at, end);
+      const skip = skipLine(line);
+      const body = skip ? null : lineBody(line);
+      lines.push({ start: at, end, skip, from: body ? at + body.from : at, to: body ? at + body.to : at });
+      if (nl === -1) break;
+      at = nl + 1;
+    }
+    const lineAt = (p) => {                   // the last line starting at or before p
+      let lo = 0, hi = lines.length - 1;
+      while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lines[mid].start <= p) lo = mid; else hi = mid - 1; }
+      return lo;
+    };
+    const marks = [];                         // { at, ch, order }: closes before points before opens
+    for (const r of ranges) {
+      if (!r || !Number.isInteger(r.start) || !Number.isInteger(r.end) || r.start < 0 || r.end < r.start || r.end > src.length) return null;
+      if (r.start === r.end) {
+        // A deletion: the point goes to the next line with content (what now stands where the
+        // removed text was), else the previous one.
+        let i = lineAt(r.start), p = null;
+        for (let k = i; k < lines.length && p === null; k++) {
+          const L = lines[k];
+          if (!L.skip && L.to > L.from) p = k === i ? Math.min(Math.max(r.start, L.from), L.to) : L.from;
+        }
+        for (let k = i - 1; k >= 0 && p === null; k--) if (!lines[k].skip && lines[k].to > lines[k].from) p = lines[k].to;
+        if (p !== null) marks.push({ at: p, ch: MARK_POINT, order: 1 });
+        continue;
+      }
+      for (let k = lineAt(r.start); k < lines.length && lines[k].start < r.end; k++) {
+        const L = lines[k];
+        if (L.skip) continue;
+        let s = Math.max(r.start, L.from), e = Math.min(r.end, L.to);
+        // Not on the edge whitespace, nor, in a table row, on a cell's pipe: a mark beside the pipe
+        // would land in the neighbouring cell (`| 1 |` replaced must not touch the cell before it).
+        const pipes = src.slice(L.start, L.end).includes("|");
+        const edge = (i) => src[i] === " " || src[i] === "\t" || (pipes && src[i] === "|" && src[i - 1] !== "\\");
+        while (s < e && edge(s)) s++;
+        while (e > s && edge(e - 1)) e--;
+        if (s < e) marks.push({ at: s, ch: MARK_OPEN, order: 2 }, { at: e, ch: MARK_CLOSE, order: 0 });
+      }
+    }
+    marks.sort((a, b) => a.at - b.at || a.order - b.order);
+    let out = "", at = 0;
+    for (const m of marks) { out += src.slice(at, m.at) + m.ch; at = m.at; }
+    return out + src.slice(at);
+  }
+
+  /**
+   * One rendered block's text with marks → { text (marks removed), spans: [[from, to]], points:
+   * [offset] }, offsets in `text`. An unmatched close is ignored; an open left open runs to the end.
+   */
+  function takeMarks(s) {
+    const str = String(s == null ? "" : s);
+    let text = "", open = -1;
+    const spans = [], points = [];
+    for (const ch of str) {
+      if (ch === MARK_OPEN) { if (open < 0) open = text.length; }
+      else if (ch === MARK_CLOSE) { if (open >= 0 && text.length > open) spans.push([open, text.length]); open = -1; }
+      else if (ch === MARK_POINT) points.push(text.length);
+      else text += ch;
+    }
+    if (open >= 0 && text.length > open) spans.push([open, text.length]);
+    return { text, spans, points };
+  }
+
   // Show changes (§3.10, Brett 2026-10-11): one global switch in the header; while on, the
   // markers of the latest agent write are held (no fade) and re-applied after every render.
   const SHOW_CHANGES_KEY = "canvas:showChanges";
@@ -428,5 +555,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

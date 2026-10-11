@@ -418,3 +418,100 @@ test("mermaid: a text kind for glow and 顯示變更 (one block), unlike image",
   const h = C.heldChanges({ on: true, comparing: false, editing: false, kind: "mermaid", base: "graph TD\nA-->B", author: "agent", content: "graph TD\nA-->C", agentCopy: null });
   assert.deepEqual(h, { against: "graph TD\nA-->B", from: "write" });
 });
+
+// --- canvas_patch's exact ranges (§3.10, #107) -------------------------------------------------
+
+test("patchGlowRanges: only the agent's own latest write, only well-formed ranges", () => {
+  const meta = { author: "agent", version: 4, agentVersion: 4, patchRanges: [{ start: 0, end: 3 }, { start: 3, end: 3 }, { start: 9, end: 12 }] };
+  assert.deepEqual(C.patchGlowRanges(meta), meta.patchRanges);
+  assert.equal(C.patchGlowRanges({ ...meta, author: "user", version: 5 }), null);         // saved over since
+  assert.equal(C.patchGlowRanges({ ...meta, version: 5 }), null);
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: undefined }), null);
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: [] }), null);
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: [{ start: 5, end: 9 }, { start: 2, end: 3 }] }), null);   // not in order
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: [{ start: 5, end: 4 }] }), null);
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: [{ start: "0", end: 4 }] }), null);
+  assert.equal(C.patchGlowRanges({ ...meta, patchRanges: Array.from({ length: 51 }, (_, i) => ({ start: i, end: i })) }), null);
+  assert.equal(C.patchGlowRanges(null), null);
+});
+
+const O = C.MARK_OPEN, X = C.MARK_CLOSE, P = C.MARK_POINT;
+const at = (text, find, len = find.length) => { const s = text.indexOf(find); return { start: s, end: s + len }; };
+
+test("markRanges: marks go inside a line's syntax, per line, never on lines whose meaning they would change", () => {
+  // inline: exactly the range
+  assert.equal(C.markRanges("Hello brave world", [at("Hello brave world", "brave")]), `Hello ${O}brave${X} world`);
+  // a heading / list item / quote replaced whole: after the marker, before a closing ##
+  const h = "## Title ##\n- item\n> quoted";
+  assert.equal(C.markRanges(h, [{ start: 0, end: h.length }]), `## ${O}Title${X} ##\n- ${O}item${X}\n> ${O}quoted${X}`);
+  // a table: not the delimiter row, not outside the pipes
+  const t = "| a | b |\n|---|:-:|\n| 1 | 2 |";
+  assert.equal(C.markRanges(t, [{ start: 0, end: t.length }]), `| ${O}a | b${X} |\n|---|:-:|\n| ${O}1 | 2${X} |`);
+  // one cell replaced with its pipes: the mark stays inside that cell
+  assert.equal(C.markRanges(t, [at(t, "| 1 |")]), `| a | b |\n|---|:-:|\n| ${O}1${X} | 2 |`);
+  // a fence's delimiters and a separator stay as they are; the code lines are marked
+  const f = "```js\nx = 1\n```\n\n---\n\nnext  ";
+  assert.equal(C.markRanges(f, [{ start: 0, end: f.length }]), `\`\`\`js\n${O}x = 1${X}\n\`\`\`\n\n---\n\n${O}next${X}  `);
+  // touching ranges: the close comes before the next open
+  assert.equal(C.markRanges("abcd", [{ start: 0, end: 2 }, { start: 2, end: 4 }]), `${O}ab${X}${O}cd${X}`);
+});
+
+test("markRanges: a deletion is a point at the text now standing there", () => {
+  assert.equal(C.markRanges("ab", [{ start: 1, end: 1 }]), `a${P}b`);
+  // a removed paragraph: the point goes to the start of the next block's text
+  assert.equal(C.markRanges("one\n\n## two", [{ start: 5, end: 5 }]), `one\n\n## ${P}two`);
+  // at the very end: the previous line's end
+  assert.equal(C.markRanges("one\n\n", [{ start: 5, end: 5 }]), `one${P}\n\n`);
+});
+
+test("markRanges: refuses text that already holds a mark character, and ranges out of bounds", () => {
+  assert.equal(C.markRanges(`a${O}b`, [{ start: 0, end: 1 }]), null);
+  assert.equal(C.markRanges("abc", [{ start: 2, end: 4 }]), null);
+  assert.equal(C.markRanges("abc", [{ start: -1, end: 1 }]), null);
+  assert.equal(C.markRanges("abc", "0-1"), null);
+});
+
+test("takeMarks: the block's text without marks, and where they were", () => {
+  assert.deepEqual(C.takeMarks(`a${O}bc${X}d${P}e`), { text: "abcde", spans: [[1, 3]], points: [4] });
+  assert.deepEqual(C.takeMarks(`${X}ab${O}cd`), { text: "abcd", spans: [[2, 4]], points: [] });   // unmatched close; open to the end
+  assert.deepEqual(C.takeMarks(`a${O}${X}b`), { text: "ab", spans: [], points: [] });           // empty span: nothing
+  assert.deepEqual(C.takeMarks("😀x"), { text: "😀x", spans: [], points: [] });
+});
+
+// The marks must not change what the document is: rendered through the chat's markdown-it, the
+// marked text has the same blocks with the same text once the marks are taken out.
+test("markRanges: the marked copy renders to the same blocks and text (markdown-it)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  for (const f of ["../vendor/markdown-it.iife.js", "../vendor/highlight.iife.js"]) {
+    new Function(fs.readFileSync(path.join(__dirname, f), "utf8")).call(globalThis);
+  }
+  const { md } = require("../markdown.js");
+  const blocks = (html) => (html.match(/<(h[1-6]|p|li|tr|pre|hr|blockquote|table)\b/g) || []).join(",");
+  const text = (html) => html.replace(/<[^>]*>/g, "").replace(/[\u1A1E\u1A1F\u1AA8]/g, "");
+  const doc = [
+    "# Plan ##", "", "Intro with **bold**, _em_ and `code`.", "Second line of it.  ", "Hard\\", "break",
+    "", "- one", "- [ ] task", "  1. nested", "", "> quote", "", "| a | b |", "|---|---|", "| 1 | 2 |",
+    "", "```js", "const x = 1;", "```", "", "Setext", "===", "", "***", "", "[ref]: https://example.com", "",
+    "See https://example.com now.",
+  ].join("\n");
+  // every line on its own, every pair of lines, and the whole document
+  const lines = doc.split("\n");
+  const starts = lines.map((_, i) => lines.slice(0, i).join("\n").length + (i ? 1 : 0));
+  const cases = [{ start: 0, end: doc.length }];
+  for (let i = 0; i < lines.length; i++) {
+    cases.push({ start: starts[i], end: starts[i] + lines[i].length });
+    if (i + 1 < lines.length) cases.push({ start: starts[i], end: starts[i + 1] + lines[i + 1].length });
+    cases.push({ start: starts[i], end: starts[i] });
+  }
+  // inline: each piece of inline syntax, with and without its delimiters
+  for (const f of ["**bold**", "bold", "_em_", "em", "`code`", "https://example.com"]) cases.push(at(doc, f));
+  const plain = md.render(doc);
+  for (const r of cases) {
+    const marked = C.markRanges(doc, [r]);
+    assert.ok(marked !== null);
+    const html = md.render(marked);
+    assert.equal(blocks(html), blocks(plain), `blocks differ for ${JSON.stringify(r)}`);
+    assert.equal(text(html), text(plain), `text differs for ${JSON.stringify(r)}`);
+  }
+});

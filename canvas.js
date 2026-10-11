@@ -355,7 +355,12 @@
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
     // Glow on every agent write (§3.10): the frame compares with what it showed before. With 顯示變更
     // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
-    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) msg.glowPrev = true;
+    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) {
+      msg.glowPrev = true;
+      // A canvas_patch (#107): the frame glows exactly the changed text, falling back to the block diff.
+      const ranges = CanvasCore.patchGlowRanges(c.meta);
+      if (ranges) msg.glowRanges = ranges;
+    }
     lastRenderedVersion = c.meta.version;
     const shown = { agentVersion: c.meta.agentVersion, kind: c.meta.kind, content };
     changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, shown);
@@ -464,7 +469,11 @@
     const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content };
     const same = c.content === c.latest;
     if (!same && typeof c.latest === "string") { msg.glowAgainst = c.latest; msg.glowHold = true; }
-    else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) msg.glowPrev = true;
+    else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) {
+      msg.glowPrev = true;
+      const ranges = CanvasCore.patchGlowRanges(c.meta);       // same text: the agent copy is the latest
+      if (ranges) msg.glowRanges = ranges;
+    }
     lastRenderedVersion = c.meta.agentVersion;
     notice(same ? "沒有差異：agent 最後寫的版本就是目前的版本（No differences）。" : "");
     startRender(msg);

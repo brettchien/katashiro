@@ -4,7 +4,7 @@
 //  in:  render{nonce, kind, version, seq, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
-//  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
+//  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
@@ -391,26 +391,28 @@
       .filter((el) => !el.closest(".ks-note, .ks-mermaid-error") && (el.closest(".ks-mermaid") || el) === el);
     const at = new Map(els.map((el, i) => [el, i]));
     const texts = els.map(() => "");
+    const nodes = els.map(() => []);
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
       const p = n.parentElement;
       if (!p || p.closest(".copy-btn, .ks-note, .ks-mermaid, .ks-mermaid-error")) continue;
       const b = p.closest(BLOCK_SEL);
-      if (b && at.has(b)) texts[at.get(b)] += n.data;
+      if (b && at.has(b)) { texts[at.get(b)] += n.data; nodes[at.get(b)].push(n); }
     }
+    // raw / nodes: the block's own text as it is and its text nodes in order (exact-range glow, #107).
     const out = [];
     els.forEach((el, i) => {
       const mermaid = diagramSource.has(el) ? diagramSource.get(el) : el.matches("pre") && el.querySelector(":scope > code.language-mermaid") ? texts[i] : null;
       if (mermaid !== null) {
         const text = CanvasCore.normText(mermaid);
-        out.push({ el, tag: diagramSource.has(el) ? "mermaid" : "pre", text, key: CanvasCore.mermaidKey(mermaid), heading: false });
+        out.push({ el, tag: diagramSource.has(el) ? "mermaid" : "pre", text, key: CanvasCore.mermaidKey(mermaid), heading: false, raw: texts[i], nodes: nodes[i] });
         return;
       }
       const tag = el.tagName.toLowerCase();
       const text = CanvasCore.normText(texts[i]);
       if (!text && tag !== "hr" && tag !== "img") return;
       const key = tag === "img" ? `img:${el.getAttribute("src") || ""}:${el.getAttribute("alt") || ""}` : `${tag}:${text}`;
-      out.push({ el, tag, text, key, heading: /^h[1-6]$/.test(tag) });
+      out.push({ el, tag, text, key, heading: /^h[1-6]$/.test(tag), raw: texts[i], nodes: nodes[i] });
     });
     return out;
   }
@@ -471,9 +473,85 @@
     }
   }
 
+  // canvas_patch's exact ranges (§3.10, #107): which characters of which shown blocks glow. The
+  // text is rendered again, detached, with marks around the ranges (CanvasCore.markRanges); block
+  // i of that copy is block i of the view, so its marks say which characters of block i changed.
+  // → [{ i, raw, spans, points }] (offsets in the block's own text), or null when the copy's blocks
+  // do not line up with the view's (the caller falls back to the block diff).
+  function rangeGlowPlan(kind, content, ranges, blocks) {
+    if (kind !== "markdown" && kind !== "slides") return null;
+    const marked = CanvasCore.markRanges(content, ranges);
+    if (marked === null) return null;
+    let copy;
+    if (kind === "slides") {
+      copy = CanvasCore.splitSlides(marked).flatMap((t) => {
+        const sec = document.createElement("section");
+        renderMarkdownInto(sec, t, { copyText: copyViaHost });
+        return blocksOf(sec);
+      });
+    } else {
+      const art = document.createElement("article");
+      renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(marked), { copyText: copyViaHost });
+      copy = blocksOf(art);
+    }
+    if (copy.length !== blocks.length) return null;
+    const plan = [];
+    for (let i = 0; i < copy.length; i++) {
+      const d = copy[i], t = CanvasCore.takeMarks(d.raw);
+      const key = d.key.startsWith("mermaid:") ? CanvasCore.mermaidKey(t.text) : d.tag === "img" ? d.key : `${d.tag}:${CanvasCore.normText(t.text)}`;
+      if (key !== blocks[i].key) return null;            // a mark changed the block: not the same document
+      if (t.spans.length || t.points.length) plan.push({ i, raw: t.text, spans: t.spans, points: t.points });
+    }
+    return plan.length ? plan : null;
+  }
+  // Glow the planned characters: each span is wrapped (whitespace-only pieces are left alone: they
+  // may sit between table cells). A block whose text is not exactly the planned one (a diagram, or a
+  // re-render that changed it) glows whole; a deletion with nothing added marks where it was: the
+  // top of the block that now stands there, the bottom of the last block (a deletion at the end),
+  // or the whole block when it was inside its text.
+  function glowPlan(blocks, plan, ms) {
+    for (const p of plan) {
+      const b = blocks[p.i];
+      if (!b) continue;
+      if (!p.spans.length) {
+        const edge = p.points.every((x) => x === 0) ? "ks-removed-before" : p.points.every((x) => x === p.raw.length) ? "ks-removed-after" : null;
+        if (edge) for (const t of b.el.tagName === "TR" ? Array.from(b.el.cells) : [b.el]) mark(t, edge, ms);
+        else mark(b.el, "ks-changed", ms);
+        continue;
+      }
+      if (b.tag === "mermaid" || b.raw !== p.raw) { mark(b.el, "ks-changed", ms); continue; }
+      wrapSpans(b.nodes, p.spans, ms);
+    }
+  }
+  function wrapSpans(nodes, spans, ms) {
+    let off = 0;
+    for (const n of nodes) {
+      const from = off, to = off + n.data.length;
+      off = to;
+      const cuts = spans.map(([s, e]) => [Math.max(s, from) - from, Math.min(e, to) - from]).filter(([s, e]) => s < e && n.data.slice(s, e).trim());
+      if (!cuts.length || !n.parentNode) continue;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const [s, e] of cuts) {
+        if (s > at) frag.append(n.data.slice(at, s));
+        const span = document.createElement("span");
+        span.className = "ks-range";
+        span.textContent = n.data.slice(s, e);
+        frag.append(span);
+        at = e;
+      }
+      if (at < n.data.length) frag.append(n.data.slice(at));
+      const spansHere = Array.from(frag.querySelectorAll(".ks-range"));
+      n.replaceWith(frag);
+      for (const el of spansHere) mark(el, "ks-changed", ms);
+    }
+  }
+
   let shownKind = "";
   let lastKeys = null;                    // the previous render's keys: what an agent write is compared with
-  let glowMemo = null;                    // { version, before, until }: a same-version re-render keeps its glow
+  // { version, before, until, plan?, keys? }: a same-version re-render keeps its glow (plan: the
+  // exact ranges', re-applied while the blocks are the same).
+  let glowMemo = null;
   function showChanges(m) {
     const units = shownUnits();
     const keys = units.map((u) => u.key);
@@ -483,12 +561,31 @@
     if (typeof m.glowAgainst === "string") { glowDiff(units, unitsOfText(m.kind, m.glowAgainst).map((u) => u.key), m.glowHold === true ? Infinity : GLOW_MS); return; }
     if (m.glowPrev && before) {
       glowMemo = { version: m.version, before, until: Date.now() + GLOW_MS };
+      if (Array.isArray(m.glowRanges) && typeof m.content === "string") {
+        const blocks = rangeBlocks();
+        const plan = rangeGlowPlan(m.kind, m.content, m.glowRanges, blocks);
+        if (plan) {
+          glowMemo.plan = plan;
+          glowMemo.keys = blocks.map((b) => b.key);
+          glowPlan(blocks, plan, GLOW_MS);
+          return;
+        }
+      }
       glowDiff(units, before, GLOW_MS);
       return;
     }
     // §3.5 normalization re-renders the same agent version moments later: keep its glow going.
-    if (glowMemo && glowMemo.version === m.version && Date.now() < glowMemo.until) glowDiff(units, glowMemo.before, glowMemo.until - Date.now());
+    if (glowMemo && glowMemo.version === m.version && Date.now() < glowMemo.until) {
+      const left = glowMemo.until - Date.now();
+      if (glowMemo.plan) {
+        const blocks = rangeBlocks();
+        if (blocks.map((b) => b.key).join("\n") === glowMemo.keys.join("\n")) { glowPlan(blocks, glowMemo.plan, left); return; }
+      }
+      glowDiff(units, glowMemo.before, left);
+    }
   }
+  // The shown blocks the exact ranges map onto: a deck's blocks across its slides, not whole slides.
+  const rangeBlocks = () => blocksOf(shownKind === "slides" ? deck.querySelector(".slides") : doc);
 
   // canvas_highlight (§3.10): find the block by its rendered text, glow it (outline and background
   // only), put the agent's label in the flow just above it, and bring it into view. `check` (the

@@ -733,6 +733,23 @@ test("agentPatch: an agent write — version, author, agentVersion, index, agent
   assert.ok(!(CanvasStore.agentKey(id) in storage.data));
 });
 
+test("agentPatch: meta.patchRanges keeps the exact ranges for the canvas tab's glow; normalization and other writes drop them (#107)", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", kind: "slides", content: "# A\n\nintro\n\n---\n\nbody" });
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "body", replace: "new body" }, { find: "intro", replace: "" }] });
+  assert.deepEqual(r.ranges, [{ start: 5, end: 5 }, { start: 12, end: 20 }]);
+  assert.deepEqual((await s.read({ conversationId: "c", id })).patchRanges, r.ranges);
+  // A full write is not a patch: no ranges, the block diff glows.
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Doc", kind: "slides", content: "x" });
+  assert.equal("patchRanges" in (await s.read({ conversationId: "c", id })), false);
+  // markdown: the editor's normalization rewrites the text, so the offsets no longer hold.
+  const md = await s.agentWrite({ conversationId: "c", title: "Md", content: "* a\n* b" });
+  await s.agentPatch({ conversationId: "c", id: md.id, baseVersion: 1, edits: [{ find: "b", replace: "B" }] });
+  assert.deepEqual((await s.read({ conversationId: "c", id: md.id })).patchRanges, [{ start: 6, end: 7 }]);
+  await s.applyNormalized({ id: md.id, version: 2, normalized: "- a\n- B\n" });
+  assert.equal("patchRanges" in (await s.read({ conversationId: "c", id: md.id })), false);
+});
+
 test("agentPatch: after a user edit elsewhere it rebases and keeps the user's text (rebasedOver)", async () => {
   const { s } = store();
   const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "## A\nagent a\n## B\nagent b" });

@@ -211,7 +211,8 @@ below is built around that.
   iframe's `load` event, so an attacker page can post first. That is why the allow-lists below stay
   harmless on their own, and why the host renders `error{msg}` only with `textContent`, capped at
   500 characters.
-- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version, seq})`. The frame never
+- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version, seq})` (plus the
+  §3.10 glow fields `glowPrev`, `glowRanges`, `glowAgainst`). The frame never
   fetches anything; everything it shows arrives in this message. `seq` is the host's render number,
   echoed back in `rendered{}` / `diagramError{}`, so two renders of the same version are told apart (#96).
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
@@ -885,7 +886,8 @@ agent's last write is the baseline.
 - **Glow on every agent write (phase 1).** When an agent version renders, `canvas-frame.html`
   compares it with the previous content at **block level** (paragraph, heading, list item, table
   row, slide) and gives new or changed blocks a glow that fades over a few seconds; a removed
-  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly.
+  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly, and exactly
+  that text glows (below).
 - **"Changes since you last looked" without history.** The content the user last saw is not kept
   (§3.5), so `meta` stores a **block hash list** of the last render the user saw: one short hash
   per block, tens of bytes each, no content. On the next open the new render is hashed the same
@@ -946,9 +948,22 @@ agent's last write is the baseline.
     canvas tab opens the compare view as a normal tab. The compare tab closes itself when no tab of
     that canvas is left. The *"N changes since you last looked"* hash list and `canvas_patch`'s
     exact ranges are not in phase 1 (§5 lists only the three items here; `canvas_patch` is phase 2).
-    *`canvas_patch` as implemented:* a patch is an agent version like any other, so it glows by
-    the same block diff; the exact ranges are computed (`agentPatch` returns them) but not yet
-    sent to the frame.
+    *`canvas_patch` as implemented (exact ranges, #107):* the store keeps the patch's ranges
+    (`planPatch`, offsets in the new text) in `meta.patchRanges`; any other write drops them, and
+    so does the §3.5 normalization (it rewrites the text the offsets point into). While the latest is
+    that agent write, the host adds them to the render as `glowRanges` (`CanvasCore.patchGlowRanges`).
+    The frame glows **exactly the changed text**, inline, not its block: it renders a copy of the
+    text with marks around each range (`CanvasCore.markRanges`), detached, and block *i* of the copy
+    says which characters of shown block *i* changed (`takeMarks`); those characters are wrapped and
+    glow. Marks are rare Unicode punctuation (so `_em_` stays emphasis) and stay out of syntax that
+    would change the document's blocks: a line's leading markers, a fence, a delimiter row, a
+    separator, a table cell's pipes. If the copy's blocks still differ from the view's, the block
+    diff glows as before; a block whose text a mark changed, and a mermaid diagram, glow whole; a
+    deletion marks the block now standing where the text was (its top edge; the last block's bottom
+    edge for a deletion at the end; the whole block when the text went from inside it). The normalization re-render of the same version glows the same
+    characters while its blocks are unchanged. Exact ranges are for the fading glow only: ◐ 顯示變更's
+    held markers and a compare compare whole texts, so they stay block-level.
+    `scripts/smoke-glow-ranges.mjs` checks this in headless Chrome.
   - *◐ 顯示變更 (Brett, 2026-10-11: "the difference disappears after some time").* A header switch
     on markdown and slides canvases (not in a compare tab), stored once for all canvas tabs
     (`canvas:showChanges` in `chrome.storage.local`; open tabs follow through `storage.onChanged`).

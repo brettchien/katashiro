@@ -60,7 +60,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   **💬 Ask agent** appears in the header (not in a compare tab, not while editing, gone when the
   selection is cleared). Click it, type a request: the chat shows your request, then
   `[canvas "…" (cv_…) vN, text selected by the user …]` and the selection in a fence. Ask the
-  agent to change it with `canvas_patch`: the changed blocks glow, the card shows the new
+  agent to change it with `canvas_patch`: exactly the changed words glow (inline, not their
+  paragraph; a deleted paragraph leaves a red line on the next one), the card shows the new
   version. Edit another section yourself and save first: the patch still applies and says
   `rebasedOver`.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
