@@ -216,6 +216,9 @@ class Conn {
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
       },
+      // Canvases are off in an incognito window (#109) — and while the window is not known yet. The
+      // room connects only after loadHistory, so tools/list never sees "not known yet".
+      canvasOff: () => panelIncognito !== false,
       windowId: panelWindowId,
     };
   }
@@ -1143,6 +1146,8 @@ loadConfig().then(async (r) => {
     await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
     // Folder mirror catch-up (§3.6): canvases saved while the folder was not connected.
     if (panelIncognito === false) canvasMirror.syncAll().catch(() => {});
+    // No canvases in an incognito window (#109): the gallery button shows only in a normal one.
+    if (canvasGalleryBtn) canvasGalleryBtn.hidden = panelIncognito !== false;
     buildRoom();
     connectAll();
     updateRoster();
@@ -1168,9 +1173,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults, userEdited, remote })) return;
     runningOnDefaults = false;
     applyConfig(remote);
-    buildRoom();
-    connectAll();
-    updateRoster();
+    // Before loadHistory (window, saved sessions) the startup path builds and connects the room with
+    // this config itself — connecting here would declare tools before the panel knows it is incognito.
+    if (panelIncognito !== null) {
+      buildRoom();
+      connectAll();
+      updateRoster();
+    }
     if (settingsView && settingsView.classList.contains("active")) {
       renderRoomConfig();
       renderActMode();
@@ -1228,8 +1237,8 @@ function newConversationId() {
   return "c_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
 let restoring = false;                    // true while replaying — suppresses re-recording
-// This panel's window is incognito (null until loadHistory knows): an incognito panel never
-// writes canvases to the folder mirror, and its canvases are marked noMirror (ADR §3.6).
+// This panel's window is incognito (null until loadHistory knows): an incognito panel has no
+// canvases (#109) and never writes other windows' canvases to the folder mirror (ADR §3.6).
 let panelIncognito = null;
 
 function currentWindow() {
@@ -2183,8 +2192,6 @@ const canvasStore = CanvasStore.createCanvasStore({
     `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
     evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
     (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
-  // Incognito (or not known yet): never mirrored to the folder (§3.6).
-  noMirror: () => panelIncognito !== false,
 });
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
@@ -2236,7 +2243,7 @@ async function renderCanvasFolder(extra = "") {
     canvasFolderReconnectBtn.hidden = !reconnect;
     canvasFolderStopBtn.hidden = !stop;
   };
-  if (panelIncognito !== false) { canvasFolderStatusEl.textContent = "無痕視窗不會把畫布寫進資料夾。"; show(false, false, false); return; }
+  if (panelIncognito !== false) { canvasFolderStatusEl.textContent = "無痕視窗不使用畫布。"; show(false, false, false); return; }
   if (typeof globalThis.showDirectoryPicker !== "function") { canvasFolderStatusEl.textContent = "這個瀏覽器不支援選擇資料夾（File System Access）。"; show(false, false, false); return; }
   const st = await CanvasMirror.folderStatus();
   if (!st.configured) {
@@ -2382,6 +2389,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 const canvasGalleryBtn = document.getElementById("canvas-gallery-btn");
 if (canvasGalleryBtn) {
   canvasGalleryBtn.addEventListener("click", () => {
+    if (panelIncognito !== false) return;                // hidden there; canvas pages cannot open in incognito
     CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined }).catch(() => {});
   });
 }

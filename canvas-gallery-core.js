@@ -62,8 +62,8 @@
 
   /**
    * One row per canvas meta (CanvasStore allMetas()), most recently updated first (ties: title,
-   * then id, so the order is stable). Malformed metas are skipped, and so are canvases created in
-   * an incognito window (`noMirror`): the gallery is a normal-window page. `size` is what the canvas
+   * then id, so the order is stable). Malformed metas are skipped, and so are canvases an incognito
+   * window stored before canvases were turned off there (`noMirror`, #109; removed on update). `size` is what the canvas
    * takes against the budget: latest + the agent copy kept after a user save (§3.6).
    */
   function buildRows(metas, { now }) {

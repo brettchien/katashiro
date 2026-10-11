@@ -165,6 +165,44 @@ test("remove deletes the bodies, the meta and the index entry (empty index key r
   await s.remove({ id: b.id });                                   // already gone: a no-op
 });
 
+// #109: canvases are off in incognito windows; what incognito panels stored before is removed.
+test("incognitoLeftovers selects exactly the noMirror metas with a canvas id", () => {
+  const ids = CanvasStore.incognitoLeftovers([
+    { id: "cv_000000000001" },
+    { id: "cv_000000000002", noMirror: true },
+    { id: "cv_000000000003", noMirror: false },
+    { id: "not-an-id", noMirror: true },
+    { id: "cv_000000000004", noMirror: "yes" },
+    null,
+    { id: "cv_000000000005", noMirror: true },
+  ]);
+  assert.deepEqual(ids, ["cv_000000000002", "cv_000000000005"]);
+  assert.deepEqual(CanvasStore.incognitoLeftovers(undefined), []);
+});
+
+test("removeIncognitoLeftovers removes only noMirror canvases, through remove (index kept consistent)", async () => {
+  const { s, storage } = store();
+  const keep = await s.agentWrite({ conversationId: "c", title: "Normal", content: "aa" });
+  const gone = await s.agentWrite({ conversationId: "c", title: "Incognito", content: "bb" });
+  const alone = await s.agentWrite({ conversationId: "c_inc", title: "Incognito 2", content: "cc" });
+  for (const id of [gone.id, alone.id]) {
+    const k = CanvasStore.metaKey(id);
+    storage.data[k] = { ...storage.data[k], noMirror: true };     // as an incognito panel wrote it
+  }
+  assert.equal(await s.removeIncognitoLeftovers(), 2);
+  assert.deepEqual((await s.list({ conversationId: "c" })).map((e) => e.id), [keep.id]);
+  assert.equal(CanvasStore.indexKey("c_inc") in storage.data, false);     // its conversation's index went too
+  assert.equal(CanvasStore.metaKey(gone.id) in storage.data, false);
+  assert.equal(CanvasStore.latestKey(alone.id) in storage.data, false);
+  assert.equal(await s.removeIncognitoLeftovers(), 0);                     // once they are gone: nothing
+});
+
+test("a new canvas is never marked noMirror any more (#109), whatever the host passes", async () => {
+  const { s, storage } = store({ noMirror: () => true });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "A", content: "a" });
+  assert.equal("noMirror" in storage.data[CanvasStore.metaKey(id)], false);
+});
+
 test("touch records openedAt without changing the version", async () => {
   const { s } = store();
   const { id } = await s.agentWrite({ conversationId: "c", title: "A", content: "a" });

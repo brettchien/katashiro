@@ -363,6 +363,10 @@ below is built around that.
 | `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out). Only the side panel's messages are accepted (not content scripts); every goto is answered (frame error or drop, newer goto, 5 s canvas timer, panel deadline). If the canvas is open in two tabs both move and the first answer wins |
 | `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only; label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
 
+- **Off in incognito windows** (Brett, 2026-10-11; #109, §3.6): an incognito panel does not list the
+  canvas tools in `tools/list`, and a call anyway (a list cached elsewhere, or before the panel knows
+  its window) is refused: "canvases are off in incognito windows". The panel connects only after it
+  knows, so the list it serves is already right and no `tools/list_changed` is needed.
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
 - Large payloads use a shell helper that posts to the facade (the `show_image` skill pattern), so
   the content does not pass through model output twice.
@@ -518,15 +522,20 @@ below is built around that.
     be on its way).
   - **Count real bytes freed.** Dropping a canvas frees its text, and an image only once nothing
     else references it; eviction counts what was actually freed.
-  - `storage.session` (incognito) is a separate area with its own hashes and dedup.
   - **`imageId` is copied in.** A screenshot passed by `imageId` is copied into `canvas:img:` at
     write time, not referenced in `show_image`'s temporary store, which is cleared.
 - **Keyed by `conversationId` from day one** (already minted by #61), so multi-conversation needs no
   migration. Until it lands, the window's conversation owns its canvases.
-- **Incognito** uses `storage.session`, mirroring the chat history (#54). Its ~10 MB quota is
-  **shared with that chat history**, so the canvas budget is the quota minus what the history
-  already uses (`getBytesInUse`), with the same eviction. If the new content alone does not fit,
-  the tool call fails with `{error: "quota"}` and the card says so; nothing is half-written.
+- **Canvases are off in incognito windows (Brett, 2026-10-11; #109).** This ADR first had incognito
+  canvases in `storage.session`, like the chat history (#54), but the implementation wrote them to
+  `storage.local` (on disk) and only skipped the folder. Rather than a second storage area, an
+  incognito panel has no canvases: Katashiro runs in "spanning" mode (no `incognito` key in the
+  manifest), so `canvas.html` cannot even open in an incognito window, and incognito content must
+  not persist. An incognito panel neither lists nor runs the canvas tools (§3.4) and hides the
+  gallery button and the folder settings. Canvases incognito panels stored before (`meta.noMirror`,
+  set only there) are removed once by the service worker on install/update (`onInstalled` →
+  `store.removeIncognitoLeftovers()`, through `store.remove`, so index, images and budget stay
+  consistent; best effort and idempotent).
 - If `chrome.storage.local` becomes slow at this size, move content bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
 
@@ -608,8 +617,9 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
   clicks *Reconnect folder* in the canvas header, writes stay in storage and are flushed on
   reconnect. Storage is always the working copy; the folder is a mirror, so a missing permission
   never loses data.
-- **Not in incognito**: incognito panels never write to the folder (it would persist what
-  incognito promises not to).
+- **Not in incognito**: canvases are off in incognito windows (above, #109), and an incognito
+  panel never writes other windows' canvases to the folder either (it would persist from a window
+  that promises not to).
 
 **Phase 1 implementation (PR 7).** `canvas-mirror.js` decides (slugs, path check, write plan,
 conflict names; unit-tested on a fake directory handle) and makes the few File System Access
@@ -625,8 +635,9 @@ is silent, the conservative choice:
   jsonHash, conflictName, conflictHash, state}`) plus `meta.fileSyncedVersion`; `folder` is an id
   minted per picked folder, so another folder starts over (no hashes, new slugs). The state for the
   last 3 other folders is kept in `meta.filesByFolder`, so going back to a folder (A → B → A) still
-  knows which files Katashiro wrote there; a folder older than that starts over. Canvases created
-  in an incognito window carry `meta.noMirror` and are never written, by any page.
+  knows which files Katashiro wrote there; a folder older than that starts over. Canvases an incognito
+  window stored before #109 carry `meta.noMirror`; until the update removes them they are never
+  written, by any page (no new canvas gets the flag).
 - **A new slug never lands on an existing file.** When a canvas gets a slug in a folder (first
   write, rename, new folder), a path whose `.md` already exists (a deleted canvas's file, the
   user's own) is skipped for the next free `-2`, `-3`, …, so that file is neither overwritten nor
@@ -719,9 +730,9 @@ is silent, the conservative choice:
     id until multi-conversation names exist). Search is NFKC + case folded, every term must match:
     titles, then the content of markdown/slides canvases, read lazily and cached per version and
     `normalized` flag (the editor's normalization rewrites `latest` without a version bump)
-    (≤ 300 canvases / 16 MB per pass; the rest by title only, and the page says so). Canvases
-    created in an incognito window (`noMirror`) are not listed: the gallery is a normal-window
-    page, and listing them there would show what incognito promised not to keep. A row asks the
+    (≤ 300 canvases / 16 MB per pass; the rest by title only, and the page says so). Canvases are
+    off in incognito windows (#109), so there the panel has no 🗂️; leftovers from before
+    (`noMirror`) are not listed until the update removes them. A row asks the
     panel of that canvas's conversation to open it (`katashiro-canvas-open`, accepted only from
     `canvas-gallery.html`; the panel answers once the tab exists, before grouping), so it goes
     through the card's `openCanvasTab`: the most recently used tab of that canvas (`CanvasTabs.pickCanvasTab`, never a compare tab, §3.1), else a new tab in
@@ -844,7 +855,7 @@ sequenceDiagram
 ```
 
 - **Canvases live on the user's machine only:** the working copy in the Chrome profile
-  (`chrome.storage.local`, or `storage.session` in incognito), plus an optional mirror in a folder
+  (`chrome.storage.local`; none in incognito windows, where canvases are off, #109), plus an optional mirror in a folder
   the user picked (§3.6). openab does not store canvases. The agent container holds only
   what passed through the agent's context (what it wrote, or read with `canvas_read`), like any
   tool result. Nothing goes to a cloud service.
@@ -1023,6 +1034,8 @@ agent's last write is the baseline.
   feature: it is the agent's own capability (`canvas_read` → the agent's own storage and
   credentials), so Katashiro binds to no host. Agents should confirm with the user before
   publishing, since it sends canvas content (including user edits) outside the browser.
+- **No canvases in incognito windows (Brett, 2026-10-11; #109).** Spanning mode cannot open
+  `canvas.html` there, and incognito content must not persist (§3.4, §3.6).
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 

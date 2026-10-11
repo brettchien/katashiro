@@ -74,6 +74,15 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   the canvas like its chat card (its open tab, else a new tab in the Canvas group); with the panel
   closed it opens ungrouped beside the gallery and says so. 🗑 asks first, then the canvas's open
   tab closes and the row disappears; an agent write elsewhere updates the list live.
+- **No canvases in incognito (ADR §3.4/§3.6, #109):** allow Katashiro in incognito
+  (chrome://extensions → Details → Allow in Incognito), open the side panel in an incognito window
+  and connect: the agent's tool list has no `katashiro.canvas_*` (ask it to list its tools, or to
+  "make a canvas": it says it cannot), 🗂️ is not in the panel header, and Settings →
+  畫布存到資料夾 says 無痕視窗不使用畫布 with no buttons. A normal window in the same profile is
+  unaffected: 🗂️ shows, canvas tools work. Leftovers: before updating, on the previous version write
+  a canvas from an incognito panel; after loading this version (an update fires `onInstalled`) it is
+  gone from the gallery, and the service worker's console logs "removed 1 canvas(es) left by
+  incognito windows"; the normal window's canvases are all still there.
 - **◐ 顯示變更 (ADR §3.10):** open a markdown canvas in two tabs (or two canvases) and click
   **◐ 顯示變更** in one: it turns green (`aria-pressed="true"`) in both. Ask the agent to change a
   paragraph: the changed block stays outlined (a removed one keeps its red line) instead of fading

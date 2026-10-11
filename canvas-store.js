@@ -8,7 +8,8 @@
 //   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes, agentBytes }
 //   canvas:<id>:latest             the latest content (string)
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
-// filesByFolder, and noMirror (created in an incognito window: never written to the folder).
+// filesByFolder. noMirror marks a canvas an incognito window stored before canvases were turned off
+// there (#109); none is created any more, and the update removes them (incognitoLeftovers).
 //
 // chrome.storage has no transactions, so every read → check → write runs under a lock: the
 // canvas's own (`canvas:<id>`) and, nested inside it for the index, `canvas:index` — always in
@@ -228,8 +229,6 @@
    * @param {(id: string) => Promise<boolean>} [deps.isOpen]  is this canvas open in a tab (never evicted)
    * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
    *        asked once when a write would go over budget; true = remove `evict` and write
-   * @param {() => boolean} [deps.noMirror]  true = canvases created now are never mirrored to the
-   *        folder (an incognito window, §3.6)
    */
   // The entries whose key passes `test`, without pulling every value into memory: getKeys()
   // (Chrome 130+) lists keys only, so canvas contents (up to the budget) are not read just to be
@@ -405,7 +404,6 @@
           version: 1, author: "agent", at, agentVersion: 1, agentSeenVersion: 1, bytes: v.bytes, agentBytes: 0,
           normalized: v.kind !== "markdown",               // markdown waits for the editor's normalization
         };
-        if (deps.noMirror && deps.noMirror()) meta.noMirror = true;
         await putImage(v.image);
         await lock(`canvas:${newId}`, async () => {
           await storage.set({ [latestKey(newId)]: v.content, [metaKey(newId)]: meta });
@@ -630,6 +628,14 @@
       return result;
     }
 
+    // Remove what incognito panels left in this storage before canvases were turned off there (#109).
+    // Through remove(), so the index and the image sweep stay consistent. Returns how many.
+    async function removeIncognitoLeftovers() {
+      const ids = incognitoLeftovers(await allMetas());
+      for (const id of ids) await remove({ id });
+      return ids.length;
+    }
+
     async function list({ conversationId }) {
       return (await getOne(indexKey(conversationId))) || [];
     }
@@ -662,7 +668,13 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages, allMetas };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
+  }
+
+  // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
+  // mirror files, so nothing in the folder needs touching.
+  function incognitoLeftovers(metas) {
+    return (metas || []).filter((m) => m && m.noMirror === true && ID_RE.test(String(m.id))).map((m) => m.id);
   }
 
   function indexEntry(meta) {
@@ -679,5 +691,5 @@
   const BUDGET_OVERRIDE_KEY = "canvas:budgetBytes";
   const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
-  return { createCanvasStore, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, incognitoLeftovers, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

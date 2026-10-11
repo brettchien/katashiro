@@ -3050,6 +3050,40 @@ test("canvas tools without a panel (no ctx.canvas) fail cleanly", async () => {
   }
 });
 
+// #109: canvases are off in incognito windows — and while the panel does not know its window yet.
+const CANVAS_TOOL_NAMES = Object.keys(BrowserMcp.TOOLS).filter((n) => n.startsWith("katashiro.canvas_"));
+
+test("every katashiro.canvas_* tool, and only those, carries the canvas flag", () => {
+  assert.ok(CANVAS_TOOL_NAMES.length >= 7);
+  assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.canvas).map(([n]) => n), CANVAS_TOOL_NAMES);
+});
+
+test("tools/list leaves the canvas tools out while canvasOff() — and lists them without the flag or when on", async () => {
+  const { deps: d } = deps();
+  const names = async (extra) => (await BrowserMcp.handleMcpMessage("tools/list", {}, { ...d, ...extra })).tools.map((t) => t.name);
+  const off = await names({ canvasOff: () => true });
+  for (const n of CANVAS_TOOL_NAMES) assert.ok(!off.includes(n), `${n} hidden`);
+  assert.equal(off.length, BrowserMcp.BROWSER_TOOLS.length - CANVAS_TOOL_NAMES.length);
+  assert.ok(off.includes("katashiro.show_image") && off.includes("katashiro.screenshot"));
+  assert.equal((await names({ canvasOff: () => false })).length, BrowserMcp.BROWSER_TOOLS.length);
+  assert.equal((await names({})).length, BrowserMcp.BROWSER_TOOLS.length);
+});
+
+test("a canvas tool called while canvasOff() is refused before it touches the store", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const { data } = withCanvas(d);
+  d.canvasOff = () => true;
+  for (const name of CANVAS_TOOL_NAMES) {
+    const r = await callTool(d, name, { title: "T", content: "x", id: "cv_000000000001", baseVersion: 1, slide: 1, find: "x", edits: [] });
+    assert.equal(r.isError, true, name);
+    assert.match(r.content[0].text, /canvases are off in incognito windows/, name);
+  }
+  assert.deepEqual(Object.keys(data), [], "nothing written");
+  d.canvasOff = () => false;
+  const ok = await callTool(d, "katashiro.canvas_open", { title: "T", content: "x" });
+  assert.equal(ok.isError, undefined, JSON.stringify(ok));
+});
+
 test("katashiro.canvas_open redact shows the title and size, never the document", () => {
   const masked = BrowserMcp.TOOLS["katashiro.canvas_open"].redact({ title: "Plan", content: "secret body".repeat(10), id: "cv_1", baseVersion: 2 });
   assert.deepEqual(masked, { id: "cv_1", baseVersion: 2, title: "Plan", content: "<110 bytes>" });

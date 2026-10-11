@@ -24,8 +24,8 @@
       <div class="header-actions">
         <!-- Config sync status: ☁️ synced / ⏳ waiting for synced config / 📭 none found / ⚠️ local only. Rendered by sidepanel.js. -->
         <span id="sync-badge" class="sync-badge" hidden></span>
-        <!-- Canvas gallery (ADR docs/adr/canvas.md §3.7): every canvas across conversations, in one tab. -->
-        <button id="canvas-gallery-btn" title="畫布總覽（所有畫布）">🗂️</button>
+        <!-- Canvas gallery (ADR docs/adr/canvas.md §3.7): every canvas across conversations, in one tab. Hidden until sidepanel.js knows the window is not incognito (#109). -->
+        <button id="canvas-gallery-btn" title="畫布總覽（所有畫布）" hidden>🗂️</button>
         <button id="clear-chat-btn" title="清除聊天畫面">🧹</button>
         <button id="settings-btn" title="設定">⚙️</button>
       </div>
@@ -137,7 +137,7 @@
           <!-- Canvas folder mirror (ADR docs/adr/canvas.md §3.6): File System Access, handle in IndexedDB -->
           <div class="input-group">
             <label>畫布存到資料夾（選填）</label>
-            <span class="mode-hint">畫布平常只存在這個 Chrome 設定檔裡（不同步、移除 extension 就沒了）。選一個資料夾後，每次 agent 或你儲存畫布，最新內容都會寫成 .md 檔（圖片放在旁邊的 .assets 資料夾），可以自己用 git、Dropbox 或 Time Machine 保存歷史。資料夾裡的檔案在 Katashiro 外被改過時不會被覆寫，而是另存一個 .katashiro-&lt;時間&gt;.md；檔案的修改不會自動讀回畫布。無痕視窗不會寫入。</span>
+            <span class="mode-hint">畫布平常只存在這個 Chrome 設定檔裡（不同步、移除 extension 就沒了）。選一個資料夾後，每次 agent 或你儲存畫布，最新內容都會寫成 .md 檔（圖片放在旁邊的 .assets 資料夾），可以自己用 git、Dropbox 或 Time Machine 保存歷史。資料夾裡的檔案在 Katashiro 外被改過時不會被覆寫，而是另存一個 .katashiro-&lt;時間&gt;.md；檔案的修改不會自動讀回畫布。無痕視窗不使用畫布。</span>
             <span class="mode-hint" id="canvas-folder-status"></span>
             <button id="canvas-folder-pick" class="secondary-btn" type="button">📁 選擇資料夾</button>
             <button id="canvas-folder-reconnect" class="secondary-btn" type="button" hidden>🔌 重新連線資料夾</button>
