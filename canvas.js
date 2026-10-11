@@ -871,7 +871,7 @@
   function mirrorHoldsLatest() {
     const m = current && current.meta;
     return !!(m && m.file && folder.configured && folder.permission === "granted" && m.file.folder === folder.folderId &&
-      (m.file.state === "ok" || m.file.state === "recreated") && m.fileSyncedVersion === m.version);
+      CanvasMirror.stateOf(m.file) === "ok" && m.fileSyncedVersion === m.version);    // legacy "recreated" reads as ok (#106)
   }
   function syncFile(opts) {
     if (deleted || compareView) return Promise.resolve();    // a compare tab is read-only (§3.10): the canvas tab writes

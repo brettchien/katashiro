@@ -359,6 +359,22 @@ test("same content under a newer version: fileSyncedVersion moves on without a w
   assert.equal(env.storage.sets, sets, "settled: no further meta writes");
 });
 
+test("#106: a legacy \"recreated\" meta (before #105) reads as ok", async () => {
+  assert.equal(M.stateOf({ state: "recreated" }), "ok");
+  assert.equal(M.stateOf({ state: "deleted" }), "deleted");
+  assert.equal(M.stateOf(null), undefined);
+  assert.equal(M.describeState({ state: "recreated" }).level, "ok");     // no amber warning left over
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  const m = await env.meta(id);
+  await env.storage.set({ [`canvas:${id}:meta`]: { ...m, file: { ...m.file, state: "recreated" } } });
+  // same content under a newer version: the file holds the latest, as for "ok"
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Plan", content: "v1\n" });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "ok" });
+  assert.equal((await env.meta(id)).fileSyncedVersion, 2);
+});
+
 test("check after an error clears the stale error text", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1" });
