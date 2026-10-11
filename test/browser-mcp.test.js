@@ -215,6 +215,7 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.show_image",
     "katashiro.canvas_open",
     "katashiro.canvas_read",
+    "katashiro.canvas_patch",
     "katashiro.canvas_delete",
     "katashiro.canvas_goto",
     "katashiro.canvas_highlight",
@@ -3055,7 +3056,7 @@ test("katashiro.canvas_open redact shows the title and size, never the document"
 });
 
 test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated by act mode)", () => {
-  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_list"]) {
+  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_list"]) {
     assert.equal(BrowserMcp.TOOLS[name].sessionScope, true);
     assert.ok(!BrowserMcp.TOOLS[name].write);
   }
@@ -3275,4 +3276,64 @@ test("katashiro.canvas_highlight: one text anchor, bounded label and duration, m
   t += 2000;
   delete d.canvas.highlight;
   assert.match((await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "x" })).content[0].text, /not available/);
+});
+
+// --- canvas_patch (§3.5) -------------------------------------------------------------------------
+
+test("katashiro.canvas_patch applies find/replace edits as an agent write: card, version, normalization wait", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  const { writes } = withCanvas(d);
+  const waited = [];
+  d.canvas.waitNormalized = async (id, v, raw) => { waited.push({ id, v, raw }); return { diff: "" }; };
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "# T\n\nalpha\n\nbeta" });
+  const r = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "alpha", replace: "ALPHA" }, { find: "beta", replace: "" }] });
+  assert.equal(r.isError, undefined, JSON.stringify(r));
+  assert.match(r.content[0].text, /^patched canvas "Doc" — id cv_000000000001, version 2 \(2 edits\)$/);
+  assert.equal(writes.length, 2);
+  assert.deepEqual([writes[1].id, writes[1].version, writes[1].created], ["cv_000000000001", 2, false]);
+  assert.deepEqual(waited[1], { id: "cv_000000000001", v: 2, raw: "# T\n\nALPHA\n\n" });
+  const read = await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" });
+  assert.match(read.content[0].text, /"version":2,"author":"agent"/);
+  // A patch on top of a user edit says rebasedOver.
+  await d.canvas.store.userSave({ id: "cv_000000000001", baseVersion: 2, content: "# T\n\nUSER\n\n" });
+  const r2 = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2, edits: [{ find: "# T", replace: "# Title" }] });
+  assert.match(r2.content[0].text, /version 4 \(1 edit\)\nrebasedOver: \{"version":3,"author":"user"\}/);
+  assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).content, "# Title\n\nUSER\n\n");
+});
+
+test("katashiro.canvas_patch errors are structured JSON: stale (+failedEdit, diffFromBase) and patch (edit index, count)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "T", content: "a\nb\nc" });
+  await d.canvas.store.userSave({ id: "cv_000000000001", baseVersion: 1, content: "a\nB\nc" });
+  const st = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "b", replace: "x" }] });
+  assert.equal(st.isError, true);
+  const e = JSON.parse(st.content[0].text);
+  assert.equal(e.error, "stale");
+  assert.equal(e.currentVersion, 2);
+  assert.equal(e.author, "user");
+  assert.match(e.diffFromBase, /-b\n\+B/);
+  assert.deepEqual([e.failedEdit.index, e.failedEdit.count], [0, 0]);
+  const two = JSON.parse((await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2, edits: [{ find: "a", replace: "A" }, { find: "\n", replace: "" }] })).content[0].text);
+  assert.deepEqual([two.error, two.edit, two.count], ["patch", 1, 2]);
+  assert.match(two.message, /^nothing applied: edits\[1\]\.find matches 2 places/);
+  const ov = JSON.parse((await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2, edits: [{ find: "a\nB", replace: "1" }, { find: "B\nc", replace: "2" }] })).content[0].text);
+  assert.deepEqual([ov.error, ov.edit, ov.overlaps], ["patch", 1, 0]);
+  assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).version, 2);       // nothing applied
+  const bad = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2, edits: "a→b" });
+  assert.match(bad.content[0].text, /^canvas_patch: `edits` must be a non-empty array/);
+});
+
+test("katashiro.canvas_patch refuses image canvases; redact never shows the text", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Px", kind: "image", data: PNG_1PX, mimeType: "image/png" });
+  const r = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "image", replace: "x" }] });
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /only markdown and slides canvases can be patched/);
+  const masked = BrowserMcp.TOOLS["katashiro.canvas_patch"].redact({ id: "cv_1", baseVersion: 3, edits: [{ find: "secret", replace: "token é" }] });
+  assert.deepEqual(masked, { id: "cv_1", baseVersion: 3, edits: "<1 edit, 14 bytes>" });
+  assert.equal(BrowserMcp.TOOLS["katashiro.canvas_patch"].inputSchema.properties.edits.maxItems, CanvasStore.PATCH_EDITS_MAX);
+  const none = { ...d, canvas: undefined };
+  assert.match((await callTool(none, "katashiro.canvas_patch", { id: "cv_1", baseVersion: 1, edits: [] })).content[0].text, /not available in this host/);
 });

@@ -79,6 +79,91 @@
     }
   }
 
+  // canvas_patch could not apply (§3.5) on an up-to-date canvas: which edit, and why. (Against a
+  // canvas that moved on since baseVersion, a miss is a StaleError with the diff instead.)
+  class PatchError extends Error {
+    constructor(failure) {
+      super(failure.message);
+      this.code = "patch";
+      this.index = failure.index;
+      this.count = failure.count;
+      if (failure.overlaps != null) this.overlaps = failure.overlaps;
+    }
+  }
+
+  // canvas_patch limits: edits per call and the size of each find / replace (the result is still
+  // capped at CONTENT_MAX_BYTES like any write).
+  const PATCH_EDITS_MAX = 50;
+  const PATCH_FIND_MAX = 32 * 1024;
+  const PATCH_REPLACE_MAX = 512 * 1024;
+
+  // How many places `find` starts in `text` (overlapping starts count: "aa" is twice in "aaa"),
+  // and where the first one is. Stops counting at `cap`.
+  function countMatches(text, find, cap = 1000) {
+    let count = 0, first = -1;
+    for (let i = text.indexOf(find); i !== -1 && count < cap; i = text.indexOf(find, i + 1)) {
+      if (first < 0) first = i;
+      count++;
+    }
+    return { count, first };
+  }
+
+  /**
+   * canvas_patch's matching (§3.5), pure: every `find` against ONE snapshot (`text`), never against
+   * another edit's output; each must occur exactly once and no two matched ranges may overlap
+   * (touching is fine). Then all replacements apply together.
+   * → { ok: true, text, ranges: [{ start, end }] (in the NEW text, document order) }
+   *   | { ok: false, index, count, overlaps?, message }   (index = the failing edit, 0-based)
+   * Edits are assumed validated (validatePatchEdits).
+   */
+  function planPatch(text, edits) {
+    const src = String(text);
+    const spans = [];
+    for (let i = 0; i < edits.length; i++) {
+      const { count, first } = countMatches(src, edits[i].find);
+      if (count !== 1) {
+        return {
+          ok: false, index: i, count,
+          message: count === 0
+            ? `edits[${i}].find matches nothing in the latest version — canvas_read and copy the stored (normalized) text exactly`
+            : `edits[${i}].find matches ${count >= 1000 ? "1000+" : count} places; it must match exactly once — include more surrounding text`,
+        };
+      }
+      spans.push({ index: i, start: first, end: first + edits[i].find.length, replace: edits[i].replace });
+    }
+    spans.sort((a, b) => a.start - b.start);
+    for (let k = 1; k < spans.length; k++) {
+      if (spans[k].start < spans[k - 1].end) {
+        const [a, b] = [spans[k - 1].index, spans[k].index].sort((x, y) => x - y);
+        return { ok: false, index: b, count: 1, overlaps: a, message: `edits[${b}].find overlaps edits[${a}].find; merge them into one edit` };
+      }
+    }
+    let out = "", at = 0, shift = 0;
+    const ranges = [];
+    for (const s of spans) {
+      out += src.slice(at, s.start) + s.replace;
+      ranges.push({ start: s.start + shift, end: s.start + shift + s.replace.length });
+      shift += s.replace.length - (s.end - s.start);
+      at = s.end;
+    }
+    out += src.slice(at);
+    return { ok: true, text: out, ranges };
+  }
+
+  // Shape of canvas_patch's `edits`; returns the edits ({find, replace} strings) or throws.
+  function validatePatchEdits(edits) {
+    if (!Array.isArray(edits) || !edits.length) throw new Error("`edits` must be a non-empty array of { find, replace }");
+    if (edits.length > PATCH_EDITS_MAX) throw new Error(`${edits.length} edits; at most ${PATCH_EDITS_MAX} per call (for a rewrite, use canvas_open with the full content)`);
+    return edits.map((e, i) => {
+      if (!e || typeof e !== "object") throw new Error(`edits[${i}] must be { find, replace }`);
+      if (typeof e.find !== "string" || e.find === "") throw new Error(`edits[${i}].find must be a non-empty string`);
+      if (typeof e.replace !== "string") throw new Error(`edits[${i}].replace must be a string (may be empty)`);
+      if (e.find.length > PATCH_FIND_MAX) throw new Error(`edits[${i}].find is ${e.find.length} chars; at most ${PATCH_FIND_MAX}`);
+      if (e.replace.length > PATCH_REPLACE_MAX) throw new Error(`edits[${i}].replace is ${e.replace.length} chars; at most ${PATCH_REPLACE_MAX}`);
+      return { find: e.find, replace: e.replace };
+    });
+  }
+
   // Line-based unified diff (a → b), 2 lines of context. Common prefix/suffix are trimmed first; the
   // middle is an LCS, bounded (returns null if too large to diff here). Pure, used for the stale
   // diff, normalizedDiff and Send to agent.
@@ -334,25 +419,88 @@
         if (!cur) throw new Error(`no canvas "${id}"`);
         if (cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
         if (cur.kind !== v.kind) throw new Error(`canvas "${id}" is ${cur.kind}; a canvas cannot change kind`);
-        if (cur.version !== baseVersion) {
-          // diffFromBase exists only when the base is the agent's own last write (§3.5).
-          let diff = null;
-          if (baseVersion === cur.agentVersion) {
-            const got = await storage.get([agentKey(id), latestKey(id)]);
-            if (got[agentKey(id)] != null) diff = unifiedDiff(got[agentKey(id)], got[latestKey(id)] || "");
-          }
-          throw new StaleError(cur, baseVersion, diff);
-        }
-        meta = {
-          ...cur, title: v.title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
-          agentSeenVersion: cur.version + 1, bytes: v.bytes, agentBytes: 0, normalized: v.kind !== "markdown",
-        };
-        await storage.set({ [latestKey(id)]: v.content, [metaKey(id)]: meta });
-        await storage.remove(agentKey(id));                // the latest is the agent's write again
-        await updateIndex(conversationId, indexEntry(meta));
+        if (cur.version !== baseVersion) throw await staleFor(cur, baseVersion);
+        meta = await storeAgentVersion(cur, { title: v.title, content: v.content, bytes: v.bytes, at });
       });
       if (v.kind === "image") await sweepAfter();       // the previous image may be unreferenced now
       return { id, version: meta.version, created: false, title: meta.title };
+    }
+
+    // The stale error for a write based on `baseVersion` (under the canvas lock). diffFromBase
+    // exists only when the base is the agent's own last write (§3.5).
+    async function staleFor(cur, baseVersion) {
+      let diff = null;
+      if (baseVersion === cur.agentVersion) {
+        const got = await storage.get([agentKey(cur.id), latestKey(cur.id)]);
+        if (got[agentKey(cur.id)] != null) diff = unifiedDiff(got[agentKey(cur.id)], got[latestKey(cur.id)] || "");
+      }
+      return new StaleError(cur, baseVersion, diff);
+    }
+
+    // An agent version on top of `cur` (under the canvas lock): the next revision, authored by the
+    // agent, which the agent has seen; markdown waits for normalization again (§3.5). Content and
+    // meta in one set(); the agent copy goes (the latest is the agent's write again).
+    async function storeAgentVersion(cur, { title, content, bytes, at }) {
+      const id = cur.id;
+      const meta = {
+        ...cur, title, version: cur.version + 1, author: "agent", at, agentVersion: cur.version + 1,
+        agentSeenVersion: cur.version + 1, bytes, agentBytes: 0, normalized: cur.kind !== "markdown",
+      };
+      await storage.set({ [latestKey(id)]: content, [metaKey(id)]: meta });
+      await storage.remove(agentKey(id));
+      await updateIndex(cur.conversationId, indexEntry(meta));
+      return meta;
+    }
+
+    /**
+     * canvas_patch (§3.5): find/replace edits on the latest text of a markdown or slides canvas, as
+     * the agent. All finds are matched against one snapshot of the latest version — not baseVersion
+     * — inside the canvas lock, so nothing can change between matching and writing. All apply or
+     * none: a miss on a canvas that moved on since baseVersion is `stale` (with diffFromBase), on an
+     * up-to-date one a PatchError naming the edit. A user's edit is never overwritten: only the
+     * matched ranges change.
+     * @returns {Promise<{ id, version, created: false, title, kind, content, ranges, rebasedOver }>}
+     *   rebasedOver = { version, author } of the latest when it was past baseVersion, else null.
+     */
+    async function agentPatch({ conversationId, id, baseVersion, edits }) {
+      if (!conversationId) throw new Error("no conversation to attach the canvas to");
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      if (!Number.isInteger(baseVersion)) throw new Error("canvas_patch needs `baseVersion` (the version you last read or wrote)");
+      const list = validatePatchEdits(edits);
+      // The budget is checked before the lock (eviction takes other canvases' locks, §3.6 lock
+      // order), on a lock-free dry run; a dry run that fails needs no room (the locked run decides).
+      {
+        const got = await storage.get([metaKey(id), latestKey(id)]);
+        const dry = got[metaKey(id)] ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
+        if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id);
+      }
+      let result;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
+        if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`canvas "${id}" is ${cur.kind}; only markdown and slides canvases can be patched`);
+        if (baseVersion > cur.version || baseVersion < 1) throw new StaleError(cur, baseVersion, null);
+        const latest = (await getOne(latestKey(id))) || "";
+        const plan = planPatch(latest, list);
+        if (!plan.ok) {
+          // A miss after the canvas moved on: rebase on the diff (§3.5), not a bare "no match".
+          if (cur.version !== baseVersion) {
+            const e = await staleFor(cur, baseVersion);
+            e.patch = { index: plan.index, count: plan.count, message: plan.message };
+            throw e;
+          }
+          throw new PatchError(plan);
+        }
+        const bytes = utf8Bytes(plan.text);
+        if (bytes > CONTENT_MAX_BYTES) throw new Error(`the patched content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
+        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now() });
+        result = {
+          id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges,
+          rebasedOver: cur.version !== baseVersion ? { version: cur.version, author: cur.author } : null,
+        };
+      });
+      return result;
     }
 
     // asAgent: the agent's canvas_read — records agentSeenVersion (§3.5), so Send to agent does not
@@ -496,7 +644,7 @@
       });
     }
 
-    return { markSeen, agentWrite, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
   }
 
   function indexEntry(meta) {
@@ -513,5 +661,5 @@
   const BUDGET_OVERRIDE_KEY = "canvas:budgetBytes";
   const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
-  return { createCanvasStore, unifiedDiff, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+  return { createCanvasStore, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });

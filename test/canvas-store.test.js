@@ -492,3 +492,149 @@ test("markSeen raises agentSeenVersion, never lowers it or passes the latest", a
   await s.markSeen({ id, version: 9 });
   assert.equal((await s.read({ conversationId: "c", id })).agentSeenVersion, 2);
 });
+
+// --- canvas_patch (§3.5) -------------------------------------------------------------------------
+
+const P = (text, edits) => CanvasStore.planPatch(text, edits);
+
+test("planPatch: all finds against one snapshot, applied together; ranges in the new text", () => {
+  const r = P("alpha beta gamma", [{ find: "gamma", replace: "G" }, { find: "alpha", replace: "AAAA" }]);
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "AAAA beta G");
+  assert.deepEqual(r.ranges, [{ start: 0, end: 4 }, { start: 10, end: 11 }]);       // document order
+  // One snapshot: edit 0's replace creates a second "beta", which edit 1 never sees.
+  const s = P("alpha beta", [{ find: "alpha", replace: "beta beta" }, { find: "beta", replace: "B" }]);
+  assert.equal(s.ok, true);
+  assert.equal(s.text, "beta beta B");
+  // …and a find that only exists in another edit's output does not match.
+  const t = P("one two", [{ find: "one", replace: "three" }, { find: "three", replace: "3" }]);
+  assert.equal(t.ok, false);
+  assert.equal(t.index, 1);
+  assert.equal(t.count, 0);
+  // Deleting (empty replace) and touching ranges are fine.
+  assert.equal(P("abcd", [{ find: "ab", replace: "" }, { find: "cd", replace: "X" }]).text, "X");
+});
+
+test("planPatch: each find exactly once (overlapping starts count), no overlapping ranges", () => {
+  const none = P("abc", [{ find: "abc", replace: "x" }, { find: "zzz", replace: "y" }]);
+  assert.deepEqual([none.ok, none.index, none.count], [false, 1, 0]);
+  assert.match(none.message, /^edits\[1\]\.find matches nothing in the latest version/);
+  const two = P("a-b a-b", [{ find: "a-b", replace: "x" }]);
+  assert.deepEqual([two.ok, two.index, two.count], [false, 0, 2]);
+  assert.match(two.message, /matches 2 places; it must match exactly once/);
+  assert.equal(P("aaa", [{ find: "aa", replace: "x" }]).count, 2);                   // overlapping occurrences
+  const over = P("hello world", [{ find: "hello wo", replace: "x" }, { find: "o world", replace: "y" }]);
+  assert.deepEqual([over.ok, over.index, over.overlaps], [false, 1, 0]);
+  assert.match(over.message, /edits\[1\]\.find overlaps edits\[0\]\.find/);
+  // Same range twice is an overlap too.
+  assert.equal(P("abc", [{ find: "b", replace: "1" }, { find: "b", replace: "2" }]).ok, false);
+});
+
+test("validatePatchEdits: shape and limits", () => {
+  for (const bad of [undefined, [], "x", [null], [{ find: "", replace: "x" }], [{ find: "a" }], [{ find: 1, replace: "" }],
+    Array.from({ length: CanvasStore.PATCH_EDITS_MAX + 1 }, () => ({ find: "a", replace: "b" })),
+    [{ find: "f".repeat(CanvasStore.PATCH_FIND_MAX + 1), replace: "" }], [{ find: "a", replace: "r".repeat(CanvasStore.PATCH_REPLACE_MAX + 1) }]]) {
+    assert.throws(() => CanvasStore.validatePatchEdits(bad));
+  }
+  assert.deepEqual(CanvasStore.validatePatchEdits([{ find: "a", replace: "", extra: 1 }]), [{ find: "a", replace: "" }]);
+});
+
+test("agentPatch: an agent write — version, author, agentVersion, index, agent copy dropped, normalization pending", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", content: "# A\n\nintro\n\n## B\n\nbody" });
+  await s.applyNormalized({ id, version: 1, normalized: "# A\n\nintro\n\n## B\n\nbody" });
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "body", replace: "new body" }] });
+  assert.equal(r.version, 2);
+  assert.equal(r.created, false);
+  assert.equal(r.title, "Doc");
+  assert.equal(r.kind, "markdown");
+  assert.equal(r.rebasedOver, null);
+  assert.equal(r.content, "# A\n\nintro\n\n## B\n\nnew body");
+  const m = await s.read({ conversationId: "c", id });
+  assert.equal(m.content, r.content);
+  assert.deepEqual([m.author, m.agentVersion, m.agentSeenVersion, m.normalized, m.bytes], ["agent", 2, 2, false, Buffer.byteLength(r.content)]);
+  assert.equal((await s.list({ conversationId: "c" }))[0].version, 2);
+  assert.ok(!(CanvasStore.agentKey(id) in storage.data));
+});
+
+test("agentPatch: after a user edit elsewhere it rebases and keeps the user's text (rebasedOver)", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "## A\nagent a\n## B\nagent b" });
+  await s.userSave({ id, baseVersion: 1, content: "## A\nUSER a\n## B\nagent b" });
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "agent b", replace: "patched b" }] });
+  assert.equal(r.version, 3);
+  assert.deepEqual(r.rebasedOver, { version: 2, author: "user" });
+  assert.equal((await s.read({ id })).content, "## A\nUSER a\n## B\npatched b");
+  assert.equal(await s.readAgentCopy(id), "## A\nUSER a\n## B\npatched b");     // the latest is the agent's write
+});
+
+test("agentPatch: a miss after the canvas moved on is stale with diffFromBase; up to date it is a patch error; nothing changes either way", async () => {
+  const { s, storage } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a\nb\nc" });
+  await s.userSave({ id, baseVersion: 1, content: "a\nB\nc" });
+  const before = structuredClone(storage.data);
+  await assert.rejects(
+    () => s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "a", replace: "A" }, { find: "b", replace: "x" }] }),
+    (e) => e.code === "stale" && e.currentVersion === 2 && e.author === "user" && /-b\n\+B/.test(e.diffFromBase) &&
+      e.patch.index === 1 && e.patch.count === 0
+  );
+  assert.deepEqual(storage.data, before);                                     // all or nothing: "a" was not applied
+  await assert.rejects(
+    () => s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "a", replace: "A" }, { find: "nope", replace: "x" }] }),
+    (e) => e.code === "patch" && e.index === 1 && e.count === 0 && e instanceof CanvasStore.PatchError
+  );
+  await assert.rejects(
+    () => s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "\n", replace: " " }] }),
+    (e) => e.code === "patch" && e.index === 0 && e.count === 2
+  );
+  await assert.rejects(
+    () => s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "a\nB", replace: "1" }, { find: "B\nc", replace: "2" }] }),
+    (e) => e.code === "patch" && e.index === 1 && e.overlaps === 0
+  );
+  assert.deepEqual(storage.data, before);
+  // A base the canvas never had is stale, not a silent write.
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id, baseVersion: 9, edits: [{ find: "a", replace: "A" }] }), (e) => e.code === "stale");
+});
+
+test("agentPatch: text kinds only, own conversation, needs baseVersion; slides are stored as sent", async () => {
+  const { s } = store();
+  const img = await s.agentWrite({ conversationId: "c", title: "Px", kind: "image", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } });
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: img.id, baseVersion: 1, edits: [{ find: "image", replace: "x" }] }), /image; only markdown and slides/);
+  const deck = await s.agentWrite({ conversationId: "c", title: "D", kind: "slides", content: "# 1\n---\n# 2" });
+  await assert.rejects(() => s.agentPatch({ conversationId: "other", id: deck.id, baseVersion: 1, edits: [{ find: "# 2", replace: "# Two" }] }), /another conversation/);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: deck.id, edits: [{ find: "# 2", replace: "# Two" }] }), /baseVersion/);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: "cv_x", baseVersion: 1, edits: [{ find: "a", replace: "b" }] }), /not a canvas id/);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: deck.id, baseVersion: 1, edits: [] }), /non-empty array/);
+  const r = await s.agentPatch({ conversationId: "c", id: deck.id, baseVersion: 1, edits: [{ find: "# 2", replace: "# Two" }] });
+  const m = await s.read({ id: deck.id });
+  assert.deepEqual([r.kind, m.content, m.normalized], ["slides", "# 1\n---\n# Two", true]);
+});
+
+test("agentPatch: the result is capped at 2 MB; the budget is checked like any write", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "x".repeat(CanvasStore.CONTENT_MAX_BYTES - 10) + "END" });
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "END", replace: "y".repeat(100) }] }), /capped at/);
+  const small = store({ budgetBytes: 20 });
+  const w = await small.s.agentWrite({ conversationId: "c", title: "T", content: "0123456789" });
+  await assert.rejects(() => small.s.agentPatch({ conversationId: "c", id: w.id, baseVersion: 1, edits: [{ find: "9", replace: "9".repeat(50) }] }), (e) => e.code === "quota");
+  assert.equal((await small.s.read({ id: w.id })).version, 1);
+});
+
+test("agentPatch runs under the canvas lock: a user save and a patch from the same base never lose either", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "head\nmiddle\ntail" });
+  const [u, p] = await Promise.allSettled([
+    s.userSave({ id, baseVersion: 1, content: "HEAD\nmiddle\ntail" }),
+    s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "tail", replace: "TAIL" }] }),
+  ]);
+  const content = (await s.read({ id })).content;
+  // Whatever the order, the patch matched the snapshot it saw under the lock: both changes survive
+  // when the save ran first (rebase), and the save is stale (not overwriting) when the patch ran first.
+  if (u.status === "fulfilled") {
+    assert.equal(p.status, "fulfilled");
+    assert.equal(content, "HEAD\nmiddle\nTAIL");
+  } else {
+    assert.equal(u.reason.code, "stale");
+    assert.equal(content, "head\nmiddle\nTAIL");
+  }
+});

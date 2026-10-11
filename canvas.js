@@ -9,7 +9,7 @@
 //  - render is sent only after a `ready` with the current nonce;
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
 // With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
-// Send to agent, Revert or delete, and its frame's save/dirty/selection are refused.
+// Send to agent, Ask agent, Revert or delete, and its frame's save/dirty/selection are refused.
 (function () {
   "use strict";
 
@@ -25,6 +25,7 @@
   const noticeBar = document.getElementById("canvas-notice-bar");
   const noticeAction = document.getElementById("canvas-notice-action");
   const sendBtn = document.getElementById("canvas-send");
+  const askBtn = document.getElementById("canvas-ask");
   const downloadBtn = document.getElementById("canvas-download");
   const printBtn = document.getElementById("canvas-print");
   const mainEl = document.getElementById("canvas-main");
@@ -103,7 +104,7 @@
   async function updateButtons() {
     if (compareView) {
       // The compare tab is not the canvas (§3.10): nothing here can change it.
-      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, compareBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, sendBtn, askBtn, compareBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
       return;
     }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
@@ -128,6 +129,8 @@
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
+    // Ask agent (§3.7): while text is selected in the view.
+    askBtn.hidden = !(textKind && mode === "view" && !!frame && !!selection);
     downloadBtn.hidden = !textKind;
     printBtn.hidden = !(textKind && !!frame && mode === "view");
     printBtn.disabled = (mode === "edit" && dirty) || !!printing;
@@ -175,6 +178,33 @@
       flash(`📤 已送給 ${r.agent || "agent"}（v${c.meta.version}）`);
     } finally {
       sendBtn.disabled = false;
+    }
+  });
+
+  // Ask agent (§3.7 "Edit with agent on a selection"): the frame reports the selected text
+  // (selection{}, canvas-frame.html only — a compare tab refuses it, CanvasCore); the user types a
+  // request, which goes first, then the selection as data under a fixed host line. Rendered text,
+  // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
+  let selection = null;               // { text, truncated } while the user has text selected in the view
+  function onSelection(m) {
+    const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
+    updateButtons();
+  }
+  askBtn.addEventListener("click", async () => {
+    if (!current || !selection || askBtn.disabled) return;
+    const c = current, sel = selection;          // what was selected when clicked, not what arrives meanwhile
+    const note = window.prompt("要 agent 對選取的文字做什麼？", "");
+    if (note === null) return;
+    if (!note.trim()) { flash("請寫下要 agent 做什麼（例如：改短一點、翻成英文）。"); return; }
+    askBtn.disabled = true;                      // one push per click; the panel also dedupes by reqId
+    try {
+      const text = CanvasCore.composeAskAgent({ note, title: c.meta.title, id: canvasId, version: c.meta.version, text: sel.text, truncated: sel.truncated });
+      const r = await pushToAgent(text, note);
+      if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
+      flash(`💬 已問 ${r.agent || "agent"}（v${c.meta.version} 的選取文字）`);
+    } finally {
+      askBtn.disabled = false;
     }
   });
 
@@ -348,6 +378,7 @@
   let renderingVersion = 0;
   let renderFailed = "";
   function startRender(msg) {
+    if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
     rendered = false;
     renderFailed = "";
     renderingVersion = msg.version;
@@ -443,6 +474,7 @@
     if (!current || current.meta.kind !== "markdown" || printing) return;
     mode = "edit";
     dirty = false;
+    selection = null;
     notice("");
     toFrame({ type: "edit", content: current.content, version: current.meta.version });
     updateButtons();
@@ -591,6 +623,9 @@
         break;
       case "highlighted":
         onHighlighted(m);
+        break;
+      case "selection":
+        onSelection(m);
         break;
       case "error":
         if (printing) mountFrame();      // back to the normal view; a later render must never print()

@@ -204,8 +204,9 @@ below is built around that.
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
   - `canvas-frame.html`: `ready`, `rendered{version, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
-    `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and in phase 2
-    `selection{text}`.
+    `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
+    `selection{text, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    compare tab like `save`).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
@@ -301,7 +302,7 @@ below is built around that.
 | `katashiro.canvas_open({title, kind, content \| imageId \| data, id?, baseVersion?, beside?})` | Without `id`: creates a canvas and returns `{id, version: 1}`. With `id`: a new version, re-rendered live; **`baseVersion` is then required** (no blind writes). `beside: "current"` also shows it in Split View beside the user's current page (§3.1); the result says where it went or why not |
 | `katashiro.canvas_read({id, diff?})` | Returns the latest content (including **user edits**) with `{version, author, at, agentVersion}`; `diff: true` returns only the diff from the agent's last write to now |
 | `katashiro.canvas_list()` | Lists the conversation's canvases: id, title, kind, latest version, last author |
-| `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Phase 2: patches a long document without resending it |
+| `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Patches a long document without resending it (§3.5 rules). Implemented: `markdown`/`slides` only, ≤ 50 edits, `find` ≤ 32 K and `replace` ≤ 512 K chars, result ≤ 2 MB. Matching and writing run in `CanvasStore.agentPatch` under the `canvas:<id>` lock; the write itself is the same agent write as `canvas_open` (card, normalization wait, mirror, index, budget). Errors are JSON: `stale` (+ `failedEdit`) when the canvas moved on and a `find` missed, else `{error:"patch", edit, count, overlaps?}`; success after a user edit adds `rebasedOver` |
 | `katashiro.canvas_delete({id})` | Deletes a canvas of the conversation after the **user confirms** in the side panel (Brett, 2026-10-10: any canvas, the confirmation is the only gate); declined → nothing deleted, `declined`. A deleted canvas's open tab closes (any delete path), unless it holds unsaved edits, which stay on screen to be copied out |
 | `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out). Only the side panel's messages are accepted (not content scripts); every goto is answered (frame error or drop, newer goto, 5 s canvas timer, panel deadline). If the canvas is open in two tabs both move and the first answer wins |
 | `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only; label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
@@ -339,6 +340,10 @@ below is built around that.
   On success after the canvas has moved on, the result carries `rebasedOver: {version, author}` so
   the agent knows the user edited in between. The common case, "the user edited section A, the
   agent patches section B", does not conflict.
+  *As implemented:* a miss on a canvas still at `baseVersion` is not `stale` but
+  `{error:"patch", edit, count}` (0 = no match, n = ambiguous; `overlaps` names the other edit).
+  That includes a late normalization (below): it keeps the version, and the agent's raw text is
+  not kept, so there is no diff to give; the miss message says to `canvas_read`.
 - **User side: unsaved edits are never eaten.** If the user has unsaved changes when an agent
   version arrives, the frame does not re-render. The host stores the agent's write and shows
   *"Agent saved vN — view / keep editing"*. When the user then saves, their `save{baseVersion}` is
@@ -626,6 +631,14 @@ is silent, the conservative choice:
   - **Edit with agent on a selection** (phase 2): highlight text in the canvas, click *Ask agent*,
     type the request. It is sent like Send to agent, with the selected text quoted, so the agent
     knows exactly which part to change (`selection{}`, §3.2).
+    *As implemented:* the frame posts `selection{}` in view mode only (debounced 250 ms; the
+    editor's unsaved text is never quoted, since the agent could not find it in storage), for
+    `markdown` and `slides`; the host shows **💬 Ask agent** while text is selected and asks for
+    the request with a prompt (an empty request sends nothing). The host line is
+    `[canvas "X" (<id>) v7, text selected by the user — as rendered, not the markdown source;
+    canvas_read before canvas_patch]`: the selection is rendered text, so the agent reads the
+    stored markdown before patching. It goes through the same `katashiro-canvas-push` path as Send
+    to agent (panel sender checks, `reqId` dedupe, refused while no agent is connected).
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
     message, sent as data (rules below). **The `html` frame never gets this button with its
@@ -842,6 +855,9 @@ agent's last write is the baseline.
     canvas tab opens the compare view as a normal tab. The compare tab closes itself when no tab of
     that canvas is left. The *"N changes since you last looked"* hash list and `canvas_patch`'s
     exact ranges are not in phase 1 (§5 lists only the three items here; `canvas_patch` is phase 2).
+    *`canvas_patch` as implemented:* a patch is an agent version like any other, so it glows by
+    the same block diff; the exact ranges are computed (`agentPatch` returns them) but not yet
+    sent to the frame.
   - *Pointing:* the label is placed in the flow just above the block (before the table for a row,
     at the top of a list item), so it never covers text; it shifts the content below while shown.
 - **Skill (Brett, 2026-10-10).** `skills/katashiro-point-at` (#67) teaches agents when and how to

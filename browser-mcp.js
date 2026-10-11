@@ -321,6 +321,7 @@
   const SHOW_IMAGE_CAPTION_MAX = 200;
   // SVG is accepted: the panel rasterizes it to PNG (or, failing that, only ever shows it as an <img>).
   const CANVAS_DIFF_MAX = 20000;           // chars of a diff put into a tool result
+  const CANVAS_PATCH_EDITS_MAX = 50;       // canvas_patch edits per call (canvas-store PATCH_EDITS_MAX)
   // canvas_highlight (§3.10): a text anchor, never a selector; the glow is capped at 10 s and each
   // canvas takes one call per CANVAS_HIGHLIGHT_COOLDOWN_MS, so a looping agent cannot strobe it.
   const CANVAS_FIND_MAX = 500;
@@ -576,6 +577,21 @@
     if (typeof a.data === "string") out.data = `<${b64Bytes(a.data.replace(/^data:[^,]*,/, "").replace(/\s+/g, ""))} bytes>`;
     if (typeof a.caption === "string") out.caption = a.caption.length > 80 ? `${a.caption.slice(0, 80)}…` : a.caption;
     if (a.beside != null) out.beside = String(a.beside).slice(0, 20);
+    return out;
+  }
+
+  // canvas_patch: the id, base and how many edits of what size — never the text itself (it is the
+  // document's content, and a replace can be large).
+  function redactCanvasPatch(args) {
+    const a = args || {};
+    const out = {};
+    if (a.id != null) out.id = a.id;
+    if (a.baseVersion != null) out.baseVersion = a.baseVersion;
+    if (Array.isArray(a.edits)) {
+      const enc = new TextEncoder();
+      const bytes = a.edits.reduce((n, e) => n + (e && typeof e.find === "string" ? enc.encode(e.find).length : 0) + (e && typeof e.replace === "string" ? enc.encode(e.replace).length : 0), 0);
+      out.edits = `<${a.edits.length} edit${a.edits.length === 1 ? "" : "s"}, ${bytes} bytes>`;
+    }
     return out;
   }
 
@@ -2816,6 +2832,93 @@
         } catch (e) {
           return errText(`canvas_read: ${(e && e.message) || e}`);
         }
+      }
+    },
+
+    // canvas_patch (§3.5): small changes to a long markdown / slides canvas without resending it.
+    // The store matches every find against one snapshot of the latest under the canvas lock and
+    // applies all or none; the write is an ordinary agent write (card, normalization, mirror, glow).
+    "katashiro.canvas_patch": {
+      description:
+        "Patch a markdown or slides CANVAS with find/replace edits, instead of resending the whole " +
+        "document with canvas_open — use it for small changes to a long document. Every `find` is " +
+        "matched against the canvas's LATEST stored text (which may include the user's edits; " +
+        "markdown is stored normalized by the editor, so canvas_read first and copy text exactly — " +
+        "markdown source, not rendered text). Each `find` must match exactly once and no two may " +
+        "overlap; they are all matched on the same snapshot (one edit's `replace` never feeds the " +
+        "next), then applied together — or none is, and you get an error naming the edit. " +
+        "`baseVersion` = the version you last read or wrote. If the user edited since, your edits " +
+        "still apply on top as long as every find matches (the result says `rebasedOver`); the " +
+        "user's edits are never overwritten. If a find then misses, you get `stale` with " +
+        "diffFromBase — rebase on it or canvas_read. Not for image canvases.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id (markdown or slides)" },
+          baseVersion: { type: "integer", description: "the version you last read or wrote" },
+          edits: {
+            type: "array",
+            minItems: 1,
+            maxItems: CANVAS_PATCH_EDITS_MAX,
+            description: `up to ${CANVAS_PATCH_EDITS_MAX} edits, all matched against the same latest text`,
+            items: {
+              type: "object",
+              properties: {
+                find: { type: "string", description: "exact stored text to replace; must occur exactly once" },
+                replace: { type: "string", description: "replacement text (may be empty to delete)" }
+              },
+              required: ["find", "replace"]
+            }
+          }
+        },
+        required: ["id", "baseVersion", "edits"]
+      },
+      redact: redactCanvasPatch,
+      /** @param {{ id: string, baseVersion: number, edits: { find: string, replace: string }[] }} args */
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        if (typeof c.store.agentPatch !== "function") return errText("canvas_patch: not available in this host");
+        let res;
+        try {
+          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits });
+        } catch (e) {
+          if (e && e.code === "stale") {
+            const diff = e.diffFromBase == null ? null : String(e.diffFromBase).slice(0, CANVAS_DIFF_MAX);
+            const out = { error: "stale", currentVersion: e.currentVersion, author: e.author, diffFromBase: diff, message: e.message };
+            if (e.patch) out.failedEdit = { index: e.patch.index, count: e.patch.count, message: e.patch.message };
+            return errText(JSON.stringify(out));
+          }
+          if (e && e.code === "patch") {
+            const out = { error: "patch", edit: e.index, count: e.count, message: `nothing applied: ${e.message}` };
+            if (e.overlaps != null) out.overlaps = e.overlaps;
+            return errText(JSON.stringify(out));
+          }
+          if (e && e.code === "quota") return errText(JSON.stringify({ error: "quota", message: e.message }));
+          return errText(`canvas_patch: ${(e && e.message) || e}`);
+        }
+        let opened = "";
+        if (typeof c.onWrite === "function") {
+          try { opened = (await c.onWrite(res, { beside: null })) || ""; } catch (_) { /* the canvas is saved either way */ }
+        }
+        const n = args.edits.length;
+        let text = `patched canvas "${res.title}" — id ${res.id}, version ${res.version} (${n} edit${n === 1 ? "" : "s"})${opened ? ` (${opened})` : ""}`;
+        if (res.rebasedOver) {
+          text += `\nrebasedOver: ${JSON.stringify(res.rebasedOver)} — the canvas was at v${res.rebasedOver.version} (last saved by ${res.rebasedOver.author}), past your baseVersion ${args.baseVersion}; your edits applied on top and kept those changes`;
+        }
+        // markdown: wait for the editor's normalization like canvas_open, so the next find targets
+        // what is actually stored.
+        if (res.kind === "markdown" && typeof c.waitNormalized === "function") {
+          let nz = null;
+          try { nz = await c.waitNormalized(res.id, res.version, res.content); } catch (_) { /* best effort */ }
+          if (nz && nz.diff) {
+            text += `\nnormalizedDiff (the editor reformatted the patched markdown; the stored text is the normalized one — base your next edit on it):\n${nz.diff.slice(0, CANVAS_DIFF_MAX)}`;
+          } else if (!nz) {
+            text += "\n(not normalized yet: no canvas tab rendered it in time — canvas_read before the next patch)";
+          }
+        }
+        return okText(text);
       }
     },
 
