@@ -622,7 +622,7 @@ test("agentPatch: a miss after the canvas moved on is stale with diffFromBase; u
 test("agentPatch: text kinds only, own conversation, needs baseVersion; slides are stored as sent", async () => {
   const { s } = store();
   const img = await s.agentWrite({ conversationId: "c", title: "Px", kind: "image", image: { mimeType: "image/png", data: "iVBORw0KGgo=" } });
-  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: img.id, baseVersion: 1, edits: [{ find: "image", replace: "x" }] }), /image; only markdown and slides/);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id: img.id, baseVersion: 1, edits: [{ find: "image", replace: "x" }] }), /image; only markdown, slides and mermaid/);
   const deck = await s.agentWrite({ conversationId: "c", title: "D", kind: "slides", content: "# 1\n---\n# 2" });
   await assert.rejects(() => s.agentPatch({ conversationId: "other", id: deck.id, baseVersion: 1, edits: [{ find: "# 2", replace: "# Two" }] }), /another conversation/);
   await assert.rejects(() => s.agentPatch({ conversationId: "c", id: deck.id, edits: [{ find: "# 2", replace: "# Two" }] }), /baseVersion/);
@@ -673,4 +673,19 @@ test("allMetas: every canvas across conversations (the gallery, §3.7), metas on
   assert.deepEqual(metas.map((m) => m.conversationId).sort(), ["c_a", "c_b"]);
   await s.remove({ id: a.id });
   assert.deepEqual((await s.allMetas()).map((m) => m.id), [b.id]);
+});
+
+test("kind mermaid (Brett 2026-10-11): stored as sent (no normalization), patchable, never user-edited", async () => {
+  const { s } = store();
+  const src = "flowchart LR\n  A --> B\n";
+  const r = await s.agentWrite({ conversationId: "c", title: "Flow", kind: "mermaid", content: src });
+  const m = await s.read({ id: r.id });
+  assert.deepEqual([m.kind, m.content, m.normalized], ["mermaid", src, true]);
+  assert.ok(CanvasStore.KINDS.includes("mermaid"));
+  const p = await s.agentPatch({ conversationId: "c", id: r.id, baseVersion: 1, edits: [{ find: "A --> B", replace: "A --> C" }] });
+  assert.equal(p.version, 2);
+  assert.equal((await s.read({ id: r.id })).content, "flowchart LR\n  A --> C\n");
+  await assert.rejects(() => s.userSave({ id: r.id, baseVersion: 2, content: "graph TD" }), /a mermaid canvas cannot be edited/);
+  // A canvas never changes kind.
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", id: r.id, baseVersion: 2, title: "Flow", kind: "markdown", content: "x" }), /kind/);
 });

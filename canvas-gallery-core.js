@@ -8,11 +8,11 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const KIND_ICONS = { markdown: "📄", slides: "🖼️", image: "🏞️" };
-  const KIND_LABELS = { markdown: "文件", slides: "投影片", image: "圖片" };
+  const KIND_ICONS = { markdown: "📄", slides: "🖼️", image: "🏞️", mermaid: "🔀" };
+  const KIND_LABELS = { markdown: "文件", slides: "投影片", image: "圖片", mermaid: "Mermaid 圖表" };
   const AUTHOR_LABELS = { agent: "agent", user: "你", file: "資料夾檔案" };
   // Content search reads canvas text only for these kinds (an image canvas's body is a JSON ref).
-  const TEXT_KINDS = new Set(["markdown", "slides"]);
+  const TEXT_KINDS = new Set(["markdown", "slides", "mermaid"]);
   const TITLE_MAX = 120;
 
   // Search normalisation: NFKC (full-width ↔ half-width, compatibility forms) and lower case, so

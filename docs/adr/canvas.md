@@ -83,6 +83,18 @@ versioned surface next to the conversation that the agent renders into and updat
   global fallbacks in crepe and mermaid-tiny, if they fire). A new or changed violation fails the
   test until someone reviews it. For mermaid, check whether `@mermaid-js/tiny` bundles ELK and
   whether it runs without a Worker.
+  *As implemented (mermaid, 2026-10-11):* `@mermaid-js/tiny` 12.1.0 does **not** bundle ELK. It
+  registers only the `dagre` and `swimlane` layouts, and an `elk` request falls back to dagre with
+  a console warning. Layout runs on the main thread, so no Worker is ever constructed. The frame asks
+  for `layout: "dagre"` explicitly (and `state.layout`, whose default is `elk`). The smoke test is
+  `scripts/smoke-mermaid.mjs`. It needs Chrome, so it is not part of `node --test`. It serves
+  `canvas-frame.html` with the manifest's sandbox policy as a CSP header (opaque origin, on top of
+  the meta CSP) and drives it with `render{}` like `canvas.html` does. The fixture holds flowchart,
+  sequence, state and class diagrams plus a broken one, a `mermaid` canvas and a slide with a
+  diagram. Violations are recorded by a CDP-injected listener in every frame, and a deliberate
+  `img-src` violation checks the recorder works. Result in chrome-headless-shell 154: **0
+  violations** (the four `Function("return this")` fallbacks are never reached), **0 Workers**, and
+  the allow-list is empty.
 
 ---
 
@@ -270,7 +282,7 @@ below is built around that.
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
 | 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off |
-| 3 | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` |
+| 3 → done (2026-10-11) | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` (and `slides`) |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
 - **Markdown canvases are editable from phase 1** (Milkdown crepe, §3.5). Slides get the
@@ -292,6 +304,50 @@ below is built around that.
 - **Mermaid supersedes the markdown ADR's dagre lean** `[MD-ADR §3.6]`. That lean existed because
   mermaid could not run on an extension page, and in the sandbox it can. Chat bubbles keep showing
   mermaid fences as code; the canvas renders them.
+  *As implemented (moved up from phase 3, Brett 2026-10-11):*
+  - `markdown.js` gives a ```` ```mermaid ```` fence's `<code>` the constant class `language-mermaid`.
+    The chat still shows it as code. The frame renders exactly those fences, in `markdown` and
+    `slides` canvases, and loads the 2.7 MB engine only when the rendered view has one (a
+    `mermaid` canvas always does).
+  - `mermaid.initialize` is called with `securityLevel: 'strict'`, `theme: 'dark'`,
+    `layout: 'dagre'`, `htmlLabels: false` and `suppressErrorRendering: true`. `htmlLabels: false`
+    makes most labels SVG text, but not all: journey tasks and venn text are `<foreignObject>` HTML
+    whatever it says, and a `%%{init}%%` directive can turn it back on. The SVG then goes through
+    DOMPurify as well, a second check behind mermaid's own sanitizing: the svg, svgFilters and html
+    profiles, with `foreignObject` added and made an HTML integration point (DOMPurify otherwise
+    drops HTML under SVG, which blanked those labels with no error). The HTML in it is held to the
+    same html profile as the markdown sink, and `script-src 'self'` stands behind both. This is a
+    separate sink from the chat's: `[MD-ADR §3.2]` (pinned config, no relaxing, no svg profile)
+    governs the chat's `renderMarkdownInto` and is unchanged; the canvas diagram config is set
+    apart on purpose. It returns a DOM fragment that is inserted as is, not re-parsed.
+  - `@mermaid-js/tiny` leaves out mindmap and architecture (they need cytoscape); such a diagram
+    fails like a syntax error. The smoke test draws each other type the tool names and checks that
+    the sanitized SVG keeps all of mermaid's text.
+  - Each render gets a fresh id. The SVG and its scoped `<style>` replace the fence, so a re-render
+    leaves nothing behind (checked by the smoke test).
+  - A diagram with a syntax error keeps its source, and its error is shown above it with
+    `textContent`. It is reported as **`diagramError{msg, version}`**, not `error{}`: the rest of
+    the canvas stands, the render is not marked failed, and pending goto / highlight carry on. The
+    host drops a report whose version is not the render in progress, and offers *送給 agent 修*; the
+    header says a diagram failed and the rest rendered, so the agent patches that fence instead of
+    rewriting the canvas. If the engine itself fails to load, every fence keeps its source with
+    that note and one report goes up without a diagram number.
+  - A diagram is **one block** for §3.10, keyed by its source (`mermaid:<source>`). A failed or
+    unrendered fence has the same key, so a compare's other side need not be rendered. Changing one
+    diagram glows only that diagram. `canvas_highlight` can find a diagram by its source text. The
+    copy button on a diagram copies its source.
+  - **Print:** the document's diagrams are re-rendered with mermaid's light `default` theme, then
+    the frame prints and switches back to dark. A deck prints on its own dark slides and stays dark.
+  - **`kind: "mermaid"`:** the whole canvas is one diagram source, shown like a lone fence that
+    fills the tab. It is stored as sent (no normalization) and can be changed with `canvas_patch`,
+    but is not editable in the canvas. It has ⬇ `.mmd` download, PDF, glow and 顯示變更. The folder
+    mirror (§3.6) writes it as a `.md` holding one ```` ```mermaid ```` fence.
+  - Milkdown normalization keeps mermaid fences byte for byte (smoke test).
+  - **Links (§3.2):** `strict` disables `click` *callbacks*, but a `click X "url"` link is still
+    drawn, as an SVG `<a>`. The capture-phase listener covers it. It reads `href` (or `xlink:href`)
+    from the attribute, because an SVG `<a>`'s `href` property is an `SVGAnimatedString`, which
+    `postMessage` cannot clone (before this fix, the click was swallowed and no `openLink` was sent).
+    The host's confirm then applies as for any link (smoke test).
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 
@@ -915,7 +971,7 @@ agent's last write is the baseline.
 
 ### Negative / tradeoffs
 - Vendor weight: Milkdown crepe 2.7 MB minified (phase 1), reveal.js ~120 KB + CSS/themes, Chart.js
-  ~200 KB, mermaid-tiny 2.7 MB (phase 3). The release zip grows by roughly 6 MB at full scope.
+  ~200 KB, mermaid-tiny 2.7 MB (shipped 2026-10-11; loaded only by canvases with a diagram). The release zip grows by roughly 6 MB at full scope.
 - More Chrome tabs than an in-page tab strip would need (one per open canvas, each loading its own
   sandbox frame), and group bookkeeping around Split View (§3.1).
 - A second rendering path (sandbox) beside the panel's markdown sink, with its own security review.

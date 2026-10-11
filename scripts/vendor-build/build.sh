@@ -18,5 +18,10 @@ npx esbuild entry-crepe.css --bundle --minify --outfile=../../vendor/milkdown/cr
 mkdir -p ../../vendor/reveal
 cp node_modules/reveal.js/dist/reveal.js node_modules/reveal.js/dist/reveal.css ../../vendor/reveal/
 cp node_modules/reveal.js/dist/theme/dracula.css ../../vendor/reveal/theme-dracula.css
+# Mermaid (canvas diagrams, ADR canvas §3.3): @mermaid-js/tiny ships one prebuilt IIFE (global
+# `mermaid`; no ELK, so it lays out with dagre and never starts a Worker). Copied as-is.
+mkdir -p ../../vendor/mermaid
+cp node_modules/@mermaid-js/tiny/dist/mermaid.tiny.js ../../vendor/mermaid/
 cd ../../vendor && sha256sum markdown-it.iife.js dompurify.iife.js highlight.iife.js \
-  reveal/reveal.js reveal/reveal.css reveal/theme-dracula.css milkdown/crepe.iife.js milkdown/crepe.css
+  reveal/reveal.js reveal/reveal.css reveal/theme-dracula.css milkdown/crepe.iife.js milkdown/crepe.css \
+  mermaid/mermaid.tiny.js

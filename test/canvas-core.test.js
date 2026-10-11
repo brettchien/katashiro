@@ -338,3 +338,59 @@ test("composeAskAgent: the user's request first, a fixed host line with id and v
   assert.equal(cutHere.match(/cut at 20 KB/g).length, 1);
   assert.ok(!C.composeAskAgent({ note: "n", title: "T", id: "cv_000000000001", version: 1, text: "abc" }).includes("cut at"));
 });
+
+// --- Mermaid (§3.3) ------------------------------------------------------------------------------
+test("mermaid: diagramError{} is its own allow-listed frame message, also from a compare tab", () => {
+  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", version: 3 }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", version: 3 }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, version: 3 }), null);
+  // The render it belongs to: the host drops an older render's report.
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x" }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: "3" }), null);
+  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", version: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
+});
+
+test("mermaid: the lazy-load decision — a mermaid canvas always, markdown / slides only with a fence", () => {
+  const root = (has) => ({ querySelector: (sel) => (sel === C.MERMAID_SEL && has ? {} : null) });
+  assert.equal(C.MERMAID_SEL, "pre > code.language-mermaid");
+  assert.equal(C.wantsMermaid("mermaid", null), true);
+  assert.equal(C.wantsMermaid("markdown", root(true)), true);
+  assert.equal(C.wantsMermaid("slides", root(true)), true);
+  assert.equal(C.wantsMermaid("markdown", root(false)), false);
+  assert.equal(C.wantsMermaid("slides", root(false)), false);
+  assert.equal(C.wantsMermaid("image", root(true)), false);
+  assert.equal(C.wantsMermaid("markdown", null), false);
+  assert.equal(C.wantsMermaid("markdown", {}), false);
+});
+
+test("mermaid: a diagram is one block keyed by its source, whitespace-insensitive", () => {
+  const k = C.mermaidKey("flowchart LR\n  A --> B\n");
+  assert.equal(k, "mermaid:flowchart LR A --> B");
+  assert.equal(C.mermaidKey("flowchart LR\nA -->   B"), k);
+  assert.notEqual(C.mermaidKey("flowchart LR\nA --> C"), k);
+  assert.notEqual(k, "pre:flowchart LR A --> B");          // a diagram never matches a code block's key
+  // Changing one of three diagrams changes exactly that block.
+  const d = C.diffBlocks(["p:a", C.mermaidKey("graph TD\nA-->B"), "p:b"], ["p:a", C.mermaidKey("graph TD\nA-->C"), "p:b"]);
+  assert.deepEqual(d.changed, [1]);
+});
+
+test("mermaid: diagramErrorText numbers the diagram, keeps mermaid's message, and is capped", () => {
+  assert.equal(C.diagramErrorText(new Error("Parse error on line 2:\r\n...\r\n"), 3), "mermaid diagram 3: Parse error on line 2:\n...");
+  assert.equal(C.diagramErrorText({ str: "Lexical error" }, 1), "mermaid diagram 1: Lexical error");
+  assert.equal(C.diagramErrorText("No diagram type detected", 2), "mermaid diagram 2: No diagram type detected");
+  assert.equal(C.diagramErrorText(null, 1), "mermaid diagram 1: the diagram could not be drawn");
+  // Not about one diagram (the engine did not load): no number.
+  assert.equal(C.diagramErrorText(new Error("mermaid failed to load")), "mermaid: mermaid failed to load");
+  const long = C.diagramErrorText(new Error("x".repeat(2000)), 1);
+  assert.equal(long.length, C.ERROR_MAX + 1);
+  assert.ok(long.endsWith("…"));
+});
+
+test("mermaid: a text kind for glow and 顯示變更 (one block), unlike image", () => {
+  assert.equal(C.textKind("mermaid"), true);
+  assert.equal(C.textKind("image"), false);
+  const shown = { agentVersion: 1, kind: "mermaid", content: "graph TD\nA-->B" };
+  assert.equal(C.changesBaseAfter(null, shown, { agentVersion: 2, kind: "mermaid", content: "graph TD\nA-->C" }), "graph TD\nA-->B");
+  const h = C.heldChanges({ on: true, comparing: false, editing: false, kind: "mermaid", base: "graph TD\nA-->B", author: "agent", content: "graph TD\nA-->C", agentCopy: null });
+  assert.deepEqual(h, { against: "graph TD\nA-->B", from: "write" });
+});

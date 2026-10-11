@@ -2728,7 +2728,7 @@
       }
     },
 
-    // Canvas (ADR docs/adr/canvas.md, phase 1 MVP: markdown only). The panel owns the store and
+    // Canvas (ADR docs/adr/canvas.md: markdown, slides, mermaid, image). The panel owns the store and
     // the tabs; these bodies validate and delegate through ctx.canvas = { store, conversationId(),
     // onWrite(info) }. sessionScope (no page involved) and not act-gated: like show_image, a canvas
     // changes nothing on any web page (§3.4).
@@ -2737,10 +2737,15 @@
         "Create or update a CANVAS: a document shown to the user in its own browser tab, full width, " +
         "beside the chat — use it for long or structured output the user will read, keep and come " +
         "back to (a report, a design doc, a plan, a deck), instead of a long chat reply. `kind`: " +
-        "`markdown` (default; GFM tables, task lists, fenced code), `slides` (markdown, slides separated " +
-        "by lines that are exactly `---`; arrow keys to navigate), or `image` (give `imageId` from " +
-        "screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an optional `caption`; " +
-        "no `content`). Without `id` it creates a canvas, opens its tab in the background " +
+        "`markdown` (default; GFM tables, task lists, fenced code; a ```mermaid fence is drawn as a " +
+        "diagram — flowchart, sequence, class, state, ER, gantt, pie, journey, C4, …; not mindmap or " +
+        "architecture), `slides` (markdown, slides separated " +
+        "by lines that are exactly `---`; arrow keys to navigate; mermaid fences work there too), " +
+        "`mermaid` (the whole canvas is one diagram: `content` is Mermaid source, no fence), or `image` " +
+        "(give `imageId` from screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an " +
+        "optional `caption`; no `content`). A diagram with a syntax error shows the error and its source " +
+        "in place (the rest of the canvas still renders) and the user can send you the error. In diagrams " +
+        "`click` callbacks are off; a `click X \"https://…\"` link opens only after the user confirms. Without `id` it creates a canvas, opens its tab in the background " +
         "and returns { id, version: 1 }. To change it, pass `id` and `baseVersion` (the version you " +
         "last wrote or read) with the FULL new content; if the canvas moved on since, the call is " +
         "refused as stale — canvas_read, then write again on top of the latest. A card in your reply " +
@@ -2752,8 +2757,8 @@
         type: "object",
         properties: {
           title: { type: "string", description: "short title, shown on the tab and the card (≤ 120 chars)" },
-          content: { type: "string", description: "markdown / slides: the whole document (≤ 2 MB)" },
-          kind: { type: "string", enum: ["markdown", "slides", "image"], description: "content kind (default markdown)" },
+          content: { type: "string", description: "markdown / slides: the whole document; mermaid: the diagram source (≤ 2 MB)" },
+          kind: { type: "string", enum: ["markdown", "slides", "mermaid", "image"], description: "content kind (default markdown)" },
           imageId: { type: "string", description: "image: a capture from screenshot" },
           data: { type: "string", description: "image: base64 bytes or a data:image/...;base64, URL (≤ 5 MB)" },
           mimeType: { type: "string", enum: SHOW_IMAGE_MIME_TYPES, description: "image: required with raw base64 data" },
@@ -2835,12 +2840,12 @@
       }
     },
 
-    // canvas_patch (§3.5): small changes to a long markdown / slides canvas without resending it.
+    // canvas_patch (§3.5): small changes to a long markdown / slides / mermaid canvas without resending it.
     // The store matches every find against one snapshot of the latest under the canvas lock and
     // applies all or none; the write is an ordinary agent write (card, normalization, mirror, glow).
     "katashiro.canvas_patch": {
       description:
-        "Patch a markdown or slides CANVAS with find/replace edits, instead of resending the whole " +
+        "Patch a markdown, slides or mermaid CANVAS with find/replace edits, instead of resending the whole " +
         "document with canvas_open — use it for small changes to a long document. Every `find` is " +
         "matched against the canvas's LATEST stored text (which may include the user's edits; " +
         "markdown is stored normalized by the editor, so canvas_read first and copy text exactly — " +
@@ -2855,7 +2860,7 @@
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "string", description: "canvas id (markdown or slides)" },
+          id: { type: "string", description: "canvas id (markdown, slides or mermaid)" },
           baseVersion: { type: "integer", description: "the version you last read or wrote" },
           edits: {
             type: "array",

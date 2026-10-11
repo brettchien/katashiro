@@ -25,7 +25,9 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const KINDS = ["markdown", "slides", "image"];   // phase 1; chart / mermaid / html follow
+  const KINDS = ["markdown", "slides", "image", "mermaid"];   // chart / html follow (mermaid moved up, Brett 2026-10-11)
+  // Text the agent can canvas_patch: a mermaid canvas is its diagram source (never edited by the user).
+  const PATCH_KINDS = ["markdown", "slides", "mermaid"];
   const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
   const IMAGE_MAX_BYTES = 5 * 1024 * 1024;  // like show_image
   const IMAGE_GRACE_MS = 10 * 60 * 1000;    // §3.6 sweep: never delete an image written this recently
@@ -268,7 +270,7 @@
     }
 
     // Validate what any write needs; returns the normalized fields or throws a plain Error.
-    // markdown / slides: `content` is the text. image: `image` = { mimeType, data (base64) } plus an
+    // markdown / slides / mermaid: `content` is the text (mermaid: the diagram source). image: `image` = { mimeType, data (base64) } plus an
     // optional `caption`; the stored content is a small JSON reference to the image by hash (§3.6).
     async function validate({ title, kind, content, image, caption }) {
       const t = title == null ? "" : String(title).trim();
@@ -458,7 +460,7 @@
     }
 
     /**
-     * canvas_patch (§3.5): find/replace edits on the latest text of a markdown or slides canvas, as
+     * canvas_patch (§3.5): find/replace edits on the latest text of a markdown, slides or mermaid canvas, as
      * the agent. All finds are matched against one snapshot of the latest version — not baseVersion
      * — inside the canvas lock, so nothing can change between matching and writing. All apply or
      * none: a miss on a canvas that moved on since baseVersion is `stale` (with diffFromBase), on an
@@ -481,7 +483,7 @@
       {
         const got = await storage.get([metaKey(id), latestKey(id)]);
         const m = got[metaKey(id)];
-        const patchable = m && m.conversationId === conversationId && (m.kind === "markdown" || m.kind === "slides");
+        const patchable = m && m.conversationId === conversationId && PATCH_KINDS.includes(m.kind);
         const dry = patchable ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
         if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id);
       }
@@ -490,7 +492,7 @@
         const cur = await getOne(metaKey(id));
         if (!cur) throw new Error(`no canvas "${id}"`);
         if (cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
-        if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`canvas "${id}" is ${cur.kind}; only markdown and slides canvases can be patched`);
+        if (!PATCH_KINDS.includes(cur.kind)) throw new Error(`canvas "${id}" is ${cur.kind}; only markdown, slides and mermaid canvases can be patched`);
         if (baseVersion > cur.version || baseVersion < 1) throw new StaleError(cur, baseVersion, null);
         const latest = (await getOne(latestKey(id))) || "";
         const plan = planPatch(latest, list);

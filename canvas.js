@@ -123,7 +123,8 @@
       } catch (_) { /* stays hidden */ }
     }
     revertBtn.hidden = !canRevert;
-    const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    // markdown, slides and mermaid (a diagram source: download as .mmd, print, glow; never edited here).
+    const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
     compareBtn.hidden = !(canRevert && textKind && !!frame);
     showChangesBtn.hidden = !textKind;
@@ -134,6 +135,9 @@
     // Ask agent (§3.7): while text is selected in the view.
     askBtn.hidden = !(textKind && mode === "view" && !!frame && !!selection);
     downloadBtn.hidden = !textKind;
+    const ext = current && current.meta.kind === "mermaid" ? "mmd" : "md";
+    downloadBtn.textContent = `⬇ .${ext}`;
+    downloadBtn.title = `下載成 .${ext}`;
     printBtn.hidden = !(textKind && !!frame && mode === "view");
     printBtn.disabled = (mode === "edit" && dirty) || !!printing;
     printBtn.title = printing ? "正在準備列印…" : printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
@@ -189,7 +193,7 @@
   // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
   let selection = null;               // { text, truncated } while the user has text selected in the view
   function onSelection(m) {
-    const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
     updateButtons();
   }
@@ -211,14 +215,17 @@
   });
 
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
-  function offerSendError(msg) {
+  // diagram: only a mermaid diagram failed (§3.3) and the rest rendered, so the agent is pointed at
+  // that fence rather than told the whole canvas is broken.
+  function offerSendError(msg, diagram = false) {
     const c = current;
-    notice(`顯示時發生錯誤：${CanvasCore.clipError(msg)}`, {
+    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
+    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
         const text = CanvasCore.composeCanvasPush({
-          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) failed to render]`,
+          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) ${what}]`,
           data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
@@ -230,10 +237,11 @@
   // --- Export (§3.8) --------------------------------------------------------------------------
   downloadBtn.addEventListener("click", () => {
     if (!current) return;
-    const url = URL.createObjectURL(new Blob([current.content], { type: "text/markdown;charset=utf-8" }));
+    const mermaid = current.meta.kind === "mermaid";
+    const url = URL.createObjectURL(new Blob([current.content], { type: mermaid ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8" }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = CanvasCore.safeFileName(current.meta.title, "md");
+    a.download = CanvasCore.safeFileName(current.meta.title, mermaid ? "mmd" : "md");
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   });
@@ -691,6 +699,13 @@
         else offerSendError(m.msg);
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         finishHighlight({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
+        break;
+      case "diagramError":
+        // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
+        // nothing is marked failed and pending goto / highlight carry on.
+        if (m.version !== renderingVersion) break;           // an older render's
+        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
+        else offerSendError(m.msg, true);
         break;
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });

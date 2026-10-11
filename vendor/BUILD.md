@@ -87,6 +87,23 @@ never by the panel.
 - KaTeX comes along as a crepe dependency (7.22.3 pins `^0.19.0`; the 7.22.2 bundle had 0.18.10). It is
   in the bundle but never runs: `Feature.Latex` is off and `latex.css` is left out.
 
+## `mermaid/` — Mermaid (canvas diagrams)
+
+Diagrams in the canvas (ADR `docs/adr/canvas.md` §3.3): ```` ```mermaid ```` fences in markdown /
+slides canvases, and `kind: "mermaid"` canvases. Loaded **on demand** by the sandboxed
+`canvas-frame.html`, and only when the rendered canvas has a diagram. The panel never loads it; the
+chat shows mermaid fences as code.
+
+- Source: `@mermaid-js/tiny@12.1.0` (MIT). Its prebuilt `dist/mermaid.tiny.js` (global `mermaid`) is
+  copied as-is, not rebuilt. 2,811,019 bytes (~2.7 MB), 746 KB gzip.
+- **No ELK.** The tiny build registers only the `dagre` and `swimlane` layouts (mermaid 12's
+  default `elk` falls back to dagre). Layout runs on the main thread and never starts a Worker,
+  which the sandbox CSP (`worker-src 'none'`) would block. The frame sets `layout: "dagre"`.
+- Verified: 0 `eval(`; 4 `Function("return this")()` global fallbacks behind `self` checks, never
+  reached in a browser. The smoke test `scripts/smoke-mermaid.mjs` renders flowchart, sequence,
+  state and class diagrams in the real frame under the manifest's sandbox CSP: 0 CSP violations,
+  0 Workers.
+
 ## Reproducible rebuild
 
 The markdown-it / DOMPurify / highlight.js bundles are built from pinned inputs in
@@ -109,6 +126,7 @@ aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.
 47bf8605c95d61ad25c23d2e16b7de9aca79c1c5b5f1af33558f87f1faef26d0  reveal/theme-dracula.css
 caca944b724842e308162ef5a4f9b0be7c42ebae033297b768df09608c84b1c5  milkdown/crepe.iife.js
 7d6bb77a0d31140eb36fdec3b9831eaba9eae3f8583564f67f9c413c8f51ac5a  milkdown/crepe.css
+143c1b9345c45963ff429da4bdcd9051316a43522ea9edd7ccb7a87ff947a804  mermaid/mermaid.tiny.js
 ```
 
 To bump a version: edit `package.json`, run `npm i --package-lock-only` there, run `build.sh`, and update

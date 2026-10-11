@@ -3331,10 +3331,30 @@ test("katashiro.canvas_patch refuses image canvases; redact never shows the text
   await callTool(d, "katashiro.canvas_open", { title: "Px", kind: "image", data: PNG_1PX, mimeType: "image/png" });
   const r = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "image", replace: "x" }] });
   assert.equal(r.isError, true);
-  assert.match(r.content[0].text, /only markdown and slides canvases can be patched/);
+  assert.match(r.content[0].text, /only markdown, slides and mermaid canvases can be patched/);
   const masked = BrowserMcp.TOOLS["katashiro.canvas_patch"].redact({ id: "cv_1", baseVersion: 3, edits: [{ find: "secret", replace: "token é" }] });
   assert.deepEqual(masked, { id: "cv_1", baseVersion: 3, edits: "<1 edit, 14 bytes>" });
   assert.equal(BrowserMcp.TOOLS["katashiro.canvas_patch"].inputSchema.properties.edits.maxItems, CanvasStore.PATCH_EDITS_MAX);
   const none = { ...d, canvas: undefined };
   assert.match((await callTool(none, "katashiro.canvas_patch", { id: "cv_1", baseVersion: 1, edits: [] })).content[0].text, /not available in this host/);
+});
+
+test("canvas_open kind:mermaid (Brett 2026-10-11): stored as sent, not normalized; the description teaches fences and the kind", async () => {
+  const def = BrowserMcp.TOOLS["katashiro.canvas_open"];
+  assert.ok(def.inputSchema.properties.kind.enum.includes("mermaid"));
+  assert.match(def.description, /```mermaid fence/);
+  assert.match(def.description, /`mermaid` \(the whole canvas is one diagram/);
+  assert.match(BrowserMcp.TOOLS["katashiro.canvas_patch"].description, /markdown, slides or mermaid CANVAS/);
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  let waited = 0;
+  d.canvas.waitNormalized = async () => { waited += 1; return { diff: "" }; };
+  const r = await callTool(d, "katashiro.canvas_open", { title: "Flow", kind: "mermaid", content: "flowchart LR\n  A --> B" });
+  assert.equal(r.isError, undefined, JSON.stringify(r));
+  assert.doesNotMatch(r.content[0].text, /normaliz/);
+  assert.equal(waited, 0);
+  const read = await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" });
+  assert.match(read.content[0].text, /"kind":"mermaid"[\s\S]*\n\nflowchart LR\n {2}A --> B$/);
+  const p = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "A --> B", replace: "A --> C" }] });
+  assert.equal(p.isError, undefined, JSON.stringify(p));
 });

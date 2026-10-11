@@ -4,7 +4,8 @@
 // latest content of every canvas as a plain file, so the user can put it under git / Dropbox /
 // Time Machine. Write-through, never clobbering outside edits:
 //   <folder>/<conversation-slug>/<canvas-slug>.md            markdown and slides as stored;
-//                                                            image canvases as a one-line ![](…)
+//                                                            image canvases as a one-line ![](…),
+//                                                            mermaid canvases as one ```mermaid fence
 //   <folder>/<conversation-slug>/<canvas-slug>.assets/<sha256>.<ext>   png / jpg / gif / webp only
 //   <folder>/.katashiro/<canvasId>.json                      informational, never read
 //
@@ -177,6 +178,16 @@
       return `![${alt}](${slug}.assets/${assetName})\n${cap ? `\n${cap}\n` : ""}`;
     }
     return `${cap ? `${cap}\n\n` : ""}_(${kept})_\n`;
+  }
+
+  // The .md for a mermaid canvas: its source in one ```mermaid fence (longer than any backtick run
+  // inside), so GitHub / Obsidian draw it and the file stays markdown like every other canvas's.
+  function mermaidMarkdown(source) {
+    const text = String(source == null ? "" : source).replace(/\n+$/, "");
+    let max = 0;
+    for (const m of text.matchAll(/`+/g)) max = Math.max(max, m[0].length);
+    const fence = "`".repeat(Math.max(3, max + 1));
+    return `${fence}mermaid\n${text}\n${fence}\n`;
   }
 
   /** Header text for a canvas's mirror state; null when there is nothing to say. */
@@ -371,6 +382,7 @@
 
     // What goes to disk for this canvas: the .md text, and for an image canvas its asset.
     async function renderFile(meta, content, slug) {
+      if (meta.kind === "mermaid") return { text: mermaidMarkdown(content) };
       if (meta.kind !== "image") return { text: String(content) };
       let ref = null;
       try { ref = JSON.parse(content); } catch (_) { /* broken ref */ }
@@ -633,7 +645,7 @@
 
   return {
     createCanvasMirror, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
-    onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, describeState, mdPath, assetPath, jsonPath,
+    onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, mermaidMarkdown, describeState, mdPath, assetPath, jsonPath,
     folderStatus, grantedRoot, requestAccess, pickFolder, stopMirror, NOT_A_FILE, SLUG_MAX, SLUG_MAX_BYTES,
   };
 });

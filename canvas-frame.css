@@ -64,6 +64,19 @@ body {
 
 [hidden] { display: none !important; }
 
+/* Mermaid diagrams (§3.3): centered, never wider than the page; the copy button copies the source.
+   A diagram that failed keeps its source below the error. */
+.doc figure.ks-mermaid { position: relative; margin: 12px 0; text-align: center; overflow-x: auto; }
+.doc figure.ks-mermaid svg { max-width: 100%; height: auto; }
+.doc figure.ks-mermaid:hover .copy-btn { opacity: 1; }
+.ks-mermaid-error {
+  margin: 8px 0 0; padding: 6px 10px; white-space: pre-wrap; font-family: Menlo, Consolas, Monaco, monospace;
+  font-size: 0.85em; color: #fecaca; background: rgba(248, 113, 113, 0.12); border-left: 3px solid #f87171; border-radius: 4px;
+}
+/* A mermaid canvas is one diagram: it fills the tab (mermaid's inline max-width is its natural size). */
+body.mode-mermaid .doc figure.ks-mermaid { margin: 0; }
+body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !important; max-height: calc(100vh - 80px); }
+
 /* image canvas: centered, fits the tab, caption below (text only). */
 .pic { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; }
 .pic img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; border-radius: 8px; }
@@ -99,6 +112,10 @@ body {
   .doc pre.hljs code { color: #24292f; }
   .doc .hljs-addition { color: #116329; background: #dafbe1; }
   .doc .hljs-deletion { color: #82071e; background: #ffebe9; }
+  /* Diagrams are re-rendered with mermaid's light theme for paper (canvas-frame.js, print). */
+  .doc figure.ks-mermaid { overflow: visible; break-inside: avoid; }
+  body.mode-mermaid .doc figure.ks-mermaid svg { max-height: none; }
+  .ks-mermaid-error { color: #82071e; background: #ffebe9; }
 }
 
 /* Showing what changed (ADR §3.10). Outline, background and our own marker line only: a glow never

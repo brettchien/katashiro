@@ -83,3 +83,18 @@ test("task lists never let message text into the checkbox markup (html stays esc
   assert.match(h, /checked disabled> &lt;img src=x onerror=alert\(1\)&gt; &quot;quoted&quot;/);
   assert.doesNotMatch(h, /<img/);
 });
+
+test("```mermaid fences keep their text as code, tagged language-mermaid for the canvas (ADR canvas §3.3)", () => {
+  const tagged = (src) => (md.render(src).match(/<code class="language-mermaid">/g) || []).length;
+  assert.match(md.render("```mermaid\nflowchart LR\n  A --> B\n```"), /<pre class="hljs"><code class="language-mermaid">flowchart LR\n {2}A --&gt; B\n<\/code><\/pre>/);
+  assert.equal(tagged("~~~mermaid\ngraph TD\n~~~"), 1);
+  assert.equal(tagged("```Mermaid \ngraph TD\n```"), 1);                 // normalized like other languages
+  assert.equal(tagged("- item\n\n  ```mermaid\n  graph TD\n  ```"), 1);  // inside a list item
+  assert.equal(tagged("> ```mermaid\n> graph TD\n> ```"), 1);           // inside a blockquote
+  assert.equal(tagged("```mermaidx\ngraph TD\n```"), 0);
+  assert.equal(tagged("```\nmermaid\n```"), 0);
+  assert.equal(tagged("    ```mermaid\n    graph TD"), 0);                // an indented code block is not a fence
+  assert.equal(tagged("text `mermaid` text"), 0);
+  // The source is escaped like any code: a label never becomes markup.
+  assert.match(md.render('```mermaid\nA["<img src=x onerror=alert(1)>"]\n```'), /A\[&quot;&lt;img src=x onerror=alert\(1\)&gt;&quot;\]/);
+});
