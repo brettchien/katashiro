@@ -84,3 +84,21 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   edits since the agent are marked. While ✏️ editing nothing is marked; with ⇆ Compare open its
   markers show instead, and these come back when the compare tab closes. The compare tab has no
   switch; image canvases neither. Reload Chrome: the switch keeps its state.
+- **Mermaid diagrams (ADR canvas §3.3):** ask the agent for a markdown canvas with a ```` ```mermaid ````
+  flowchart, a sequence diagram and one deliberately broken diagram. The two good ones are drawn
+  (dark theme). The broken one shows a red `mermaid diagram N: Parse error …` box above its source,
+  the rest of the canvas is fine, and the header offers **送給 agent 修**, which posts the error to
+  the chat. In the chat bubble the same fences stay code. Hover a diagram: **copy** copies its
+  source. Then check:
+  - 🖨 PDF: the diagrams print on white in mermaid's light theme, and are dark again afterwards.
+  - Ask the agent to change one diagram: only that diagram glows. With ◐ 顯示變更 on, it stays
+    marked.
+  - ✏️ Edit: the diagram is a plain code block in Milkdown. Save, leave edit, and it is drawn again.
+  - `canvas_open kind:"mermaid"`: one diagram fills the tab. The header shows ⬇ .mmd (the raw
+    source) and 🖨 PDF, but no ✏️. The gallery lists it as 🔀 Mermaid 圖表.
+  - A slide with a fence draws the diagram across the slide width.
+  - A canvas without a diagram never loads `vendor/mermaid/mermaid.tiny.js` (DevTools → Network,
+    in the canvas frame).
+  - `click A "https://example.com"`: clicking node A asks before opening the link in a new tab,
+    and the canvas frame does not navigate. `click A callback` does nothing (`securityLevel: 'strict'`).
+  - The canvas frame's console shows no CSP errors.
