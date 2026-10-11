@@ -2370,8 +2370,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } catch (_) { /* no or bad url */ }
   if (!fromGallery || !CanvasStore.ID_RE.test(String(msg.id))) { sendResponse({ ok: false, error: "not from the Katashiro canvas gallery" }); return false; }
   if (msg.conversationId !== conversationId) return false;           // another window's panel answers
-  openCanvasTab(msg.id, { active: true })
-    .then(() => sendResponse({ ok: true }), (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+  // Answer once the tab exists, not after grouping: the group queue has no timeout, and a stalled
+  // queue must not make the gallery report a failed open for a tab that is already there.
+  let answered = false;
+  const answer = (r) => { if (!answered) { answered = true; sendResponse(r); } };
+  openCanvasTab(msg.id, { active: true, onTab: () => answer({ ok: true }) })
+    .then(() => answer({ ok: true }), (e) => answer({ ok: false, error: (e && e.message) || String(e) }));
   return true;
 });
 
@@ -2384,7 +2388,8 @@ if (canvasGalleryBtn) {
 
 // Focus the canvas's tab, or open it (in the panel's window, after the active tab) and put it in
 // the conversation's canvas group (§3.1). A tab found by URL stays wherever the user left it.
-async function openCanvasTab(id, { active = true } = {}) {
+// `onTab` is called as soon as the tab is created, before the (cosmetic) grouping.
+async function openCanvasTab(id, { active = true, onTab } = {}) {
   const existing = await findCanvasTab(id);
   if (existing) {
     if (active) {
@@ -2396,6 +2401,7 @@ async function openCanvasTab(id, { active = true } = {}) {
   const opts = { url: canvasTabUrl(id), active };
   if (typeof panelWindowId === "number") opts.windowId = panelWindowId;
   const tab = await chrome.tabs.create(opts);
+  if (onTab) onTab(tab);
   // Grouping is cosmetic: a failure (old Chrome, no tabGroups, the tab already closed) never fails
   // the open. Re-read so callers see the tab's group.
   try {

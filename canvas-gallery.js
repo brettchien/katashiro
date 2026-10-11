@@ -29,7 +29,7 @@
   });
 
   let rows = [];                                   // every canvas, newest first
-  const contents = new Map();                      // id → { version, text } (normalized), for content search
+  const contents = new Map();                      // id → { rev, text } (normalized), for content search
   let contentSkipped = 0;                          // text canvases left out of the last content pass
 
   let noticeTimer = 0;
@@ -65,7 +65,7 @@
         const asked = new Set(plan.ids);
         for (const r of rows) {
           const v = got[CanvasStore.latestKey(r.id)];
-          if (typeof v === "string" && asked.has(r.id)) contents.set(r.id, { version: r.version, text: G.normalize(v) });
+          if (typeof v === "string" && asked.has(r.id)) contents.set(r.id, { rev: r.rev, text: G.normalize(v) });
         }
       }
       if (seq !== searchSeq) return;                // a newer keystroke or reload took over
@@ -174,7 +174,7 @@
   // --- Delete (#70, as the canvas tab's 🗑) --------------------------------------------------------
   async function deleteCanvas(r, btn) {
     const kept = r.hasFile ? "\n資料夾裡的檔案不會被刪除。" : "";
-    if (!window.confirm(`刪除畫布「${r.title.slice(0, 60)}」？\n\n這個動作無法復原。${kept}`)) return;
+    if (!window.confirm(`刪除畫布「${r.title.replace(/\s+/g, " ").trim().slice(0, 60)}」？\n\n這個動作無法復原。${kept}`)) return;
     btn.disabled = true;
     try {
       await store.remove({ id: r.id });                 // onChanged re-renders the list

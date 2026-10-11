@@ -661,11 +661,14 @@ is silent, the conservative choice:
     the budget's scan), newest first: kind icon, title, version, last author, update time
     (relative; local absolute on hover), size (latest + agent copy) and conversation (its short
     id until multi-conversation names exist). Search is NFKC + case folded, every term must match:
-    titles, then the content of markdown/slides canvases, read lazily and cached per version
-    (≤ 300 canvases / 16 MB per pass; the rest by title only, and the page says so). A row asks the
+    titles, then the content of markdown/slides canvases, read lazily and cached per version and
+    `normalized` flag (the editor's normalization rewrites `latest` without a version bump)
+    (≤ 300 canvases / 16 MB per pass; the rest by title only, and the page says so). Canvases
+    created in an incognito window (`noMirror`) are not listed: the gallery is a normal-window
+    page, and listing them there would show what incognito promised not to keep. A row asks the
     panel of that canvas's conversation to open it (`katashiro-canvas-open`, accepted only from
-    `canvas-gallery.html`), so it goes through the card's `openCanvasTab`: the most recently used
-    tab of that canvas (`CanvasTabs.pickCanvasTab`, never a compare tab, §3.1), else a new tab in
+    `canvas-gallery.html`; the panel answers once the tab exists, before grouping), so it goes
+    through the card's `openCanvasTab`: the most recently used tab of that canvas (`CanvasTabs.pickCanvasTab`, never a compare tab, §3.1), else a new tab in
     that conversation's group. With no such panel the gallery focuses that tab itself, or opens one
     ungrouped beside it and says so. 🗑 is the canvas tab's delete (same confirm, `store.remove`):
     open tabs close themselves unless they hold unsaved edits, and the folder file is kept (§3.6).

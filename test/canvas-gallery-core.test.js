@@ -81,16 +81,26 @@ test("filterRows: every term in the title (or conversation label); empty query s
   assert.equal(G.filterRows(rows, "WEEKLY")[0].snippet, undefined);         // a title hit has no snippet
 });
 
-test("filterRows: content hits only at the row's current version, with a snippet", () => {
+test("filterRows: content hits only at the row's current rev, with a snippet", () => {
   const rows = G.buildRows([meta({ id: "cv_000000000001", title: "Plan", version: 3 })], { now: NOW });
   const text = G.normalize("# Intro\n\nThe budget for Q4 is approved.\nMore text follows here.");
-  const contents = new Map([["cv_000000000001", { version: 3, text }]]);
+  const contents = new Map([["cv_000000000001", { rev: "3", text }]]);
   const [hit] = G.filterRows(rows, "Budget q4", contents);
   assert.equal(hit.id, "cv_000000000001");
   assert.match(hit.snippet, /the budget for q4 is approved/);
   // an older read must not match: the canvas changed since
-  contents.set("cv_000000000001", { version: 2, text });
+  contents.set("cv_000000000001", { rev: "2", text });
   assert.equal(G.filterRows(rows, "budget", contents).length, 0);
+  // applyNormalized rewrites latest without a version bump: a pre-normalization read is stale too
+  contents.set("cv_000000000001", { rev: "3", text });
+  const normalized = G.buildRows([meta({ id: "cv_000000000001", title: "Plan", version: 3, normalized: true })], { now: NOW });
+  assert.equal(normalized[0].rev, "3n");
+  assert.equal(G.filterRows(normalized, "budget", contents).length, 0);
+});
+
+test("buildRows: canvases created in an incognito window (noMirror) are not listed", () => {
+  const rows = G.buildRows([meta({ id: "cv_000000000001" }), meta({ id: "cv_000000000002", noMirror: true })], { now: NOW });
+  assert.deepEqual(rows.map((r) => r.id), ["cv_000000000001"]);
 });
 
 test("snippet: around the earliest hit, ellipses where cut, whitespace collapsed", () => {
@@ -102,7 +112,7 @@ test("snippet: around the earliest hit, ellipses where cut, whitespace collapsed
   assert.equal(G.snippet("nothing here", ["needle"]), "");
 });
 
-test("planContentReads: text kinds only, skips what is cached at the current version, capped", () => {
+test("planContentReads: text kinds only, skips what is cached at the current rev, capped", () => {
   const rows = G.buildRows([
     meta({ id: "cv_000000000001", at: NOW - 1, bytes: 600 }),
     meta({ id: "cv_000000000002", at: NOW - 2, kind: "slides", bytes: 600 }),
@@ -110,7 +120,7 @@ test("planContentReads: text kinds only, skips what is cached at the current ver
     meta({ id: "cv_000000000004", at: NOW - 4, bytes: 10, version: 2 }),
     meta({ id: "cv_000000000005", at: NOW - 5, bytes: 10 }),
   ], { now: NOW });
-  const cache = new Map([["cv_000000000004", { version: 2, text: "" }], ["cv_000000000005", { version: 0, text: "" }]]);
+  const cache = new Map([["cv_000000000004", { rev: "2", text: "" }], ["cv_000000000005", { rev: "0", text: "" }]]);
   assert.deepEqual(G.planContentReads(rows, cache), { ids: ["cv_000000000001", "cv_000000000002", "cv_000000000005"], skipped: 0 });
   // byte cap: the newest first, the rest skipped (searched by title only)
   assert.deepEqual(G.planContentReads(rows, cache, { maxBytes: 1000 }), { ids: ["cv_000000000001", "cv_000000000005"], skipped: 1 });

@@ -62,13 +62,15 @@
 
   /**
    * One row per canvas meta (CanvasStore allMetas()), most recently updated first (ties: title,
-   * then id, so the order is stable). Malformed metas are skipped. `size` is what the canvas takes
-   * against the budget: latest + the agent copy kept after a user save (§3.6).
+   * then id, so the order is stable). Malformed metas are skipped, and so are canvases created in
+   * an incognito window (`noMirror`): the gallery is a normal-window page. `size` is what the canvas
+   * takes against the budget: latest + the agent copy kept after a user save (§3.6).
    */
   function buildRows(metas, { now }) {
     const rows = [];
     for (const m of metas || []) {
       if (!m || typeof m !== "object" || typeof m.id !== "string") continue;
+      if (m.noMirror) continue;
       const kind = String(m.kind || "markdown");
       const at = Number.isFinite(m.at) ? m.at : 0;
       const bytes = (m.bytes || 0) + (m.agentBytes || 0);
@@ -83,6 +85,9 @@
         icon: KIND_ICONS[kind] || "📄",
         kindLabel: KIND_LABELS[kind] || kind,
         version: Number.isInteger(m.version) ? m.version : 0,
+        // The content cache key: applyNormalized rewrites latest in place without a version bump,
+        // so the version alone can name stale text.
+        rev: `${Number.isInteger(m.version) ? m.version : 0}${m.normalized ? "n" : ""}`,
         author: AUTHOR_LABELS[m.author] || String(m.author || ""),
         at,
         timeRel: at ? relativeTime(at, now) : "",
@@ -97,7 +102,7 @@
 
   /**
    * The rows a query shows. Title (and conversation label) always; content too for the rows whose
-   * normalized text is in `contents` (Map id → { version, text }) at the row's current version.
+   * normalized text is in `contents` (Map id → { rev, text }) at the row's current `rev`.
    * A content-only match carries `snippet`. Empty query → every row.
    */
   function filterRows(rows, query, contents) {
@@ -107,7 +112,7 @@
     for (const r of rows) {
       if (hasAllTerms(`${r.titleKey} ${normalize(r.conversation)}`, terms)) { out.push(r); continue; }
       const c = contents && contents.get(r.id);
-      if (c && c.version === r.version && hasAllTerms(c.text, terms)) out.push({ ...r, snippet: snippet(c.text, terms) });
+      if (c && c.rev === r.rev && hasAllTerms(c.text, terms)) out.push({ ...r, snippet: snippet(c.text, terms) });
     }
     return out;
   }
@@ -139,7 +144,7 @@
     for (const r of rows) {
       if (!TEXT_KINDS.has(r.kind)) continue;
       const c = contents && contents.get(r.id);
-      if (c && c.version === r.version) continue;
+      if (c && c.rev === r.rev) continue;
       const b = r.bytes || 0;
       if (ids.length >= maxCount || bytes + b > maxBytes) { skipped++; continue; }
       ids.push(r.id);
