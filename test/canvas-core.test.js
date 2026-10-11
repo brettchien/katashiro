@@ -222,20 +222,24 @@ test("diffBlocks: changed blocks glow, removed blocks leave a marker, a replacem
 });
 
 test("show changes: an agent write makes what the tab showed before the baseline, until the next one", () => {
-  const md = (version, content) => ({ version, kind: "markdown", content });
+  // shown / next: { agentVersion, kind, content } (agentVersion = the version the agent last wrote).
+  const md = (agentVersion, content) => ({ agentVersion, kind: "markdown", content });
   assert.equal(C.SHOW_CHANGES_KEY, "canvas:showChanges");
   // Agent v2 over what was shown (v1): v1's text is the baseline.
-  assert.equal(C.changesBaseAfter(null, md(1, "a"), { ...md(2, "b"), author: "agent" }), "a");
-  // A user save, or the §3.5 normalization re-render (same version), keeps it.
-  assert.equal(C.changesBaseAfter("a", md(2, "b"), { ...md(3, "c"), author: "user" }), "a");
-  assert.equal(C.changesBaseAfter("a", md(2, "b"), { ...md(2, "b2"), author: "agent" }), "a");
+  assert.equal(C.changesBaseAfter(null, md(1, "a"), md(2, "b")), "a");
+  // A user save (agentVersion unchanged), or the §3.5 normalization re-render, keeps it.
+  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "c")), "a");
+  assert.equal(C.changesBaseAfter("a", md(2, "b"), md(2, "b2")), "a");
   // The next agent write replaces it with what was shown just before that write.
-  assert.equal(C.changesBaseAfter("a", md(3, "c"), { ...md(4, "d"), author: "agent" }), "c");
+  assert.equal(C.changesBaseAfter("a", md(2, "c"), md(4, "d")), "c");
+  // An agent write never rendered here (written while editing, then the user saved on top):
+  // the next render is a user save, but agentVersion moved → what was shown before is the baseline.
+  assert.equal(C.changesBaseAfter("a", md(4, "d"), md(5, "f")), "d");
   // Nothing shown yet (tab just loaded): no baseline.
-  assert.equal(C.changesBaseAfter(null, null, { ...md(5, "e"), author: "agent" }), null);
+  assert.equal(C.changesBaseAfter(null, null, md(5, "e")), null);
   // Not text, or the kind changed: none.
-  assert.equal(C.changesBaseAfter("a", { version: 1, kind: "image", content: {} }, { version: 2, kind: "image", author: "agent", content: {} }), null);
-  assert.equal(C.changesBaseAfter("a", md(1, "a"), { version: 2, kind: "slides", author: "agent", content: "x" }), null);
+  assert.equal(C.changesBaseAfter("a", { agentVersion: 1, kind: "image", content: {} }, { agentVersion: 2, kind: "image", content: {} }), null);
+  assert.equal(C.changesBaseAfter("a", md(1, "a"), { agentVersion: 2, kind: "slides", content: "x" }), null);
 });
 
 test("show changes: what the held markers compare with", () => {

@@ -344,8 +344,9 @@
     // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
     if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) msg.glowPrev = true;
     lastRenderedVersion = c.meta.version;
-    changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, { version: c.meta.version, kind: c.meta.kind, author: c.meta.author, content });
-    lastShown = { version: c.meta.version, kind: c.meta.kind, content };
+    const shown = { agentVersion: c.meta.agentVersion, kind: c.meta.kind, content };
+    changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, shown);
+    lastShown = shown;
     startRender(msg);
   }
 
@@ -378,7 +379,7 @@
   // or after a reload the agent copy when the user saved since. A compare's markers win while open.
   let showChanges = false;
   let changesBase = null;                   // the text this tab showed before the latest agent write
-  let lastShown = null;                     // { version, kind, content } of the last render here
+  let lastShown = null;                     // { agentVersion, kind, content } of the last render here
   let heldFrom = "off";                     // what the held markers compare with (for the title)
   let heldSeq = 0;
   async function applyHeldChanges() {
@@ -402,8 +403,9 @@
     showChangesBtn.title = !showChanges
       ? "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）"
       : heldFrom === "agentCopy" ? "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）"
+      : heldFrom === "off" && mode !== "view" ? "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉"
       : heldFrom === "none" ? "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示"
-      : "顯示變更（開）：一直標示 agent 最近一次寫入改過的段落，直到下一次寫入。按一下關閉";
+      : "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
   }
   function setShowChanges(on) {
     if (on === showChanges) return;

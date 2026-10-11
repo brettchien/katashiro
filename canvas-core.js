@@ -273,15 +273,16 @@
   const textKind = (k) => k === "markdown" || k === "slides";
 
   /**
-   * The baseline after a render: `shown` = { version, kind, content } last rendered in this tab
-   * (null at load), `next` = { version, kind, author, content } about to render. An agent write
-   * newer than what was shown makes the shown text the baseline (what the tab showed before it);
-   * anything else keeps `base` (string | null), until the next agent write replaces it.
+   * The baseline after a render: `shown` = { agentVersion, kind, content } last rendered in this tab
+   * (null at load), `next` = { agentVersion, kind, content } about to render. An agent write newer
+   * than what was shown makes the shown text the baseline (what the tab showed before it), even when
+   * it was never rendered here (written while editing, then a user save on top); anything else keeps
+   * `base` (string | null), until the next agent write replaces it.
    */
   function changesBaseAfter(base, shown, next) {
     if (!next || !textKind(next.kind)) return null;
     if (shown && shown.kind !== next.kind) return null;
-    if (next.author === "agent" && shown && typeof shown.content === "string" && next.version > shown.version) return shown.content;
+    if (shown && typeof shown.content === "string" && (next.agentVersion || 0) > (shown.agentVersion || 0)) return shown.content;
     return typeof base === "string" ? base : null;
   }
 
