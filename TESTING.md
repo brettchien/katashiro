@@ -77,6 +77,11 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   gets `declined`; leave it 2 minutes → 已拒絕（逾時）; edit and save the canvas in its tab before
   clicking 允許 → nothing is deleted and the agent gets `changed while asking, not deleted`. 🧹 清除聊天
   while a card waits → the agent gets `declined`.
+  Ask it to `canvas_delete` two canvases in one turn and press ⏹ while the first card waits: that
+  card turns 已拒絕（回合已結束）, and no second card opens — a one-line notice says the agent's turn
+  had ended and the delete was not carried out, and both canvases are still there. A card shown on
+  its own row (the eviction prompt between turns, if you can trigger it) sits left-aligned and full
+  width, not on the right like your messages.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt (a 🔒 confirm card in the chat). Run `chrome.storage.local.remove("canvas:budgetBytes")`
@@ -146,5 +151,9 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   empty lines disappear from the editor too, with the cursor where it was (#103) — also when it was
   at the start of the next paragraph, which it keeps; Ctrl+Z then undoes your typing, never brings
   the blank lines back.
+  Click at the end of a paragraph, press Space a few times (or many, to scroll) and Save: the notice
+  says nothing changed (no extra blank lines or spaces at a paragraph's end), and the 編輯中 / dirty
+  state never lit up for the spaces. A hard break (Shift+Enter inside a paragraph) survives a save,
+  and trailing spaces inside a code block are kept (`canvas_read` shows the stored text).
   Esc leaves edit mode with one press, also with the cursor in a table cell and the pointer resting
   on the table (#104); with the slash menu (`/`) or the link editor open, Esc only closes it.

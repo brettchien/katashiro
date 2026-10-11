@@ -128,6 +128,40 @@ test("cleanEditorMarkdown: Milkdown's <br /> empty-paragraph lines become blank 
   assert.equal(C.cleanEditorMarkdown(nested), nested);
 });
 
+test("cleanEditorMarkdown: trailing spaces/tabs go at a block's end, a hard break stays", () => {
+  const sp = " ".repeat(97);
+  const clean = C.cleanEditorMarkdown;
+  assert.equal(clean(`para${sp}\n\nnext`), "para\n\nnext");                    // before a blank line
+  assert.equal(clean("para \t \n   \n\nnext"), "para\n\nnext");               // a whitespace-only line is blank
+  assert.equal(clean("a\n\nlast   "), "a\n\nlast");                             // at the end
+  assert.equal(clean("a\n\nlast\t\n"), "a\n\nlast\n");                         // before the final newline
+  assert.equal(clean("# Head  \n\n- item  \n\ntext"), "# Head\n\n- item\n\ntext");
+  assert.equal(clean("line one  \nline two"), "line one  \nline two");           // hard break untouched
+  assert.equal(clean("a  \n<br />\n\nb"), "a\n\nb");                            // a dropped <br /> line ends the block
+  const fenced = "```\ncode   \n\n  \n```\n\n~~~\nx \t\n\n~~~\n";
+  assert.equal(clean(fenced), fenced);                                            // inside ``` and ~~~: content
+  const nested = "- a\n  - b\n\n    ```\n    keep   \n\n    ```\n";
+  assert.equal(clean(nested), nested);                                            // fence in a nested list
+  for (const md of [`p${sp}\n\nq  \nr \n`, "x  \n<br>\n<br />\n\ny\t", fenced, nested]) {
+    assert.equal(clean(clean(md)), clean(md));                                    // idempotent
+  }
+});
+
+test("onlyTrailingSpace: a save that only drops trailing spaces does not reset the editor (#103)", () => {
+  assert.equal(C.onlyTrailingSpace("a   \n\nb ", "a\n\nb"), true);
+  assert.equal(C.onlyTrailingSpace("a\n\nb", "a\n\nb"), false);                 // nothing dropped
+  assert.equal(C.onlyTrailingSpace("a  \n\n<br />\n\nb", "a\n\nb"), false);    // blank paragraphs too: reset
+});
+
+test("savedTextOffset: the cursor's text offset less the block-end spaces cleaning drops", () => {
+  const S = "\u0001";
+  assert.equal(C.savedTextOffset(`ab   ${S}cd`, S), 4);                           // earlier block's spaces go
+  assert.equal(C.savedTextOffset(`ab${S}cd  `, S), 6);                             // mid-block: typed spaces kept
+  assert.equal(C.savedTextOffset(`ab${S}cd  `, S, true), 4);                       // at the block's end: they go
+  assert.equal(C.savedTextOffset("", S, true), 0);
+  assert.equal(C.savedTextOffset(`a b${S}`, S), 3);                                 // inner spaces stay
+});
+
 test("slide message (canvas_goto): 1-based integers only", () => {
   assert.ok(ok({ type: "slide", nonce: "n1", index: 2, total: 5 }));
   assert.equal(ok({ type: "slide", nonce: "n1", index: 0, total: 5 }), null);

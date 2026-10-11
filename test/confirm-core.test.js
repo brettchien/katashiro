@@ -146,3 +146,17 @@ test("createDecision: end() (the asking turn ended) declines; outcome tells it f
   t.fire();
   assert.deepEqual(await y.outcome, { ok: false, state: "timeout" });
 });
+
+test("shouldAsk: an agent's request after its turn ended gets no card; non-agent callers always ask", () => {
+  assert.equal(C.shouldAsk({ forAgent: true, turnActive: true }), true);
+  assert.equal(C.shouldAsk({ forAgent: true, turnActive: false }), false);   // stopped / failed / timed out
+  assert.equal(C.shouldAsk({ forAgent: true }), false);
+  assert.equal(C.shouldAsk({ forAgent: false, turnActive: false }), true);   // e.g. the store's fallback evict card
+  assert.equal(C.shouldAsk({}), true);
+  assert.equal(C.shouldAsk(), true);
+});
+
+test("NOT_ASKED: a frozen decline, state skipped", () => {
+  assert.deepEqual({ ...C.NOT_ASKED }, { ok: false, state: "skipped" });
+  assert.equal(Object.isFrozen(C.NOT_ASKED), true);
+});

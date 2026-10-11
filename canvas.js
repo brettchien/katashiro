@@ -509,12 +509,13 @@
   }
 
   // Returns true when the content is stored (saved, or already equal to the latest).
-  // droppedBlank: the editor had empty paragraphs that markdown cannot keep (cleanEditorMarkdown).
+  // droppedBlank: the editor had empty paragraphs or block-end spaces that markdown cannot keep
+  // (cleanEditorMarkdown).
   async function doSave(content, baseVersion, droppedBlank) {
     if (deleted) { notice("這個畫布已被刪除，無法儲存。請先把內容複製出來。"); return false; }
     try {
       const r = await store.userSave({ id: canvasId, baseVersion, content });
-      if (r.unchanged) { flash(droppedBlank ? "沒有內容變更，不需要儲存（markdown 不保留多餘的空行）。" : "沒有內容變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
+      if (r.unchanged) { flash(droppedBlank ? "沒有內容變更，不需要儲存（markdown 不保留多餘的空行和段落結尾的空白）。" : "沒有內容變更，不需要儲存。"); toFrame({ type: "saved", version: r.version, content }); return true; }
       ownSaveVersion = r.version;
       flash(`✓ 已儲存 v${r.version}`);
       toFrame({ type: "saved", version: r.version, content });
