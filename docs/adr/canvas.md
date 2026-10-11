@@ -111,7 +111,7 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   This needs no tab UI of our own: drag, pin, close and Split View are Chrome's.
 - The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Clicking it focuses that
   canvas's tab, or reopens it in the group if it was closed. A tab shows one canvas, always its latest
-  content (older versions come back only through ↶ / ↷, as new versions, §3.5). A new canvas from the agent opens a new tab in the group without stealing focus.
+  content (older versions are kept in history, §3.5, but there is no way to show or step back to one; Revert to agent's restores the agent's last write). A new canvas from the agent opens a new tab in the group without stealing focus.
 - **Split View beside a web page.** Katashiro's `split_tabs` requires both tabs to share window,
   pinned state and tab group (it checks this before `tabs.createSplit`, following Chrome's split
   rule; Chrome's own rejection has not been tested live). So "canvas beside this page" temporarily
@@ -222,9 +222,11 @@ below is built around that.
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
     `selection{text, seq, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
     compare tab like `save`; `seq` is the render it was made in, and one from an older render is
-    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too).
-  - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
-    `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
+    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too), and
+    `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
+    refused from a compare tab, and acted on only in edit mode).
+  - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save`,
+    `selection` and `undoState` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
     injection laundered into the user's voice.
 - **Not web-accessible.** `canvas.html`, `canvas-frame.html` and `canvas-html-frame.html` must never
@@ -388,28 +390,34 @@ below is built around that.
     it (`previous` only when it is latest − 1: with N = 1 the entry before the latest can be the
     pinned agent write, and then there is no previous). The **agent's last write** (`agentVersion`)
     is a third pointer and is **pinned**: while it is the agent copy it is never trimmed, even when
-    it is older than the last N (so a canvas holds at most N + 1 versions, except during a ↶ / ↷
-    walk: the walk also pins the versions it can still reach, so history can grow to about 2N + 1
-    until the next ordinary save trims it back). Send to agent's diff (§3.7), the `stale` diff below, **Revert to
+    it is older than the last N (so a canvas holds at most N + 1 versions). Send to agent's diff (§3.7), the `stale` diff below, **Revert to
     agent's** (the header button that makes the agent's last write the latest again, as a user
     save), Compare with agent's (§3.10) and `rebasedOver.diffFromBase` read that entry and work as
     before.
   - **Trimming happens on write, only there:** the new version is appended, then the oldest entries
     beyond N are dropped, the pinned one kept. History is never trimmed to make room in the budget
     (§3.6 evicts whole canvases instead).
-  - **↶ / ↷ in the canvas header (no version list).** Undo and redo **save a new version**: author
-    `user`, `baseVersion`, the stale check and the folder mirror exactly as a user save; version
-    numbers only go up. Consecutive ↶ walk back through history (v8 latest → ↶ writes v9 = v7's
-    content → ↶ again writes v10 = v6's content …) and ↷ walks forward again along the same walk
-    (v11 = v7's content). Any other save (a user save, an agent write, Revert, `canvas_patch`, an
-    import) ends the walk. A version missing from history (trimmed) is skipped, and so is one whose
-    content equals the latest (a step that would change nothing). ↶ is disabled when nothing older
-    is in history; ↷ when no walk is running or it is back where it started. Like Revert, only in
-    view mode (hidden while editing) and never in a compare tab; markdown and slides only (the kinds
-    a user can save). The header flashes *"↶ 回到 v7 的內容（存成 v9）"*. Every step is itself a
-    version, so while a walk is running the versions on its path are pinned too: its own steps
-    never trim the walk away, and history may hold more than N until the next ordinary save trims
-    it back (the pinned agent write is always kept).
+  - **No version walking in the view (Brett, 2026-10-11 21:13: "just use editor's undo/redo").**
+    #117 shipped ↶ / ↷ header buttons in view mode that saved an older version's content as a new
+    version (v8 latest → ↶ wrote v9 = v7's content); tried in real Chrome, "↶ saves the old content
+    as a new version" read as weird, so they are gone, with the walk state they kept in meta. History
+    stays for what reads it: ◐ 顯示變更 (previous → latest, §3.10), the agent's pinned copy (Revert,
+    Compare, Send to agent) and `stale` / `rebasedOver` `diffFromBase`. There is no version list
+    and no way to show an older version in the tab.
+  - **Undo / redo is the editor's own (edit mode only).** While ✏️ editing, **↶ 復原 / ↷ 重做**
+    buttons sit in the header next to 💾 儲存 / 結束編輯 and run Milkdown's ProseMirror history
+    (`prosemirror-history` `undo` / `redo`, the same stack as Ctrl/⌘+Z and Ctrl/⌘+Shift+Z inside
+    the editor). The host sends `editCmd{cmd: "undo" | "redo"}` to the frame on the nonce channel;
+    the frame reports `undoState{canUndo, canRedo}` (from `undoDepth` / `redoDepth`) whenever it
+    may have changed, and the buttons enable from it. A compare tab never edits, so it refuses
+    `undoState` like `save` / `dirty` (§3.2). Clicking a button does not move focus out of the
+    editor, and Ctrl/⌘+Z pressed while focus is in the header still reaches it. The stack lives only as long as the editor: it starts empty on ✏️ 編輯 (loading the
+    canvas is not an undoable step), survives a save (undo past it makes the editor dirty again;
+    nothing stored changes until the next save), and is dropped on leaving edit mode. **Agent
+    writes cannot be undone by the editor:** an agent write is never a step in it (a clean editor
+    gives way to the new version, a dirty one keeps going and meets the conflict view). To go back
+    on an agent write, use Revert to agent's (only the agent's last write), ask the agent, or the
+    folder mirror under git (§3.6).
   - **The agent cannot read old versions:** `canvas_read` returns the latest, as before. What
     history adds for the agent is the stale diff: it exists whenever `baseVersion` is still in
     history (below).
@@ -461,8 +469,8 @@ below is built around that.
   revision has a diff too, while that version is in history.)
 - **Destructive actions.** *Revert to agent's* (replaces the user's latest) and *discard mine* in
   the conflict view each ask for confirmation. Revert is a new version, so the replaced text stays
-  in history and ↶ brings it back; its dialog says so (with N = 1 the replaced text is trimmed, and
-  the dialog says *"This cannot be undone"* unless the folder mirror holds it). *Discard mine*
+  in history, but nothing in the tab brings it back (no version walking, above): the dialog says
+  *"This cannot be undone"* unless the folder mirror holds it (as before #117). *Discard mine*
   throws away unsaved text, which was never a version: it cannot be undone. Deleting a canvas
   deletes its history with it. Importing an outside file change is never automatic (§3.6,
   `author: "file"`).
@@ -533,9 +541,9 @@ below is built around that.
     byte size.
   - `canvas:<id>:meta` — title, kind, `conversationId`, `version`, author and time of the latest,
     `agentVersion`, last opened, and **`history`**: `[{v, author, at, bytes, image?, imageBytes?}]`,
-    oldest first, the last entry being the latest (sizes and authors only, no content), plus
-    **`walk`** while a ↶ / ↷ walk runs (`{path, pos, head}`: the versions it walks over, where it
-    is, and the version its last step wrote; it holds only while `head` is the latest).
+    oldest first, the last entry being the latest (sizes and authors only, no content). A meta
+    written by #117 may still carry `walk` (the removed ↶ / ↷ walk state, §3.5): it is never read,
+    and the canvas's next write drops it.
   - `canvas:<id>:latest` — the latest content (the newest history entry).
   - `canvas:<id>:v:<n>` — the content of every other version in history (the agent's last write
     among them while it is not the latest). A write moves the old latest here in the same `set()`
@@ -548,7 +556,7 @@ below is built around that.
 - **The cap is a byte budget** (200 MB, §6 Q3; a `canvas:budgetBytes` storage override can lower
   it for testing, see TESTING.md). **A canvas's footprint is its whole history** (Brett,
   2026-10-11): the sum of its versions' sizes, each a full copy, with an image canvas's image
-  counted once per distinct image. So a canvas costs up to N + 1 copies of its text (about 2N + 1 during a ↶ / ↷ walk) plus its
+  counted once per distinct image. So a canvas costs up to N + 1 copies of its text plus its
   images, and the budget is reached by many canvases, long histories of large canvases, or many
   images. Over budget, the host drops **whole canvases** (history included), least recently opened first (never one open
   in a tab), after asking once; it never trims history to make room. **The question is asked in the panel** (the agent's write arrives
@@ -1048,7 +1056,7 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
     **Baseline: previous → latest, any author (Brett, 2026-10-11, with §3.5 history).** The
     markers compare the latest with the version before it in history (`store.readPrevious`,
     `CanvasCore.heldChanges`), whoever wrote either: after an agent write they show that write,
-    after a user save or a ↶ / ↷ step that one. The previous version is stored, so a reloaded tab
+    after a user save that one. The previous version is stored, so a reloaded tab
     marks the same thing. With no previous (v1, or nothing left before the latest) nothing is
     marked, and the switch's title says so. This replaces #110's baseline (the text the tab showed
     just before the latest agent write, kept only in the host's memory, with the agent copy as a
@@ -1080,9 +1088,10 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
   interception and per-frame message allow-lists (§3.2), and the `html` kind still cannot be made
   leak-proof.
 - Short history inside Katashiro: the last N versions (default 10) plus the agent's last write,
-  reached only by ↶ / ↷, and each step is itself a version. Anything older needs the folder mirror
-  under git (§3.6). Each version is a full copy, so a canvas can take up to N + 1 times its size
-  against the budget (about 2N + 1 during a ↶ / ↷ walk).
+  and the user cannot step back to one (only ◐ previous → latest and Revert to agent's use it); the
+  editor's undo covers only the current edit session. Anything older needs the folder mirror under
+  git (§3.6). Each version is a full copy, so a canvas can take up to N + 1 times its size against
+  the budget.
 - pptx in either direction is lossy and must be described honestly in the UI.
 
 ### Neutral
@@ -1158,12 +1167,15 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
    2026-10-10):** latest + the agent's last write, with a revision counter (§3.5, §3.6).
    **Revised (Brett, 2026-10-11):** the last **N versions** of each canvas (N = 10, a setting,
    1–50), full content each; `latest` and `previous` point into the history and the agent's last
-   write stays pinned; **↶ / ↷** in the header save a new version (no version list); ◐ 顯示變更
-   compares previous → latest; the footprint against the 200 MB budget includes the history, and
+   write stays pinned; ◐ 顯示變更 compares previous → latest; the footprint against the 200 MB budget includes the history, and
    over budget whole canvases are evicted (history is not trimmed for room); the agent gets no
    access to old versions, but `stale.diffFromBase` now works for any `baseVersion` still in
    history; images any version references are kept; the folder mirrors the latest only; existing
    canvases migrate lazily (§3.5, §3.6, §3.10).
+   **Revised again (Brett, 2026-10-11 21:13, after trying #117 in real Chrome: "just use editor's
+   undo/redo"):** no view-mode ↶ / ↷ that saves an older version as a new one; the history above
+   stays. Undo / redo is the editor's own, with ↶ 復原 / ↷ 重做 buttons in edit mode; agent writes
+   cannot be undone by it (Revert to agent's, ask the agent, or the folder mirror + git) (§3.5).
 8. ~~**`html` and act mode:** click to run, or gate `html` by act mode?~~ **Decided (Brett,
    2026-10-10):** (a) click to run. Raised in review after Q2: with `html` on by default, an `html`
    canvas would be an exfiltration path that skips act mode (§3.2 residual risk). Both options

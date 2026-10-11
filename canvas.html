@@ -20,12 +20,12 @@
     <button id="canvas-reconnect" class="canvas-btn" type="button" hidden>📁 Reconnect folder</button>
     <button id="canvas-rewrite" class="canvas-btn" type="button" title="把這個畫布重新寫進資料夾，恢復同步" hidden>📁 重新寫入</button>
     <button id="canvas-edit" class="canvas-btn" type="button" title="編輯（Milkdown）" hidden>✏️ 編輯</button>
+    <!-- Edit mode only (§3.5): the editor's own undo / redo (its history, same as Ctrl/⌘+Z). -->
+    <button id="canvas-undo" class="canvas-btn" type="button" title="復原" hidden>↶ 復原</button>
+    <button id="canvas-redo" class="canvas-btn" type="button" title="重做" hidden>↷ 重做</button>
     <button id="canvas-save" class="canvas-btn primary" type="button" title="儲存（Ctrl/⌘+S）" hidden>💾 儲存</button>
     <button id="canvas-cancel" class="canvas-btn" type="button" title="結束編輯" hidden>結束編輯</button>
     <button id="canvas-revert" class="canvas-btn" type="button" title="還原成 agent 最後寫的版本（只在檢視模式）" hidden>↺ Revert to agent's</button>
-    <!-- Version history (§3.5): each step saves an older version's content as a new version. -->
-    <button id="canvas-undo" class="canvas-btn" type="button" aria-label="回到上一個版本" hidden>↶</button>
-    <button id="canvas-redo" class="canvas-btn" type="button" aria-label="往回走" hidden>↷</button>
     <button id="canvas-compare" class="canvas-btn" type="button" title="在 Split View 裡並排比較 agent 最後寫的版本（唯讀）" hidden>⇆ Compare with agent's</button>
     <!-- Show changes (§3.10): hold the markers of previous → latest instead of fading them; one global switch. -->
     <button id="canvas-show-changes" class="canvas-btn" type="button" aria-pressed="false" hidden>◐ 顯示變更</button>

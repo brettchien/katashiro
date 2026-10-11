@@ -9,7 +9,7 @@
 //  - render is sent only after a `ready` with the current nonce;
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
 // With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
-// Send to agent, Ask agent, Revert or delete, and its frame's save/dirty/selection are refused.
+// Send to agent, Ask agent, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
 (function () {
   "use strict";
 
@@ -81,7 +81,9 @@
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
   let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
   let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
-  let stepping = false;               // a ↶ / ↷ step is being stored (§3.5)
+  // The editor's undo stack as the frame last reported it (undoState{}, §3.5): the edit-mode ↶ / ↷.
+  let editUndo = { canUndo: false, canRedo: false };
+  const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
   const gate = CanvasCore.createLoadGate();
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
@@ -134,11 +136,8 @@
       } catch (_) { /* stays hidden */ }
     }
     revertBtn.hidden = !canRevert;
-    // ↶ / ↷ (§3.5): enabled from the walk in meta (CanvasStore), like Revert only in view mode.
-    const hb = CanvasCore.historyButtons({
-      kind: current && current.meta.kind, mode, compareView, deleted, busy: stepping,
-      canUndo: !!current && CanvasStore.canUndo(current.meta), canRedo: !!current && CanvasStore.canRedo(current.meta),
-    });
+    // ↶ 復原 / ↷ 重做 (§3.5): the editor's own undo / redo, only while editing.
+    const hb = CanvasCore.editUndoButtons({ mode, compareView, deleted, mac, ...editUndo });
     undoBtn.hidden = redoBtn.hidden = !hb.show;
     undoBtn.disabled = hb.undo.disabled;
     undoBtn.title = hb.undo.title;
@@ -577,6 +576,7 @@
     if (!current || current.meta.kind !== "markdown" || printing) return;
     mode = "edit";
     dirty = false;
+    editUndo = { canUndo: false, canRedo: false };    // a new editor: nothing to undo yet
     selection = null;
     notice("");
     toFrame({ type: "edit", content: current.content, version: current.meta.version });
@@ -586,6 +586,7 @@
   async function leaveEdit() {
     mode = "view";
     dirty = false;
+    editUndo = { canUndo: false, canRedo: false };    // the editor and its undo stack are gone
     toFrame({ type: "leaveEdit" });
     await refresh();
   }
@@ -600,49 +601,35 @@
   cancelBtn.addEventListener("click", requestLeaveEdit);
   // The buttons show their shortcuts (Brett, 2026-10-11): Ctrl/⌘+S saves, Esc leaves edit mode.
   {
-    const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
     saveBtn.textContent = `💾 儲存 ${mac ? "⌘S" : "Ctrl+S"}`;
     cancelBtn.textContent = "結束編輯 Esc";
     cancelBtn.title = "結束編輯（Esc）";
   }
   revertBtn.addEventListener("click", async () => {
     if (!current) return;
-    // §3.5: Revert is a new version, so ↶ brings the replaced text back — unless N = 1 trims it;
-    // then "cannot be undone", except when the folder mirror holds the current text (then git can).
-    let max = CanvasStore.HISTORY_DEFAULT;
-    try { max = await store.getHistoryMax(); } catch (_) { /* the default */ }
-    const undo = max >= 2
-      ? "之後可以按 ↶ 回到你目前的內容。"
-      : mirrorHoldsLatest()
-        ? "Katashiro 裡無法復原（版本紀錄只保留 1 版）；目前的內容已寫進資料夾，若你有把資料夾 commit 進 git，可以從 git 找回（資料夾裡的檔案接著會被這次還原改寫）。"
-        : "這個動作無法復原（版本紀錄只保留 1 版）。";
+    // §3.5: "cannot be undone" unless the folder mirror holds the current text (then git can). The
+    // replaced text stays in history, but nothing in the tab can bring it back (no version walking).
+    const undo = mirrorHoldsLatest()
+      ? "Katashiro 裡無法復原；目前的內容已寫進資料夾，若你有把資料夾 commit 進 git，可以從 git 找回（資料夾裡的檔案接著會被這次還原改寫）。"
+      : "這個動作無法復原。";
     if (!window.confirm(`還原成 agent 最後寫的版本？\n\n你目前的內容會被取代。${undo}`)) return;
     try { await store.revertToAgent({ id: canvasId, baseVersion: current.meta.version }); }
     catch (e) { notice(`還原失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
     closeCompareTabs();                     // Revert to agent's also ends a compare (§3.10)
   });
 
-  // --- ↶ / ↷ (§3.5, Brett 2026-10-11) ---------------------------------------------------------
-  // Each step saves the content of the next version along the walk as a new version (the store
-  // keeps the walk in meta); the header flashes which version's content it saved as which. No
-  // confirmation: nothing is lost, the replaced text stays in history.
-  async function stepHistory(dir) {
-    if (!current || compareView || mode !== "view" || stepping || deleted) return;
-    stepping = true;
-    updateButtons();
-    try {
-      const r = await store[dir]({ id: canvasId, baseVersion: current.meta.version });
-      flash(CanvasCore.historyStepNote(dir, r));
-    } catch (e) {
-      if (e && e.code === "stale") notice(`畫布剛被更新成 v${e.currentVersion}，請再按一次。`);
-      else notice(`${dir === "undo" ? "↶" : "↷"} 失敗：${CanvasCore.clipError((e && e.message) || e)}`);
-    } finally {
-      stepping = false;
-      updateButtons();
-    }
+  // --- ↶ 復原 / ↷ 重做 (§3.5, Brett 2026-10-11: "just use editor's undo/redo") ----------------
+  // The editor's own history: the frame runs prosemirror-history's undo / redo, the same stack as
+  // Ctrl/⌘+Z in the editor, and reports undoState{} back. Pressing a button must not take focus
+  // out of the editor (typing goes on where it was), so mousedown keeps it in the frame.
+  function editCmd(cmd) {
+    if (compareView || mode !== "edit" || deleted || !conflictEl.hidden || !CanvasCore.isEditCmd(cmd)) return;
+    toFrame({ type: "editCmd", cmd });
   }
-  undoBtn.addEventListener("click", () => stepHistory("undo"));
-  redoBtn.addEventListener("click", () => stepHistory("redo"));
+  for (const [btn, cmd] of [[undoBtn, "undo"], [redoBtn, "redo"]]) {
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", () => editCmd(cmd));
+  }
 
   // --- Compare with agent's (§3.10) -------------------------------------------------------------
   // The side panel does the tab moves (it holds the §3.1 split records and the canvas group); it
@@ -707,6 +694,11 @@
   }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
+    // Focus in the header (not the editor) while editing: Ctrl/⌘+Z still undoes the editor's edits.
+    if (mode === "edit" && conflictEl.hidden && (e.ctrlKey || e.metaKey) && !e.altKey) {
+      const k = e.key.toLowerCase();
+      if (k === "z" || (k === "y" && !mac)) { e.preventDefault(); editCmd(k === "z" && !e.shiftKey ? "undo" : "redo"); }
+    }
     if (mode === "edit" && e.key === "Escape" && !CanvasCore.imeKey(e) && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
   });
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
@@ -753,6 +745,11 @@
         dirty = m.dirty;
         updateButtons();
         break;
+      case "undoState":
+        if (mode !== "edit") break;                 // a late report from an editor already closed
+        editUndo = { canUndo: m.canUndo, canRedo: m.canRedo };
+        updateButtons();
+        break;
       case "highlighted":
         onHighlighted(m);
         break;
@@ -780,6 +777,7 @@
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });
         dirty = false;                   // #93: no editor opened, so nothing unsaved
+        editUndo = { canUndo: false, canRedo: false };
         updateButtons();
         offerSendError(m.msg);
         break;

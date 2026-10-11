@@ -128,24 +128,32 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - `click A "https://example.com"`: clicking node A asks before opening the link in a new tab,
     and the canvas frame does not navigate. `click A callback` does nothing (`securityLevel: 'strict'`).
   - The canvas frame's console shows no CSP errors.
-- **Version history, ↶ / ↷ (ADR §3.5):** Settings → **畫布版本紀錄** shows 10; type 0 or 99
+- **Version history (ADR §3.5):** Settings → **畫布版本紀錄** shows 10; type 0 or 99
   and leave the field: it shows 1 or 50 (type 10 again afterwards). Let the agent write a markdown
-  canvas, then save three edits (v1 agent, v2–v4 yours). In the canvas header **↶** is enabled and
-  **↷** disabled (hover: "只在按過 ↶ 之後可用"). Click ↶: the canvas shows v3's text, the header
-  says v5（你的修改） and the notice flashes "↶ 回到 v3 的內容（存成 v5）". ↶ again → v2's text as v6;
-  ↷ → v3's text as v7; ↷ → v4's text as v8, and ↷ is disabled again. ↶ down to v1 (the agent's)
-  disables ↶. Save an edit: ↷ is disabled (the walk ended) and ↶ starts again from your save. The
-  ↶ / ↷ buttons are hidden while ✏️ editing, in a ⇆ compare tab, and on mermaid / image canvases.
-  With the folder mirror on, each step rewrites the `.md` file. **Revert to agent's** now says
-  "之後可以按 ↶ 回到你目前的內容。" and ↶ after it brings your text back. Set N to 2, save a few
+  canvas, then save three edits (v1 agent, v2–v4 yours). In view mode the header has **no ↶ / ↷**
+  (no version walking, Brett 2026-10-11); ◐ 顯示變更 marks v3 → v4. **Revert to agent's** says
+  "這個動作無法復原。" (with the folder mirror on: the git wording). Set N to 2, save a few
   more edits: in DevTools (canvas tab) `chrome.storage.local.get(null)` shows only
   `canvas:<id>:v:<n>` keys for the versions in `meta.history` (the previous one plus the agent's
   last write, which is never trimmed), and the gallery's size column shrinks accordingly. An
   agent write with a stale `baseVersion` that is one of your saves still in history returns a
-  `diffFromBase`. A canvas created before this version (no `meta.history`) keeps working: ↶
-  reaches its agent copy, and its next save moves `canvas:<id>:agent` to `canvas:<id>:v:<n>`.
+  `diffFromBase`. A canvas created before this version (no `meta.history`) keeps working: ◐ marks agent copy →
+  latest, and its next save moves `canvas:<id>:agent` to `canvas:<id>:v:<n>`. A canvas whose meta
+  still has a `walk` (from #117) opens normally, and its next save drops `walk`.
   With an image canvas rewritten twice, the first image survives the 10-minute image sweep while
   its version is in history.
+- **Undo / redo while editing (ADR §3.5, the editor's own):** ✏️ Edit a markdown canvas: next to
+  💾 儲存 and 結束編輯 the header shows **↶ 復原** and **↷ 重做**, both disabled (hover shows the
+  shortcut: ⌘Z / ⇧⌘Z on a Mac, Ctrl+Z / Ctrl+Shift+Z elsewhere). Type a word: ↶ enables (within
+  ~0.2 s). Click ↶: the word goes, ↷ enables, ↶ disables, and the cursor is still blinking in the
+  editor — keep typing without clicking back in. Click ↷: the word is back. Ctrl/⌘+Z inside the
+  editor and the buttons walk the same stack (the buttons follow after the key is released). Click
+  the header's title (focus leaves the editor) and press Ctrl/⌘+Z: the editor still undoes. Save,
+  then ↶: the text before the save comes back and 💾 enables again (nothing stored changes until
+  you save). Leave edit mode and ✏️ Edit again: both buttons start disabled (a new editor, a new
+  stack). In view mode, in a ⇆ compare tab, and on slides / mermaid / image canvases the buttons
+  never show. With a clean editor open, let the agent write: the editor gives way to its version,
+  and ↶ cannot take the agent's write back (Revert to agent's / ask the agent / git).
 - **Editing a canvas (ADR §3.5):** ✏️ Edit a markdown canvas, press Enter a few times between two
   paragraphs and Save: the notice says nothing changed (markdown keeps no extra blank lines) and the
   empty lines disappear from the editor too, with the cursor where it was (#103) — also when it was

@@ -26,6 +26,8 @@
     dirty: (m) => typeof m.dirty === "boolean",
     // Esc in the editor (Brett, 2026-10-11): asks the host to leave edit mode, like 結束編輯.
     escape: (m) => typeof m.dirty === "boolean",
+    // The editor's undo stack (§3.5, Brett 2026-10-11): enables the edit-mode ↶ 復原 / ↷ 重做 buttons.
+    undoState: (m) => typeof m.canUndo === "boolean" && typeof m.canRedo === "boolean",
     // canvas_goto: the slide now shown (1-based) and the deck's length.
     // PDF export (§3.8): the frame finished its print() call.
     printed: () => true,
@@ -58,7 +60,7 @@
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed", "escape"]);
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed", "escape", "undoState"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
@@ -520,25 +522,24 @@
     return "顯示變更（開）：一直標示上一版到目前版本之間改過的段落（不論是 agent 還是你改的）。按一下關閉";
   }
 
+  // What the host may ask the editor to run (§3.5): editCmd{cmd} → the editor's own history.
+  const EDIT_CMDS = ["undo", "redo"];
+  const isEditCmd = (cmd) => EDIT_CMDS.includes(cmd);
+
   /**
-   * The ↶ / ↷ buttons (§3.5) → { show, undo: { disabled, title }, redo: { disabled, title } }.
-   * Shown in view mode on markdown and slides canvases (the kinds a user can save), never in a
-   * compare tab; `canUndo` / `canRedo` from CanvasStore (the walk), `busy` while a step runs.
+   * The edit-mode ↶ 復原 / ↷ 重做 buttons (§3.5, Brett 2026-10-11: "just use editor's undo/redo")
+   * → { show, undo: { disabled, title }, redo: { disabled, title } }. Shown only while editing
+   * (never in a compare tab, nor once the canvas is deleted); canUndo / canRedo from the frame's
+   * undoState{} (the editor's undo stack). `mac` picks the shortcut the titles show.
    */
-  function historyButtons({ kind, mode, compareView, deleted, canUndo, canRedo, busy }) {
-    const show = !compareView && !deleted && mode === "view" && (kind === "markdown" || kind === "slides");
+  function editUndoButtons({ mode, compareView, deleted, canUndo, canRedo, mac }) {
+    const show = !compareView && !deleted && mode === "edit";
+    const keys = mac ? { undo: "⌘Z", redo: "⇧⌘Z" } : { undo: "Ctrl+Z", redo: "Ctrl+Shift+Z" };
     return {
       show,
-      undo: { disabled: !show || busy || !canUndo, title: canUndo ? "↶ 回到上一個版本的內容（存成新版本）" : "↶ 沒有更舊的版本" },
-      redo: { disabled: !show || busy || !canRedo, title: canRedo ? "↷ 往回走（存成新版本）" : "↷ 只在按過 ↶ 之後可用" },
+      undo: { disabled: !show || !canUndo, title: canUndo ? `復原上一個編輯（${keys.undo}）` : `沒有可以復原的編輯（${keys.undo}）` },
+      redo: { disabled: !show || !canRedo, title: canRedo ? `重做剛才復原的編輯（${keys.redo}）` : `沒有可以重做的編輯（${keys.redo}）` },
     };
-  }
-
-  // The flash after a step: "↶ 回到 v7 的內容（存成 v9）".
-  function historyStepNote(dir, { from, version, unchanged }) {
-    const arrow = dir === "undo" ? "↶" : "↷";
-    if (unchanged) return `${arrow} 沒有內容不同的版本可以${dir === "undo" ? "回到" : "前往"}。`;
-    return `${arrow} 回到 v${from} 的內容（存成 v${version}）`;
   }
 
   /**
@@ -619,5 +620,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, historyButtons, historyStepNote, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

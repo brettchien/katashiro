@@ -7,7 +7,7 @@
 //   canvas:<conversationId>:index  [{ id, title, kind, version, bytes, updatedAt }]
 //   canvas:<id>:meta               { id, conversationId, title, kind, version, author, at, agentVersion, bytes,
 //                                    history: [{ v, author, at, bytes, image?, imageBytes? }] (oldest first,
-//                                    the last is the latest), walk? (↶ / ↷, walkCandidates) }
+//                                    the last is the latest) }
 //   canvas:<id>:latest             the latest content (string)
 //   canvas:<id>:v:<n>              every other version in history
 //   canvas:<id>:agent              only before history: the agent's last write while it differed from
@@ -70,7 +70,7 @@
   }
 
   // --- Version history (§3.5, Brett 2026-10-11) ------------------------------------------------
-  // Pure: the store and the canvas tab (button states) share them, and the tests drive them alone.
+  // Pure: the store, the canvas tab (◐, the agent copy), the gallery and Settings share them; the tests drive them alone.
   const HISTORY_MAX_KEY = "canvas:historyMax";   // the setting (sidepanel Settings), in chrome.storage.local
   const HISTORY_DEFAULT = 10;
   const HISTORY_MIN = 1;
@@ -122,13 +122,10 @@
    * Append `entry` (the new latest) and trim to the last `max` versions, never dropping `pin` (the
    * agent's last write) → { history, dropped: [v] }. Only writes trim (§3.5): never the budget.
    */
-  // pin: a version (the agent copy) or several (also the versions an active ↶ / ↷ walk can still
-  // reach, so its own steps do not trim the walk away; the next ordinary save trims them).
   function appendHistory(history, entry, { max, pin } = {}) {
     const all = [...(history || []).filter((h) => h && h.v < entry.v), entry];
     const from = Math.max(0, all.length - historyLimit(max));
-    const pins = new Set([].concat(pin == null ? [] : pin));
-    const keep = (h, i) => i >= from || pins.has(h.v);
+    const keep = (h, i) => i >= from || h.v === pin;
     return { history: all.filter(keep), dropped: all.filter((h, i) => !keep(h, i)).map((h) => h.v) };
   }
 
@@ -146,39 +143,6 @@
     return n;
   }
   const footprint = (meta) => historyFootprint(historyOf(meta));
-
-  // The ↶ / ↷ walk (§3.5): meta.walk = { path, pos, head }. path[0] is the version the walk started
-  // from (the latest then), path[1…] the older versions in history then, newest first; pos = the
-  // path entry whose content the latest shows; head = the version the last step wrote. It holds
-  // only while head is still the latest: any other save ends it (the store drops it too).
-  function activeWalk(meta) {
-    const w = meta && meta.walk;
-    if (!w || w.head !== meta.version || !Array.isArray(w.path) || !Number.isInteger(w.pos) || w.pos < 0 || w.pos >= w.path.length) return null;
-    return w;
-  }
-
-  /**
-   * The versions a step may take its content from, in the order to try → { path, candidates:
-   * [{ v, pos }] }. dir "undo" (↶) goes older, starting a walk at the latest when none runs; "redo"
-   * (↷) goes back toward where the walk started and needs a running walk. Versions no longer in
-   * history are skipped (trimmed meanwhile; the pinned agent write stays reachable).
-   */
-  function walkCandidates(meta, dir) {
-    if (!meta) return { path: [], candidates: [] };
-    const hist = historyOf(meta);
-    const have = new Set(hist.map((h) => h.v));
-    let w = activeWalk(meta);
-    if (!w) {
-      if (dir !== "undo") return { path: [], candidates: [] };
-      w = { path: [meta.version, ...hist.filter((h) => h.v < meta.version).map((h) => h.v).reverse()], pos: 0 };
-    }
-    const d = dir === "undo" ? 1 : -1;
-    const candidates = [];
-    for (let p = w.pos + d; p >= 0 && p < w.path.length; p += d) if (have.has(w.path[p])) candidates.push({ v: w.path[p], pos: p });
-    return { path: w.path.slice(), candidates };
-  }
-  const canUndo = (meta) => walkCandidates(meta, "undo").candidates.length > 0;
-  const canRedo = (meta) => walkCandidates(meta, "redo").candidates.length > 0;
 
   // A stale write: the canvas moved on since the caller's baseVersion (§3.5). A structured error,
   // not the whole document; `diffFromBase` (baseVersion → latest) when that version is in history.
@@ -595,21 +559,20 @@
      * meta's agentVersion) pinned, and the trimmed versions' keys removed. A canvas stored before
      * history migrates here: its agent copy moves from `canvas:<id>:agent` into the history.
      * `fields`: the meta fields this save sets (author, at, bytes, …; patchRanges only from a patch);
-     * `img`: the new version's image fields; `walk`: only from ↶ / ↷ (any other save ends a walk);
-     * `latest`: the current latest, if the caller has read it already.
+     * `img`: the new version's image fields; `latest`: the current latest, if the caller has read
+     * it already.
      * @returns the new meta
      */
-    async function commit(cur, { content, fields, img, walk, max, latest }) {
+    async function commit(cur, { content, fields, img, max, latest }) {
       const id = cur.id;
       const version = cur.version + 1;
       const meta = { ...cur, ...fields, version };
       if (!fields.patchRanges) delete meta.patchRanges;
       delete meta.agentBytes;                            // the history has every version's size
-      delete meta.walk;
-      if (walk) meta.walk = { path: walk.path, pos: walk.pos, head: version };
+      delete meta.walk;                                  // #117's ↶ / ↷ walk state, no longer used
       const legacy = !hasHistory(cur);
       const entry = { v: version, author: meta.author, at: meta.at, bytes: meta.bytes, ...img };
-      const { history, dropped } = appendHistory(historyOf(cur), entry, { max, pin: walk ? [meta.agentVersion, ...walk.path] : meta.agentVersion });
+      const { history, dropped } = appendHistory(historyOf(cur), entry, { max, pin: meta.agentVersion });
       const kept = new Set(history.map((h) => h.v));
       const legacyAgent = legacy && cur.agentVersion < cur.version ? cur.agentVersion : null;
       const want = [];
@@ -764,9 +727,6 @@
       return content == null ? null : { version: v, content };
     }
 
-    // The history setting as the store applies it (for the canvas tab's dialogs).
-    const getHistoryMax = () => historyMaxNow();
-
     // A user's explicit save (§3.5). Stale if the canvas moved on since baseVersion; a save equal to
     // the latest creates no version. The version it replaces stays in history; the agent's last
     // write stays pinned.
@@ -794,7 +754,7 @@
     }
 
     // Revert to agent's (§3.5): the agent's last write becomes the latest again, as a user save (a
-    // new version: what it replaces stays in history, so ↶ brings it back).
+    // new version: what it replaces stays in history).
     async function revertToAgent({ id, baseVersion }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       const max = await historyMaxNow();
@@ -818,44 +778,6 @@
       });
       return result;
     }
-
-    /**
-     * ↶ (dir "undo") / ↷ ("redo"), §3.5: save the content of the next version along the walk
-     * (walkCandidates) as a new version — author "user", stale check, mirror and budget as a user
-     * save; version numbers only go up. A candidate whose content equals the latest is skipped (a
-     * step that would change nothing). → { version, from, unchanged } (from = the version whose
-     * content it saved); unchanged when no candidate differs from the latest.
-     */
-    async function stepHistory(dir, { id, baseVersion }) {
-      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
-      if (!Number.isInteger(baseVersion)) throw new Error("a step needs `baseVersion` (the version shown)");
-      const max = await historyMaxNow();
-      const before = await getOne(metaKey(id));
-      const first = before && walkCandidates(before, dir).candidates[0];
-      const firstEntry = first && historyOf(before).find((h) => h.v === first.v);
-      if (firstEntry) await ensureBudget(projected(before, { bytes: firstEntry.bytes }, max, [before.agentVersion, ...walkCandidates(before, dir).path]), id);
-      let result;
-      await lock(`canvas:${id}`, async () => {
-        const cur = await getOne(metaKey(id));
-        if (!cur) throw new Error(`no canvas "${id}"`);
-        if (cur.kind !== "markdown" && cur.kind !== "slides") throw new Error(`a ${cur.kind} canvas cannot be edited`);
-        if (cur.version !== baseVersion) throw new StaleError(cur, baseVersion);
-        const { path, candidates } = walkCandidates(cur, dir);
-        const stored = await getOne(latestKey(id));
-        const latest = stored == null ? "" : stored;
-        for (const c of candidates) {
-          const text = await getOne(contentKey(cur, c.v));
-          if (text == null || text === latest) continue;
-          const meta = await commit(cur, { content: text, fields: { author: "user", at: now(), bytes: utf8Bytes(text) }, walk: { path, pos: c.pos }, max, latest });
-          result = { version: meta.version, from: c.v, unchanged: false };
-          return;
-        }
-        result = { version: cur.version, unchanged: true };
-      });
-      return result;
-    }
-    const undo = (args) => stepHistory("undo", args);
-    const redo = (args) => stepHistory("redo", args);
 
     // The editor's normalization of an agent markdown write (§3.5). Applies only to that agent
     // version: its history entry (the agent copy) always — the latest while it still IS that
@@ -943,7 +865,7 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, getHistoryMax, userSave, revertToAgent, undo, redo, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
   }
 
   // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
@@ -968,6 +890,6 @@
   const BUDGET_OVERRIDE_MIN = 1024 * 1024;
 
   return { createCanvasStore, incognitoLeftovers,
-    historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint, walkCandidates, canUndo, canRedo,
+    historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint,
     HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
 });
