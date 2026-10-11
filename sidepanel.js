@@ -2188,7 +2188,9 @@ const canvasStore = CanvasStore.createCanvasStore({
   // panel (the agent's write arrives here; no canvas tab may be open).
   isOpen: async (id) => !!(await findCanvasTab(id)),
   // A confirm card, not window.confirm (#80); the write waits on it (no lock held, §3.6). An
-  // agent's write passes its own (ctx.canvas.confirmEvict, in its turn); this one is a user save.
+  // agent's write passes its own (ctx.canvas.confirmEvict, in its turn). This default is only a
+  // fallback, with no caller today: the panel makes no user save (canvas.js saves through its own
+  // store, which has no confirmEvict, so a user save over budget fails with a quota error, no card).
   confirmEvict: (info) => confirmEvictCard(info, null),
 });
 
