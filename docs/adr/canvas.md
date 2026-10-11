@@ -217,7 +217,8 @@ below is built around that.
   echoed back in `rendered{}` / `diagramError{}`, so two renders of the same version are told apart (#96).
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
-  - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
+  - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg, seq?}` (`seq`:
+    the render that failed; one from an older render than the host's latest is dropped), `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
     `selection{text, version, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
     compare tab like `save`; `version` is the render it was made in, and one from an older render is

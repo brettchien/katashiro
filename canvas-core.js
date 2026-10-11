@@ -30,7 +30,9 @@
     // PDF export (§3.8): the frame finished its print() call.
     printed: () => true,
     slide: (m) => Number.isInteger(m.index) && Number.isInteger(m.total) && m.index >= 1 && m.total >= 1,
-    error: (m) => typeof m.msg === "string",
+    // seq: the render that failed (absent for a CSP report or a goto that could not run), so the
+    // host can drop an older render's failure (#115 review).
+    error: (m) => typeof m.msg === "string" && (m.seq === undefined || Number.isInteger(m.seq)),
     // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
     // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
     diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.seq),
@@ -72,6 +74,10 @@
     if (!FRAME_TYPES[m.type](m)) return null;
     return m;
   }
+
+  // A report that names an older render than the one in flight (its seq, #96): what it says about
+  // that render no longer holds. A report without a seq is about no render in particular.
+  const fromOlderRender = (m, renderingSeq) => !!m && Number.isInteger(m.seq) && m.seq !== renderingSeq;
 
   // The host's edit mode after a frame message: only editFailed ends it. Always (#93): the editor
   // never opened, so there are no unsaved edits, and the frame has already gone back to the view
@@ -555,5 +561,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

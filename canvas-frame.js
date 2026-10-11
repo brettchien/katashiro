@@ -6,7 +6,7 @@
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
-//  out: ready, rendered{version, seq, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
+//  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, version, truncated?}                                (Ask agent, §3.7)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
@@ -794,7 +794,7 @@
       }
       post(normalized === undefined ? { type: "rendered", version: m.version, seq } : { type: "rendered", version: m.version, seq, normalized });
     }, (err) => {
-      if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err) });   // else superseded
+      if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err), seq });   // else superseded
     });
   });
 

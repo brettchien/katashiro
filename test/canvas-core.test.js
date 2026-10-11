@@ -515,3 +515,14 @@ test("markRanges: the marked copy renders to the same blocks and text (markdown-
     assert.equal(text(html), text(plain), `text differs for ${JSON.stringify(r)}`);
   }
 });
+
+test("error{seq?}: a render failure names its render, and the host drops one from an older render (#115 review)", () => {
+  assert.ok(ok({ type: "error", nonce: "n1", msg: "boom", seq: 4 }));
+  assert.ok(ok({ type: "error", nonce: "n1", msg: "blocked by CSP: img-src" }));        // no render in particular
+  assert.equal(ok({ type: "error", nonce: "n1", msg: "boom", seq: "4" }), null);
+  // render 4 failing after startRender(5): not a failure of 5
+  assert.equal(C.fromOlderRender({ type: "error", msg: "boom", seq: 4 }, 5), true);
+  assert.equal(C.fromOlderRender({ type: "error", msg: "boom", seq: 5 }, 5), false);
+  assert.equal(C.fromOlderRender({ type: "error", msg: "CSP" }, 5), false);
+  assert.equal(C.fromOlderRender(null, 5), false);
+});

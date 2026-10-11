@@ -719,6 +719,9 @@
         onSelection(m);
         break;
       case "error":
+        // Render N failing after startRender(N+1) says nothing about N+1: it must not fail the goto /
+        // highlight waiting for it, nor mark it failed (#115 review). No seq: a CSP report or a goto.
+        if (CanvasCore.fromOlderRender(m, renderingSeq)) break;
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
         if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
         if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
