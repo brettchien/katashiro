@@ -228,7 +228,9 @@
    *   value in storage if set, else 200 MB, §3.6)
    * @param {(id: string) => Promise<boolean>} [deps.isOpen]  is this canvas open in a tab (never evicted)
    * @param {(info: { needed: number, evict: object[] }) => Promise<boolean>} [deps.confirmEvict]
-   *        asked once when a write would go over budget; true = remove `evict` and write
+   *        asked once when a write would go over budget; true = remove `evict` and write. An agent
+   *        write may pass its own (agentWrite/agentPatch `confirmEvict`), so the question is tied to
+   *        the asking agent (#80); a user save asks this one.
    */
   // The entries whose key passes `test`, without pulling every value into memory: getKeys()
   // (Chrome 130+) lists keys only, so canvas contents (up to the budget) are not read just to be
@@ -354,7 +356,7 @@
     // Make room for `addBytes` more (minus what the canvas being rewritten already uses). Over
     // budget: least recently opened first, never one open in a tab nor the one being written, and
     // only after one confirmation. Throws QuotaError if declined or if that cannot free enough.
-    async function ensureBudget(addBytes, keepId) {
+    async function ensureBudget(addBytes, keepId, ask = confirmEvict) {
       const metas = await allMetas();
       const total = metas.reduce((n, m) => n + footprint(m), 0);
       const mine = metas.find((m) => m.id === keepId);
@@ -373,7 +375,7 @@
         evict.push({ id: m.id, title: m.title, bytes: footprint(m), conversationId: m.conversationId, version: m.version });
         freed += footprint(m);
       }
-      if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
+      if (freed < over || !(await ask({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
       // The confirmation waits on the user (up to 2 minutes, #80); a canvas opened or changed
       // meanwhile is kept — the user agreed to drop what they were shown (the write may then run
       // slightly over budget — it is a soft cap).
@@ -393,11 +395,11 @@
      * Create (no `id`) or update (with `id` + `baseVersion`) a canvas as the agent.
      * @returns {Promise<{ id, version, created, title }>}
      */
-    async function agentWrite({ conversationId, id, baseVersion, title, kind, content, image, caption }) {
+    async function agentWrite({ conversationId, id, baseVersion, title, kind, content, image, caption, confirmEvict: ask }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       const v = await validate({ title, kind, content, image, caption });
       const at = now();
-      await ensureBudget(v.bytes, id || null);
+      await ensureBudget(v.bytes, id || null, ask || confirmEvict);
       if (id == null || id === "") {
         const newId = `cv_${randomHex()}`;
         const meta = {
@@ -469,7 +471,7 @@
      *   rebasedOver = { version, author, diffFromBase } of the latest when it was past baseVersion,
      *   else null; diffFromBase as in a stale error (null unless baseVersion was the agent's write).
      */
-    async function agentPatch({ conversationId, id, baseVersion, edits }) {
+    async function agentPatch({ conversationId, id, baseVersion, edits, confirmEvict: ask }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (!Number.isInteger(baseVersion)) throw new Error("canvas_patch needs `baseVersion` (the version you last read or wrote)");
@@ -484,7 +486,7 @@
         const m = got[metaKey(id)];
         const patchable = m && m.conversationId === conversationId && PATCH_KINDS.includes(m.kind);
         const dry = patchable ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
-        if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id);
+        if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id, ask || confirmEvict);
       }
       let result;
       await lock(`canvas:${id}`, async () => {

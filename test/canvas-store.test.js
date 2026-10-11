@@ -313,6 +313,22 @@ test("budget: a canvas changed while the eviction confirm waits is kept (#80)", 
   assert.equal(r.version, 2);                         // A was not what the user agreed to drop: kept
 });
 
+test("budget: an agent write may ask its own confirmEvict (the asking agent's turn, #80); a user save asks the store's", async () => {
+  const storeAsked = [], agentAsked = [];
+  const { s } = store({ budgetBytes: 10, confirmEvict: async (i) => { storeAsked.push(i); return false; } });
+  await s.agentWrite({ conversationId: "c", title: "A", content: "aaaa" });
+  await s.agentWrite({ conversationId: "c", title: "B", content: "bbbb" });
+  const ask = async (i) => { agentAsked.push(i); return true; };
+  await s.agentWrite({ conversationId: "d", title: "C", content: "cccc", confirmEvict: ask });
+  assert.equal(agentAsked.length, 1);
+  assert.equal(storeAsked.length, 0);
+  assert.equal((await s.usage()).count, 2);           // the agent's yes evicted A
+  const c = (await s.list({ conversationId: "d" }))[0];
+  await s.agentPatch({ conversationId: "d", id: c.id, baseVersion: 1, edits: [{ find: "cccc", replace: "c".repeat(9) }], confirmEvict: ask });
+  assert.equal(agentAsked.length, 2);                 // canvas_patch asks the agent's too
+  assert.equal(storeAsked.length, 0);
+});
+
 test("budget: when even evicting everything allowed is not enough, it fails without asking", async () => {
   const asked = [];
   const { s } = store({ budgetBytes: 5, confirmEvict: async (i) => { asked.push(i); return true; } });

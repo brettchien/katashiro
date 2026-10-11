@@ -220,11 +220,14 @@ class Conn {
             lines: [
               `「${title}」（v${version}${author === "user" ? "，含你的修改" : ""}）`,
               // canvas.js keeps a dirty editor on screen to copy from, but nothing saves it any more.
-              ...(open ? ["這個畫布正開在分頁中：分頁裡未儲存的修改會遺失（編輯中的文字會留在畫面上，可先複製）。"] : []),
+              // The dirty flag reaches the panel a frame late, so "usually".
+              ...(open ? ["這個畫布正開在分頁中：分頁裡未儲存的修改會遺失（編輯中的文字通常會留在畫面上，可先複製）。"] : []),
               "這個動作無法復原。",
             ],
           }, { conn: this });
         },
+        // Storage full on this agent's canvas_open / canvas_patch: ask in this agent's turn (#80).
+        confirmEvict: (info) => confirmEvictCard(info, this),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
       },
@@ -850,6 +853,9 @@ class Conn {
   finalizeStream(stopReason) {
     const s = this.stream;
     this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
+    // A confirm card still waiting in this turn declines: the turn ended (stop, timeout, error,
+    // disconnect), so a late "yes" must not act for an agent that can no longer hear it (#80).
+    if (s && s.confirms) for (const d of [...s.confirms]) d.end();
     if (!s || !s.bubble) return;
     settleRunningPills(s);
     const cancelled = stopReason === "cancelled";
@@ -859,7 +865,8 @@ class Conn {
       // Exception: a turn that ran browser tools but emitted no text is a legitimate pure-action
       // turn — keep the row (and its tool-activity strip) so the user still sees what happened;
       // only the empty typing bubble is dropped.
-      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount) {
+      // A confirm card asked in the turn keeps the row too: its outcome stays readable (#80).
+      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount || (s.confirms && s.contentEl.querySelector(".confirm-card"))) {
         s.bubble.remove();
         if (s.imageCount) recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText("", s.imageCount), timestamp: Date.now() });
         if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
@@ -2180,16 +2187,21 @@ const canvasStore = CanvasStore.createCanvasStore({
   // Over the budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
   // panel (the agent's write arrives here; no canvas tab may be open).
   isOpen: async (id) => !!(await findCanvasTab(id)),
-  // A confirm card, not window.confirm (#80); the agent's write waits on it (no lock held, §3.6).
-  confirmEvict: ({ evict }) => confirmCard({
+  // A confirm card, not window.confirm (#80); the write waits on it (no lock held, §3.6). An
+  // agent's write passes its own (ctx.canvas.confirmEvict, in its turn); this one is a user save.
+  confirmEvict: (info) => confirmEvictCard(info, null),
+});
+
+function confirmEvictCard({ evict }, conn) {
+  return confirmCard({
     title: "畫布儲存空間已滿",
     lines: [
       `要刪除最久沒打開的 ${evict.length} 個畫布嗎？這個動作無法復原。`,
       ...evict.slice(0, 10).map((e) => `• ${e.title}`),
       ...(evict.length > 10 ? [`…還有 ${evict.length - 10} 個`] : []),
     ],
-  }),
-});
+  }, { conn });
+}
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
 // The panel writes the agent's saves (and anything else that changes a canvas while it is open);
@@ -2686,7 +2698,7 @@ function canvasCard({ id, version, title }) {
 // A yes/no question in the chat instead of window.confirm, which blocked the panel's main thread:
 // every agent connection, heartbeat and tool call in the room froze until the user answered.
 // Nothing here blocks, several cards can wait at once, and each one declines itself after
-// ConfirmCore.TIMEOUT_MS (2 minutes). The text rules and the decision live in confirm-core.js.
+// ConfirmCore.TIMEOUT_MS (2 minutes) — or when the agent turn it was asked in ends. The text rules and the decision live in confirm-core.js.
 // Every string goes in with textContent (agent text included), and the card is a "system" element:
 // the 🔒 header and its border come from sidepanel.css on an element markdown cannot produce
 // (html:false, and the card sits outside any .bubble), so an agent reply cannot imitate one.
@@ -2696,7 +2708,8 @@ const pendingConfirms = new Set();
 /**
  * Ask the user on a card in the chat: in `conn`'s turn while it is in flight, else as its own row.
  * @param {{ title: string, lines?: string[], allowLabel?: string, denyLabel?: string, timeoutMs?: number }} spec
- * @returns {Promise<boolean>} true only if the user clicked allow; a timeout or a cleared chat is false
+ * @returns {Promise<boolean>} true only if the user clicked allow; a timeout, a cleared chat or the
+ *   end of `conn`'s turn is false
  */
 function confirmCard(spec, { conn = null } = {}) {
   const s = ConfirmCore.normalizeSpec(spec);
@@ -2723,9 +2736,7 @@ function confirmCard(spec, { conn = null } = {}) {
   }
   const hint = document.createElement("div");
   hint.className = "confirm-card-hint";
-  hint.textContent = s.timeoutMs >= 60000
-    ? `${Math.round(s.timeoutMs / 60000)} 分鐘內沒有回答視為${s.denyLabel}。`
-    : `${Math.ceil(s.timeoutMs / 1000)} 秒內沒有回答視為${s.denyLabel}。`;
+  hint.textContent = ConfirmCore.timeoutHint(s);
   const actions = document.createElement("div");
   actions.className = "confirm-card-actions";
   const deny = document.createElement("button");
@@ -2742,11 +2753,16 @@ function confirmCard(spec, { conn = null } = {}) {
   result.hidden = true;
   card.append(hint, actions, result);
 
+  // Asked in a turn: the card sits in that turn and declines when it ends (finalizeStream).
+  if (conn && conn.turnActive && (!conn.stream || !conn.stream.bubble)) conn.startStream();
+  const turn = conn && conn.turnActive ? conn.stream : null;
+
   // The card stays in the chat with the outcome; the buttons go, so a late click cannot act.
   const decision = ConfirmCore.createDecision({
     timeoutMs: s.timeoutMs,
     onSettle: (state) => {
       pendingConfirms.delete(decision);
+      if (turn) turn.confirms.delete(decision);
       hint.remove();
       actions.remove();
       card.className = `confirm-card ${state === "allowed" ? "allowed" : "declined"}`;
@@ -2755,12 +2771,12 @@ function confirmCard(spec, { conn = null } = {}) {
     },
   });
   pendingConfirms.add(decision);
+  if (turn) (turn.confirms || (turn.confirms = new Set())).add(decision);
   allow.addEventListener("click", () => decision.allow());
   deny.addEventListener("click", () => decision.deny());
 
-  if (conn && conn.turnActive) {
-    if (!conn.stream || !conn.stream.bubble) conn.startStream();
-    conn.stream.contentEl.insertBefore(card, conn.stream.bubble);
+  if (turn) {
+    turn.contentEl.insertBefore(card, turn.bubble);
   } else {
     const row = document.createElement("div");
     row.className = "message system";

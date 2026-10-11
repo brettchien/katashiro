@@ -2786,6 +2786,7 @@
           res = await c.store.agentWrite({
             conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion,
             title: args.title, kind: args.kind, content: args.content, image, caption: args.caption,
+            confirmEvict: c.confirmEvict,                // the eviction card goes to THIS agent (#80)
           });
         } catch (e) {
           if (e && e.code === "stale") {
@@ -2887,7 +2888,7 @@
         if (typeof c.store.agentPatch !== "function") return errText("canvas_patch: not available in this host");
         let res;
         try {
-          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits });
+          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits, confirmEvict: c.confirmEvict });
         } catch (e) {
           if (e && e.code === "stale") {
             const diff = e.diffFromBase == null ? null : String(e.diffFromBase).slice(0, CANVAS_DIFF_MAX);

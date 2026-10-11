@@ -26,6 +26,7 @@ test("plainText: newlines and control characters become spaces (no spoofed lines
   // bidi overrides / isolates / marks would reorder what the user reads
   assert.equal(C.plainText(`a${ch(0x202e)}gpj.exe${ch(0x202c)}b`), "a gpj.exe b");
   assert.equal(C.plainText(`a${ch(0x2066)}b${ch(0x2069)}${ch(0x200f)}c`), "a b c");
+  assert.equal(C.plainText(`a${ch(0x061c)}b${ch(0x200b)}c${ch(0xfeff)}d`), "a b c d");   // ALM, ZWSP, BOM
   assert.equal(C.plainText("  many    spaces  "), "many spaces");
   assert.equal(C.plainText(null), "");
   assert.equal(C.plainText(42), "42");
@@ -41,7 +42,7 @@ test("plainText cuts long text with an ellipsis", () => {
 
 test("normalizeSpec: defaults, flattened lines, clamped timeout", () => {
   const d = C.normalizeSpec();
-  assert.deepEqual(d, { title: "確認", lines: [], allowLabel: "允許", denyLabel: "拒絕", timeoutMs: C.TIMEOUT_MS });
+  assert.deepEqual(d, { title: "確認", lines: [], allowLabel: "允許", denyLabel: "拒絕", allowDefault: true, denyDefault: true, timeoutMs: C.TIMEOUT_MS });
   assert.equal(C.TIMEOUT_MS, 120000);
   const s = C.normalizeSpec({ title: "刪除「a\nb」", lines: ["one\ntwo", "", null, "three"], allowLabel: "是", denyLabel: "否", timeoutMs: 5000 });
   assert.equal(s.title, "刪除「a b」");
@@ -59,7 +60,10 @@ test("outcomeText: what a decided card says", () => {
   assert.equal(C.outcomeText("denied", s), "已拒絕");
   assert.equal(C.outcomeText("timeout", s), "已拒絕（逾時）");
   assert.equal(C.outcomeText("cancelled", s), "已拒絕（聊天已清除）");
+  assert.equal(C.outcomeText("ended", s), "已拒絕（回合已結束）");
   assert.equal(C.outcomeText("allowed", C.normalizeSpec({ allowLabel: "是" })), "已選擇：是");
+  // a flag, not a string compare: a caller that passes the default label explicitly is still a choice
+  assert.equal(C.outcomeText("denied", C.normalizeSpec({ denyLabel: "拒絕" })), "已選擇：拒絕");
   assert.equal(C.outcomeText("pending", s), "");
 });
 
@@ -116,4 +120,29 @@ test("createDecision with real timers settles on its own", async () => {
   const d = C.createDecision({ timeoutMs: 5 });
   assert.equal(await d.promise, false);
   assert.equal(d.state, "timeout");
+});
+
+test("timeoutHint: whole minutes only when the timeout is whole minutes", () => {
+  assert.equal(C.timeoutHint(C.normalizeSpec()), "2 分鐘內沒有回答視為拒絕。");
+  assert.equal(C.timeoutHint(C.normalizeSpec({ timeoutMs: 90000 })), "90 秒內沒有回答視為拒絕。");
+  assert.equal(C.timeoutHint(C.normalizeSpec({ timeoutMs: 1500, denyLabel: "否" })), "2 秒內沒有回答視為否。");
+});
+
+test("createDecision: end() (the asking turn ended) declines; outcome tells it from a no", async () => {
+  const t = fakeTimers();
+  const seen = [];
+  const d = C.createDecision({ setTimer: t.setTimer, clearTimer: t.clearTimer, onSettle: (st) => seen.push(st) });
+  assert.equal(d.end(), true);
+  assert.equal(d.state, "ended");
+  assert.equal(t.timers.size, 0);
+  assert.equal(d.allow(), false);                           // a late yes after the turn ended does nothing
+  assert.deepEqual(seen, ["ended"]);
+  assert.equal(await d.promise, false);
+  assert.deepEqual(await d.outcome, { ok: false, state: "ended" });
+  const n = C.createDecision({ setTimer: t.setTimer, clearTimer: t.clearTimer });
+  n.deny();
+  assert.deepEqual(await n.outcome, { ok: false, state: "denied" });
+  const y = C.createDecision({ setTimer: t.setTimer, clearTimer: t.clearTimer });
+  t.fire();
+  assert.deepEqual(await y.outcome, { ok: false, state: "timeout" });
 });
