@@ -56,6 +56,13 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   "📁 檔案在 Katashiro 外被修改過". Delete the `.md` and reopen the canvas tab: "📁 檔案已刪除，不再同步", and
   later saves leave the folder alone; **📁 重新寫入** writes it again and mirroring resumes. Restart Chrome: the canvas header shows **📁 Reconnect folder**
   (unless Chrome kept the grant); saves made before reconnecting are written after it.
+- **canvas_patch and Ask agent (ADR §3.5, §3.7):** with a markdown canvas open, select a sentence:
+  **💬 Ask agent** appears in the header (not in a compare tab, not while editing, gone when the
+  selection is cleared). Click it, type a request: the chat shows your request, then
+  `[canvas "…" (cv_…) vN, text selected by the user …]` and the selection in a fence. Ask the
+  agent to change it with `canvas_patch`: the changed blocks glow, the card shows the new
+  version. Edit another section yourself and save first: the patch still applies and says
+  `rebasedOver`.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt. Run `chrome.storage.local.remove("canvas:budgetBytes")`

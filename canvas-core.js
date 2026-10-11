@@ -13,9 +13,9 @@
   const COPY_MAX = 1024 * 1024;
   const TEXT_MAX = 2 * 1024 * 1024;           // a canvas's text cap (canvas-store CONTENT_MAX_BYTES)
   const HIGHLIGHT_TEXT_MAX = 200;
+  const SELECTION_MAX = 20 * 1024;            // selection{text}: the §3.7 push data cap (PUSH_DATA_MAX)
 
-  // What canvas-frame.html may send (§3.2 per-frame allow-list). MVP: no editor, so no save /
-  // selection yet. Anything else is dropped.
+  // What canvas-frame.html may send (§3.2 per-frame allow-list). Anything else is dropped.
   const FRAME_TYPES = {
     ready: () => true,
     // normalized (§3.5): Milkdown's parse+serialize of an agent markdown version, ≤ 2 MB.
@@ -34,6 +34,9 @@
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
+    // Ask agent (§3.7): the text the user selected in the view, as rendered; "" = nothing selected.
+    // Capped at the push data cap (the frame cuts it and says so with truncated).
+    selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && (m.truncated === undefined || typeof m.truncated === "boolean"),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
@@ -288,7 +291,7 @@
     return { error: `${hits.length} ${byHeading ? "headings" : "blocks"} match ${JSON.stringify(want)}; give ${byHeading ? "`find` with text from the section instead" : "a longer `find`"}` };
   }
 
-  // --- Pushes into the prompt (§3.7: Send to agent, Send error) ---------------------------------
+  // --- Pushes into the prompt (§3.7: Send to agent, Ask agent, Send error) ----------------------
   // Layout: the user's note first, then a fixed host line, then the canvas data in a code fence
   // longer than any backtick run inside it, so the data cannot close the fence and forge text
   // "outside" the data block. The data is capped (20 KB); the panel caps the whole text again.
@@ -317,6 +320,19 @@
     return parts.join("\n\n");
   }
 
+  // Ask agent (§3.7 "Edit with agent on a selection"): the user's request first, a fixed host line
+  // naming the canvas (id + version, so the agent can canvas_read / canvas_patch it), then the
+  // selected text as data. The selection is rendered text, not the markdown source: the header says
+  // so, since a canvas_patch `find` must be the stored text.
+  function composeAskAgent({ note, title, id, version, text, truncated }) {
+    const t = String(title == null ? "" : title).slice(0, 120);
+    const header = `[canvas "${t}" (${id}) v${version}, text selected by the user — as rendered, not the markdown source; canvas_read before canvas_patch]`;
+    const CUT = "(the selection was cut at 20 KB — canvas_read for the rest)";
+    const body = composeCanvasPush({ note, header, data: text, truncatedNote: CUT });
+    // Cut here (over the cap) or already in the frame (`truncated`): say so once.
+    return truncated === true && !body.endsWith(CUT) ? `${body}\n\n${CUT}` : body;
+  }
+
   // Download as markdown (§3.7): a file name from the agent's title — no path separators, control
   // characters, reserved names or leading dots; ≤ 100 chars; "canvas" if nothing is left.
   const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
@@ -329,5 +345,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { SELECTION_MAX, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

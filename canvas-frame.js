@@ -7,7 +7,8 @@
 //  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
-//       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?}
+//       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
+//       selection{text, truncated?}                                         (Ask agent, §3.7)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -360,6 +361,29 @@
   document.addEventListener("click", onLinkClick, true);
   document.addEventListener("auxclick", onLinkClick, true);   // middle click
 
+  // Ask agent (§3.7): tell the host what the user has selected in the view (rendered text), so it
+  // can offer the button; "" when the selection is gone. Debounced (selectionchange fires per
+  // pixel of a drag), sent only when it changed, cut at the push cap. Not while editing: the
+  // editor holds unsaved text the agent could not find in the stored canvas.
+  const SELECTION_DEBOUNCE_MS = 250;
+  let selectionTimer = 0;
+  let lastSelection = "";
+  function postSelection() {
+    let text = "";
+    if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
+      const sel = document.getSelection();
+      text = sel && !sel.isCollapsed ? sel.toString().trim() : "";
+    }
+    if (text === lastSelection) return;
+    lastSelection = text;
+    const truncated = text.length > CanvasCore.SELECTION_MAX;
+    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), truncated } : { type: "selection", text });
+  }
+  document.addEventListener("selectionchange", () => {
+    clearTimeout(selectionTimer);
+    selectionTimer = setTimeout(postSelection, SELECTION_DEBOUNCE_MS);
+  });
+
   // A library that hits a blocked eval / fetch fails visibly, not silently (§3.2).
   document.addEventListener("securitypolicyviolation", (e) => {
     post({ type: "error", msg: `blocked by CSP: ${e.violatedDirective} ${e.blockedURI || ""}`.trim() });
@@ -375,6 +399,7 @@
       return;
     }
     if (m.type === "edit") {
+      lastSelection = "";                   // the host drops its selection on edit and render
       startEdit(typeof m.content === "string" ? m.content : "", m.version)
         .catch((err) => { stopEdit(); post({ type: "editFailed", msg: String((err && err.message) || err) }); });
       return;
@@ -421,6 +446,7 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
+    lastSelection = "";
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "");
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "");
