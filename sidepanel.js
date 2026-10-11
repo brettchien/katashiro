@@ -2348,14 +2348,38 @@ async function highlightCanvasBlock(id, req) {
 }
 
 function canvasTabUrl(id) {
-  return chrome.runtime.getURL(`canvas.html?id=${encodeURIComponent(id)}`);
+  return CanvasTabs.canvasTabUrl(chrome.runtime.getURL("canvas.html"), id);
 }
 
 async function findCanvasTab(id) {
   // Match patterns do not cover chrome-extension://, so list tabs and compare URLs (needs "tabs").
-  const want = canvasTabUrl(id);
-  const tabs = await chrome.tabs.query({});
-  return tabs.find((t) => t.url === want || t.pendingUrl === want) || null;
+  // Several tabs of one canvas: the most recently used (§3.1); never a compare tab.
+  return CanvasTabs.pickCanvasTab(await chrome.tabs.query({}), chrome.runtime.getURL("canvas.html"), id);
+}
+
+// Canvas gallery (§3.7): a row click asks the panel of that canvas's conversation to open it, so it
+// goes through openCanvasTab (focus the most recently used tab, or open it in this conversation's
+// canvas group). Only from Katashiro's own canvas-gallery.html; another conversation's canvas is
+// left to that conversation's panel (the gallery opens it itself when no panel answers).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-open") return false;
+  let fromGallery = false;
+  try {
+    const u = new URL(sender && sender.url);
+    fromGallery = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas-gallery.html";
+  } catch (_) { /* no or bad url */ }
+  if (!fromGallery || !CanvasStore.ID_RE.test(String(msg.id))) { sendResponse({ ok: false, error: "not from the Katashiro canvas gallery" }); return false; }
+  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  openCanvasTab(msg.id, { active: true })
+    .then(() => sendResponse({ ok: true }), (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+  return true;
+});
+
+const canvasGalleryBtn = document.getElementById("canvas-gallery-btn");
+if (canvasGalleryBtn) {
+  canvasGalleryBtn.addEventListener("click", () => {
+    CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined }).catch(() => {});
+  });
 }
 
 // Focus the canvas's tab, or open it (in the panel's window, after the active tab) and put it in

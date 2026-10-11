@@ -332,8 +332,9 @@ body {
   transform: rotate(30deg);
 }
 
-/* The broom shouldn't spin like the gear — a subtle lift reads better for "clear". */
-#clear-chat-btn:hover {
+/* The broom (and the gallery's folder) shouldn't spin like the gear — a subtle lift reads better. */
+#clear-chat-btn:hover,
+#canvas-gallery-btn:hover {
   transform: translateY(-1px);
 }
 

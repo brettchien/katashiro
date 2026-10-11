@@ -68,3 +68,9 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   few image canvases trigger the eviction prompt. Run `chrome.storage.local.remove("canvas:budgetBytes")`
   to go back to 200 MB. Both take effect without a reload. Values under 1 MB are ignored, and
   values over 200 MB are capped at 200 MB.
+- **Canvas gallery (ADR §3.7):** 🗂️ in the panel header (or **🗂️ 總覽** in a canvas tab) opens
+  `canvas-gallery.html`; a second click focuses that tab instead of opening another. Every canvas
+  is listed, newest first; typing filters by title, then by content (markdown / slides). A row opens
+  the canvas like its chat card (its open tab, else a new tab in the Canvas group); with the panel
+  closed it opens ungrouped beside the gallery and says so. 🗑 asks first, then the canvas's open
+  tab closes and the row disappears; an agent write elsewhere updates the list live.
