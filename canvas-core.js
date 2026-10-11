@@ -91,6 +91,10 @@
     return null;
   }
 
+  // A key that belongs to an IME composition (Esc there cancels the composition, not edit mode).
+  // isComposing, or keyCode 229: some platforms' IMEs send that without isComposing (#115 review).
+  const imeKey = (e) => !!e && (e.isComposing === true || e.keyCode === 229);
+
   // A report that names an older render than the one in flight (its seq, #96): what it says about
   // that render no longer holds. A report without a seq is about no render in particular.
   const fromOlderRender = (m, renderingSeq) => !!m && Number.isInteger(m.seq) && m.seq !== renderingSeq;
@@ -577,5 +581,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { imeKey, posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

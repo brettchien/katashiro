@@ -665,7 +665,7 @@
   }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
-    if (mode === "edit" && e.key === "Escape" && !e.isComposing && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
+    if (mode === "edit" && e.key === "Escape" && !CanvasCore.imeKey(e) && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
   });
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
 

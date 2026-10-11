@@ -545,3 +545,10 @@ test("posAtTextOffset (#103 showSaved): after n characters; a paragraph start st
   assert.equal(C.posAtTextOffset(runs, 0, true), 1);
   assert.equal(C.posAtTextOffset([], 0), null);
 });
+
+test("imeKey: Esc during an IME composition is the IME's — isComposing or keyCode 229 (#115 review)", () => {
+  assert.equal(C.imeKey({ key: "Escape", isComposing: true, keyCode: 27 }), true);
+  assert.equal(C.imeKey({ key: "Escape", isComposing: false, keyCode: 229 }), true);
+  assert.equal(C.imeKey({ key: "Escape", isComposing: false, keyCode: 27 }), false);
+  assert.equal(C.imeKey(null), false);
+});

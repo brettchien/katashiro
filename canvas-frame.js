@@ -170,7 +170,7 @@
   // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
   // so text typed just before Esc would otherwise be dropped without asking.
   document.addEventListener("keydown", (e) => {
-    if (!editing || e.key !== "Escape" || e.defaultPrevented || e.isComposing || editorRoot.querySelector(EDITOR_POPUPS)) return;
+    if (!editing || e.key !== "Escape" || e.defaultPrevented || CanvasCore.imeKey(e) || editorRoot.querySelector(EDITOR_POPUPS)) return;
     e.preventDefault();
     e.stopPropagation();                  // not selectParentNode as well
     editing.dirty = editorText(editing.crepe) !== editing.baseline;
