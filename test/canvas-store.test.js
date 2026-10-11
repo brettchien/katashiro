@@ -296,6 +296,23 @@ test("budget: under it nothing is asked; over it the least recently opened, unop
   assert.equal((await s.usage()).total, 6);
 });
 
+test("budget: a canvas changed while the eviction confirm waits is kept (#80)", async () => {
+  let s;
+  let a;
+  ({ s } = store({
+    budgetBytes: 10,
+    // the user is still deciding when A gets rewritten (no lock is held while asking)
+    confirmEvict: async () => { await s.agentWrite({ conversationId: "c", id: a.id, baseVersion: 1, title: "A", content: "aaa" }); return true; },
+  }));
+  a = await s.agentWrite({ conversationId: "c", title: "A", content: "aaaa" });
+  await s.agentWrite({ conversationId: "c", title: "B", content: "bbbb" });
+  await s.touch(a.id);
+  await s.touch((await s.list({ conversationId: "c" })).find((e) => e.id !== a.id).id);
+  await s.agentWrite({ conversationId: "d", title: "C", content: "cccc" });   // asks to evict A (opened first)
+  const r = await s.read({ conversationId: "c", id: a.id });
+  assert.equal(r.version, 2);                         // A was not what the user agreed to drop: kept
+});
+
 test("budget: when even evicting everything allowed is not enough, it fails without asking", async () => {
   const asked = [];
   const { s } = store({ budgetBytes: 5, confirmEvict: async (i) => { asked.push(i); return true; } });

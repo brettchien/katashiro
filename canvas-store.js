@@ -370,13 +370,14 @@
       for (const m of candidates) {
         if (freed >= over) break;
         if (await isOpen(m.id)) continue;
-        evict.push({ id: m.id, title: m.title, bytes: footprint(m), conversationId: m.conversationId });
+        evict.push({ id: m.id, title: m.title, bytes: footprint(m), conversationId: m.conversationId, version: m.version });
         freed += footprint(m);
       }
       if (freed < over || !(await confirmEvict({ needed: over, evict }))) throw new QuotaError(over, budgetBytes);
-      // The confirmation waits on the user; a canvas opened meanwhile is kept (the write may then
-      // run slightly over budget — it is a soft cap).
-      for (const e of evict) if (!(await isOpen(e.id))) await remove({ id: e.id });
+      // The confirmation waits on the user (up to 2 minutes, #80); a canvas opened or changed
+      // meanwhile is kept — the user agreed to drop what they were shown (the write may then run
+      // slightly over budget — it is a soft cap).
+      for (const e of evict) if (!(await isOpen(e.id))) await remove({ id: e.id, expectVersion: e.version });
     }
 
     async function updateIndex(conversationId, entry) {
