@@ -19,7 +19,8 @@
   const FRAME_TYPES = {
     ready: () => true,
     // normalized (§3.5): Milkdown's parse+serialize of an agent markdown version, ≤ 2 MB.
-    rendered: (m) => Number.isInteger(m.version) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
+    // seq (#96): the host's render number echoed back — two renders of one version differ in it.
+    rendered: (m) => Number.isInteger(m.version) && Number.isInteger(m.seq) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
     // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
@@ -32,14 +33,16 @@
     error: (m) => typeof m.msg === "string",
     // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
     // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
-    diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.version),
+    diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.seq),
     // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // Ask agent (§3.7): the text the user selected in the view, as rendered; "" = nothing selected.
-    // Capped at the push data cap (the frame cuts it and says so with truncated).
-    selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && (m.truncated === undefined || typeof m.truncated === "boolean"),
+    // Capped at the push data cap (the frame cuts it and says so with truncated). version: the
+    // render it was made in (#107) — the host drops a selection from an older one.
+    selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.version) &&
+      (m.truncated === undefined || typeof m.truncated === "boolean"),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
@@ -70,10 +73,12 @@
     return m;
   }
 
-  // The host's edit mode after a frame message: only editFailed ends it, and never over unsaved
-  // edits. A plain error (e.g. a CSP-blocked image inside an open editor) leaves it alone.
-  function modeAfterFrameMessage(type, { mode, dirty }) {
-    return type === "editFailed" && mode === "edit" && !dirty ? "view" : mode;
+  // The host's edit mode after a frame message: only editFailed ends it. Always (#93): the editor
+  // never opened, so there are no unsaved edits, and the frame has already gone back to the view
+  // (stopEdit) — staying in edit would leave Save with no editor behind it. A plain error (e.g. a
+  // CSP-blocked image inside an open editor) leaves the mode alone.
+  function modeAfterFrameMessage(type, { mode }) {
+    return type === "editFailed" ? "view" : mode;
   }
 
   // openLink: http(s) only, absolute, bounded. Returns the normalized URL or null.
@@ -332,6 +337,20 @@
   }
 
   /**
+   * The 顯示變更 button's title for the state the tab is in now (#110): what the markers show, or why
+   * none show. Editing and an open compare win over `from` (heldChanges' last answer), which is
+   * not recomputed while either lasts.
+   */
+  function showChangesTitle({ on, from, editing, comparing }) {
+    if (!on) return "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）";
+    if (editing) return "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉";
+    if (comparing) return "顯示變更（開）：比較開著時標示的是跟 agent 版本的差異，關閉比較後恢復。按一下關閉";
+    if (from === "agentCopy") return "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）";
+    if (from === "none") return "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示";
+    return "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+  }
+
+  /**
    * canvas_highlight anchoring (§3.10): `blocks` = [{ text, heading }] in document order (rendered
    * text, what the user sees). `find` must be inside exactly one block; `heading` must equal one
    * heading's text. Whitespace is collapsed on both sides; matching is case-sensitive.
@@ -409,5 +428,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

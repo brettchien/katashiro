@@ -2156,6 +2156,11 @@ test("split_tabs: two adjacent tabs split in place, no move", async () => {
   assert.deepEqual(calls.createSplit, [[1, 2]]);
   assert.match(res.content[0].text, /split tabs \[0, 1\] side by side \(split 900\)/);
   assert.match(res.content[0].text, /act on the active pane/);
+  // the second tab right before the first is adjacent too (CanvasTabs.adjacentIndex, #90)
+  const left = deps({ tabsList: splitTabs() });
+  await call(left.deps, "katashiro.split_tabs", { tabs: [{ index: 1 }, { index: 0 }] });
+  assert.equal(left.calls.tabsMove.length, 0);
+  assert.deepEqual(left.calls.createSplit, [[2, 1]]);
 });
 
 test("split_tabs: a non-adjacent second tab is moved right after the first", async () => {

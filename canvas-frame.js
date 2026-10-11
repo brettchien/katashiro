@@ -1,15 +1,15 @@
 // canvas-frame.js — renders one canvas inside the sandboxed canvas-frame.html (ADR §3.2–§3.3).
 //
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
-//  in:  render{nonce, kind, version, content, normalizeText?}
+//  in:  render{nonce, kind, version, seq, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
-//  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
+//  out: ready, rendered{version, seq, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, truncated?}                                         (Ask agent, §3.7)
-//       diagramError{msg, version}                          (a mermaid diagram that failed, §3.3)
+//       selection{text, version, truncated?}                                (Ask agent, §3.7)
+//       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -101,6 +101,43 @@
     // droppedBlank: cleaning removed empty paragraphs, so an "unchanged" reply can say why.
     post({ type: "save", content, baseVersion: editing.version, droppedBlank: content !== raw });
   }
+  // #103: a save drops the empty paragraphs markdown cannot keep (cleanEditorMarkdown), but the
+  // editor still showed them, so "沒有內容變更" looked like a failed save. After a save, an editor
+  // that holds exactly the saved text plus such paragraphs is reset to the saved text. Not when the
+  // user typed while the save was in flight (that text is not saved yet). The cursor stays where it
+  // was. Best effort: on any failure the editor just keeps showing the blank lines.
+  function showSaved(crepe, saved) {
+    try {
+      const raw = crepe.getMarkdown();
+      if (raw === saved || CanvasCore.cleanEditorMarkdown(raw) !== saved) return;
+      crepe.editor.action((ctx) => {
+        const M = globalThis.KatashiroMilkdown;
+        const view = ctx.get("editorView");          // by slice name: the bundle does not export editorViewCtx
+        const doc = ctx.get(M.parserCtx)(saved);
+        if (!doc) return;
+        // Only empty paragraphs go, so the text before the cursor is the same: put the cursor back
+        // after as many characters (a position would shift by the paragraphs removed before it).
+        const { state } = view;
+        const offset = state.doc.textBetween(0, state.selection.from).length;
+        const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
+        const Sel = state.selection.constructor;   // near() is Selection's, inherited by every kind
+        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset))));
+        view.dispatch(tr);
+      });
+    } catch (_) { /* keeps the blank lines on screen; the saved text is right either way */ }
+  }
+  // The document position right after the first `n` characters of text (the end if it is shorter).
+  function posAtTextOffset(doc, n) {
+    let pos = null;
+    doc.descendants((node, p) => {
+      if (pos !== null) return false;
+      if (!node.isText) return true;
+      if (n <= node.text.length) pos = p + n;
+      else n -= node.text.length;
+      return false;
+    });
+    return pos === null ? doc.content.size : pos;
+  }
   // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
   function stopEdit() {
     if (editing) {
@@ -112,21 +149,29 @@
     editorRoot.hidden = true;
     doc.hidden = false;
   }
+  // Crepe's popups that close on Esc themselves (vendored crepe): the slash menu and the link editor.
+  // The selection toolbar and the link preview have no Esc handler, so they must not hold Esc back.
+  const EDITOR_POPUPS = [".milkdown-slash-menu", ".milkdown-link-edit"].map((c) => `${c}[data-show="true"]`).join(", ");
   document.addEventListener("keydown", (e) => {
     if (editing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); requestSave(); }
-    // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless one of the
-    // editor's own popups is open (slash menu, link or selection toolbar), which Esc closes first.
-    // This also matches a table's row/column handle while the pointer rests on the table, so Esc
-    // does nothing there; move the pointer off the table and it works.
-    // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
-    // so text typed just before Esc would otherwise be dropped without asking.
-    if (editing && e.key === "Escape" && !e.defaultPrevented && !e.isComposing &&
-      !editorRoot.querySelector('[data-show="true"]')) {
-      e.preventDefault();
-      editing.dirty = editorText(editing.crepe) !== editing.baseline;
-      post({ type: "escape", dirty: editing.dirty });
-    }
   });
+  // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless one of the
+  // editor's own popups is open (EDITOR_POPUPS), which Esc closes first, or an IME composition is
+  // in progress. The slash menu handles Esc in a window capture listener (it runs first and calls
+  // preventDefault); the link editor on its input, after us, so it is checked as shown.
+  // Document capture phase, ahead of the editor (#104): ProseMirror's base keymap binds Esc to
+  // selectParentNode, which took every Esc inside a table (cell → row → table) and the first one
+  // anywhere else. Only real popups count: hover handles (a block's drag handle, a table's row /
+  // column handles) are data-show too while the pointer rests on them.
+  // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
+  // so text typed just before Esc would otherwise be dropped without asking.
+  document.addEventListener("keydown", (e) => {
+    if (!editing || e.key !== "Escape" || e.defaultPrevented || e.isComposing || editorRoot.querySelector(EDITOR_POPUPS)) return;
+    e.preventDefault();
+    e.stopPropagation();                  // not selectParentNode as well
+    editing.dirty = editorText(editing.crepe) !== editing.baseline;
+    post({ type: "escape", dirty: editing.dirty });
+  }, true);
 
   // --- Mermaid (§3.3), loaded on first use: a ```mermaid fence in a markdown / slides canvas, or a
   // mermaid canvas — 2.7 MB, so a canvas without a diagram never loads it. @mermaid-js/tiny has no
@@ -216,8 +261,8 @@
   }
   // Render every ```mermaid fence under root in place. A bad diagram keeps its source, shows the
   // error above it (textContent) and is reported as diagramError{}; the rest of the canvas stands.
-  // `gen` is the render it belongs to: a newer render makes it stop. `version` goes with the report,
-  // so the host can tell it from an older render's.
+  // `gen` is the render it belongs to: a newer render makes it stop. `seq` (the host's render number,
+  // #96) goes with the report, so the host can tell it from an older render's.
   let renderGen = 0;
   function diagramNote(pre, msg) {
     const note = document.createElement("div");
@@ -226,7 +271,7 @@
     note.textContent = msg;                         // mermaid's message quotes agent text: textContent only
     pre.before(note);
   }
-  async function renderDiagrams(root, kind, gen, version, theme) {
+  async function renderDiagrams(root, kind, gen, seq, theme) {
     if (!CanvasCore.wantsMermaid(kind, root)) return;
     const codes = Array.from(root.querySelectorAll(CanvasCore.MERMAID_SEL));
     if (!codes.length) return;
@@ -236,7 +281,7 @@
       // Not one diagram's fault: every fence stays source, each saying so.
       const msg = CanvasCore.diagramErrorText(e);
       for (const code of codes) diagramNote(code.parentElement, msg);
-      post({ type: "diagramError", msg, version });
+      post({ type: "diagramError", msg, seq });
       return;
     }
     const errors = [];
@@ -251,7 +296,7 @@
       diagramNote(pre, msg);
       errors.push(msg);
     }
-    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), version });
+    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), seq });
   }
   // Print (§3.8): the rendered diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Failures keep the old SVG.
@@ -265,16 +310,16 @@
   }
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
-  function renderMarkdown(content, gen, version) {
+  function renderMarkdown(content, gen, seq) {
     doc.hidden = false;
     // Older saves may still hold "<br />" lines; never show them as literal text.
     renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
-    return renderDiagrams(doc, "markdown", gen, version, SCREEN_THEME);
+    return renderDiagrams(doc, "markdown", gen, seq, SCREEN_THEME);
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
   // shows the source with the error, as in a document).
-  function renderMermaidCanvas(content, gen, version) {
+  function renderMermaidCanvas(content, gen, seq) {
     doc.hidden = false;
     document.body.classList.add("mode-mermaid");
     const pre = document.createElement("pre");
@@ -284,14 +329,14 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, version, SCREEN_THEME);
+    return renderDiagrams(doc, "mermaid", gen, seq, SCREEN_THEME);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
   // markdown sink; reveal.js only receives finished <section>s (no reveal markdown plugin, which
   // would pass raw HTML through). Re-renders keep the current slide.
   let revealReady = null;
-  async function renderSlides(content, gen, version) {
+  async function renderSlides(content, gen, seq) {
     deck.hidden = false;
     document.body.classList.add("mode-slides");
     const container = deck.querySelector(".slides");
@@ -302,7 +347,7 @@
     });
     container.replaceChildren(...sections);
     // Diagrams before reveal lays the deck out (it sizes slides by their content).
-    await renderDiagrams(container, "slides", gen, version, SCREEN_THEME);
+    await renderDiagrams(container, "slides", gen, seq, SCREEN_THEME);
     if (gen !== renderGen) return undefined;
     if (!revealReady) {
       revealReady = Reveal.initialize({
@@ -536,10 +581,12 @@
   // Ask agent (§3.7): tell the host what the user has selected in the view (rendered text), so it
   // can offer the button; "" when the selection is gone. Debounced (selectionchange fires per
   // pixel of a drag), sent only when it changed, cut at the push cap. Not while editing: the
-  // editor holds unsaved text the agent could not find in the stored canvas.
+  // editor holds unsaved text the agent could not find in the stored canvas. It carries the version
+  // of the render it was made in, so the host can drop one that arrives after a newer render (#107).
   const SELECTION_DEBOUNCE_MS = 250;
   let selectionTimer = 0;
   let lastSelection = "";
+  let shownVersion = 0;                   // render{version} of what the view shows
   function postSelection() {
     let text = "";
     if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
@@ -549,7 +596,8 @@
     if (text === lastSelection) return;
     lastSelection = text;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
-    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), truncated } : { type: "selection", text });
+    const version = shownVersion;
+    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), version, truncated } : { type: "selection", text, version });
   }
   document.addEventListener("selectionchange", () => {
     clearTimeout(selectionTimer);
@@ -580,7 +628,7 @@
       if (editing && Number.isInteger(m.version)) {
         editing.version = m.version;
         // The baseline is what was saved; text typed while the save was in flight stays dirty.
-        if (typeof m.content === "string") editing.baseline = m.content;
+        if (typeof m.content === "string") { editing.baseline = m.content; showSaved(editing.crepe, m.content); }
         const dirty = editorText(editing.crepe) !== editing.baseline;
         if (dirty !== editing.dirty) { editing.dirty = dirty; post({ type: "dirty", dirty }); }
       }
@@ -627,12 +675,14 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
+    shownVersion = Number.isInteger(m.version) ? m.version : 0;
     lastSelection = "";
     const gen = ++renderGen;
+    const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)
     Promise.resolve().then(() => {
-      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, m.version);
-      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, m.version);
-      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, m.version);
+      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, seq);
+      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);
+      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
@@ -645,7 +695,7 @@
         // #86: never store a normalization that lost an image; the agent's text stays as written.
         if (normalized !== undefined && CanvasCore.losesImages(m.normalizeText, normalized)) normalized = undefined;
       }
-      post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
+      post(normalized === undefined ? { type: "rendered", version: m.version, seq } : { type: "rendered", version: m.version, seq, normalized });
     }, (err) => {
       if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err) });   // else superseded
     });

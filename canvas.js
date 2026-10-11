@@ -128,6 +128,7 @@
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
     compareBtn.hidden = !(canRevert && textKind && !!frame);
     showChangesBtn.hidden = !textKind;
+    updateShowChangesBtn();             // editing changes its title (#110)
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
@@ -193,6 +194,9 @@
   // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
   let selection = null;               // { text, truncated } while the user has text selected in the view
   function onSelection(m) {
+    // #107: made in an older render (debounced in the frame, it can arrive after startRender
+    // cleared the selection): its text may not be in the version the header would name.
+    if (m.version !== renderVersion) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
     updateButtons();
@@ -284,6 +288,7 @@
     if (!query) printing = null;              // any normal mount ends a print (§3.8)
     if (frame) frame.remove();
     frameReady = false;
+    renderFailed = "";                        // #96: a goto / highlight before the new frame's ready must not get the old failure
     nonce = CanvasCore.newNonce();
     frame = document.createElement("iframe");
     // allow-scripts + allow-modals (print, §3.8): no same-origin, popups, forms or top navigation (§3.2).
@@ -378,6 +383,7 @@
     const gen = compareGen;
     if ((await compareStillOpen()) || gen !== compareGen || !comparing) return;
     comparing = false;
+    updateShowChangesBtn();
     applyHeldChanges();                     // clears the compare's markers; 顯示變更's come back if on
   }
 
@@ -406,14 +412,11 @@
     updateShowChangesBtn();
     toFrame(h.against === null ? { type: "glow", clear: true } : { type: "glow", against: h.against, hold: true });
   }
+  // Also from updateButtons and wherever a compare starts or ends (#110): entering edit or a
+  // compare changes what the title should say without a new heldChanges answer.
   function updateShowChangesBtn() {
     showChangesBtn.setAttribute("aria-pressed", String(showChanges));
-    showChangesBtn.title = !showChanges
-      ? "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）"
-      : heldFrom === "agentCopy" ? "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）"
-      : heldFrom === "off" && mode !== "view" ? "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉"
-      : heldFrom === "none" ? "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示"
-      : "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+    showChangesBtn.title = CanvasCore.showChangesTitle({ on: showChanges, from: heldFrom, editing: mode !== "view", comparing });
   }
   function setShowChanges(on) {
     if (on === showChanges) return;
@@ -434,19 +437,24 @@
     chrome.tabs.onRemoved.addListener(endCompareIfClosed);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
     // A reloaded canvas tab picks up a compare tab that is still open; rendered{} then marks.
-    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; if (rendered) holdCompareGlow(); } });
+    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; updateShowChangesBtn(); if (rendered) holdCompareGlow(); } });
   }
 
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
   // them reach a deck still being replaced), and fail at once with the reason while it is failed.
-  let renderingVersion = 0;
+  // Told apart by a per-render seq the frame echoes back, not the version (#96): two renders of
+  // the same version (meta and latest written separately → two refreshes) share a version.
+  let renderSeq = 0;
+  let renderingSeq = 0;
+  let renderVersion = 0;                    // render{version} last sent: selection{} must match (#107)
   let renderFailed = "";
   function startRender(msg) {
     if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
     rendered = false;
     renderFailed = "";
-    renderingVersion = msg.version;
-    toFrame(msg);
+    renderingSeq = ++renderSeq;
+    renderVersion = msg.version;
+    toFrame({ ...msg, seq: renderingSeq });
   }
 
   // Compare tab (§3.10): the agent copy, re-sent (no reload) whenever the canvas changes. Its blocks
@@ -595,6 +603,7 @@
       // Both panes mark the differing blocks, held while the compare is open.
       compareGen++;
       comparing = true;
+      updateShowChangesBtn();
       holdCompareGlow();
     } finally {
       compareBtn.disabled = false;
@@ -661,7 +670,7 @@
         break;
       case "rendered":
         if (printing && !printing.sent) { printing.sent = true; toFrame({ type: "print" }); }
-        if (m.version !== renderingVersion) break;           // an older render; a newer one is on its way
+        if (m.seq !== renderingSeq) break;                   // an older render; a newer one is on its way
         rendered = true;
         renderFailed = "";
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
@@ -703,12 +712,13 @@
       case "diagramError":
         // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
         // nothing is marked failed and pending goto / highlight carry on.
-        if (m.version !== renderingVersion) break;           // an older render's
+        if (m.seq !== renderingSeq) break;                   // an older render's
         if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
         else offerSendError(m.msg, true);
         break;
       case "editFailed":
-        mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });
+        mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });
+        dirty = false;                   // #93: no editor opened, so nothing unsaved
         updateButtons();
         offerSendError(m.msg);
         break;
@@ -866,7 +876,7 @@
   function mirrorHoldsLatest() {
     const m = current && current.meta;
     return !!(m && m.file && folder.configured && folder.permission === "granted" && m.file.folder === folder.folderId &&
-      (m.file.state === "ok" || m.file.state === "recreated") && m.fileSyncedVersion === m.version);
+      CanvasMirror.stateOf(m.file) === "ok" && m.fileSyncedVersion === m.version);    // legacy "recreated" reads as ok (#106)
   }
   function syncFile(opts) {
     if (deleted || compareView) return Promise.resolve();    // a compare tab is read-only (§3.10): the canvas tab writes

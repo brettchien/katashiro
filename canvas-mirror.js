@@ -190,12 +190,22 @@
     return `${fence}mermaid\n${text}\n${fence}\n`;
   }
 
+  /**
+   * A mirror state as read. Legacy (#106): "recreated" is not written since #105 (a file written
+   * again on 重新寫入 is plain "ok"), but metas saved before it may still hold it. It meant the
+   * latest was written, so it reads as "ok" — no amber warning left over until the next write.
+   * Kept for those old metas: not dead code.
+   */
+  function stateOf(file) {
+    const s = file ? file.state : undefined;
+    return s === "recreated" ? "ok" : s;
+  }
+
   /** Header text for a canvas's mirror state; null when there is nothing to say. */
   function describeState(file) {
     if (!file) return null;
-    switch (file.state) {
+    switch (stateOf(file)) {
       case "ok": return { level: "ok", text: "📁 已存到資料夾", title: "最新內容已寫進資料夾" };
-      case "recreated": return { level: "warn", text: "📁 檔案被刪過，已重新寫入", title: "資料夾裡的檔案在 Katashiro 外被刪除；畫布不受影響，已用最新內容重新寫入" };
       // Brett 2026-10-11 (1B): a file deleted outside is taken as meant — this canvas stops mirroring
       // until the user asks to write it again (or the file comes back). "missing" is #95's meta for it.
       case "missing":
@@ -460,8 +470,8 @@
             // Same content under a newer version (an agent rewrite with the same text): the file
             // still holds the latest, so fileSyncedVersion moves on without writing anything.
             if (!check) {
-              if (prev.hash === newHash && (prev.state === "ok" || prev.state === "recreated")) await saveFile(id, prev, meta.version);
-              return { action: "none", state: prev.state };
+              if (prev.hash === newHash && stateOf(prev) === "ok") await saveFile(id, prev, meta.version);
+              return { action: "none", state: stateOf(prev) };
             }
             const seen = fileState({ diskHash: await hashAt(root.dir, mdPath(ctx), ctx), lastHash: prev.hash });
             const state = seen === "missing" && !rewrite ? "deleted" : seen;
@@ -543,8 +553,11 @@
           // Permission withdrawn mid-way: just not connected; the next reconnect catches up.
           if (errName(e) === "NotAllowedError" || errName(e) === "SecurityError") return { action: "disconnected" };
           const msg = String((e && e.message) || e).slice(0, ERROR_MAX);
-          if (file) { try { await saveFile(id, { ...file, state: "error", error: msg }, meta.fileSyncedVersion); } catch (_) { /* best effort */ } }
-          return { action: "error", state: "error", error: msg };
+          // A file deleted outside stays deleted through an error (#100): "error" would drop the
+          // mark, and the next sync (title changed meanwhile) would write under the new path unasked.
+          const state = prev && (prev.state === "deleted" || prev.state === "missing") ? prev.state : "error";
+          if (file) { try { await saveFile(id, { ...file, state, error: msg }, meta.fileSyncedVersion); } catch (_) { /* best effort */ } }
+          return { action: "error", state, error: msg };
         }
       });
     }
@@ -647,7 +660,7 @@
 
   return {
     createCanvasMirror, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
-    onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, mermaidMarkdown, describeState, mdPath, assetPath, jsonPath,
+    onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, mermaidMarkdown, stateOf, describeState, mdPath, assetPath, jsonPath,
     folderStatus, grantedRoot, requestAccess, pickFolder, stopMirror, NOT_A_FILE, SLUG_MAX, SLUG_MAX_BYTES,
   };
 });

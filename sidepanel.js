@@ -2188,7 +2188,9 @@ const canvasStore = CanvasStore.createCanvasStore({
   // panel (the agent's write arrives here; no canvas tab may be open).
   isOpen: async (id) => !!(await findCanvasTab(id)),
   // A confirm card, not window.confirm (#80); the write waits on it (no lock held, §3.6). An
-  // agent's write passes its own (ctx.canvas.confirmEvict, in its turn); this one is a user save.
+  // agent's write passes its own (ctx.canvas.confirmEvict, in its turn). This default is only a
+  // fallback, with no caller today: the panel makes no user save (canvas.js saves through its own
+  // store, which has no confirmEvict, so a user save over budget fails with a quota error, no card).
   confirmEvict: (info) => confirmEvictCard(info, null),
 });
 
@@ -2497,7 +2499,8 @@ async function restoreCanvasTab(tabId) {
   }
   const plan = CanvasTabs.planRestore({ canvasTab: tab, record, groups });
   // The record is dropped only once the move worked: a rejected call (e.g. "Tabs cannot be edited
-  // right now" while the user drags a tab) keeps it, so the next sweep tries again.
+  // right now" while the user drags a tab) keeps it, so the next sweep tries again. No cooldown or
+  // attempt cap (Brett, 2026-10-11, #90): retries come only with a canvas_open or a tab event.
   if (plan.action === "group") await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tabId] });
   else if (plan.action === "ungroup") await chrome.tabs.ungroup([tabId]);
   else if (plan.action === "recreate") await addToCanvasGroup(tab);

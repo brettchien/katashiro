@@ -632,10 +632,12 @@
     }
 
     // Remove what incognito panels left in this storage before incognito was dropped (#109).
-    // Through remove(), so the index and the image sweep stay consistent. Returns how many.
+    // Through remove(), so the index stays consistent; one image sweep after all of them, not one
+    // per canvas (#113 review). Returns how many.
     async function removeIncognitoLeftovers() {
       const ids = incognitoLeftovers(await allMetas());
-      for (const id of ids) await remove({ id });
+      for (const id of ids) await remove({ id, sweep: false });
+      if (ids.length) await sweepAfter();
       return ids.length;
     }
 
@@ -648,8 +650,9 @@
     // still that version (#80): canvas_delete asks the user first, and the canvas may be saved or
     // rewritten while the question waits; the check runs under the same lock as the removal, so
     // nothing can land between them. Returns { removed, version } (version: what is stored now,
-    // null when there is no such canvas).
-    async function remove({ conversationId, id, expectVersion }) {
+    // null when there is no such canvas). sweep: false skips the image sweep, for a caller that
+    // removes several and sweeps once after them.
+    async function remove({ conversationId, id, expectVersion, sweep = true }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       let result = { removed: false, version: null };
       await lock(`canvas:${id}`, async () => {
@@ -667,7 +670,7 @@
           else await storage.remove(key);
         });
       });
-      await sweepAfter();
+      if (sweep) await sweepAfter();
       return result;
     }
 

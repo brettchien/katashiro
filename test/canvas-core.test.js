@@ -9,7 +9,7 @@ const ok = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frame
 
 test("frame messages: only our frame, our nonce, allow-listed and well-formed", () => {
   assert.ok(ok({ type: "ready", nonce: "n1" }));
-  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3 }));
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1 }));
   assert.ok(ok({ type: "openLink", nonce: "n1", url: "https://x" }));
   assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "ready", nonce: "n1" } }, { frameWindow, nonce: "n1" }), null);
   assert.equal(ok({ type: "ready", nonce: "n2" }), null);
@@ -96,16 +96,20 @@ test("editing messages (§3.5): save, dirty, rendered.normalized — typed and b
   assert.equal(ok({ type: "save", nonce: "n1", content: "x".repeat(2 * 1024 * 1024 + 1), baseVersion: 3 }), null);
   assert.ok(ok({ type: "dirty", nonce: "n1", dirty: true }));
   assert.equal(ok({ type: "dirty", nonce: "n1", dirty: "yes" }), null);
-  assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, normalized: "- a" }));
-  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, normalized: 7 }), null);
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, seq: 4, normalized: "- a" }));
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, seq: 4, normalized: 7 }), null);
+  // #96: the render number is echoed back, so two renders of one version are told apart
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2 }), null);
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, seq: "4" }), null);
   assert.ok(ok({ type: "editFailed", nonce: "n1", msg: "no editor" }));
   assert.equal(ok({ type: "editFailed", nonce: "n1" }), null);
 });
 
-test("modeAfterFrameMessage (#91): only editFailed ends a clean edit mode", () => {
+test("modeAfterFrameMessage (#91, #93): editFailed always ends edit mode; nothing else does", () => {
   const after = (type, mode, dirty) => C.modeAfterFrameMessage(type, { mode, dirty });
   assert.equal(after("editFailed", "edit", false), "view");
-  assert.equal(after("editFailed", "edit", true), "edit");     // never over unsaved edits
+  // #93: the frame has already stopped the editor, so staying in edit would leave Save with no editor
+  assert.equal(after("editFailed", "edit", true), "view");
   assert.equal(after("editFailed", "view", false), "view");
   // a CSP error from an image inside an open editor must not end edit mode (Save would vanish)
   assert.equal(after("error", "edit", false), "edit");
@@ -197,9 +201,9 @@ test("frame messages: highlighted{} is allow-listed and bounded; a compare tab r
   const ro = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frameWindow, nonce: "n1", readOnly: true });
   assert.equal(ro({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }), null);
   assert.equal(ro({ type: "dirty", nonce: "n1", dirty: true }), null);
-  assert.equal(ro({ type: "selection", nonce: "n1", text: "x" }), null);
+  assert.equal(ro({ type: "selection", nonce: "n1", text: "x", version: 3 }), null);
   assert.equal(ro({ type: "editFailed", nonce: "n1", msg: "x" }), null);
-  assert.ok(ro({ type: "rendered", nonce: "n1", version: 1 }));
+  assert.ok(ro({ type: "rendered", nonce: "n1", version: 1, seq: 1 }));
   assert.ok(ro({ type: "openLink", nonce: "n1", url: "https://x" }));
   assert.ok(ok({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }));             // the canvas tab still saves
 });
@@ -259,6 +263,22 @@ test("show changes: what the held markers compare with", () => {
   }
 });
 
+test("show changes: the button title follows editing and the compare, not only the last heldChanges (#110)", () => {
+  const t = (o) => C.showChangesTitle({ on: true, from: "write", editing: false, comparing: false, ...o });
+  assert.match(t({ on: false }), /^顯示變更（關）/);
+  assert.match(t({ on: false, editing: true, comparing: true }), /^顯示變更（關）/);
+  // the last answer was "write" (marking), then the user clicked ✏️ Edit / ⇆ Compare
+  assert.match(t({ editing: true }), /編輯時不標示/);
+  assert.match(t({ comparing: true }), /比較開著時/);
+  assert.match(t({ editing: true, comparing: true }), /編輯時不標示/);
+  // back in the view
+  assert.match(t({}), /一直標示/);
+  assert.match(t({ from: "same" }), /一直標示/);
+  assert.match(t({ from: "agentCopy" }), /agent 最後寫入之後/);
+  assert.match(t({ from: "none" }), /沒有 agent 寫入前的版本/);
+  assert.match(t({ from: "off" }), /一直標示/);                // e.g. computed while a compare was open
+});
+
 test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {
   const prev = Array.from({ length: 1500 }, (_, i) => `p:${i}`);
   const next = ["p:0", ...Array.from({ length: 1000 }, (_, i) => `q:${i}`), "p:1499"];
@@ -305,17 +325,20 @@ test("acceptFrameMessage: escape (Esc in the editor) is allowed, but not from a 
 
 // --- Ask agent (§3.7 "Edit with agent on a selection") ------------------------------------------
 
-test("selection{text}: allow-listed from the canvas frame only — bounded, typed; refused from a compare tab or another window", () => {
-  assert.deepEqual(ok({ type: "selection", nonce: "n1", text: "the intro" }), { type: "selection", nonce: "n1", text: "the intro" });
-  assert.ok(ok({ type: "selection", nonce: "n1", text: "" }));                               // nothing selected any more
-  assert.ok(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX), truncated: true }));
-  assert.equal(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX + 1) }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1" }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1", text: ["x"] }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", truncated: "yes" }), null);
-  assert.equal(ok({ type: "selection", nonce: "n2", text: "x" }), null);                     // stale nonce
-  assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "selection", nonce: "n1", text: "x" } }, { frameWindow, nonce: "n1" }), null);
-  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selection", nonce: "n1", text: "x" } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+test("selection{text, version}: allow-listed from the canvas frame only — bounded, typed; refused from a compare tab or another window", () => {
+  assert.deepEqual(ok({ type: "selection", nonce: "n1", text: "the intro", version: 3 }), { type: "selection", nonce: "n1", text: "the intro", version: 3 });
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "", version: 3 }));                               // nothing selected any more
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX), version: 3, truncated: true }));
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX + 1), version: 3 }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", version: 3 }), null);                       // no text
+  assert.equal(ok({ type: "selection", nonce: "n1", text: ["x"], version: 3 }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", version: 3, truncated: "yes" }), null);
+  assert.equal(ok({ type: "selection", nonce: "n2", text: "x", version: 3 }), null);                     // stale nonce
+  assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "selection", nonce: "n1", text: "x", version: 3 } }, { frameWindow, nonce: "n1" }), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selection", nonce: "n1", text: "x", version: 3 } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+  // #107: the render it was made in, so the host can drop one from an older render
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x" }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", version: "3" }), null);
   assert.equal(C.SELECTION_MAX, C.PUSH_DATA_MAX);
 });
 
@@ -341,13 +364,14 @@ test("composeAskAgent: the user's request first, a fixed host line with id and v
 
 // --- Mermaid (§3.3) ------------------------------------------------------------------------------
 test("mermaid: diagramError{} is its own allow-listed frame message, also from a compare tab", () => {
-  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", version: 3 }));
-  assert.equal(ok({ type: "diagramError", nonce: "n1", version: 3 }), null);
-  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, version: 3 }), null);
-  // The render it belongs to: the host drops an older render's report.
+  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", seq: 3 }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", seq: 3 }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, seq: 3 }), null);
+  // The render it belongs to (its seq, #96): the host drops an older render's report.
   assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x" }), null);
-  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: "3" }), null);
-  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", version: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", seq: "3" }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: 3 }), null);
+  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", seq: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
 });
 
 test("mermaid: the lazy-load decision — a mermaid canvas always, markdown / slides only with a fence", () => {

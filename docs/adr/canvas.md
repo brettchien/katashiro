@@ -211,14 +211,16 @@ below is built around that.
   iframe's `load` event, so an attacker page can post first. That is why the allow-lists below stay
   harmless on their own, and why the host renders `error{msg}` only with `textContent`, capped at
   500 characters.
-- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version})`. The frame never
-  fetches anything; everything it shows arrives in this message.
+- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version, seq})`. The frame never
+  fetches anything; everything it shows arrives in this message. `seq` is the host's render number,
+  echoed back in `rendered{}` / `diagramError{}`, so two renders of the same version are told apart (#96).
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
-  - `canvas-frame.html`: `ready`, `rendered{version, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
+  - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
-    compare tab like `save`).
+    `selection{text, version, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    compare tab like `save`; `version` is the render it was made in, and one from an older render is
+    dropped, #107).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
@@ -326,9 +328,9 @@ below is built around that.
   - Each render gets a fresh id. The SVG and its scoped `<style>` replace the fence, so a re-render
     leaves nothing behind (checked by the smoke test).
   - A diagram with a syntax error keeps its source, and its error is shown above it with
-    `textContent`. It is reported as **`diagramError{msg, version}`**, not `error{}`: the rest of
+    `textContent`. It is reported as **`diagramError{msg, seq}`**, not `error{}`: the rest of
     the canvas stands, the render is not marked failed, and pending goto / highlight carry on. The
-    host drops a report whose version is not the render in progress, and offers *送給 agent 修*; the
+    host drops a report whose seq is not the render in progress, and offers *送給 agent 修*; the
     header says a diagram failed and the rest rendered, so the agent patches that fence instead of
     rewriting the canvas. If the engine itself fails to load, every fence keeps its source with
     that note and one report goes up without a diagram number.
@@ -530,9 +532,9 @@ below is built around that.
   `"incognito": "not_allowed"`. What the user sends the agent cannot be made forgotten on the
   agent side, so an incognito promise could not be kept anyway. The chat history is therefore
   always in `storage.local` too. Canvases incognito panels stored before (`meta.noMirror`, set only
-  there) are removed once by the service worker on install/update (`onInstalled` →
-  `store.removeIncognitoLeftovers()`, through `store.remove`, so index, images and budget stay
-  consistent; best effort and idempotent). Until that has run, `noMirror` is still read: the
+  there) are removed by the service worker on install/update and on browser start (`onInstalled` /
+  `onStartup` → `store.removeIncognitoLeftovers()`, through `store.remove`, so index and budget stay
+  consistent, with one image sweep after all of them; best effort and idempotent). Until that has run, `noMirror` is still read: the
   mirror skips such a canvas and the gallery does not list it.
 - If `chrome.storage.local` becomes slow at this size, move content bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
@@ -648,7 +650,8 @@ is silent, the conservative choice:
 - **One conflict file per episode:** while the main file stays changed, later saves rewrite the same
   `.katashiro-<time>.md` as long as it is still exactly what Katashiro wrote there; once the user
   edits it too, a new one is made. If the disk already holds exactly the new content, it is adopted
-  (nothing written), even for a file Katashiro never wrote.
+  (nothing written). For a file Katashiro never wrote, this can only happen when the file appeared
+  at the path after the slug was assigned: a new slug skips any existing `.md` (above) (#98).
 - Known limit: between hashing the file and the swap file's move into place (`createWritable` →
   `close`) is a window of a few ms in which an outside write would be overwritten. File System
   Access has no compare-and-swap; the window is accepted.
