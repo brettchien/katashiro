@@ -543,8 +543,11 @@
           // Permission withdrawn mid-way: just not connected; the next reconnect catches up.
           if (errName(e) === "NotAllowedError" || errName(e) === "SecurityError") return { action: "disconnected" };
           const msg = String((e && e.message) || e).slice(0, ERROR_MAX);
-          if (file) { try { await saveFile(id, { ...file, state: "error", error: msg }, meta.fileSyncedVersion); } catch (_) { /* best effort */ } }
-          return { action: "error", state: "error", error: msg };
+          // A file deleted outside stays deleted through an error (#100): "error" would drop the
+          // mark, and the next sync (title changed meanwhile) would write under the new path unasked.
+          const state = prev && (prev.state === "deleted" || prev.state === "missing") ? prev.state : "error";
+          if (file) { try { await saveFile(id, { ...file, state, error: msg }, meta.fileSyncedVersion); } catch (_) { /* best effort */ } }
+          return { action: "error", state, error: msg };
         }
       });
     }

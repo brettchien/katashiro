@@ -464,6 +464,34 @@ test("#95's \"missing\" meta is taken as deleted: no write on save", async () =>
   assert.equal((await env.meta(id)).file.state, "deleted");
 });
 
+test("#100: an error during the deleted check keeps \"deleted\"; a later rename still writes nothing", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  assert.equal((await env.mirror.sync(id, { check: true })).state, "deleted");
+  // A transient I/O error while hashing the old path
+  const real = env.dir.getDirectoryHandle;
+  env.dir.getDirectoryHandle = async () => { env.dir.getDirectoryHandle = real; throw new Error("I/O error"); };
+  await env.store.userSave({ id, baseVersion: 1, content: "v2\n" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "error");
+  assert.equal(r.state, "deleted");
+  const file = (await env.meta(id)).file;
+  assert.equal(file.state, "deleted");                                   // the mark survives
+  assert.match(file.error, /I\/O error/);
+  // Renamed meanwhile: still nothing under the new title until the user asks
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Plan Renamed", content: "v3\n" });
+  assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), []);
+  // #95's "missing" is kept the same way
+  const m = await env.meta(id);
+  await env.storage.set({ [`canvas:${id}:meta`]: { ...m, file: { ...m.file, state: "missing" } } });
+  env.dir.getDirectoryHandle = async () => { env.dir.getDirectoryHandle = real; throw new Error("I/O error"); };
+  assert.equal((await env.mirror.sync(id)).state, "missing");
+  assert.equal((await env.meta(id)).file.state, "missing");
+});
+
 test("slug collisions get -2; a conversation keeps one slug; slugs come from storage, not the folder", async () => {
   const env = setup();
   const a = await env.store.agentWrite({ conversationId: "c_one", title: "Plan", content: "a" });
