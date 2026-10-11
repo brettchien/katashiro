@@ -119,10 +119,13 @@
    * Append `entry` (the new latest) and trim to the last `max` versions, never dropping `pin` (the
    * agent's last write) → { history, dropped: [v] }. Only writes trim (§3.5): never the budget.
    */
+  // pin: a version (the agent copy) or several (also the versions an active ↶ / ↷ walk can still
+  // reach, so its own steps do not trim the walk away; the next ordinary save trims them).
   function appendHistory(history, entry, { max, pin } = {}) {
     const all = [...(history || []).filter((h) => h && h.v < entry.v), entry];
     const from = Math.max(0, all.length - historyLimit(max));
-    const keep = (h, i) => i >= from || h.v === pin;
+    const pins = new Set([].concat(pin == null ? [] : pin));
+    const keep = (h, i) => i >= from || pins.has(h.v);
     return { history: all.filter(keep), dropped: all.filter((h, i) => !keep(h, i)).map((h) => h.v) };
   }
 
@@ -603,7 +606,7 @@
       if (walk) meta.walk = { path: walk.path, pos: walk.pos, head: version };
       const legacy = !hasHistory(cur);
       const entry = { v: version, author: meta.author, at: meta.at, bytes: meta.bytes, ...img };
-      const { history, dropped } = appendHistory(historyOf(cur), entry, { max, pin: meta.agentVersion });
+      const { history, dropped } = appendHistory(historyOf(cur), entry, { max, pin: walk ? [meta.agentVersion, ...walk.path] : meta.agentVersion });
       const kept = new Set(history.map((h) => h.v));
       const legacyAgent = legacy && cur.agentVersion < cur.version ? cur.agentVersion : null;
       const want = [];
@@ -825,7 +828,7 @@
       const before = await getOne(metaKey(id));
       const first = before && walkCandidates(before, dir).candidates[0];
       const firstEntry = first && historyOf(before).find((h) => h.v === first.v);
-      if (firstEntry) await ensureBudget(projected(before, { bytes: firstEntry.bytes }, max, before.agentVersion), id);
+      if (firstEntry) await ensureBudget(projected(before, { bytes: firstEntry.bytes }, max, [before.agentVersion, ...walkCandidates(before, dir).path]), id);
       let result;
       await lock(`canvas:${id}`, async () => {
         const cur = await getOne(metaKey(id));

@@ -404,8 +404,9 @@ below is built around that.
     is in history; ↷ when no walk is running or it is back where it started. Like Revert, only in
     view mode (hidden while editing) and never in a compare tab; markdown and slides only (the kinds
     a user can save). The header flashes *"↶ 回到 v7 的內容（存成 v9）"*. Every step is itself a
-    version, so a walk reaches back roughly N/2 steps before its own steps push the oldest out (the
-    pinned agent write stays reachable).
+    version, so while a walk is running the versions on its path are pinned too: its own steps
+    never trim the walk away, and history may hold more than N until the next ordinary save trims
+    it back (the pinned agent write is always kept).
   - **The agent cannot read old versions:** `canvas_read` returns the latest, as before. What
     history adds for the agent is the stale diff: it exists whenever `baseVersion` is still in
     history (below).

@@ -1088,7 +1088,7 @@ test("↶ skips versions with the latest's content, is unchanged with nothing ol
   await assert.rejects(() => s.undo({ id: "x", baseVersion: 1 }), /not a canvas id/);
 });
 
-test("↶ under trimming: each step is a version, so the walk reaches back about N/2; the pinned agent write stays reachable", async () => {
+test("↶ under trimming: a running walk pins its path, so its own steps never trim it away; the next ordinary save trims back to N (+ the agent pin)", async () => {
   const { s } = store({ historyMax: 4 });
   const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "c1" });      // pinned
   for (let v = 1; v < 6; v++) await s.userSave({ id, baseVersion: v, content: `c${v + 1}` });   // v6 = c6
@@ -1098,11 +1098,21 @@ test("↶ under trimming: each step is a version, so the walk reaches back about
     if (r.unchanged) break;
     froms.push(r.from);
   }
-  // history v1 (pin) + v3..v6: v5, then v4 — by then v3 is trimmed — then the pinned v1
-  assert.deepEqual(froms, [5, 4, 1]);
+  // history v1 (pin) + v3..v6 when the walk starts: every one stays reachable
+  assert.deepEqual(froms, [5, 4, 3, 1]);
   const m = await s.read({ id });
   assert.equal(m.content, "c1");
   assert.equal(CanvasStore.canUndo(m), false);
+  // ↷ walks all the way forward again
+  const fwd = [];
+  for (let v = m.version; ; v++) { const r = await s.redo({ id, baseVersion: v }); if (r.unchanged) break; fwd.push(r.from); }
+  assert.deepEqual(fwd, [3, 4, 5, 6]);
+  // an ordinary save ends the walk and trims back to N = 4 plus the pinned agent write
+  const last = (await s.read({ id })).version;
+  await s.userSave({ id, baseVersion: last, content: "z" });
+  const h = CanvasStore.historyOf(await s.read({ id }));
+  assert.ok(h.length <= 5, `history ${h.length} after the walk ended`);
+  assert.ok(h.some((e) => e.v === 1), "agent write still pinned");
 });
 
 test("↶ / ↷ and Revert check the budget like a user save (a new full version)", async () => {
