@@ -8,7 +8,7 @@
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, version, truncated?}                                (Ask agent, §3.7)
+//       selection{text, seq, truncated?}                                    (Ask agent, §3.7)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
@@ -678,12 +678,12 @@
   // Ask agent (§3.7): tell the host what the user has selected in the view (rendered text), so it
   // can offer the button; "" when the selection is gone. Debounced (selectionchange fires per
   // pixel of a drag), sent only when it changed, cut at the push cap. Not while editing: the
-  // editor holds unsaved text the agent could not find in the stored canvas. It carries the version
-  // of the render it was made in, so the host can drop one that arrives after a newer render (#107).
+  // editor holds unsaved text the agent could not find in the stored canvas. It carries the seq of
+  // the render it was made in (#107, #96), so the host can drop one that arrives after a newer render.
   const SELECTION_DEBOUNCE_MS = 250;
   let selectionTimer = 0;
   let lastSelection = "";
-  let shownVersion = 0;                   // render{version} of what the view shows
+  let shownSeq = 0;                       // render{seq} of what the view shows
   function postSelection() {
     let text = "";
     if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
@@ -693,8 +693,8 @@
     if (text === lastSelection) return;
     lastSelection = text;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
-    const version = shownVersion;
-    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), version, truncated } : { type: "selection", text, version });
+    const seq = shownSeq;
+    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), seq, truncated } : { type: "selection", text, seq });
   }
   document.addEventListener("selectionchange", () => {
     clearTimeout(selectionTimer);
@@ -772,10 +772,10 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
-    shownVersion = Number.isInteger(m.version) ? m.version : 0;
     lastSelection = "";
     const gen = ++renderGen;
     const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)
+    shownSeq = seq;
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);

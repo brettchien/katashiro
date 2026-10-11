@@ -220,9 +220,9 @@ below is built around that.
   - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg, seq?}` (`seq`:
     the render that failed; one from an older render than the host's latest is dropped), `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, version, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
-    compare tab like `save`; `version` is the render it was made in, and one from an older render is
-    dropped, #107).
+    `selection{text, seq, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    compare tab like `save`; `seq` is the render it was made in, and one from an older render is
+    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt

@@ -201,7 +201,7 @@ test("frame messages: highlighted{} is allow-listed and bounded; a compare tab r
   const ro = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frameWindow, nonce: "n1", readOnly: true });
   assert.equal(ro({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }), null);
   assert.equal(ro({ type: "dirty", nonce: "n1", dirty: true }), null);
-  assert.equal(ro({ type: "selection", nonce: "n1", text: "x", version: 3 }), null);
+  assert.equal(ro({ type: "selection", nonce: "n1", text: "x", seq: 3 }), null);
   assert.equal(ro({ type: "editFailed", nonce: "n1", msg: "x" }), null);
   assert.ok(ro({ type: "rendered", nonce: "n1", version: 1, seq: 1 }));
   assert.ok(ro({ type: "openLink", nonce: "n1", url: "https://x" }));
@@ -325,20 +325,24 @@ test("acceptFrameMessage: escape (Esc in the editor) is allowed, but not from a 
 
 // --- Ask agent (§3.7 "Edit with agent on a selection") ------------------------------------------
 
-test("selection{text, version}: allow-listed from the canvas frame only — bounded, typed; refused from a compare tab or another window", () => {
-  assert.deepEqual(ok({ type: "selection", nonce: "n1", text: "the intro", version: 3 }), { type: "selection", nonce: "n1", text: "the intro", version: 3 });
-  assert.ok(ok({ type: "selection", nonce: "n1", text: "", version: 3 }));                               // nothing selected any more
-  assert.ok(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX), version: 3, truncated: true }));
-  assert.equal(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX + 1), version: 3 }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1", version: 3 }), null);                       // no text
-  assert.equal(ok({ type: "selection", nonce: "n1", text: ["x"], version: 3 }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", version: 3, truncated: "yes" }), null);
-  assert.equal(ok({ type: "selection", nonce: "n2", text: "x", version: 3 }), null);                     // stale nonce
-  assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "selection", nonce: "n1", text: "x", version: 3 } }, { frameWindow, nonce: "n1" }), null);
-  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selection", nonce: "n1", text: "x", version: 3 } }, { frameWindow, nonce: "n1", readOnly: true }), null);
-  // #107: the render it was made in, so the host can drop one from an older render
+test("selection{text, seq}: allow-listed from the canvas frame only — bounded, typed; refused from a compare tab or another window", () => {
+  assert.deepEqual(ok({ type: "selection", nonce: "n1", text: "the intro", seq: 3 }), { type: "selection", nonce: "n1", text: "the intro", seq: 3 });
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "", seq: 3 }));                               // nothing selected any more
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX), seq: 3, truncated: true }));
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x".repeat(C.SELECTION_MAX + 1), seq: 3 }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", seq: 3 }), null);                       // no text
+  assert.equal(ok({ type: "selection", nonce: "n1", text: ["x"], seq: 3 }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", seq: 3, truncated: "yes" }), null);
+  assert.equal(ok({ type: "selection", nonce: "n2", text: "x", seq: 3 }), null);                     // stale nonce
+  assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "selection", nonce: "n1", text: "x", seq: 3 } }, { frameWindow, nonce: "n1" }), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selection", nonce: "n1", text: "x", seq: 3 } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+  // #107: the render it was made in (its seq), so the host can drop one from an older render —
+  // also one of the same version (a normalization re-render replaces the DOM it was made in)
   assert.equal(ok({ type: "selection", nonce: "n1", text: "x" }), null);
-  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", version: "3" }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", seq: "3" }), null);
+  assert.equal(ok({ type: "selection", nonce: "n1", text: "x", version: 3 }), null);
+  assert.equal(C.fromOlderRender({ type: "selection", text: "x", seq: 3 }, 4), true);
+  assert.equal(C.fromOlderRender({ type: "selection", text: "x", seq: 4 }, 4), false);
   assert.equal(C.SELECTION_MAX, C.PUSH_DATA_MAX);
 });
 
