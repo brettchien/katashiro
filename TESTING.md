@@ -121,6 +121,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   the chat. In the chat bubble the same fences stay code. Hover a diagram: **copy** copies its
   source. Then check:
   - 🖨 PDF: the diagrams print on white in mermaid's light theme, and are dark again afterwards.
+    Edge labels (`|yes|`) sit on a solid white box: the edge line does not run through the text.
+    A markdown table in the same canvas prints with thin grey borders and a light header row.
   - Ask the agent to change one diagram: only that diagram glows. With ◐ 顯示變更 on, it stays
     marked.
   - ✏️ Edit: the diagram is a plain code block in Milkdown. Save, leave edit, and it is drawn again.

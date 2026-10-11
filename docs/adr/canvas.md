@@ -872,6 +872,10 @@ is silent, the conservative choice:
   dialog prints the full deck. Fallback: print from `canvas.html` with the iframe sized to content.
   The print reload would discard unsaved editor content, so **export is disabled while the editor
   is dirty**, with a "Save first" prompt.
+- A printed document is light: mermaid diagrams are re-rendered with the light theme, their edge
+  labels on an opaque white box (mermaid draws them at half opacity, so the edge line ran through
+  the text), and tables get visible borders (the screen ones are white at 15%). Slides print as
+  they are (dark).
 - **pptx export** (phase 2–3): `pptxgenjs` from **our slide model** (titles, bullets, images,
   code as monospace). **Text must stay editable** (titles, bullets and tables as real text boxes, never one image per slide, the NotebookLM complaint). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
   and themes, fragments and transitions are lost. `dom-to-pptx` is the higher-fidelity candidate,
