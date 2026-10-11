@@ -117,3 +117,5 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
 - **Editing a canvas (ADR §3.5):** ✏️ Edit a markdown canvas, press Enter a few times between two
   paragraphs and Save: the notice says nothing changed (markdown keeps no extra blank lines) and the
   empty lines disappear from the editor too, with the cursor where it was (#103).
+  Esc leaves edit mode with one press, also with the cursor in a table cell and the pointer resting
+  on the table (#104); with the slash menu (`/`) or the link editor open, Esc only closes it.

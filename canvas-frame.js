@@ -149,21 +149,29 @@
     editorRoot.hidden = true;
     doc.hidden = false;
   }
+  // Crepe's popups that close on Esc themselves (vendored crepe): the slash menu and the link editor.
+  // The selection toolbar and the link preview have no Esc handler, so they must not hold Esc back.
+  const EDITOR_POPUPS = [".milkdown-slash-menu", ".milkdown-link-edit"].map((c) => `${c}[data-show="true"]`).join(", ");
   document.addEventListener("keydown", (e) => {
     if (editing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); requestSave(); }
-    // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless one of the
-    // editor's own popups is open (slash menu, link or selection toolbar), which Esc closes first.
-    // This also matches a table's row/column handle while the pointer rests on the table, so Esc
-    // does nothing there; move the pointer off the table and it works.
-    // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
-    // so text typed just before Esc would otherwise be dropped without asking.
-    if (editing && e.key === "Escape" && !e.defaultPrevented && !e.isComposing &&
-      !editorRoot.querySelector('[data-show="true"]')) {
-      e.preventDefault();
-      editing.dirty = editorText(editing.crepe) !== editing.baseline;
-      post({ type: "escape", dirty: editing.dirty });
-    }
   });
+  // Esc leaves edit mode (the host asks first if there are unsaved changes) — unless one of the
+  // editor's own popups is open (EDITOR_POPUPS), which Esc closes first, or an IME composition is
+  // in progress. The slash menu handles Esc in a window capture listener (it runs first and calls
+  // preventDefault); the link editor on its input, after us, so it is checked as shown.
+  // Document capture phase, ahead of the editor (#104): ProseMirror's base keymap binds Esc to
+  // selectParentNode, which took every Esc inside a table (cell → row → table) and the first one
+  // anywhere else. Only real popups count: hover handles (a block's drag handle, a table's row /
+  // column handles) are data-show too while the pointer rests on them.
+  // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
+  // so text typed just before Esc would otherwise be dropped without asking.
+  document.addEventListener("keydown", (e) => {
+    if (!editing || e.key !== "Escape" || e.defaultPrevented || e.isComposing || editorRoot.querySelector(EDITOR_POPUPS)) return;
+    e.preventDefault();
+    e.stopPropagation();                  // not selectParentNode as well
+    editing.dirty = editorText(editing.crepe) !== editing.baseline;
+    post({ type: "escape", dirty: editing.dirty });
+  }, true);
 
   // --- Mermaid (§3.3), loaded on first use: a ```mermaid fence in a markdown / slides canvas, or a
   // mermaid canvas — 2.7 MB, so a canvas without a diagram never loads it. @mermaid-js/tiny has no
