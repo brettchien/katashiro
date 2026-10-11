@@ -222,37 +222,84 @@ test("removeIncognitoLeftovers removes only noMirror canvases, through remove (i
   assert.equal(await s.removeIncognitoLeftovers(), 0);                     // once they are gone: nothing
 });
 
-test("background.js runs the incognito cleanup on onInstalled (install / update)", async () => {
+test("removeIncognitoLeftovers sweeps images once after all removals, not once per canvas (#113 review)", async () => {
+  const names = [];
+  const inner = memLock();
+  const { s, storage } = store({ lock: (name, fn) => { names.push(name); return inner(name, fn); } });
+  const ids = [];
+  for (const t of ["A", "B", "C"]) ids.push((await s.agentWrite({ conversationId: "c", title: t, content: t })).id);
+  for (const id of ids) storage.data[CanvasStore.metaKey(id)] = { ...storage.data[CanvasStore.metaKey(id)], noMirror: true };
+  names.length = 0;
+  assert.equal(await s.removeIncognitoLeftovers(), 3);
+  // canvas:index: one index update per removal, plus the one sweep
+  assert.equal(names.filter((n) => n === "canvas:index").length, 3 + 1);
+  names.length = 0;
+  assert.equal(await s.removeIncognitoLeftovers(), 0);
+  assert.equal(names.filter((n) => n === "canvas:index").length, 0);        // nothing removed: no sweep
+  // a plain remove still sweeps
+  const { id } = await s.agentWrite({ conversationId: "c", title: "D", content: "d" });
+  names.length = 0;
+  await s.remove({ id });
+  assert.equal(names.filter((n) => n === "canvas:index").length, 2);
+});
+
+// background.js in a vm sandbox, with importScripts reading the real files (or failing on demand).
+function loadBackground(storage, { failImport = false } = {}) {
   const fs = require("node:fs");
   const path = require("node:path");
   const vm = require("node:vm");
-  const { s, storage } = store();
-  const keep = await s.agentWrite({ conversationId: "c", title: "Normal", content: "aa" });
-  const gone = await s.agentWrite({ conversationId: "c", title: "Incognito", content: "bb" });
-  const k = CanvasStore.metaKey(gone.id);
-  storage.data[k] = { ...storage.data[k], noMirror: true };
-  let onInstalled = null;
   const lock = memLock();
+  const bg = { onInstalled: null, onStartup: null, panel: 0, warned: [] };
   const sandbox = {
-    console: { log() {}, warn() {}, error() {} },
+    console: { log() {}, warn(...a) { bg.warned.push(a.join(" ")); }, error() {} },
     navigator: { locks: { request: (name, fn) => lock(name, fn) } },
     chrome: {
       storage: { local: storage },
-      sidePanel: { setPanelBehavior: async () => {} },
-      runtime: { onInstalled: { addListener: (fn) => { onInstalled = fn; } } },
+      sidePanel: { setPanelBehavior: async () => { bg.panel++; } },
+      runtime: {
+        onInstalled: { addListener: (fn) => { bg.onInstalled = fn; } },
+        onStartup: { addListener: (fn) => { bg.onStartup = fn; } },
+      },
     },
   };
   sandbox.globalThis = sandbox;
   sandbox.crypto = globalThis.crypto;
-  sandbox.importScripts = (f) => vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), sandbox);
+  sandbox.importScripts = (f) => {
+    if (failImport) throw new Error(`NetworkError: Failed to load ${f}`);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), sandbox);
+  };
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8"), sandbox);
-  assert.equal(typeof onInstalled, "function");
-  onInstalled({ reason: "update" });
-  const indexed = () => (storage.data[CanvasStore.indexKey("c")] || []).length;
-  for (let i = 0; i < 400 && indexed() !== 1; i++) await new Promise((r) => setTimeout(r, 5));   // best effort, not awaited
-  assert.equal(k in storage.data, false);
-  assert.deepEqual((await s.list({ conversationId: "c" })).map((e) => e.id), [keep.id]);
+  return bg;
+}
+
+for (const event of ["onInstalled", "onStartup"]) {
+  test(`background.js runs the incognito cleanup on ${event}`, async () => {
+    const { s, storage } = store();
+    const keep = await s.agentWrite({ conversationId: "c", title: "Normal", content: "aa" });
+    const gone = await s.agentWrite({ conversationId: "c", title: "Incognito", content: "bb" });
+    const k = CanvasStore.metaKey(gone.id);
+    storage.data[k] = { ...storage.data[k], noMirror: true };
+    const bg = loadBackground(storage);
+    assert.equal(typeof bg[event], "function");
+    bg[event]({ reason: "update" });
+    const indexed = () => (storage.data[CanvasStore.indexKey("c")] || []).length;
+    for (let i = 0; i < 400 && indexed() !== 1; i++) await new Promise((r) => setTimeout(r, 5));   // best effort, not awaited
+    assert.equal(k in storage.data, false);
+    assert.deepEqual((await s.list({ conversationId: "c" })).map((e) => e.id), [keep.id]);
+  });
+}
+
+test("background.js survives canvas-store.js failing to load (#113 review): panel and listeners still set up", async () => {
+  const { storage } = store();
+  const bg = loadBackground(storage, { failImport: true });
+  assert.equal(bg.panel, 1);
+  assert.equal(typeof bg.onInstalled, "function");
+  assert.equal(typeof bg.onStartup, "function");
+  bg.onInstalled({ reason: "update" });                                    // reports, never throws
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(bg.warned.some((w) => /canvas-store\.js failed to load/.test(w)));
+  assert.ok(bg.warned.some((w) => /cleanup failed/.test(w)));
 });
 
 test("a new canvas is never marked noMirror any more (#109), whatever the host passes", async () => {

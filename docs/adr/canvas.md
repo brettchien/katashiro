@@ -532,9 +532,9 @@ below is built around that.
   `"incognito": "not_allowed"`. What the user sends the agent cannot be made forgotten on the
   agent side, so an incognito promise could not be kept anyway. The chat history is therefore
   always in `storage.local` too. Canvases incognito panels stored before (`meta.noMirror`, set only
-  there) are removed once by the service worker on install/update (`onInstalled` →
-  `store.removeIncognitoLeftovers()`, through `store.remove`, so index, images and budget stay
-  consistent; best effort and idempotent). Until that has run, `noMirror` is still read: the
+  there) are removed by the service worker on install/update and on browser start (`onInstalled` /
+  `onStartup` → `store.removeIncognitoLeftovers()`, through `store.remove`, so index and budget stay
+  consistent, with one image sweep after all of them; best effort and idempotent). Until that has run, `noMirror` is still read: the
   mirror skips such a canvas and the gallery does not list it.
 - If `chrome.storage.local` becomes slow at this size, move content bodies to IndexedDB on the
   extension origin (the host page owns the reads and writes either way).
