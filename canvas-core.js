@@ -70,10 +70,12 @@
     return m;
   }
 
-  // The host's edit mode after a frame message: only editFailed ends it, and never over unsaved
-  // edits. A plain error (e.g. a CSP-blocked image inside an open editor) leaves it alone.
-  function modeAfterFrameMessage(type, { mode, dirty }) {
-    return type === "editFailed" && mode === "edit" && !dirty ? "view" : mode;
+  // The host's edit mode after a frame message: only editFailed ends it. Always (#93): the editor
+  // never opened, so there are no unsaved edits, and the frame has already gone back to the view
+  // (stopEdit) — staying in edit would leave Save with no editor behind it. A plain error (e.g. a
+  // CSP-blocked image inside an open editor) leaves the mode alone.
+  function modeAfterFrameMessage(type, { mode }) {
+    return type === "editFailed" ? "view" : mode;
   }
 
   // openLink: http(s) only, absolute, bounded. Returns the normalized URL or null.

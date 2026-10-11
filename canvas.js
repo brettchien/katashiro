@@ -708,7 +708,8 @@
         else offerSendError(m.msg, true);
         break;
       case "editFailed":
-        mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });
+        mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });
+        dirty = false;                   // #93: no editor opened, so nothing unsaved
         updateButtons();
         offerSendError(m.msg);
         break;

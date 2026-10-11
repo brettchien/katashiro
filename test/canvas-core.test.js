@@ -102,10 +102,11 @@ test("editing messages (§3.5): save, dirty, rendered.normalized — typed and b
   assert.equal(ok({ type: "editFailed", nonce: "n1" }), null);
 });
 
-test("modeAfterFrameMessage (#91): only editFailed ends a clean edit mode", () => {
+test("modeAfterFrameMessage (#91, #93): editFailed always ends edit mode; nothing else does", () => {
   const after = (type, mode, dirty) => C.modeAfterFrameMessage(type, { mode, dirty });
   assert.equal(after("editFailed", "edit", false), "view");
-  assert.equal(after("editFailed", "edit", true), "edit");     // never over unsaved edits
+  // #93: the frame has already stopped the editor, so staying in edit would leave Save with no editor
+  assert.equal(after("editFailed", "edit", true), "view");
   assert.equal(after("editFailed", "view", false), "view");
   // a CSP error from an image inside an open editor must not end edit mode (Save would vanish)
   assert.equal(after("error", "edit", false), "edit");
