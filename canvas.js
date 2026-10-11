@@ -193,7 +193,7 @@
   // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
   let selection = null;               // { text, truncated } while the user has text selected in the view
   function onSelection(m) {
-    const textKind = !!current && (current.meta.kind === "markdown" || current.meta.kind === "slides");
+    const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
     updateButtons();
   }
@@ -215,14 +215,17 @@
   });
 
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
-  function offerSendError(msg) {
+  // diagram: only a mermaid diagram failed (§3.3) and the rest rendered, so the agent is pointed at
+  // that fence rather than told the whole canvas is broken.
+  function offerSendError(msg, diagram = false) {
     const c = current;
-    notice(`顯示時發生錯誤：${CanvasCore.clipError(msg)}`, {
+    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
+    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
         const text = CanvasCore.composeCanvasPush({
-          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) failed to render]`,
+          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) ${what}]`,
           data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
@@ -700,8 +703,9 @@
       case "diagramError":
         // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
         // nothing is marked failed and pending goto / highlight carry on.
+        if (m.version !== renderingVersion) break;           // an older render's
         if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
-        else offerSendError(m.msg);
+        else offerSendError(m.msg, true);
         break;
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode, dirty });

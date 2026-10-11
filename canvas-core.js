@@ -32,7 +32,7 @@
     error: (m) => typeof m.msg === "string",
     // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
     // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
-    diagramError: (m) => typeof m.msg === "string",
+    diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.version),
     // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
@@ -237,11 +237,14 @@
    * fence (a compare's other side is never rendered): the same source is the same block.
    */
   const mermaidKey = (source) => `mermaid:${normText(source)}`;
-  /** The text of a failed diagram for the host (error{} rules: plain text, capped there too). */
+  /**
+   * The text of a failed diagram for the host (error{} rules: plain text, capped there too). `n` =
+   * the diagram's number in the canvas; none when it is not about one diagram (mermaid did not load).
+   */
   function diagramErrorText(err, n) {
     let msg = err && typeof err === "object" ? (err.message || err.str || "") : String(err == null ? "" : err);
     msg = String(msg).replace(/\r\n?/g, "\n").trim() || "the diagram could not be drawn";
-    return clipError(`mermaid diagram ${n}: ${msg}`);
+    return clipError(`${n ? `mermaid diagram ${n}` : "mermaid"}: ${msg}`);
   }
 
   // Above this many LCS cells (prev × next blocks left after trimming the common ends) every

@@ -9,7 +9,7 @@
 //  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, truncated?}                                         (Ask agent, §3.7)
-//       diagramError{msg}                                    (a mermaid diagram that failed, §3.3)
+//       diagramError{msg, version}                          (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -160,7 +160,7 @@
           startOnLoad: false, securityLevel: "strict", theme,
           // dagre is the only layout in mermaid-tiny; say so, rather than ask for ELK and get a warning.
           layout: "dagre", state: { layout: "dagre" },
-          // SVG text, no <foreignObject> HTML labels: plain SVG passes DOMPurify's svg profile intact.
+          // SVG text labels by default: they take the canvas font and print the same.
           htmlLabels: false,
           suppressErrorRendering: true,   // throw instead of drawing mermaid's own error graphic
           fontFamily: getComputedStyle(document.body).fontFamily,
@@ -174,9 +174,16 @@
     mermaidQueue = run.catch(() => {});
     return run;
   }
-  // Mermaid's SVG goes through DOMPurify too (svg profile), as a second check behind its 'strict'
-  // sanitizing; the frame's meta CSP blocks script either way.
-  const SVG_DP = { USE_PROFILES: { svg: true, svgFilters: true }, SANITIZE_DOM: true };
+  // Mermaid's SVG goes through DOMPurify too, as a second check behind its 'strict' sanitizing; the
+  // frame's meta CSP blocks script either way. <foreignObject> with HTML in it is kept: some labels
+  // are drawn that way whatever htmlLabels says (journey tasks, venn text, and htmlLabels can be
+  // turned on by a directive), and dropping them would blank those labels without an error. The
+  // HTML inside is held to the html profile, like the markdown sink's; DOMPurify drops HTML under
+  // SVG unless the SVG parent is an integration point, so foreignObject is made one (as mermaid does).
+  const SVG_DP = {
+    USE_PROFILES: { svg: true, svgFilters: true, html: true }, ADD_TAGS: ["foreignObject"],
+    HTML_INTEGRATION_POINTS: { foreignobject: true }, SANITIZE_DOM: true,
+  };
   const diagramSource = new WeakMap();    // <figure class="ks-mermaid"> → its mermaid source
   function setDiagramSvg(fig, svg) {
     let box = fig.querySelector(":scope > .ks-mermaid-svg");
@@ -203,15 +210,27 @@
   }
   // Render every ```mermaid fence under root in place. A bad diagram keeps its source, shows the
   // error above it (textContent) and is reported as diagramError{}; the rest of the canvas stands.
-  // `gen` is the render it belongs to: a newer render makes it stop.
+  // `gen` is the render it belongs to: a newer render makes it stop. `version` goes with the report,
+  // so the host can tell it from an older render's.
   let renderGen = 0;
-  async function renderDiagrams(root, kind, gen, theme) {
+  function diagramNote(pre, msg) {
+    const note = document.createElement("div");
+    note.className = "ks-mermaid-error";
+    note.setAttribute("role", "note");
+    note.textContent = msg;                         // mermaid's message quotes agent text: textContent only
+    pre.before(note);
+  }
+  async function renderDiagrams(root, kind, gen, version, theme) {
     if (!CanvasCore.wantsMermaid(kind, root)) return;
     const codes = Array.from(root.querySelectorAll(CanvasCore.MERMAID_SEL));
     if (!codes.length) return;
     let M;
     try { M = await loadMermaid(); } catch (e) {
-      if (gen === renderGen) post({ type: "diagramError", msg: CanvasCore.diagramErrorText(e, 1) });
+      if (gen !== renderGen) return;
+      // Not one diagram's fault: every fence stays source, each saying so.
+      const msg = CanvasCore.diagramErrorText(e);
+      for (const code of codes) diagramNote(code.parentElement, msg);
+      post({ type: "diagramError", msg, version });
       return;
     }
     const errors = [];
@@ -223,14 +242,10 @@
       if (gen !== renderGen) return;
       if (svg !== undefined) { pre.replaceWith(diagramFigure(source, svg)); continue; }
       const msg = CanvasCore.diagramErrorText(err, i + 1);
-      const note = document.createElement("div");
-      note.className = "ks-mermaid-error";
-      note.setAttribute("role", "note");
-      note.textContent = msg;                       // mermaid's message quotes agent text: textContent only
-      pre.before(note);
+      diagramNote(pre, msg);
       errors.push(msg);
     }
-    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")) });
+    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), version });
   }
   // Print (§3.8): the rendered diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Failures keep the old SVG.
@@ -244,16 +259,16 @@
   }
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
-  function renderMarkdown(content, gen) {
+  function renderMarkdown(content, gen, version) {
     doc.hidden = false;
     // Older saves may still hold "<br />" lines; never show them as literal text.
     renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
-    return renderDiagrams(doc, "markdown", gen, SCREEN_THEME);
+    return renderDiagrams(doc, "markdown", gen, version, SCREEN_THEME);
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
   // shows the source with the error, as in a document).
-  function renderMermaidCanvas(content, gen) {
+  function renderMermaidCanvas(content, gen, version) {
     doc.hidden = false;
     document.body.classList.add("mode-mermaid");
     const pre = document.createElement("pre");
@@ -263,14 +278,14 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, SCREEN_THEME);
+    return renderDiagrams(doc, "mermaid", gen, version, SCREEN_THEME);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
   // markdown sink; reveal.js only receives finished <section>s (no reveal markdown plugin, which
   // would pass raw HTML through). Re-renders keep the current slide.
   let revealReady = null;
-  async function renderSlides(content, gen) {
+  async function renderSlides(content, gen, version) {
     deck.hidden = false;
     document.body.classList.add("mode-slides");
     const container = deck.querySelector(".slides");
@@ -281,7 +296,7 @@
     });
     container.replaceChildren(...sections);
     // Diagrams before reveal lays the deck out (it sizes slides by their content).
-    await renderDiagrams(container, "slides", gen, SCREEN_THEME);
+    await renderDiagrams(container, "slides", gen, version, SCREEN_THEME);
     if (gen !== renderGen) return undefined;
     if (!revealReady) {
       revealReady = Reveal.initialize({
@@ -609,9 +624,9 @@
     lastSelection = "";
     const gen = ++renderGen;
     Promise.resolve().then(() => {
-      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen);
-      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen);
-      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen);
+      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, m.version);
+      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, m.version);
+      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, m.version);
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
@@ -625,7 +640,9 @@
         if (normalized !== undefined && CanvasCore.losesImages(m.normalizeText, normalized)) normalized = undefined;
       }
       post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
-    }, (err) => post({ type: "error", msg: String((err && err.message) || err) }));
+    }, (err) => {
+      if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err) });   // else superseded
+    });
   });
 
   post({ type: "ready" });

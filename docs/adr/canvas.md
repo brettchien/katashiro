@@ -310,15 +310,25 @@ below is built around that.
     `slides` canvases, and loads the 2.7 MB engine only when the rendered view has one (a
     `mermaid` canvas always does).
   - `mermaid.initialize` is called with `securityLevel: 'strict'`, `theme: 'dark'`,
-    `layout: 'dagre'`, `htmlLabels: false` and `suppressErrorRendering: true`. With
-    `htmlLabels: false` the output is plain SVG with no `<foreignObject>`. The SVG then goes through
-    DOMPurify's svg profile as well, a second check behind mermaid's own sanitizing.
+    `layout: 'dagre'`, `htmlLabels: false` and `suppressErrorRendering: true`. `htmlLabels: false`
+    makes most labels SVG text, but not all: journey tasks and venn text are `<foreignObject>` HTML
+    whatever it says, and a `%%{init}%%` directive can turn it back on. The SVG then goes through
+    DOMPurify as well, a second check behind mermaid's own sanitizing: the svg, svgFilters and html
+    profiles, with `foreignObject` added and made an HTML integration point (DOMPurify otherwise
+    drops HTML under SVG, which blanked those labels with no error). The HTML in it is held to the
+    same html profile as the markdown sink, and `script-src 'self'` stands behind both.
+  - `@mermaid-js/tiny` leaves out mindmap and architecture (they need cytoscape); such a diagram
+    fails like a syntax error. The smoke test draws each other type the tool names and checks that
+    the sanitized SVG keeps all of mermaid's text.
   - Each render gets a fresh id. The SVG and its scoped `<style>` replace the fence, so a re-render
     leaves nothing behind (checked by the smoke test).
   - A diagram with a syntax error keeps its source, and its error is shown above it with
-    `textContent`. It is reported as **`diagramError{msg}`**, not `error{}`: the rest of the canvas
-    stands, the render is not marked failed, and pending goto / highlight carry on. The host offers
-    *送給 agent 修* with the message, as for `error{}`.
+    `textContent`. It is reported as **`diagramError{msg, version}`**, not `error{}`: the rest of
+    the canvas stands, the render is not marked failed, and pending goto / highlight carry on. The
+    host drops a report whose version is not the render in progress, and offers *送給 agent 修*; the
+    header says a diagram failed and the rest rendered, so the agent patches that fence instead of
+    rewriting the canvas. If the engine itself fails to load, every fence keeps its source with
+    that note and one report goes up without a diagram number.
   - A diagram is **one block** for §3.10, keyed by its source (`mermaid:<source>`). A failed or
     unrendered fence has the same key, so a compare's other side need not be rendered. Changing one
     diagram glows only that diagram. `canvas_highlight` can find a diagram by its source text. The

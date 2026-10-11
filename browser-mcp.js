@@ -2738,7 +2738,8 @@
         "beside the chat — use it for long or structured output the user will read, keep and come " +
         "back to (a report, a design doc, a plan, a deck), instead of a long chat reply. `kind`: " +
         "`markdown` (default; GFM tables, task lists, fenced code; a ```mermaid fence is drawn as a " +
-        "diagram — flowchart, sequence, class, state, ER, gantt, …), `slides` (markdown, slides separated " +
+        "diagram — flowchart, sequence, class, state, ER, gantt, pie, journey, C4, …; not mindmap or " +
+        "architecture), `slides` (markdown, slides separated " +
         "by lines that are exactly `---`; arrow keys to navigate; mermaid fences work there too), " +
         "`mermaid` (the whole canvas is one diagram: `content` is Mermaid source, no fence), or `image` " +
         "(give `imageId` from screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an " +

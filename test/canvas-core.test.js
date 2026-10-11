@@ -341,10 +341,13 @@ test("composeAskAgent: the user's request first, a fixed host line with id and v
 
 // --- Mermaid (§3.3) ------------------------------------------------------------------------------
 test("mermaid: diagramError{} is its own allow-listed frame message, also from a compare tab", () => {
-  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error" }));
-  assert.equal(ok({ type: "diagramError", nonce: "n1" }), null);
-  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5 }), null);
-  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x" } }, { frameWindow, nonce: "n1", readOnly: true }));
+  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", version: 3 }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", version: 3 }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, version: 3 }), null);
+  // The render it belongs to: the host drops an older render's report.
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x" }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: "3" }), null);
+  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", version: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
 });
 
 test("mermaid: the lazy-load decision — a mermaid canvas always, markdown / slides only with a fence", () => {
@@ -376,6 +379,8 @@ test("mermaid: diagramErrorText numbers the diagram, keeps mermaid's message, an
   assert.equal(C.diagramErrorText({ str: "Lexical error" }, 1), "mermaid diagram 1: Lexical error");
   assert.equal(C.diagramErrorText("No diagram type detected", 2), "mermaid diagram 2: No diagram type detected");
   assert.equal(C.diagramErrorText(null, 1), "mermaid diagram 1: the diagram could not be drawn");
+  // Not about one diagram (the engine did not load): no number.
+  assert.equal(C.diagramErrorText(new Error("mermaid failed to load")), "mermaid: mermaid failed to load");
   const long = C.diagramErrorText(new Error("x".repeat(2000)), 1);
   assert.equal(long.length, C.ERROR_MAX + 1);
   assert.ok(long.endsWith("…"));

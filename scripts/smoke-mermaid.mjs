@@ -14,6 +14,8 @@
 //   - a markdown canvas with flowchart, sequence, state and class diagrams draws 4 SVGs, and one bad
 //     diagram shows its error inline, posts diagramError{} (not error{}), and the canvas still renders;
 //   - a `mermaid` canvas, and a slides canvas with a diagram, render;
+//   - each diagram type in KINDS draws with all of mermaid's text kept through the frame's DOMPurify
+//     pass (foreignObject labels included), and an engine that fails to load is reported, not hung;
 //   - no Worker is constructed (mermaid-tiny has no ELK) and no CSP violation outside the allow-list;
 //   - re-renders leave no stray SVG / <style> / mermaid temp nodes behind; print re-themes and back;
 //   - Milkdown's normalization (§3.5) keeps ```mermaid fences as they are.
@@ -98,6 +100,24 @@ const x = 1;
 \`\`\`
 `;
 const MERMAID_CANVAS = "flowchart TD\n  start([Start]) --> work[Work] --> done([Done])\n";
+// One per diagram type, each shown as a `mermaid` canvas: every label must survive the frame's
+// sanitizing. The last two turn HTML labels back on through a directive (not a secure key).
+const KINDS = [
+  ["ER", "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  ORDER {\n    string id\n  }\n"],
+  ["gantt", "gantt\n  title Plan\n  dateFormat YYYY-MM-DD\n  section Build\n  Mermaid :a1, 2026-10-01, 3d\n  Review :after a1, 2d\n"],
+  ["pie", "pie title Pets\n  \"Dogs\" : 3\n  \"Cats\" : 2\n"],
+  ["timeline", "timeline\n  title History\n  2025 : Katashiro\n  2026 : Canvas : Mermaid\n"],
+  ["journey", "journey\n  title A day\n  section Work\n    Write the doc: 5: Me\n    Review: 3: Jelly\n"],
+  ["C4", "C4Context\n  Person(u, \"User\", \"Reads canvases\")\n  System(s, \"Katashiro\", \"Side panel\")\n  Rel(u, s, \"uses\")\n"],
+  ["venn", "venn-beta\n  set A[\"Apples\"]\n  set B[\"Bananas\"]\n  union A,B[\"Both\"]\n"],
+  ["quadrant", "quadrantChart\n  title Effort\n  x-axis Low --> High\n  y-axis Small --> Big\n  Mermaid: [0.3, 0.6]\n"],
+  ["gitGraph", "gitGraph\n  commit id: \"base\"\n  branch feat\n  commit id: \"mermaid\"\n  checkout main\n  merge feat\n"],
+  ["kanban", "kanban\n  todo[Todo]\n    t1[Write smoke test]\n  done[Done]\n    t2[Vendor mermaid]\n"],
+  ["requirement", "requirementDiagram\n  requirement r1 {\n    id: 1\n    text: Draw diagrams\n    risk: low\n    verifymethod: test\n  }\n"],
+  ["xychart", "xychart-beta\n  title Sizes\n  x-axis [a, b, c]\n  bar [1, 3, 2]\n"],
+  ["flowchart htmlLabels", "%%{init: {\"htmlLabels\": true}}%%\nflowchart LR\n  A[Alpha] --> B[Beta]\n"],
+  ["flowchart.htmlLabels", "%%{init: {\"flowchart\": {\"htmlLabels\": true}}}%%\nflowchart LR\n  C[Gamma] -->|edge| D[Delta]\n"],
+];
 const SLIDES = "# Slide one\n\nText\n\n---\n\n## A diagram\n\n```mermaid\nflowchart LR\n  X --> Y --> Z\n```\n";
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
@@ -106,14 +126,18 @@ const HOST = `<!doctype html><meta charset="utf-8"><body style="margin:0;backgro
 <iframe id="md" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0md" style="width:1100px;height:1200px;border:0;display:block"></iframe>
 <iframe id="mm" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0mm" style="width:800px;height:500px;border:0;display:block"></iframe>
 <iframe id="sl" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0sl" style="width:960px;height:540px;border:0;display:block"></iframe>
+<iframe id="nl" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0nl" style="width:600px;height:200px;border:0;display:block"></iframe>
 <script>
   window.__msgs = [];
   addEventListener("message", (e) => { if (e.data && typeof e.data.nonce === "string") __msgs.push(e.data); });
   window.__send = (id, msg) => document.getElementById(id).contentWindow.postMessage({ ...msg, nonce: "nonce0" + id }, "*");
 </script>`;
 
+let failMermaid = false;
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
+  // Section 7 makes the engine fail to load for the "nl" frame (the only one that has not loaded it).
+  if (url.pathname === "/vendor/mermaid/mermaid.tiny.js" && failMermaid) { res.writeHead(404); res.end(); return; }
   if (url.pathname === "/__host.html") { res.writeHead(200, { "content-type": "text/html" }); res.end(HOST); return; }
   const file = path.join(ROOT, path.normalize(decodeURIComponent(url.pathname)));
   if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end(); return; }
@@ -160,7 +184,7 @@ try {
       await new Promise((r) => setTimeout(r, 100));
     }
   };
-  for (const id of ["md", "mm", "sl"]) await waitFor((m) => m.nonce === `nonce0${id}` && m.type === "ready", `${id} ready`);
+  for (const id of ["md", "mm", "sl", "nl"]) await waitFor((m) => m.nonce === `nonce0${id}` && m.type === "ready", `${id} ready`);
   const frameOf = (id) => page.frames().find((f) => f.url().endsWith(`#nonce0${id}`));
   // The header's `sandbox` directive must have made the frame an opaque origin, like the extension's.
   (await frameOf("md").evaluate(() => self.origin)) === "null" ? ok("frame runs in an opaque origin (sandbox CSP applied)") : fail("frame origin is not opaque");
@@ -189,7 +213,7 @@ try {
   const s1 = await shape();
   s1.figures === 4 && s1.svgs === 4 ? ok("4 diagrams drawn (flowchart, sequence, state, class)") : fail(`expected 4 diagrams, got ${JSON.stringify(s1)}`);
   s1.errors.length === 1 && /mermaid diagram 5:/.test(s1.errors[0]) && s1.fencesLeft === 1 ? ok(`bad diagram shows its error inline and keeps its source: ${JSON.stringify(s1.errors[0].split("\n")[0])}`) : fail(`bad diagram: ${JSON.stringify(s1)}`);
-  /mermaid diagram 5:/.test(de.msg) ? ok("diagramError{} reported to the host") : fail(`diagramError msg: ${de.msg}`);
+  /mermaid diagram 5:/.test(de.msg) && de.version === 1 ? ok("diagramError{} reported to the host, with its render's version") : fail(`diagramError: ${JSON.stringify(de)}`);
   (await msgs()).some((m) => m.nonce === "nonce0md" && m.type === "error") ? fail("an error{} was posted (would mark the render failed)") : ok("no error{} posted");
   // securityLevel 'strict': no click handlers; a link, if mermaid draws one, is an SVG <a> that the
   // frame's capture-phase listener turns into openLink{} (the host asks before opening).
@@ -258,12 +282,45 @@ try {
   await (await page.$("#sl")).screenshot({ path: SHOT.replace(/\.png$/, "-slide.png") });
   await (await page.$("#mm")).screenshot({ path: SHOT.replace(/\.png$/, "-kind.png") });
 
-  // 6. Worker / ELK, and CSP violations in every frame. First a control: the recorder must be in
+  // 6. Every diagram type the tool description names (and a few more) draws with all its text: the
+  // frame's DOMPurify pass must not drop a label (a <foreignObject> one, say) that mermaid drew.
+  // Compared with the same source through mermaid.render alone, <style> left out of both.
+  const mmFrame = frameOf("mm");
+  for (const [i, [name, source]] of KINDS.entries()) {
+    const version = 10 + i;
+    await page.evaluate((c, v) => { window.__msgs = window.__msgs.filter((m) => m.nonce !== "nonce0mm" || m.type !== "diagramError"); __send("mm", { type: "render", kind: "mermaid", version: v, content: c }); }, source, version);
+    await waitFor((m) => m.nonce === "nonce0mm" && m.type === "rendered" && m.version === version, `${name} rendered`);
+    const errMsg = (await msgs()).find((m) => m.nonce === "nonce0mm" && m.type === "diagramError");
+    const r = await mmFrame.evaluate(async (src) => {
+      const text = (root) => { const c = root.cloneNode(true); c.querySelectorAll("style, .copy-btn").forEach((e) => e.remove()); return c.textContent.replace(/\s+/g, " ").trim(); };
+      const fig = document.querySelector("#doc figure.ks-mermaid .ks-mermaid-svg");
+      if (!fig) return { drawn: false };
+      const t = document.createElement("template");
+      t.innerHTML = (await window.mermaid.render("probe-raw", src)).svg;
+      return { drawn: true, shown: text(fig), raw: text(t.content), fo: fig.querySelectorAll("foreignObject").length };
+    }, source);
+    if (errMsg || !r.drawn) fail(`${name}: not drawn (${errMsg ? errMsg.msg.split("\n")[0] : "no figure"})`);
+    else if (!r.raw) fail(`${name}: mermaid drew no text at all`);
+    else r.shown === r.raw ? ok(`${name}: all text kept (${r.raw.length} chars${r.fo ? `, ${r.fo} foreignObject` : ""})`) : fail(`${name}: text lost in sanitizing\n  mermaid: ${r.raw.slice(0, 200)}\n  shown:   ${r.shown.slice(0, 200)}`);
+  }
+
+  // 7. The engine does not load (a frame that has not loaded it yet): every fence keeps its source
+  // with a note, one diagramError{} without a diagram number, and the render still completes.
+  failMermaid = true;
+  await page.evaluate(() => __send("nl", { type: "render", kind: "markdown", version: 7, content: "# x\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n```mermaid\npie\n  \"a\" : 1\n```\n" }));
+  await waitFor((m) => m.nonce === "nonce0nl" && m.type === "rendered" && m.version === 7, "rendered without the engine");
+  const nlErr = await waitFor((m) => m.nonce === "nonce0nl" && m.type === "diagramError", "diagramError without the engine", 5000).catch(() => null);
+  failMermaid = false;
+  const nl = await frameOf("nl").evaluate(() => ({ notes: Array.from(document.querySelectorAll("#doc .ks-mermaid-error"), (e) => e.textContent), fences: document.querySelectorAll("#doc pre > code.language-mermaid").length }));
+  nlErr && nlErr.version === 7 && /^mermaid: mermaid failed to load$/.test(nlErr.msg) && nl.notes.length === 2 && nl.fences === 2
+    ? ok(`engine load failure: ${JSON.stringify(nlErr.msg)}, both fences kept with a note`) : fail(`engine load failure: ${JSON.stringify({ nlErr, nl })}`);
+
+  // 8. Worker / ELK, and CSP violations in every frame. First a control: the recorder must be in
   // each canvas frame, and must see a violation we cause on purpose (img-src allows data:/blob: only).
   const CONTROL = "http://control.invalid/x.png";
   await md.evaluate((u) => { const i = document.createElement("img"); i.src = u; document.body.appendChild(i); }, CONTROL);
   await new Promise((r) => setTimeout(r, 500));
-  for (const id of ["md", "mm", "sl"]) {
+  for (const id of ["md", "mm", "sl", "nl"]) {
     if (!(await frameOf(id).evaluate(() => Array.isArray(window.__ksViolations)))) fail(`violation recorder missing in frame ${id}`);
   }
   let workers = 0;
