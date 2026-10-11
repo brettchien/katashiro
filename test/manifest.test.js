@@ -33,6 +33,10 @@ test("sessions is an optional permission (reopen_tab), never a required one", ()
   assert.ok((manifest.optional_permissions || []).includes("sessions"));
 });
 
+test("incognito is not allowed (#109): what reaches the agent cannot be forgotten", () => {
+  assert.equal(manifest.incognito, "not_allowed");
+});
+
 test("notifications is a required permission (katashiro.notify)", () => {
   assert.ok(manifest.permissions.includes("notifications"));
 });

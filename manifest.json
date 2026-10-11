@@ -13,6 +13,7 @@
     "notifications",
     "unlimitedStorage"
   ],
+  "incognito": "not_allowed",
   "optional_permissions": [
     "sessions"
   ],

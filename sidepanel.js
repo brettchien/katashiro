@@ -89,7 +89,7 @@ async function clientInfoSnapshot() {
     version, build: detail, sha, builtAt, installType,
     extensionId: chrome.runtime.id,
     browser: m ? `Chrome ${m[1]}` : null,
-    windowId: panelWindowId, incognito: historyStore === chrome.storage.session,
+    windowId: panelWindowId,
     actMode, optionalPermissions,
   };
 }
@@ -1000,10 +1000,9 @@ loadBuildInfo();
 
 // Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
 // exactly like chrome://extensions' reload button. It closes the side panel in EVERY window; each
-// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive
-// (incognito windows keep theirs in storage.session, which the reload clears). Confirmed with
-// confirm(), like 清除聊天. In-flight turns get session/cancel first, with a short delay so the
-// notification leaves before the page dies (pagehide's cancel is best effort).
+// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive.
+// Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a short
+// delay so the notification leaves before the page dies (pagehide's cancel is best effort).
 const reloadExtensionBtn = document.getElementById("reload-extension-btn");
 const RELOAD_CANCEL_GRACE_MS = 150;
 if (reloadExtensionBtn) {
@@ -1142,7 +1141,7 @@ loadConfig().then(async (r) => {
     switchView("chat");
     await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
     // Folder mirror catch-up (§3.6): canvases saved while the folder was not connected.
-    if (panelIncognito === false) canvasMirror.syncAll().catch(() => {});
+    canvasMirror.syncAll().catch(() => {});
     buildRoom();
     connectAll();
     updateRoster();
@@ -1212,11 +1211,8 @@ function persist() {
 // conversation via `chat_history`. It IS written to disk (the Chrome profile), never synced.
 // Window ids are only stable for one browser run: after a browser restart the old keys belong to no
 // window, so loadHistory() prunes every `history:<id>` whose window is gone.
-// Incognito windows (manifest incognito defaults to "spanning", so they share storage.local) keep
-// storage.session instead — an incognito conversation must never reach the profile on disk.
 const HISTORY_CAP = 200;
 const HISTORY_PREFIX = "history:";
-let historyStore = chrome.storage.local;  // storage.session for an incognito window (loadHistory)
 let historyKey = null;                    // "history:<windowId>"
 let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
 let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
@@ -1228,18 +1224,12 @@ function newConversationId() {
   return "c_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 }
 let restoring = false;                    // true while replaying — suppresses re-recording
-// This panel's window is incognito (null until loadHistory knows): an incognito panel never
-// writes canvases to the folder mirror, and its canvases are marked noMirror (ADR §3.6).
-let panelIncognito = null;
 
 function currentWindow() {
   return new Promise((resolve) => {
     try {
-      chrome.windows.getCurrent((w) => resolve({
-        id: w && w.id != null ? w.id : "default",
-        incognito: !!(w && w.incognito),
-      }));
-    } catch { resolve({ id: "default", incognito: false }); }
+      chrome.windows.getCurrent((w) => resolve({ id: w && w.id != null ? w.id : "default" }));
+    } catch { resolve({ id: "default" }); }
   });
 }
 
@@ -1247,8 +1237,8 @@ function saveHistory() {
   if (!historyKey) return;
   const sessions = {};
   room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  historyStore.set({ [historyKey]: { conversationId, sessions, messages: historyMessages, savedAt: Date.now() } })
-    .catch(() => { /* quota (10 MB in incognito) — the on-screen chat is unaffected */ });
+  chrome.storage.local.set({ [historyKey]: { conversationId, sessions, messages: historyMessages, savedAt: Date.now() } })
+    .catch(() => { /* quota — the on-screen chat is unaffected */ });
 }
 
 // Append a record to the persisted scrollback (skipped while restoring). System/status notices are
@@ -1270,12 +1260,12 @@ function replayMessage(rec) {
 // recently saved orphan — its scrollback, conversationId and ACP session ids, so the agent's
 // session resumes too — and orphans older than 7 days are pruned. Several restored windows each
 // adopt one (the lock makes "pick + move" atomic across panels). Only numeric window keys count;
-// "default" is left alone. storage.local only: incognito history is never adopted. getAll() lists
-// only normal + popup windows by default, so ask for every type — a panel in an app/devtools window
-// would otherwise treat its own key as orphaned. Best effort: never blocks the panel.
+// "default" is left alone. getAll() lists only normal + popup windows by default, so ask for every
+// type — a panel in an app/devtools window would otherwise treat its own key as orphaned. Best
+// effort: never blocks the panel.
 const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
 const HISTORY_ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-async function adoptOrPruneOrphanHistory(ownKey, { adoptAllowed }) {
+async function adoptOrPruneOrphanHistory(ownKey) {
   try {
     await navigator.locks.request("history:adopt", async () => {
       const [entries, wins] = await Promise.all([
@@ -1286,7 +1276,7 @@ async function adoptOrPruneOrphanHistory(ownKey, { adoptAllowed }) {
         entries, liveIds: new Set(wins.map((w) => String(w.id))), ownKey, prefix: HISTORY_PREFIX,
         now: Date.now(), keepMs: HISTORY_ORPHAN_KEEP_MS,
       });
-      if (plan.adopt && adoptAllowed) {
+      if (plan.adopt) {
         await chrome.storage.local.set({ [ownKey]: entries[plan.adopt] });
         await chrome.storage.local.remove(plan.adopt);
       }
@@ -1302,10 +1292,8 @@ async function loadHistory() {
   const win = await currentWindow();
   panelWindowId = win.id;
   historyKey = `${HISTORY_PREFIX}${win.id}`;
-  if (win.incognito) historyStore = chrome.storage.session;
-  panelIncognito = win.incognito;
-  await adoptOrPruneOrphanHistory(historyKey, { adoptAllowed: !win.incognito });
-  const got = await historyStore.get(historyKey);
+  await adoptOrPruneOrphanHistory(historyKey);
+  const got = await chrome.storage.local.get(historyKey);
   const data = (got && got[historyKey]) || {};
   savedSessions = data.sessions || {};
   conversationId = data.conversationId || newConversationId();
@@ -1461,8 +1449,8 @@ settingsView.addEventListener("click", (e) => {
 // Clear the on-screen scrollback + this window's persisted mirror (storage.local). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
-// just not the cleared bubbles. Guarded by a confirm since the stored copy (storage.local, or
-// storage.session in an incognito window) is the only one.
+// just not the cleared bubbles. Guarded by a confirm since the stored copy (storage.local) is the
+// only one.
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   messagesList.replaceChildren();
@@ -2183,8 +2171,6 @@ const canvasStore = CanvasStore.createCanvasStore({
     `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
     evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
     (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
-  // Incognito (or not known yet): never mirrored to the folder (§3.6).
-  noMirror: () => panelIncognito !== false,
 });
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
@@ -2195,7 +2181,7 @@ const canvasStore = CanvasStore.createCanvasStore({
 const canvasMirror = CanvasMirror.createCanvasMirror({
   storage: chrome.storage.local,
   lock: (name, fn) => navigator.locks.request(name, fn),
-  getRoot: async () => (panelIncognito === false ? CanvasMirror.grantedRoot() : null),
+  getRoot: () => CanvasMirror.grantedRoot(),
 });
 const canvasMirrorPending = new Set();
 let canvasMirrorRunning = false;
@@ -2213,7 +2199,7 @@ async function runCanvasMirror() {
   }
 }
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || panelIncognito !== false) return;
+  if (area !== "local") return;
   for (const [k, ch] of Object.entries(changes)) {
     const m = /^canvas:(cv_[0-9a-f]{12}):(meta|latest)$/.exec(k);
     if (!m || ch.newValue === undefined) continue;            // deleted: the files stay (§3.6)
@@ -2236,7 +2222,6 @@ async function renderCanvasFolder(extra = "") {
     canvasFolderReconnectBtn.hidden = !reconnect;
     canvasFolderStopBtn.hidden = !stop;
   };
-  if (panelIncognito !== false) { canvasFolderStatusEl.textContent = "無痕視窗不會把畫布寫進資料夾。"; show(false, false, false); return; }
   if (typeof globalThis.showDirectoryPicker !== "function") { canvasFolderStatusEl.textContent = "這個瀏覽器不支援選擇資料夾（File System Access）。"; show(false, false, false); return; }
   const st = await CanvasMirror.folderStatus();
   if (!st.configured) {
