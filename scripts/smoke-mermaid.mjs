@@ -18,9 +18,12 @@
 //     pass (foreignObject labels included), hostile HTML labels keep no handler / script URL, and
 //     an engine that fails to load is reported, not hung;
 //   - no Worker is constructed (mermaid-tiny has no ELK) and no CSP violation outside the allow-list;
-//   - re-renders leave no stray SVG / <style> / mermaid temp nodes behind; print re-themes and back;
+//   - re-renders leave no stray SVG / <style> / mermaid temp nodes behind; print re-themes and back,
+//     with edge labels on an opaque white box on paper and the screen ones unchanged;
 //   - Milkdown's normalization (§3.5) keeps ```mermaid fences as they are.
 // The screenshot (default /tmp/ks11-mermaid.png) is the markdown fixture as rendered.
+// <name>-print.png beside it (or $PRINT_SHOT) is the same fixture as printed: light diagrams with
+// edge labels on solid white, plus a small table, under print media.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -257,8 +260,16 @@ try {
 
   // 3. Print: light theme for paper, dark again after. print() is replaced to see what would print.
   await md.evaluate(() => {
-    window.print = () => { const r = document.querySelector("#doc figure.ks-mermaid .node rect"); window.__printFill = r && getComputedStyle(r).fill; };
+    window.print = () => {
+      const r = document.querySelector("#doc figure.ks-mermaid .node rect"); window.__printFill = r && getComputedStyle(r).fill;
+      // Edge labels on paper: a solid white box, or the edge line runs through the text.
+      window.__printLabels = Array.from(document.querySelectorAll("#doc figure.ks-mermaid .edgeLabel rect"),
+        (e) => `${getComputedStyle(e).fill} ${getComputedStyle(e).opacity}`);
+      window.__printDoc = document.getElementById("doc").innerHTML;    // for the print screenshot below
+    };
   });
+  const screenLabels = await md.evaluate(() => Array.from(document.querySelectorAll("#doc figure.ks-mermaid .edgeLabel rect"),
+    (e) => `${getComputedStyle(e).fill} ${getComputedStyle(e).opacity}`));
   await page.evaluate(() => __send("md", { type: "print" }));
   await waitFor((m) => m.nonce === "nonce0md" && m.type === "printed", "printed");
   await new Promise((r) => setTimeout(r, 1500));
@@ -266,6 +277,28 @@ try {
   const printFill = await md.evaluate(() => window.__printFill);
   printFill && printFill !== s1.nodeFill ? ok(`printed with the light theme (node fill ${printFill})`) : fail(`print theme: node fill ${printFill} (screen ${s1.nodeFill})`);
   s4.theme === "dark" && s4.nodeFill === s1.nodeFill && s4.figures === 4 && s4.styles === s1.styles ? ok("back to dark after printing, nothing leaked") : fail(`after print: ${JSON.stringify(s4)}`);
+  const printLabels = await md.evaluate(() => window.__printLabels);
+  printLabels.length && printLabels.every((l) => l === "rgb(255, 255, 255) 1") ? ok(`printed edge labels on solid white (${printLabels.length})`) : fail(`print edge labels: ${JSON.stringify(printLabels)}`);
+  const darkLabels = await md.evaluate(() => Array.from(document.querySelectorAll("#doc figure.ks-mermaid .edgeLabel rect"),
+    (e) => `${getComputedStyle(e).fill} ${getComputedStyle(e).opacity}`));
+  darkLabels.length === screenLabels.length && darkLabels.every((l, i) => l === screenLabels[i] && !/^none /.test(l))
+    ? ok(`screen edge labels keep their background (${darkLabels[0]})`) : fail(`screen edge labels: ${JSON.stringify(darkLabels)} (before ${JSON.stringify(screenLabels)})`);
+  // Print screenshot: the light SVGs as printed, under print media (tables, labels), then back.
+  const PRINT_SHOT = process.env.PRINT_SHOT || SHOT.replace(/\.png$/, "-print.png");
+  await page.emulateMediaType("print");
+  await md.evaluate((t) => {
+    const d = document.getElementById("doc");
+    window.__screenDoc = d.innerHTML;
+    d.innerHTML = window.__printDoc;
+    d.insertAdjacentHTML("beforeend", t);
+  }, "<table><thead><tr><th>Diagram</th><th>Printed</th></tr></thead><tbody><tr><td>flowchart</td><td>light</td></tr><tr><td>slides</td><td>dark</td></tr></tbody></table>");
+  const ph = await md.evaluate(() => document.documentElement.scrollHeight);
+  await page.evaluate((hh) => { document.getElementById("md").style.height = `${hh}px`; }, ph);
+  await new Promise((r) => setTimeout(r, 300));
+  await (await page.$("#md")).screenshot({ path: PRINT_SHOT });
+  await md.evaluate(() => { document.getElementById("doc").innerHTML = window.__screenDoc; });
+  await page.emulateMediaType(null);
+  ok(`print screenshot ${PRINT_SHOT}`);
 
   // 4. Milkdown normalization keeps the fences.
   await page.evaluate((c) => __send("md", { type: "render", kind: "markdown", version: 4, content: c, normalizeText: c }), FIXTURE);

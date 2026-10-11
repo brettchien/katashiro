@@ -243,6 +243,10 @@
   // Dark like the canvas; a printed document re-renders its diagrams with the light theme. A deck
   // prints on its own dark slides (reveal's print-pdf layout), so it stays dark.
   const PRINT_THEME = "default", SCREEN_THEME = "dark";
+  // Mermaid scopes this under the diagram's id, after its own rules: SVG-text labels (rect) and
+  // HTML ones (a directive can turn htmlLabels on) alike.
+  const PRINT_EDGE_LABEL_CSS = ".edgeLabel rect, .edgeLabel .label rect { opacity: 1; fill: #ffffff; } " +
+    ".edgeLabel, .edgeLabel p, .labelBkg { background-color: #ffffff; }";
   let mermaidTheme = "";
   let mermaidQueue = Promise.resolve();    // one render at a time: mermaid's config is global
   let diagramSeq = 0;
@@ -257,6 +261,9 @@
           htmlLabels: false,
           suppressErrorRendering: true,   // throw instead of drawing mermaid's own error graphic
           fontFamily: getComputedStyle(document.body).fontFamily,
+          // Paper: edge labels on solid white. Mermaid draws their background at half opacity, so on
+          // the light theme the edge line runs visibly through the text (reads as struck through).
+          ...(theme === PRINT_THEME ? { themeVariables: { edgeLabelBackground: "#ffffff" }, themeCSS: PRINT_EDGE_LABEL_CSS } : {}),
         });
         mermaidTheme = theme;
       }
