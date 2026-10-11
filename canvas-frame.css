@@ -150,3 +150,11 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ks-changed, .ks-removed-before, .ks-removed-after, .ks-point { animation: none; }
 }
+
+/* Markers are for the screen (§3.10): with 顯示變更 on they never fade, so a PDF would carry them.
+   Not printed; a marked code block keeps its print background (.doc pre.hljs above). */
+@media print {
+  .ks-changed, .ks-removed-before, .ks-removed-after, .ks-point { outline: none !important; box-shadow: none !important; }
+  .ks-changed:not(pre), .ks-point:not(pre) { background-color: transparent !important; }
+  .ks-note { display: none !important; }
+}
