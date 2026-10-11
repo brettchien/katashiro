@@ -641,13 +641,21 @@
     }
 
     // Delete a canvas (#70): its bodies and meta, then its index entry. Same lock order as writes.
-    // With conversationId, only a canvas of that conversation.
-    async function remove({ conversationId, id }) {
+    // With conversationId, only a canvas of that conversation. With expectVersion, only if it is
+    // still that version (#80): canvas_delete asks the user first, and the canvas may be saved or
+    // rewritten while the question waits; the check runs under the same lock as the removal, so
+    // nothing can land between them. Returns { removed, version } (version: what is stored now,
+    // null when there is no such canvas).
+    async function remove({ conversationId, id, expectVersion }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      let result = { removed: false, version: null };
       await lock(`canvas:${id}`, async () => {
         const meta = await getOne(metaKey(id));
         if (!meta) return;
         if (conversationId && meta.conversationId !== conversationId) throw new Error(`no canvas "${id}" in this conversation`);
+        result = { removed: false, version: meta.version };
+        if (expectVersion != null && meta.version !== expectVersion) return;
+        result = { removed: true, version: meta.version };
         await storage.remove([metaKey(id), latestKey(id), agentKey(id)]);
         await lock("canvas:index", async () => {
           const key = indexKey(meta.conversationId);
@@ -657,6 +665,7 @@
         });
       });
       await sweepAfter();
+      return result;
     }
 
     // The canvas tab was opened (LRU order for eviction). Not a content change: version untouched.

@@ -63,9 +63,15 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   agent to change it with `canvas_patch`: the changed blocks glow, the card shows the new
   version. Edit another section yourself and save first: the patch still applies and says
   `rebasedOver`.
+- **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
+  border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
+  freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
+  gets `declined`; leave it 2 minutes → 已拒絕（逾時）; edit and save the canvas in its tab before
+  clicking 允許 → nothing is deleted and the agent gets `changed while asking, not deleted`. 🧹 清除聊天
+  while a card waits → the agent gets `declined`.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
-  few image canvases trigger the eviction prompt. Run `chrome.storage.local.remove("canvas:budgetBytes")`
+  few image canvases trigger the eviction prompt (a 🔒 confirm card in the chat). Run `chrome.storage.local.remove("canvas:budgetBytes")`
   to go back to 200 MB. Both take effect without a reload. Values under 1 MB are ignored, and
   values over 200 MB are capped at 200 MB.
 - **Canvas gallery (ADR §3.7):** 🗂️ in the panel header (or **🗂️ 總覽** in a canvas tab) opens

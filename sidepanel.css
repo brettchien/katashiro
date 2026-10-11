@@ -1394,6 +1394,45 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .canvas-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .canvas-card-meta { color: var(--text-secondary); white-space: nowrap; }
 
+/* Confirm card (#80): Katashiro asking the user, in the chat. A fixed amber double border and the
+   🔒 header mark it as the extension's own; agent markdown cannot produce this element or class
+   (html:false, and it sits outside .bubble), so a reply cannot look like one. */
+.confirm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 10px 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 3px double #f59e0b;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.confirm-card-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+.confirm-card-lock { flex: none; }
+.confirm-card-line { white-space: normal; }
+.confirm-card-hint { color: var(--text-secondary); font-size: 11px; }
+.confirm-card-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.confirm-card-actions button {
+  padding: 4px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.confirm-card-actions .confirm-card-allow { background: #b45309; border-color: #f59e0b; }
+.confirm-card-actions button:hover { filter: brightness(1.15); }
+.confirm-card-result { font-weight: 600; }
+.confirm-card.allowed .confirm-card-result { color: var(--accent-success); }
+.confirm-card.declined .confirm-card-result { color: var(--text-secondary); }
+.confirm-card:not(.pending) { border-color: rgba(245, 158, 11, 0.45); }
+
 /* GFM task lists in chat bubbles (markdown.js). */
 .bubble li.task-list-item { list-style: none; }
 .bubble li.task-list-item .task-list-item-checkbox { margin: 0 0.4em 0 -1.3em; vertical-align: middle; }

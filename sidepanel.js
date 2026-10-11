@@ -210,9 +210,21 @@ class Conn {
         conversationId: () => conversationId,
         onWrite: (res, opts) => this.onCanvasWrite(res, opts),
         waitNormalized: (id, version, raw) => waitCanvasNormalized(id, version, raw),
-        // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel.
-        confirmDelete: ({ title, version, author }) => Promise.resolve(window.confirm(
-          `${this.name} 要刪除畫布「${String(title).slice(0, 60)}」（v${version}${author === "user" ? "，含你的修改" : ""}）。\n\n允許嗎？這個動作無法復原。`)),
+        // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel —
+        // on a confirm card in this agent's turn, not window.confirm, which froze the whole room
+        // (#80). The title is agent text: the card shows it as one plain-text line.
+        confirmDelete: async ({ id, title, version, author }) => {
+          const open = !!(await findCanvasTab(id).catch(() => null));
+          return confirmCard({
+            title: `${this.name} 要刪除畫布`,
+            lines: [
+              `「${title}」（v${version}${author === "user" ? "，含你的修改" : ""}）`,
+              // canvas.js keeps a dirty editor on screen to copy from, but nothing saves it any more.
+              ...(open ? ["這個畫布正開在分頁中：分頁裡未儲存的修改會遺失（編輯中的文字會留在畫面上，可先複製）。"] : []),
+              "這個動作無法復原。",
+            ],
+          }, { conn: this });
+        },
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
       },
@@ -1453,6 +1465,7 @@ settingsView.addEventListener("click", (e) => {
 // only one.
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
+  cancelPendingConfirms();       // a confirm card leaving the screen is a "no" (#80)
   messagesList.replaceChildren();
   historyMessages.length = 0;
   shownImageChars = 0;           // the shown images left the DOM with the messages
@@ -2167,10 +2180,15 @@ const canvasStore = CanvasStore.createCanvasStore({
   // Over the budget (§3.6): never evict a canvas open in a tab, and ask once, here in the
   // panel (the agent's write arrives here; no canvas tab may be open).
   isOpen: async (id) => !!(await findCanvasTab(id)),
-  confirmEvict: async ({ evict }) => window.confirm(
-    `畫布儲存空間已滿。要刪除最久沒打開的 ${evict.length} 個畫布嗎？（無法復原）\n\n` +
-    evict.slice(0, 10).map((e) => `• ${String(e.title).slice(0, 60)}`).join("\n") +
-    (evict.length > 10 ? `\n…還有 ${evict.length - 10} 個` : "")),
+  // A confirm card, not window.confirm (#80); the agent's write waits on it (no lock held, §3.6).
+  confirmEvict: ({ evict }) => confirmCard({
+    title: "畫布儲存空間已滿",
+    lines: [
+      `要刪除最久沒打開的 ${evict.length} 個畫布嗎？這個動作無法復原。`,
+      ...evict.slice(0, 10).map((e) => `• ${e.title}`),
+      ...(evict.length > 10 ? [`…還有 ${evict.length - 10} 個`] : []),
+    ],
+  }),
 });
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
@@ -2662,6 +2680,100 @@ function canvasCard({ id, version, title }) {
   card.title = "在分頁中開啟這個畫布";
   card.addEventListener("click", () => { openCanvasTab(id, { active: true }).catch(() => {}); });
   return card;
+}
+
+// --- confirm card (#80) ---------------------------------------------------------------
+// A yes/no question in the chat instead of window.confirm, which blocked the panel's main thread:
+// every agent connection, heartbeat and tool call in the room froze until the user answered.
+// Nothing here blocks, several cards can wait at once, and each one declines itself after
+// ConfirmCore.TIMEOUT_MS (2 minutes). The text rules and the decision live in confirm-core.js.
+// Every string goes in with textContent (agent text included), and the card is a "system" element:
+// the 🔒 header and its border come from sidepanel.css on an element markdown cannot produce
+// (html:false, and the card sits outside any .bubble), so an agent reply cannot imitate one.
+// General on purpose (title / lines / labels / timeout) so a later ask_user can reuse it.
+const pendingConfirms = new Set();
+
+/**
+ * Ask the user on a card in the chat: in `conn`'s turn while it is in flight, else as its own row.
+ * @param {{ title: string, lines?: string[], allowLabel?: string, denyLabel?: string, timeoutMs?: number }} spec
+ * @returns {Promise<boolean>} true only if the user clicked allow; a timeout or a cleared chat is false
+ */
+function confirmCard(spec, { conn = null } = {}) {
+  const s = ConfirmCore.normalizeSpec(spec);
+  const card = document.createElement("div");
+  card.className = "confirm-card pending";
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", s.title);
+  const head = document.createElement("div");
+  head.className = "confirm-card-head";
+  const lockIcon = document.createElement("span");
+  lockIcon.className = "confirm-card-lock";
+  lockIcon.textContent = "🔒";
+  lockIcon.title = "Katashiro 的確認，不是 agent 的訊息";
+  const title = document.createElement("span");
+  title.className = "confirm-card-title";
+  title.textContent = s.title;
+  head.append(lockIcon, title);
+  card.appendChild(head);
+  for (const line of s.lines) {
+    const el = document.createElement("div");
+    el.className = "confirm-card-line";
+    el.textContent = line;
+    card.appendChild(el);
+  }
+  const hint = document.createElement("div");
+  hint.className = "confirm-card-hint";
+  hint.textContent = s.timeoutMs >= 60000
+    ? `${Math.round(s.timeoutMs / 60000)} 分鐘內沒有回答視為${s.denyLabel}。`
+    : `${Math.ceil(s.timeoutMs / 1000)} 秒內沒有回答視為${s.denyLabel}。`;
+  const actions = document.createElement("div");
+  actions.className = "confirm-card-actions";
+  const deny = document.createElement("button");
+  deny.type = "button";
+  deny.className = "confirm-card-deny";
+  deny.textContent = s.denyLabel;
+  const allow = document.createElement("button");
+  allow.type = "button";
+  allow.className = "confirm-card-allow";
+  allow.textContent = s.allowLabel;
+  actions.append(deny, allow);                           // no autofocus: a stray Enter must not answer
+  const result = document.createElement("div");
+  result.className = "confirm-card-result";
+  result.hidden = true;
+  card.append(hint, actions, result);
+
+  // The card stays in the chat with the outcome; the buttons go, so a late click cannot act.
+  const decision = ConfirmCore.createDecision({
+    timeoutMs: s.timeoutMs,
+    onSettle: (state) => {
+      pendingConfirms.delete(decision);
+      hint.remove();
+      actions.remove();
+      card.className = `confirm-card ${state === "allowed" ? "allowed" : "declined"}`;
+      result.textContent = ConfirmCore.outcomeText(state, s);
+      result.hidden = false;
+    },
+  });
+  pendingConfirms.add(decision);
+  allow.addEventListener("click", () => decision.allow());
+  deny.addEventListener("click", () => decision.deny());
+
+  if (conn && conn.turnActive) {
+    if (!conn.stream || !conn.stream.bubble) conn.startStream();
+    conn.stream.contentEl.insertBefore(card, conn.stream.bubble);
+  } else {
+    const row = document.createElement("div");
+    row.className = "message system";
+    row.appendChild(card);
+    messagesList.appendChild(row);
+  }
+  maybeScroll();
+  return decision.promise;
+}
+
+// Every card still waiting resolves as declined (the chat is being cleared).
+function cancelPendingConfirms() {
+  for (const d of [...pendingConfirms]) d.cancel();
 }
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).

@@ -165,6 +165,31 @@ test("remove deletes the bodies, the meta and the index entry (empty index key r
   await s.remove({ id: b.id });                                   // already gone: a no-op
 });
 
+// #80: canvas_delete asks first; a canvas saved while the question waits is not the one approved.
+test("remove with expectVersion removes only that version, checked under the canvas lock", async () => {
+  const lock = memLock();
+  const { s, storage } = store({ lock });
+  const a = await s.agentWrite({ conversationId: "c", title: "A", content: "aa" });
+  assert.deepEqual(await s.remove({ id: a.id, expectVersion: 2 }), { removed: false, version: 1 });
+  assert.equal((await s.read({ id: a.id })).version, 1);           // kept
+  // A writer holds canvas:<id> and moves the canvas to v2 while the removal waits for the lock:
+  // the removal must read the meta only once it holds the lock, so it sees v2 and keeps it.
+  let release;
+  const held = lock(`canvas:${a.id}`, () => new Promise((r) => { release = r; }));
+  const pending = s.remove({ conversationId: "c", id: a.id, expectVersion: 1 });
+  await new Promise((r) => setTimeout(r, 5));
+  storage.data[CanvasStore.metaKey(a.id)].version = 2;
+  release();
+  await held;
+  assert.deepEqual(await pending, { removed: false, version: 2 });
+  assert.equal((await s.read({ id: a.id })).content, "aa");
+  assert.deepEqual(await s.remove({ id: a.id, expectVersion: 2 }), { removed: true, version: 2 });
+  assert.deepEqual((await s.list({ conversationId: "c" })), []);
+  assert.deepEqual(await s.remove({ id: a.id, expectVersion: 2 }), { removed: false, version: null }); // gone
+  const b = await s.agentWrite({ conversationId: "c", title: "B", content: "bb" });
+  assert.deepEqual(await s.remove({ id: b.id }), { removed: true, version: 1 });  // no expectVersion: as before
+});
+
 // #109: Katashiro no longer runs in incognito; what incognito panels stored before is removed.
 test("incognitoLeftovers selects exactly the noMirror metas with a canvas id", () => {
   const ids = CanvasStore.incognitoLeftovers([
