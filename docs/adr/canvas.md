@@ -385,9 +385,12 @@ below is built around that.
   `chrome.storage.local`); it is read on every write, so a change applies from each canvas's next
   write on (nothing is trimmed at the moment it changes).
   - **`latest` and `previous` are pointers into the history:** the newest entry and the one before
-    it. The **agent's last write** (`agentVersion`) is a third pointer and is **pinned**: while it
-    is the agent copy it is never trimmed, even when it is older than the last N (so a canvas holds
-    at most N + 1 versions). Send to agent's diff (§3.7), the `stale` diff below, **Revert to
+    it (`previous` only when it is latest − 1: with N = 1 the entry before the latest can be the
+    pinned agent write, and then there is no previous). The **agent's last write** (`agentVersion`)
+    is a third pointer and is **pinned**: while it is the agent copy it is never trimmed, even when
+    it is older than the last N (so a canvas holds at most N + 1 versions, except during a ↶ / ↷
+    walk: the walk also pins the versions it can still reach, so history can grow to about 2N + 1
+    until the next ordinary save trims it back). Send to agent's diff (§3.7), the `stale` diff below, **Revert to
     agent's** (the header button that makes the agent's last write the latest again, as a user
     save), Compare with agent's (§3.10) and `rebasedOver.diffFromBase` read that entry and work as
     before.
@@ -527,13 +530,16 @@ below is built around that.
   - `canvas:<id>:latest` — the latest content (the newest history entry).
   - `canvas:<id>:v:<n>` — the content of every other version in history (the agent's last write
     among them while it is not the latest). A write moves the old latest here in the same `set()`
-    as the new latest and meta, then removes the trimmed versions' keys.
+    as the new latest and meta, then removes the trimmed versions' keys (best effort: a failed
+    remove leaves orphan `v:<n>` keys, which are not counted in the footprint and are cleared when
+    the canvas is deleted, on Chrome 130+ where `storage.getKeys` exists; a small leak on older
+    Chrome, accepted).
   - `canvas:<id>:agent` — only on canvases stored before history: the agent's last write while it
     differed from the latest. The next write moves it into `v:<agentVersion>` (lazy migration).
 - **The cap is a byte budget** (200 MB, §6 Q3; a `canvas:budgetBytes` storage override can lower
   it for testing, see TESTING.md). **A canvas's footprint is its whole history** (Brett,
   2026-10-11): the sum of its versions' sizes, each a full copy, with an image canvas's image
-  counted once per distinct image. So a canvas costs up to N + 1 copies of its text plus its
+  counted once per distinct image. So a canvas costs up to N + 1 copies of its text (about 2N + 1 during a ↶ / ↷ walk) plus its
   images, and the budget is reached by many canvases, long histories of large canvases, or many
   images. Over budget, the host drops **whole canvases** (history included), least recently opened first (never one open
   in a tab), after asking once; it never trims history to make room. **The question is asked in the panel** (the agent's write arrives
@@ -1067,7 +1073,7 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
 - Short history inside Katashiro: the last N versions (default 10) plus the agent's last write,
   reached only by ↶ / ↷, and each step is itself a version. Anything older needs the folder mirror
   under git (§3.6). Each version is a full copy, so a canvas can take up to N + 1 times its size
-  against the budget.
+  against the budget (about 2N + 1 during a ↶ / ↷ walk).
 - pptx in either direction is lossy and must be described honestly in the UI.
 
 ### Neutral

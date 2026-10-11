@@ -109,10 +109,13 @@
   // Every key holding a version of this canvas (the image sweep reads them all).
   const contentKeys = (meta) => historyOf(meta).map((h) => contentKey(meta, h.v));
 
-  // The version before the latest (◐ 顯示變更's baseline, §3.10), or null (v1, or trimmed).
+  // The version before the latest (◐ 顯示變更's baseline, §3.10), or null (v1, or trimmed). Only
+  // latest − 1 counts: with N = 1 the entry before the latest can be the pinned agent write, which
+  // is older than the previous version.
   function previousVersion(meta) {
     const h = historyOf(meta);
-    return h.length >= 2 ? h[h.length - 2].v : null;
+    const v = h.length >= 2 ? h[h.length - 2].v : null;
+    return v != null && v === meta.version - 1 ? v : null;
   }
 
   /**
@@ -627,7 +630,9 @@
       const gone = dropped.filter((v) => v !== cur.version && v !== legacyAgent).map((v) => versionKey(id, v));
       if (legacy) gone.push(agentKey(id));
       await storage.set(items);
-      if (gone.length) await storage.remove(gone);
+      // The version is written: a failed remove must not turn it into an error (the agent would
+      // retry and hit stale). It only leaves orphan v:<n> keys, which remove() clears.
+      if (gone.length) { try { await storage.remove(gone); } catch (_) { /* best effort */ } }
       await updateIndex(cur.conversationId, indexEntry(meta));
       return meta;
     }

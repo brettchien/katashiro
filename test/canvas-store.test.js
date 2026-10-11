@@ -937,7 +937,8 @@ test("historyOf / contentKey / previousVersion: history metas, and canvases stor
   const legacy = { id, version: 4, author: "user", at: 9, bytes: 5, agentVersion: 2, agentBytes: 3 };
   assert.deepEqual(CanvasStore.historyOf(legacy), [{ v: 2, author: "agent", at: 0, bytes: 3 }, { v: 4, author: "user", at: 9, bytes: 5 }]);
   assert.equal(CanvasStore.contentKey(legacy, 2), CanvasStore.agentKey(id));
-  assert.equal(CanvasStore.previousVersion(legacy), 2);
+  assert.equal(CanvasStore.previousVersion(legacy), null);              // v3 is not stored: no previous
+  assert.equal(CanvasStore.previousVersion({ ...legacy, version: 3 }), 2);
   assert.equal(CanvasStore.footprint(legacy), 8);                       // latest + agent copy, as before
   const legacyAgent = { id, version: 2, author: "agent", bytes: 5, agentVersion: 2, agentBytes: 0 };
   assert.deepEqual(CanvasStore.historyOf(legacyAgent).map((h) => h.v), [2]);
@@ -1212,4 +1213,29 @@ test("↶ and a user save from the same base under the lock: exactly one wins, h
   assert.equal(m.version, 3);
   assert.deepEqual(m.history.map((h) => h.v), [1, 2, 3]);
   for (const h of m.history) assert.ok(typeof storage.data[CanvasStore.contentKey(m, h.v)] === "string", `v${h.v} has content`);
+});
+
+test("readPrevious with N = 1: the pinned agent write is not the previous version", async () => {
+  const { s } = store({ historyMax: 1 });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "t", content: "A" });
+  let v = 1;
+  for (const t of ["B", "C", "D"]) v = (await s.userSave({ id, baseVersion: v, content: t })).version;
+  assert.deepEqual((await s.read({ id })).history.map((h) => h.v), [1, 4]);
+  assert.equal(CanvasStore.previousVersion((await s.read({ id }))), null);
+  assert.equal(await s.readPrevious(id), null);
+});
+
+test("commit: a failed remove of trimmed versions does not fail the write", async () => {
+  const { s, storage } = store({ historyMax: 2 });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "t", content: "a" });
+  let v = 1;
+  for (const t of ["b", "c"]) v = (await s.userSave({ id, baseVersion: v, content: t })).version;
+  const remove = storage.remove;
+  storage.remove = async () => { throw new Error("boom"); };
+  const r = await s.userSave({ id, baseVersion: v, content: "d" });
+  storage.remove = remove;
+  assert.equal(r.version, 4);
+  assert.equal((await s.read({ id })).content, "d");
+  const idx = storage.data[CanvasStore.indexKey("c")].find((e) => e.id === id);
+  assert.equal(idx.version, 4, "the index is updated");
 });
