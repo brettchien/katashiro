@@ -284,6 +284,7 @@
     if (!query) printing = null;              // any normal mount ends a print (§3.8)
     if (frame) frame.remove();
     frameReady = false;
+    renderFailed = "";                        // #96: a goto / highlight before the new frame's ready must not get the old failure
     nonce = CanvasCore.newNonce();
     frame = document.createElement("iframe");
     // allow-scripts + allow-modals (print, §3.8): no same-origin, popups, forms or top navigation (§3.2).
@@ -439,14 +440,17 @@
 
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
   // them reach a deck still being replaced), and fail at once with the reason while it is failed.
-  let renderingVersion = 0;
+  // Told apart by a per-render seq the frame echoes back, not the version (#96): two renders of
+  // the same version (meta and latest written separately → two refreshes) share a version.
+  let renderSeq = 0;
+  let renderingSeq = 0;
   let renderFailed = "";
   function startRender(msg) {
     if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
     rendered = false;
     renderFailed = "";
-    renderingVersion = msg.version;
-    toFrame(msg);
+    renderingSeq = ++renderSeq;
+    toFrame({ ...msg, seq: renderingSeq });
   }
 
   // Compare tab (§3.10): the agent copy, re-sent (no reload) whenever the canvas changes. Its blocks
@@ -661,7 +665,7 @@
         break;
       case "rendered":
         if (printing && !printing.sent) { printing.sent = true; toFrame({ type: "print" }); }
-        if (m.version !== renderingVersion) break;           // an older render; a newer one is on its way
+        if (m.seq !== renderingSeq) break;                   // an older render; a newer one is on its way
         rendered = true;
         renderFailed = "";
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
@@ -703,7 +707,7 @@
       case "diagramError":
         // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
         // nothing is marked failed and pending goto / highlight carry on.
-        if (m.version !== renderingVersion) break;           // an older render's
+        if (m.seq !== renderingSeq) break;                   // an older render's
         if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
         else offerSendError(m.msg, true);
         break;

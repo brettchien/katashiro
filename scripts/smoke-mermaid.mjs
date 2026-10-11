@@ -197,7 +197,7 @@ try {
   (await frameOf("md").evaluate(() => self.origin)) === "null" ? ok("frame runs in an opaque origin (sandbox CSP applied)") : fail("frame origin is not opaque");
 
   // 1. markdown with five fences (one bad) + a js fence.
-  await page.evaluate((c) => __send("md", { type: "render", kind: "markdown", version: 1, content: c }), FIXTURE);
+  await page.evaluate((c) => __send("md", { type: "render", kind: "markdown", version: 1, seq: 1, content: c }), FIXTURE);
   await waitFor((m) => m.nonce === "nonce0md" && m.type === "rendered" && m.version === 1, "markdown rendered");
   const de = await waitFor((m) => m.nonce === "nonce0md" && m.type === "diagramError", "diagramError");
   const md = frameOf("md");
@@ -220,7 +220,7 @@ try {
   const s1 = await shape();
   s1.figures === 4 && s1.svgs === 4 ? ok("4 diagrams drawn (flowchart, sequence, state, class)") : fail(`expected 4 diagrams, got ${JSON.stringify(s1)}`);
   s1.errors.length === 1 && /mermaid diagram 5:/.test(s1.errors[0]) && s1.fencesLeft === 1 ? ok(`bad diagram shows its error inline and keeps its source: ${JSON.stringify(s1.errors[0].split("\n")[0])}`) : fail(`bad diagram: ${JSON.stringify(s1)}`);
-  /mermaid diagram 5:/.test(de.msg) && de.version === 1 ? ok("diagramError{} reported to the host, with its render's version") : fail(`diagramError: ${JSON.stringify(de)}`);
+  /mermaid diagram 5:/.test(de.msg) && de.seq === 1 ? ok("diagramError{} reported to the host, with its render's seq (#96)") : fail(`diagramError: ${JSON.stringify(de)}`);
   (await msgs()).some((m) => m.nonce === "nonce0md" && m.type === "error") ? fail("an error{} was posted (would mark the render failed)") : ok("no error{} posted");
   // securityLevel 'strict': no click handlers; a link, if mermaid draws one, is an SVG <a> that the
   // frame's capture-phase listener turns into openLink{} (the host asks before opening).
@@ -340,12 +340,12 @@ try {
   // 7. The engine does not load (a frame that has not loaded it yet): every fence keeps its source
   // with a note, one diagramError{} without a diagram number, and the render still completes.
   failMermaid = true;
-  await page.evaluate(() => __send("nl", { type: "render", kind: "markdown", version: 7, content: "# x\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n```mermaid\npie\n  \"a\" : 1\n```\n" }));
+  await page.evaluate(() => __send("nl", { type: "render", kind: "markdown", version: 7, seq: 7, content: "# x\n\n```mermaid\nflowchart LR\n  A --> B\n```\n\n```mermaid\npie\n  \"a\" : 1\n```\n" }));
   await waitFor((m) => m.nonce === "nonce0nl" && m.type === "rendered" && m.version === 7, "rendered without the engine");
   const nlErr = await waitFor((m) => m.nonce === "nonce0nl" && m.type === "diagramError", "diagramError without the engine", 5000).catch(() => null);
   failMermaid = false;
   const nl = await frameOf("nl").evaluate(() => ({ notes: Array.from(document.querySelectorAll("#doc .ks-mermaid-error"), (e) => e.textContent), fences: document.querySelectorAll("#doc pre > code.language-mermaid").length }));
-  nlErr && nlErr.version === 7 && /^mermaid: mermaid failed to load$/.test(nlErr.msg) && nl.notes.length === 2 && nl.fences === 2
+  nlErr && nlErr.seq === 7 && /^mermaid: mermaid failed to load$/.test(nlErr.msg) && nl.notes.length === 2 && nl.fences === 2
     ? ok(`engine load failure: ${JSON.stringify(nlErr.msg)}, both fences kept with a note`) : fail(`engine load failure: ${JSON.stringify({ nlErr, nl })}`);
 
   // 8. Worker / ELK, and CSP violations in every frame. First a control: the recorder must be in

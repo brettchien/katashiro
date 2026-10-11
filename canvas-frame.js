@@ -1,15 +1,15 @@
 // canvas-frame.js — renders one canvas inside the sandboxed canvas-frame.html (ADR §3.2–§3.3).
 //
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
-//  in:  render{nonce, kind, version, content, normalizeText?}
+//  in:  render{nonce, kind, version, seq, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
-//  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
+//  out: ready, rendered{version, seq, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, truncated?}                                         (Ask agent, §3.7)
-//       diagramError{msg, version}                          (a mermaid diagram that failed, §3.3)
+//       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -216,8 +216,8 @@
   }
   // Render every ```mermaid fence under root in place. A bad diagram keeps its source, shows the
   // error above it (textContent) and is reported as diagramError{}; the rest of the canvas stands.
-  // `gen` is the render it belongs to: a newer render makes it stop. `version` goes with the report,
-  // so the host can tell it from an older render's.
+  // `gen` is the render it belongs to: a newer render makes it stop. `seq` (the host's render number,
+  // #96) goes with the report, so the host can tell it from an older render's.
   let renderGen = 0;
   function diagramNote(pre, msg) {
     const note = document.createElement("div");
@@ -226,7 +226,7 @@
     note.textContent = msg;                         // mermaid's message quotes agent text: textContent only
     pre.before(note);
   }
-  async function renderDiagrams(root, kind, gen, version, theme) {
+  async function renderDiagrams(root, kind, gen, seq, theme) {
     if (!CanvasCore.wantsMermaid(kind, root)) return;
     const codes = Array.from(root.querySelectorAll(CanvasCore.MERMAID_SEL));
     if (!codes.length) return;
@@ -236,7 +236,7 @@
       // Not one diagram's fault: every fence stays source, each saying so.
       const msg = CanvasCore.diagramErrorText(e);
       for (const code of codes) diagramNote(code.parentElement, msg);
-      post({ type: "diagramError", msg, version });
+      post({ type: "diagramError", msg, seq });
       return;
     }
     const errors = [];
@@ -251,7 +251,7 @@
       diagramNote(pre, msg);
       errors.push(msg);
     }
-    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), version });
+    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), seq });
   }
   // Print (§3.8): the rendered diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Failures keep the old SVG.
@@ -265,16 +265,16 @@
   }
 
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
-  function renderMarkdown(content, gen, version) {
+  function renderMarkdown(content, gen, seq) {
     doc.hidden = false;
     // Older saves may still hold "<br />" lines; never show them as literal text.
     renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
-    return renderDiagrams(doc, "markdown", gen, version, SCREEN_THEME);
+    return renderDiagrams(doc, "markdown", gen, seq, SCREEN_THEME);
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
   // shows the source with the error, as in a document).
-  function renderMermaidCanvas(content, gen, version) {
+  function renderMermaidCanvas(content, gen, seq) {
     doc.hidden = false;
     document.body.classList.add("mode-mermaid");
     const pre = document.createElement("pre");
@@ -284,14 +284,14 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, version, SCREEN_THEME);
+    return renderDiagrams(doc, "mermaid", gen, seq, SCREEN_THEME);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
   // markdown sink; reveal.js only receives finished <section>s (no reveal markdown plugin, which
   // would pass raw HTML through). Re-renders keep the current slide.
   let revealReady = null;
-  async function renderSlides(content, gen, version) {
+  async function renderSlides(content, gen, seq) {
     deck.hidden = false;
     document.body.classList.add("mode-slides");
     const container = deck.querySelector(".slides");
@@ -302,7 +302,7 @@
     });
     container.replaceChildren(...sections);
     // Diagrams before reveal lays the deck out (it sizes slides by their content).
-    await renderDiagrams(container, "slides", gen, version, SCREEN_THEME);
+    await renderDiagrams(container, "slides", gen, seq, SCREEN_THEME);
     if (gen !== renderGen) return undefined;
     if (!revealReady) {
       revealReady = Reveal.initialize({
@@ -629,10 +629,11 @@
     shownKind = m.kind;
     lastSelection = "";
     const gen = ++renderGen;
+    const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)
     Promise.resolve().then(() => {
-      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, m.version);
-      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, m.version);
-      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, m.version);
+      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, seq);
+      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);
+      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
@@ -645,7 +646,7 @@
         // #86: never store a normalization that lost an image; the agent's text stays as written.
         if (normalized !== undefined && CanvasCore.losesImages(m.normalizeText, normalized)) normalized = undefined;
       }
-      post(normalized === undefined ? { type: "rendered", version: m.version } : { type: "rendered", version: m.version, normalized });
+      post(normalized === undefined ? { type: "rendered", version: m.version, seq } : { type: "rendered", version: m.version, seq, normalized });
     }, (err) => {
       if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err) });   // else superseded
     });

@@ -9,7 +9,7 @@ const ok = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frame
 
 test("frame messages: only our frame, our nonce, allow-listed and well-formed", () => {
   assert.ok(ok({ type: "ready", nonce: "n1" }));
-  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3 }));
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1 }));
   assert.ok(ok({ type: "openLink", nonce: "n1", url: "https://x" }));
   assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "ready", nonce: "n1" } }, { frameWindow, nonce: "n1" }), null);
   assert.equal(ok({ type: "ready", nonce: "n2" }), null);
@@ -96,8 +96,11 @@ test("editing messages (§3.5): save, dirty, rendered.normalized — typed and b
   assert.equal(ok({ type: "save", nonce: "n1", content: "x".repeat(2 * 1024 * 1024 + 1), baseVersion: 3 }), null);
   assert.ok(ok({ type: "dirty", nonce: "n1", dirty: true }));
   assert.equal(ok({ type: "dirty", nonce: "n1", dirty: "yes" }), null);
-  assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, normalized: "- a" }));
-  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, normalized: 7 }), null);
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 2, seq: 4, normalized: "- a" }));
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, seq: 4, normalized: 7 }), null);
+  // #96: the render number is echoed back, so two renders of one version are told apart
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2 }), null);
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 2, seq: "4" }), null);
   assert.ok(ok({ type: "editFailed", nonce: "n1", msg: "no editor" }));
   assert.equal(ok({ type: "editFailed", nonce: "n1" }), null);
 });
@@ -200,7 +203,7 @@ test("frame messages: highlighted{} is allow-listed and bounded; a compare tab r
   assert.equal(ro({ type: "dirty", nonce: "n1", dirty: true }), null);
   assert.equal(ro({ type: "selection", nonce: "n1", text: "x" }), null);
   assert.equal(ro({ type: "editFailed", nonce: "n1", msg: "x" }), null);
-  assert.ok(ro({ type: "rendered", nonce: "n1", version: 1 }));
+  assert.ok(ro({ type: "rendered", nonce: "n1", version: 1, seq: 1 }));
   assert.ok(ro({ type: "openLink", nonce: "n1", url: "https://x" }));
   assert.ok(ok({ type: "save", nonce: "n1", content: "x", baseVersion: 1 }));             // the canvas tab still saves
 });
@@ -342,13 +345,14 @@ test("composeAskAgent: the user's request first, a fixed host line with id and v
 
 // --- Mermaid (§3.3) ------------------------------------------------------------------------------
 test("mermaid: diagramError{} is its own allow-listed frame message, also from a compare tab", () => {
-  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", version: 3 }));
-  assert.equal(ok({ type: "diagramError", nonce: "n1", version: 3 }), null);
-  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, version: 3 }), null);
-  // The render it belongs to: the host drops an older render's report.
+  assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", seq: 3 }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", seq: 3 }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: 5, seq: 3 }), null);
+  // The render it belongs to (its seq, #96): the host drops an older render's report.
   assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x" }), null);
-  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: "3" }), null);
-  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", version: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", seq: "3" }), null);
+  assert.equal(ok({ type: "diagramError", nonce: "n1", msg: "x", version: 3 }), null);
+  assert.ok(C.acceptFrameMessage({ source: frameWindow, data: { type: "diagramError", nonce: "n1", msg: "x", seq: 1 } }, { frameWindow, nonce: "n1", readOnly: true }));
 });
 
 test("mermaid: the lazy-load decision — a mermaid canvas always, markdown / slides only with a fence", () => {

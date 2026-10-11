@@ -19,7 +19,8 @@
   const FRAME_TYPES = {
     ready: () => true,
     // normalized (§3.5): Milkdown's parse+serialize of an agent markdown version, ≤ 2 MB.
-    rendered: (m) => Number.isInteger(m.version) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
+    // seq (#96): the host's render number echoed back — two renders of one version differ in it.
+    rendered: (m) => Number.isInteger(m.version) && Number.isInteger(m.seq) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
     // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
@@ -32,7 +33,7 @@
     error: (m) => typeof m.msg === "string",
     // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
     // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
-    diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.version),
+    diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.seq),
     // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
