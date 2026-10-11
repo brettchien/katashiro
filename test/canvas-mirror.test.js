@@ -494,6 +494,67 @@ test("file deleted outside (1B): the canvas is kept, its mirroring stops until r
   assert.equal((await env.mirror.sync(id, { check: true })).state, "changed");
 });
 
+// Real-Chrome finding (2026-10-11): with the content unchanged since the last sync, 重新寫入 took the
+// "nothing new" shortcut and returned "none" without looking at the disk — the file never came back.
+for (const check of [false, true]) {
+  test(`rewrite with unchanged content (check: ${check}): the deleted file is written back, state ok`, async () => {
+    const env = setup();
+    const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+    await env.mirror.sync(id);
+    (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+    assert.equal((await env.mirror.sync(id, { check: true })).state, "deleted");
+    // same text under a newer version while deleted: still nothing to write but the file itself
+    await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Plan", content: "v1\n" });
+    assert.deepEqual(await env.mirror.sync(id), { action: "none", state: "deleted" });
+    const w = await env.mirror.sync(id, { check, rewrite: true });
+    assert.equal(w.action, "write");
+    assert.equal(w.state, "ok");
+    assert.equal(await readText(env.dir, "c/plan.md"), "v1\n");
+    const m = await env.meta(id);
+    assert.equal(m.file.state, "ok");
+    assert.equal(m.fileSyncedVersion, m.version);
+    assert.equal(m.version, 2);
+  });
+}
+
+test("rewrite when the file is back with our content: ok, nothing written", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  assert.equal((await env.mirror.sync(id, { check: true })).state, "deleted");
+  await writeText(env.dir, "c/plan.md", "v1\n");                        // git checkout, say
+  const writes = [];
+  const c = await env.dir.getDirectoryHandle("c");
+  const real = c.getFileHandle.bind(c);
+  c.getFileHandle = async (name, opts) => { if (opts && opts.create) writes.push(name); return real(name, opts); };
+  assert.deepEqual(await env.mirror.sync(id, { rewrite: true }), { action: "none", state: "ok" });
+  assert.deepEqual(writes, []);
+  assert.equal(await readText(env.dir, "c/plan.md"), "v1\n");
+  const m = await env.meta(id);
+  assert.equal(m.file.state, "ok");
+  assert.equal(m.fileSyncedVersion, m.version);
+});
+
+test("rewrite when the file is back changed outside: not overwritten, the latest goes to a conflict file", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });
+  await env.mirror.sync(id);
+  (await env.dir.getDirectoryHandle("c")).removeEntry("plan.md");
+  assert.equal((await env.mirror.sync(id, { check: true })).state, "deleted");
+  await writeText(env.dir, "c/plan.md", "theirs\n");
+  const r = await env.mirror.sync(id, { rewrite: true });
+  assert.equal(r.action, "conflict");
+  assert.equal(r.state, "changed");
+  assert.match(r.conflictName, /^plan\.katashiro-.+\.md$/);
+  assert.equal(await readText(env.dir, "c/plan.md"), "theirs\n");
+  assert.equal(await readText(env.dir, `c/${r.conflictName}`), "v1\n");
+  // again: the same untouched conflict file is reused, no pile-up
+  const again = await env.mirror.sync(id, { rewrite: true });
+  assert.equal(again.conflictName, r.conflictName);
+  assert.equal(listFiles(await env.dir.getDirectoryHandle("c")).length, 2);
+});
+
 test("deleted on save (no tab check first) also stops; a file put back outside resumes under the usual rules", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1\n" });

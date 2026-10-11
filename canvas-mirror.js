@@ -523,7 +523,8 @@
           if (file === prev && !returning && prev.syncedHash === newHash) {
             // Same content under a newer version (an agent rewrite with the same text): the file
             // still holds the latest, so fileSyncedVersion moves on without writing anything.
-            if (!check) {
+            // 重新寫入 always looks at the disk: the file it is about to write back may be gone.
+            if (!check && !rewrite) {
               if (prev.hash === newHash && stateOf(prev) === "ok") await saveFile(id, prev, meta.version);
               return { action: "none", state: stateOf(prev) };
             }
@@ -532,7 +533,9 @@
             // Fall through and write only when that clobbers nothing: the file is still what we
             // wrote but older (the latest went to a conflict file meanwhile), or there is none yet.
             // A deleted file is only marked (it never deletes the canvas) and stops the mirroring.
-            const behind = (state === "ok" && prev.hash !== newHash) || state === "absent" || (seen === "missing" && rewrite);
+            // 重新寫入 writes unless the file is already ours and current: a missing one is written
+            // back, one changed outside gets the usual conflict file beside it.
+            const behind = (state === "ok" && prev.hash !== newHash) || state === "absent" || (rewrite && seen !== "ok");
             if (!behind) {
               const synced = state === "ok" && prev.hash === newHash ? meta.version : meta.fileSyncedVersion;
               await saveFile(id, { ...prev, state, error: undefined }, synced);

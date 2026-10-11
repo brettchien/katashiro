@@ -743,7 +743,12 @@ is silent, the conservative choice:
   marked `state: "deleted"` ("📁 檔案已刪除，不再同步") and nothing is written for it any more,
   not even on later saves, until the user clicks **📁 重新寫入** in the canvas header (`sync(id,
   { rewrite: true })`), or the file comes back outside (a `git checkout`), after which the usual
-  rules apply (ours → written over, anything else → conflict file). A rename to a new path is not a
+  rules apply (ours → written over, anything else → conflict file). 重新寫入 always looks at the
+  disk, even when the content has not changed since the last sync: a missing file is written back
+  (`state: "ok"`); one already back with our content just resumes ("ok", nothing written); one back
+  but changed outside is not overwritten — the latest goes to the usual conflict file. The header
+  says which happened (real-Chrome finding 2026-10-11: with unchanged content the click did
+  nothing). A rename to a new path is not a
   deletion (Katashiro never wrote there). Outside changes are only detected on
   open in phase 1 (no focus check, diff or import; read-back stays phase 2).
 - Deleting or evicting a canvas leaves its files. A rename removes the old `.md` only when its hash
