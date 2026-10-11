@@ -429,12 +429,16 @@
     // The stale error for a write based on `baseVersion` (under the canvas lock). diffFromBase
     // exists only when the base is the agent's own last write (§3.5).
     async function staleFor(cur, baseVersion) {
-      let diff = null;
-      if (baseVersion === cur.agentVersion) {
-        const got = await storage.get([agentKey(cur.id), latestKey(cur.id)]);
-        if (got[agentKey(cur.id)] != null) diff = unifiedDiff(got[agentKey(cur.id)], got[latestKey(cur.id)] || "");
-      }
-      return new StaleError(cur, baseVersion, diff);
+      return new StaleError(cur, baseVersion, await diffFromAgentCopy(cur, baseVersion));
+    }
+
+    // Unified diff from the agent's last write to the latest (`latest` if already read), or null
+    // when baseVersion is not that write or the agent copy is gone. Under the canvas lock.
+    async function diffFromAgentCopy(cur, baseVersion, latest) {
+      if (baseVersion !== cur.agentVersion) return null;
+      const got = await storage.get([agentKey(cur.id), latestKey(cur.id)]);
+      if (got[agentKey(cur.id)] == null) return null;
+      return unifiedDiff(got[agentKey(cur.id)], latest != null ? latest : (got[latestKey(cur.id)] || ""));
     }
 
     // An agent version on top of `cur` (under the canvas lock): the next revision, authored by the
@@ -460,7 +464,8 @@
      * up-to-date one a PatchError naming the edit. A user's edit is never overwritten: only the
      * matched ranges change.
      * @returns {Promise<{ id, version, created: false, title, kind, content, ranges, rebasedOver }>}
-     *   rebasedOver = { version, author } of the latest when it was past baseVersion, else null.
+     *   rebasedOver = { version, author, diffFromBase } of the latest when it was past baseVersion,
+     *   else null; diffFromBase as in a stale error (null unless baseVersion was the agent's write).
      */
     async function agentPatch({ conversationId, id, baseVersion, edits }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
@@ -468,10 +473,15 @@
       if (!Number.isInteger(baseVersion)) throw new Error("canvas_patch needs `baseVersion` (the version you last read or wrote)");
       const list = validatePatchEdits(edits);
       // The budget is checked before the lock (eviction takes other canvases' locks, §3.6 lock
-      // order), on a lock-free dry run; a dry run that fails needs no room (the locked run decides).
+      // order), on a lock-free dry run; a dry run that fails, or a patch the locked run will refuse
+      // (another conversation's canvas, an image or html one), needs no room. The locked run can
+      // still succeed where the dry run missed (a normalization landing in between): that write
+      // skips the budget and may go over by one canvas — a soft cap, as with agentWrite (§3.6).
       {
         const got = await storage.get([metaKey(id), latestKey(id)]);
-        const dry = got[metaKey(id)] ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
+        const m = got[metaKey(id)];
+        const patchable = m && m.conversationId === conversationId && (m.kind === "markdown" || m.kind === "slides");
+        const dry = patchable ? planPatch(got[latestKey(id)] == null ? "" : got[latestKey(id)], list) : null;
         if (dry && dry.ok) await ensureBudget(utf8Bytes(dry.text), id);
       }
       let result;
@@ -494,10 +504,14 @@
         }
         const bytes = utf8Bytes(plan.text);
         if (bytes > CONTENT_MAX_BYTES) throw new Error(`the patched content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
+        // Rebased: the result carries what the agent did not write (agent copy → latest, before this
+        // patch), so the agentSeenVersion stored below is true. diffFromBase is null when the base is
+        // not the agent's last write (that text is gone; the result tells the agent to canvas_read).
+        const rebasedOver = cur.version === baseVersion ? null
+          : { version: cur.version, author: cur.author, diffFromBase: await diffFromAgentCopy(cur, baseVersion, latest) };
         const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now() });
         result = {
-          id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges,
-          rebasedOver: cur.version !== baseVersion ? { version: cur.version, author: cur.author } : null,
+          id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges, rebasedOver,
         };
       });
       return result;

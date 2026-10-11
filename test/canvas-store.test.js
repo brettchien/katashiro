@@ -563,9 +563,32 @@ test("agentPatch: after a user edit elsewhere it rebases and keeps the user's te
   await s.userSave({ id, baseVersion: 1, content: "## A\nUSER a\n## B\nagent b" });
   const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "agent b", replace: "patched b" }] });
   assert.equal(r.version, 3);
-  assert.deepEqual(r.rebasedOver, { version: 2, author: "user" });
+  assert.deepEqual([r.rebasedOver.version, r.rebasedOver.author], [2, "user"]);
+  assert.match(r.rebasedOver.diffFromBase, /-agent a\n\+USER a/);               // the user's edit, so agentSeenVersion is true
+  assert.doesNotMatch(r.rebasedOver.diffFromBase, /patched/);                   // before the patch
   assert.equal((await s.read({ id })).content, "## A\nUSER a\n## B\npatched b");
   assert.equal(await s.readAgentCopy(id), "## A\nUSER a\n## B\npatched b");     // the latest is the agent's write
+});
+
+test("agentPatch: rebased from a base older than the agent's last write has diffFromBase null", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "x\ny" });
+  await s.userSave({ id, baseVersion: 1, content: "X\ny" });                    // v2
+  await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "y", replace: "Y" }] });   // v3, agent
+  await s.userSave({ id, baseVersion: 3, content: "X!\nY" });                   // v4
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "Y", replace: "Z" }] });
+  assert.equal(r.version, 5);
+  assert.deepEqual(r.rebasedOver, { version: 4, author: "user", diffFromBase: null });
+});
+
+test("agentPatch: a patch the store will refuse (other conversation, image) never reaches the budget", async () => {
+  const asked = [];
+  const { s } = store({ budgetBytes: 10, confirmEvict: async (i) => { asked.push(i); return true; } });
+  const { id } = await s.agentWrite({ conversationId: "c", title: "T", content: "a" });
+  const big = "x".repeat(20);                                                   // over budget if it were checked
+  await assert.rejects(() => s.agentPatch({ conversationId: "other", id, baseVersion: 1, edits: [{ find: "a", replace: big }] }), /another conversation/);
+  assert.deepEqual(asked, []);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "a", replace: big }] }), (e) => e.code === "quota");
 });
 
 test("agentPatch: a miss after the canvas moved on is stale with diffFromBase; up to date it is a patch error; nothing changes either way", async () => {

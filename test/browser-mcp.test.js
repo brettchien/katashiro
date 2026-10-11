@@ -3298,6 +3298,7 @@ test("katashiro.canvas_patch applies find/replace edits as an agent write: card,
   await d.canvas.store.userSave({ id: "cv_000000000001", baseVersion: 2, content: "# T\n\nUSER\n\n" });
   const r2 = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2, edits: [{ find: "# T", replace: "# Title" }] });
   assert.match(r2.content[0].text, /version 4 \(1 edit\)\nrebasedOver: \{"version":3,"author":"user"\}/);
+  assert.match(r2.content[0].text, /\ndiffFromBase \(what changed between your last write and v3, before your edits\):\n[^]*-ALPHA\n\+USER/);
   assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).content, "# Title\n\nUSER\n\n");
 });
 
