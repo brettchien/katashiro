@@ -743,7 +743,12 @@ is silent, the conservative choice:
   marked `state: "deleted"` ("📁 檔案已刪除，不再同步") and nothing is written for it any more,
   not even on later saves, until the user clicks **📁 重新寫入** in the canvas header (`sync(id,
   { rewrite: true })`), or the file comes back outside (a `git checkout`), after which the usual
-  rules apply (ours → written over, anything else → conflict file). A rename to a new path is not a
+  rules apply (ours → written over, anything else → conflict file). 重新寫入 always looks at the
+  disk, even when the content has not changed since the last sync: a missing file is written back
+  (`state: "ok"`); one already back with our content just resumes ("ok", nothing written); one back
+  but changed outside is not overwritten — the latest goes to the usual conflict file. The header
+  says which happened (real-Chrome finding 2026-10-11: with unchanged content the click did
+  nothing). A rename to a new path is not a
   deletion (Katashiro never wrote there). Outside changes are only detected on
   open in phase 1 (no focus check, diff or import; read-back stays phase 2).
 - Deleting or evicting a canvas leaves its files. A rename removes the old `.md` only when its hash
@@ -867,6 +872,10 @@ is silent, the conservative choice:
   dialog prints the full deck. Fallback: print from `canvas.html` with the iframe sized to content.
   The print reload would discard unsaved editor content, so **export is disabled while the editor
   is dirty**, with a "Save first" prompt.
+- A printed document is light: mermaid diagrams are re-rendered with the light theme, their edge
+  labels on an opaque white box (mermaid draws them at half opacity, so the edge line ran through
+  the text), and tables get visible borders (the screen ones are white at 15%). Slides print as
+  they are (dark).
 - **pptx export** (phase 2–3): `pptxgenjs` from **our slide model** (titles, bullets, images,
   code as monospace). **Text must stay editable** (titles, bullets and tables as real text boxes, never one image per slide, the NotebookLM complaint). The result is editable in PowerPoint but **not pixel-faithful**: reveal CSS
   and themes, fragments and transitions are lost. `dom-to-pptx` is the higher-fidelity candidate,

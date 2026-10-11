@@ -112,6 +112,12 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
   .doc pre.hljs code { color: #24292f; }
   .doc .hljs-addition { color: #116329; background: #dafbe1; }
   .doc .hljs-deletion { color: #82071e; background: #ffebe9; }
+  /* The screen borders are white at 15%: invisible on paper. A table prints whole width (no
+     scroller), its rows not split across pages. */
+  .doc table { display: table; overflow: visible; border-collapse: collapse; }
+  .doc th, .doc td { border: 1px solid #d0d7de; padding: 6px 12px; }
+  .doc th { background: #f6f8fa; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .doc tr { break-inside: avoid; }
   /* Diagrams are re-rendered with mermaid's light theme for paper (canvas-frame.js, print). */
   .doc figure.ks-mermaid { overflow: visible; break-inside: avoid; }
   body.mode-mermaid .doc figure.ks-mermaid svg { max-height: none; }

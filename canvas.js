@@ -942,17 +942,33 @@
     return mirror.sync(canvasId, opts).catch(() => {}).then(updateFileStatus);
   }
   // 1B (Brett 2026-10-11): a file deleted outside stops this canvas's mirroring; this writes it again.
+  // Every outcome says something: a click that changes nothing on screen reads as a broken button.
+  function rewriteResult(r) {
+    if (r.action === "write") return { flash: "📁 已重新寫進資料夾，恢復同步" };
+    if ((r.action === "none" || r.action === "adopt") && r.state === "ok") return { flash: "📁 資料夾裡的檔案已經是最新的，恢復同步" };
+    if (r.action === "conflict") {
+      return { notice: `📁 資料夾裡的檔案回來了，但在 Katashiro 外被修改過 — 沒有覆寫它；最新內容另存成 ${r.conflictName || "另一個 .katashiro-<時間>.md"}` };
+    }
+    if (r.action === "held") return { notice: "畫布正在整理格式，稍後再按一次「重新寫入」。" };
+    if (r.action === "skipped") return { notice: "這個畫布不會寫進資料夾。" };
+    if (r.action === "disconnected") return { notice: "資料夾需要重新授權，請先按 Reconnect folder。" };
+    if (r.action === "error") return { notice: `寫入資料夾失敗：${CanvasCore.clipError(r.error)}` };
+    return { notice: `沒有寫入資料夾（${r.action}${r.state ? `，${r.state}` : ""}）。` };
+  }
   rewriteBtn.addEventListener("click", async () => {
     rewriteBtn.disabled = true;
+    let msg;
     try {
-      const r = await mirror.sync(canvasId, { rewrite: true });
-      if (r.action === "write") flash("📁 已重新寫進資料夾，恢復同步");
-      else if (r.action === "disconnected") notice("資料夾需要重新授權，請先按 Reconnect folder。");
-      else if (r.action === "error") notice(`寫入資料夾失敗：${CanvasCore.clipError(r.error)}`);
+      msg = rewriteResult(await mirror.sync(canvasId, { rewrite: true }));
+    } catch (e) {
+      msg = { notice: `寫入資料夾失敗：${CanvasCore.clipError((e && e.message) || e)}` };
     } finally {
       rewriteBtn.disabled = false;
-      updateFileStatus();
+      await updateFileStatus();
     }
+    // After the status update, whose own notice for a new warn state would replace this one.
+    if (msg.flash) flash(msg.flash);
+    else notice(msg.notice);
   });
   reconnectBtn.addEventListener("click", async () => {
     reconnectBtn.disabled = true;

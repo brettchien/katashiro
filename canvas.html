@@ -11,7 +11,7 @@
        content itself; that happens in the sandboxed canvas-frame.html below. -->
   <header class="canvas-header">
     <!-- The canvas gallery (§3.7): every canvas across conversations. -->
-    <button id="canvas-gallery" class="canvas-btn" type="button" title="畫布總覽（所有畫布）">🗂️ 總覽</button>
+    <button id="canvas-gallery" class="canvas-btn" data-icon="🗂️" type="button" title="畫布總覽（所有畫布）">🗂️ 總覽</button>
     <span class="canvas-icon" aria-hidden="true">📄</span>
     <h1 id="canvas-title" class="canvas-title">Canvas</h1>
     <span id="canvas-version" class="canvas-version"></span>
@@ -25,17 +25,17 @@
     <button id="canvas-redo" class="canvas-btn" type="button" title="重做" hidden>↷ 重做</button>
     <button id="canvas-save" class="canvas-btn primary" type="button" title="儲存（Ctrl/⌘+S）" hidden>💾 儲存</button>
     <button id="canvas-cancel" class="canvas-btn" type="button" title="結束編輯" hidden>結束編輯</button>
-    <button id="canvas-revert" class="canvas-btn" type="button" title="還原成 agent 最後寫的版本（只在檢視模式）" hidden>↺ Revert to agent's</button>
-    <button id="canvas-compare" class="canvas-btn" type="button" title="在 Split View 裡並排比較 agent 最後寫的版本（唯讀）" hidden>⇆ Compare with agent's</button>
+    <button id="canvas-revert" class="canvas-btn" data-icon="↺" type="button" title="還原成 agent 最後寫的版本（只在檢視模式）" hidden>↺ Revert to agent's</button>
+    <button id="canvas-compare" class="canvas-btn" data-icon="⇆" type="button" title="在 Split View 裡並排比較 agent 最後寫的版本（唯讀）" hidden>⇆ Compare with agent's</button>
     <!-- Show changes (§3.10): hold the markers of previous → latest instead of fading them; one global switch. -->
-    <button id="canvas-show-changes" class="canvas-btn" type="button" aria-pressed="false" hidden>◐ 顯示變更</button>
-    <button id="canvas-end-compare" class="canvas-btn" type="button" title="關閉這個比較分頁，結束比較" hidden>✕ 結束比較</button>
-    <button id="canvas-send" class="canvas-btn" type="button" title="把你的修改送給 agent" hidden>📤 Send to agent</button>
-    <button id="canvas-ask" class="canvas-btn" type="button" title="針對選取的文字問 agent（或請它修改）" hidden>💬 Ask agent</button>
+    <button id="canvas-show-changes" class="canvas-btn" data-icon="◐" type="button" aria-pressed="false" hidden>◐ 顯示變更</button>
+    <button id="canvas-end-compare" class="canvas-btn" data-icon="✕" type="button" title="關閉這個比較分頁，結束比較" hidden>✕ 結束比較</button>
+    <button id="canvas-send" class="canvas-btn" data-icon="📤" type="button" title="把你的修改送給 agent" hidden>📤 Send to agent</button>
+    <button id="canvas-ask" class="canvas-btn" data-icon="💬" type="button" title="針對選取的文字問 agent（或請它修改）" hidden>💬 Ask agent</button>
     <button id="canvas-download" class="canvas-btn" type="button" title="下載成 .md" hidden>⬇ .md</button>
     <button id="canvas-print" class="canvas-btn" type="button" title="列印／存成 PDF" hidden>🖨 PDF</button>
     <button id="canvas-delete" class="canvas-btn" type="button" title="刪除這個畫布" hidden>🗑 刪除</button>
-    <span class="canvas-banner">Agent-generated content — Katashiro never asks for passwords or keys here.</span>
+    <span class="canvas-banner" title="Agent-generated content — Katashiro never asks for passwords or keys here.">Agent-generated content — Katashiro never asks for passwords or keys here.</span>
   </header>
   <div id="canvas-notice-bar" class="canvas-notice" hidden><span id="canvas-notice"></span><button id="canvas-notice-action" class="canvas-btn" type="button" hidden></button></div>
   <main id="canvas-main" class="canvas-main"></main>
