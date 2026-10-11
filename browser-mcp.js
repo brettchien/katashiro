@@ -2944,8 +2944,8 @@
     "katashiro.canvas_delete": {
       description:
         "Delete a canvas of this conversation (its content and images). The user is asked to confirm " +
-        "in the side panel chat first; if they decline, or do not answer within 2 minutes, nothing is " +
-        "deleted and you get \"declined\". If the canvas changes while they are asked (the user saves it, " +
+        "in the side panel chat first; if they decline, do not answer within 2 minutes, or your turn ends " +
+        "first (the user stops it), nothing is deleted and you get \"declined\". If the canvas changes while they are asked (the user saves it, " +
         "or an agent rewrites it), it is not deleted either (\"changed while asking\"). It cannot be " +
         "undone (there is no version history), so say why you want to delete it.",
       sessionScope: true,
@@ -2965,10 +2965,19 @@
           return errText(`canvas_delete: ${(e && e.message) || e}`);
         }
         if (typeof c.confirmDelete !== "function") return errText("canvas_delete: no way to ask the user here");
-        let ok = false;
-        try { ok = await c.confirmDelete({ id: meta.id, title: meta.title, kind: meta.kind, version: meta.version, author: meta.author }); }
-        catch (_) { ok = false; }
-        if (!ok) return okText(`declined: the user kept canvas "${meta.title}" (${meta.id})`);
+        // confirmDelete resolves true/false, or { ok, state } (the side panel) so a decline can say why.
+        let answer = false;
+        try { answer = await c.confirmDelete({ id: meta.id, title: meta.title, kind: meta.kind, version: meta.version, author: meta.author }); }
+        catch (_) { answer = false; }
+        const ok = answer === true || !!(answer && typeof answer === "object" && answer.ok === true);
+        const state = answer && typeof answer === "object" ? answer.state : null;
+        if (!ok) {
+          // #80 follow-up: a request that arrives after this agent's turn ended is not shown to the
+          // user at all ("skipped"); one still on screen when the turn ended declines ("ended").
+          if (state === "skipped") return okText(`declined: the turn ended before the user was asked; canvas "${meta.title}" (${meta.id}) was not deleted`);
+          if (state === "ended") return okText(`declined: the turn ended before the user answered; canvas "${meta.title}" (${meta.id}) was not deleted`);
+          return okText(`declined: the user kept canvas "${meta.title}" (${meta.id})`);
+        }
         // The user approved deleting THIS version (#80): the question can wait up to 2 minutes, and a
         // save or another agent's write meanwhile is not what they saw. The store re-checks the
         // version under the canvas:<id> lock, in the same critical section as the removal.

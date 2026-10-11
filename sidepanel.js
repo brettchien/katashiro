@@ -213,9 +213,10 @@ class Conn {
         // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel —
         // on a confirm card in this agent's turn, not window.confirm, which froze the whole room
         // (#80). The title is agent text: the card shows it as one plain-text line.
+        // Resolves { ok, state }: the tool tells "the user said no" from "your turn had ended".
         confirmDelete: async ({ id, title, version, author }) => {
           const open = !!(await findCanvasTab(id).catch(() => null));
-          return confirmCard({
+          return confirmOutcome({
             title: `${this.name} 要刪除畫布`,
             lines: [
               `「${title}」（v${version}${author === "user" ? "，含你的修改" : ""}）`,
@@ -224,7 +225,7 @@ class Conn {
               ...(open ? ["這個畫布正開在分頁中：分頁裡未儲存的修改會遺失（編輯中的文字通常會留在畫面上，可先複製）。"] : []),
               "這個動作無法復原。",
             ],
-          }, { conn: this });
+          }, { conn: this, notAskedNote: `${this.name} 的回合已結束，刪除畫布的要求未執行（沒有詢問你）。` });
         },
         // Storage full on this agent's canvas_open / canvas_patch: ask in this agent's turn (#80).
         confirmEvict: (info) => confirmEvictCard(info, this),
@@ -2202,7 +2203,7 @@ function confirmEvictCard({ evict }, conn) {
       ...evict.slice(0, 10).map((e) => `• ${e.title}`),
       ...(evict.length > 10 ? [`…還有 ${evict.length - 10} 個`] : []),
     ],
-  }, { conn });
+  }, { conn, notAskedNote: conn ? `${conn.name} 的回合已結束，清出畫布儲存空間的要求未執行（沒有詢問你）。` : "" });
 }
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
@@ -2736,11 +2737,22 @@ const pendingConfirms = new Set();
 
 /**
  * Ask the user on a card in the chat: in `conn`'s turn while it is in flight, else as its own row.
+ * Asked for an agent (`conn`) whose turn has already ended: no card, declined at once
+ * (ConfirmCore.shouldAsk) — only a small non-interactive note (`notAskedNote`) says what was dropped.
  * @param {{ title: string, lines?: string[], allowLabel?: string, denyLabel?: string, timeoutMs?: number }} spec
- * @returns {Promise<boolean>} true only if the user clicked allow; a timeout, a cleared chat or the
- *   end of `conn`'s turn is false
+ * @returns {Promise<boolean>} true only if the user clicked allow; a timeout, a cleared chat, the
+ *   end of `conn`'s turn, or a turn that had ended before asking is false
  */
-function confirmCard(spec, { conn = null } = {}) {
+function confirmCard(spec, opts) {
+  return confirmOutcome(spec, opts).then((o) => o.ok);
+}
+
+/** confirmCard, resolving { ok, state } (state: allowed / denied / timeout / cancelled / ended / skipped). */
+function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
+  if (!ConfirmCore.shouldAsk({ forAgent: !!conn, turnActive: !!(conn && conn.turnActive) })) {
+    if (notAskedNote) appendSystemMessage(notAskedNote);
+    return Promise.resolve(ConfirmCore.NOT_ASKED);
+  }
   const s = ConfirmCore.normalizeSpec(spec);
   const card = document.createElement("div");
   card.className = "confirm-card pending";
@@ -2813,7 +2825,7 @@ function confirmCard(spec, { conn = null } = {}) {
     messagesList.appendChild(row);
   }
   maybeScroll();
-  return decision.promise;
+  return decision.outcome;
 }
 
 // Every card still waiting resolves as declined (the chat is being cleared).

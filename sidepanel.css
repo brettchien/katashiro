@@ -1412,6 +1412,10 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   text-align: left;
   overflow-wrap: anywhere;
 }
+/* A card on its own row (asked outside an agent's turn) reads like the extension's other notices
+   and agent content: left-aligned and full width, not floated off-centre like a sent message. */
+.message.system:has(> .confirm-card) { align-self: stretch; }
+.message.system > .confirm-card { flex: 1 1 auto; min-width: 0; }
 .confirm-card-head { display: flex; align-items: center; gap: 6px; font-weight: 600; }
 .confirm-card-lock { flex: none; }
 .confirm-card-line { white-space: normal; }

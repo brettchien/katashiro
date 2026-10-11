@@ -106,22 +106,28 @@
   // that holds exactly the saved text plus such paragraphs is reset to the saved text. Not when the
   // user typed while the save was in flight (that text is not saved yet). The cursor stays where it
   // was. Best effort: on any failure the editor just keeps showing the blank lines.
+  // Trailing spaces at a block's end are dropped too, but alone they are invisible: no reset then
+  // (it would eat a space typed just before the next word); with blank lines, they go as well.
   function showSaved(crepe, saved) {
     try {
       const raw = crepe.getMarkdown();
-      if (raw === saved || CanvasCore.cleanEditorMarkdown(raw) !== saved) return;
+      if (raw === saved || CanvasCore.cleanEditorMarkdown(raw) !== saved || CanvasCore.onlyTrailingSpace(raw, saved)) return;
       crepe.editor.action((ctx) => {
         const M = globalThis.KatashiroMilkdown;
         const view = ctx.get("editorView");          // by slice name: the bundle does not export editorViewCtx
         const doc = ctx.get(M.parserCtx)(saved);
         if (!doc) return;
-        // Only empty paragraphs go, so the text before the cursor is the same: put the cursor back
-        // after as many characters (a position would shift by the paragraphs removed before it).
+        // Only empty paragraphs and block-end spaces go, so the text before the cursor is the same
+        // less those spaces: put the cursor back after as many characters (a position would shift
+        // by the paragraphs removed before it).
         // A cursor at the start of a paragraph has the same count as one at the end of the text
         // before it; it stays at the start (#115 review).
         const { state } = view;
-        const offset = state.doc.textBetween(0, state.selection.from).length;
-        const atStart = state.selection.$from.parentOffset === 0;
+        const { $from } = state.selection;
+        const SEP = "\u0001";                         // between blocks; never in the text
+        const offset = CanvasCore.savedTextOffset(state.doc.textBetween(0, state.selection.from, SEP, ""), SEP,
+          $from.parentOffset === $from.parent.content.size);
+        const atStart = $from.parentOffset === 0;
         const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
         const Sel = state.selection.constructor;   // near() is Selection's, inherited by every kind
         tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset, atStart))));

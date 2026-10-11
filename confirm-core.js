@@ -7,6 +7,9 @@
 // "yes" still acts after the asking agent's turn has timed out. A card in the chat blocks nothing,
 // several can be pending at once, an unanswered one declines itself after TIMEOUT_MS, and one asked
 // in an agent's turn declines when that turn ends (sidepanel.js calls end()), so it cannot act late.
+// And one an agent asks after its turn already ended is not shown at all (shouldAsk): the agent's
+// tool calls run one after another, so a second canvas_delete can arrive after the user stopped the
+// turn while the first card was up; a card then would act for a turn that no longer exists.
 // The API is general on purpose (title + lines + labels + timeout), so a later ask_user tool can
 // reuse it; today only canvas_delete and the storage-full eviction ask.
 //
@@ -67,6 +70,19 @@
     ended: { ok: false, text: () => "已拒絕（回合已結束）" },
   };
 
+  /**
+   * Whether to show the card at all. Asked on behalf of an agent (forAgent) outside that agent's
+   * turn → no: the turn that wanted the answer is over (stopped, failed, timed out), so the request
+   * declines without a card ("skipped", NOT_ASKED). A caller that is not an agent (no conn) may ask
+   * any time; its card stands on its own row.
+   */
+  function shouldAsk({ forAgent = false, turnActive = false } = {}) {
+    return !forAgent || !!turnActive;
+  }
+
+  // The outcome of a request shouldAsk turned down: a decline nobody was shown (#80 follow-up).
+  const NOT_ASKED = Object.freeze({ ok: false, state: "skipped" });
+
   function outcomeText(state, spec) {
     const o = OUTCOMES[state];
     return o ? o.text(spec || normalizeSpec()) : "";
@@ -112,5 +128,5 @@
     };
   }
 
-  return { TIMEOUT_MS, TITLE_MAX, LINE_MAX, LINES_MAX, plainText, normalizeSpec, outcomeText, timeoutHint, createDecision };
+  return { TIMEOUT_MS, TITLE_MAX, LINE_MAX, LINES_MAX, NOT_ASKED, plainText, normalizeSpec, shouldAsk, outcomeText, timeoutHint, createDecision };
 });

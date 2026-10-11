@@ -91,6 +91,29 @@
     return null;
   }
 
+  /**
+   * #103 showSaved, with cleanEditorMarkdown dropping trailing spaces at a block's end: how many
+   * characters the cursor is after in the saved text. `before` = the editor's text up to the
+   * cursor with `sep` between blocks (textBetween(0, cursor, sep, "")); `atBlockEnd` = the cursor
+   * is at the end of its block, so the spaces it follows go too. Best effort: a block whose spaces
+   * cleaning keeps (a tight list item) counts a few characters short.
+   */
+  function savedTextOffset(before, sep, atBlockEnd = false) {
+    let t = String(before == null ? "" : before);
+    if (atBlockEnd) t = t.replace(/[ \t]+$/, "");
+    return t.split(sep).map((b, i, all) => (i < all.length - 1 ? b.replace(/[ \t]+$/, "") : b)).join("").length;
+  }
+
+  /**
+   * #103 showSaved: the editor differs from the saved text only by trailing spaces/tabs (what
+   * cleanEditorMarkdown drops at a block's end). Nothing to show then — they are invisible — and
+   * resetting the editor would eat a space the user just typed before the next word.
+   */
+  function onlyTrailingSpace(raw, saved) {
+    const t = (x) => String(x == null ? "" : x).split("\n").map((l) => l.replace(/[ \t]+$/, "")).join("\n");
+    return raw !== saved && t(raw) === t(saved);
+  }
+
   // A key that belongs to an IME composition (Esc there cancels the composition, not edit mode).
   // isComposing, or keyCode 229: some platforms' IMEs send that without isComposing (#115 review).
   const imeKey = (e) => !!e && (e.isComposing === true || e.keyCode === 229);
@@ -228,19 +251,28 @@
    * piles up on every save. Treat such a line as a blank line: drop it (outside code fences, at any indent) and
    * collapse the run of blank lines it leaves. Idempotent. Extra blank lines are not kept (Brett,
    * 2026-10-11: markdown has no empty paragraph; a save of only blank lines says so, no version).
+   * Also outside fences: trailing spaces/tabs go from a line that ends a block — the next line is
+   * blank or there is none — e.g. spaces typed at a paragraph's end (Space to scroll in edit mode).
+   * Inside a paragraph they stay: two trailing spaces before a next line are a hard break.
    */
+  const BR_LINE = /^\s*<br\s*\/?>\s*$/i;
   function cleanEditorMarkdown(text) {
     const lines = String(text == null ? "" : text).split("\n");
     const out = [];
     let fence = null;
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
       // Any indent: a fence inside a nested list item starts 4+ spaces in. Over-matching only skips cleaning.
       const f = /^\s*(`{3,}|~{3,})/.exec(line);
       if (f) {
         if (fence === null) fence = f[1];
         else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
       }
-      if (fence === null && /^\s*<br\s*\/?>\s*$/i.test(line)) continue;
+      if (fence === null && BR_LINE.test(line)) continue;
+      // A next "<br />" line is dropped above and leaves a blank line: it ends the block too.
+      if (fence === null && (i === lines.length - 1 || lines[i + 1].trim() === "" || BR_LINE.test(lines[i + 1]))) {
+        line = line.replace(/[ \t]+$/, "");
+      }
       if (fence === null && line.trim() === "" && out.length && out[out.length - 1].trim() === "") continue;
       out.push(line);
     }
@@ -587,5 +619,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { imeKey, posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, historyButtons, historyStepNote, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, historyButtons, historyStepNote, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

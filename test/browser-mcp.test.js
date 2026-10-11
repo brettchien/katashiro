@@ -3232,6 +3232,24 @@ test("katashiro.canvas_delete: a canvas that changed (or went) while asking is n
   assert.match(g.content[0].text, /^not deleted: .* already deleted while asking/);
 });
 
+test("katashiro.canvas_delete: an { ok, state } answer says why it declined (#80 follow-up)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "a" });
+  const del = () => callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  d.canvas.confirmDelete = async () => ({ ok: false, state: "skipped" });   // turn over before asking
+  assert.match((await del()).content[0].text, /^declined: the turn ended before the user was asked; canvas "Doc" .* was not deleted/);
+  d.canvas.confirmDelete = async () => ({ ok: false, state: "ended" });     // turn over while the card was up
+  assert.match((await del()).content[0].text, /^declined: the turn ended before the user answered/);
+  d.canvas.confirmDelete = async () => ({ ok: false, state: "timeout" });
+  assert.match((await del()).content[0].text, /^declined: the user kept canvas "Doc"/);
+  d.canvas.confirmDelete = async () => ({ ok: "yes", state: "allowed" });  // only ok === true counts
+  assert.match((await del()).content[0].text, /^declined/);
+  assert.equal((await d.canvas.store.list({ conversationId: "c_test" })).length, 1);
+  d.canvas.confirmDelete = async () => ({ ok: true, state: "allowed" });
+  assert.match((await del()).content[0].text, /^deleted canvas "Doc"/);
+});
+
 test("katashiro.canvas_goto: slides only, positive slide, reports what is shown", async () => {
   const { deps: d } = deps({ actMode: false });
   withCanvas(d);
