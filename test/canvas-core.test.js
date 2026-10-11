@@ -287,26 +287,43 @@ test("show changes: the button title follows editing and the compare, not only t
   assert.match(t({ from: "off" }), /上一版到目前版本/);          // e.g. computed while a compare was open
 });
 
-test("↶ / ↷ buttons: view mode on markdown and slides, never in a compare tab; disabled without a step or while one runs", () => {
-  const b = (o) => C.historyButtons({ kind: "markdown", mode: "view", compareView: false, deleted: false, canUndo: true, canRedo: false, busy: false, ...o });
+test("edit-mode ↶ 復原 / ↷ 重做: only while editing, never in a compare tab or a deleted canvas; enabled from the editor's undoState", () => {
+  const b = (o) => C.editUndoButtons({ mode: "edit", compareView: false, deleted: false, canUndo: true, canRedo: false, mac: false, ...o });
   let r = b({});
   assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [true, false, true]);
-  assert.match(r.redo.title, /只在按過 ↶ 之後/);
-  r = b({ canUndo: false, canRedo: true, kind: "slides" });
+  assert.match(r.undo.title, /Ctrl\+Z/);
+  assert.match(r.redo.title, /Ctrl\+Shift\+Z/);
+  assert.match(r.redo.title, /沒有可以重做/);
+  r = b({ canUndo: false, canRedo: true, mac: true });
   assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [true, true, false]);
-  assert.match(r.undo.title, /沒有更舊的版本/);
-  for (const o of [{ mode: "edit" }, { compareView: true }, { deleted: true }, { kind: "mermaid" }, { kind: "image" }]) {
+  assert.match(r.undo.title, /沒有可以復原.*⌘Z/);
+  assert.match(r.redo.title, /⇧⌘Z/);
+  for (const o of [{ mode: "view" }, { compareView: true }, { deleted: true }]) {
     r = b({ canRedo: true, ...o });
     assert.deepEqual([r.show, r.undo.disabled, r.redo.disabled], [false, true, true], JSON.stringify(o));
   }
-  r = b({ canRedo: true, busy: true });
-  assert.deepEqual([r.undo.disabled, r.redo.disabled], [true, true]);
+  // The view-mode version walk (#117) is gone.
+  assert.equal(C.historyButtons, undefined);
+  assert.equal(C.historyStepNote, undefined);
 });
 
-test("↶ / ↷ flash: which version's content, saved as which", () => {
-  assert.equal(C.historyStepNote("undo", { from: 7, version: 9, unchanged: false }), "↶ 回到 v7 的內容（存成 v9）");
-  assert.equal(C.historyStepNote("redo", { from: 8, version: 10, unchanged: false }), "↷ 回到 v8 的內容（存成 v10）");
-  assert.match(C.historyStepNote("undo", { version: 3, unchanged: true }), /^↶ 沒有內容不同的版本/);
+test("editCmd: the host asks the editor only for undo / redo", () => {
+  assert.deepEqual(C.EDIT_CMDS, ["undo", "redo"]);
+  assert.equal(C.isEditCmd("undo"), true);
+  assert.equal(C.isEditCmd("redo"), true);
+  for (const c of ["save", "selectAll", "", undefined, null, "constructor", "toString"]) assert.equal(C.isEditCmd(c), false, String(c));
+});
+
+test("acceptFrameMessage: undoState needs both booleans, and a compare tab refuses it", () => {
+  assert.deepEqual(ok({ type: "undoState", nonce: "n1", canUndo: true, canRedo: false }), { type: "undoState", nonce: "n1", canUndo: true, canRedo: false });
+  for (const bad of [{}, { canUndo: true }, { canRedo: false }, { canUndo: 1, canRedo: 0 }, { canUndo: "true", canRedo: false }]) {
+    assert.equal(ok({ type: "undoState", nonce: "n1", ...bad }), null, JSON.stringify(bad));
+  }
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "undoState", nonce: "n1", canUndo: true, canRedo: true } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+  assert.equal(C.acceptFrameMessage({ source: {}, data: { type: "undoState", nonce: "n1", canUndo: true, canRedo: true } }, { frameWindow, nonce: "n1" }), null);
+  assert.equal(ok({ type: "undoState", nonce: "n2", canUndo: true, canRedo: true }), null);
+  // host → frame only: the frame never sends editCmd
+  assert.equal(ok({ type: "editCmd", nonce: "n1", cmd: "undo" }), null);
 });
 
 test("diffBlocks: a huge rewrite does not run the full LCS; everything between the common ends changes", () => {

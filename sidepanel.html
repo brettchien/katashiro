@@ -137,7 +137,7 @@
           <!-- Canvas version history (ADR docs/adr/canvas.md §3.5): N, canvas:historyMax in chrome.storage.local -->
           <div class="input-group">
             <label for="canvas-history-max">畫布版本紀錄（每個畫布保留幾個版本，1–50）</label>
-            <span class="mode-hint">每個畫布保留最近 N 個版本（完整內容），畫布分頁的 ↶／↷ 用它回到舊的內容；agent 最後寫的版本一律保留。版本紀錄算進畫布的 200 MB 空間。調低後，每個畫布在下一次儲存時才刪掉多的版本。</span>
+            <span class="mode-hint">每個畫布保留最近 N 個版本（完整內容），用於「◐ 顯示變更」（上一版 → 目前版本）和 agent 改寫時的差異；agent 最後寫的版本一律保留。版本紀錄算進畫布的 200 MB 空間。調低後，每個畫布在下一次儲存時才刪掉多的版本。</span>
             <input type="number" id="canvas-history-max" class="agent-input" min="1" max="50" step="1" value="10">
           </div>
 

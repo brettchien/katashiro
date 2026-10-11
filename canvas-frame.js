@@ -4,10 +4,11 @@
 //  in:  render{nonce, kind, version, seq, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
+//  in:  editCmd{cmd: "undo" | "redo"}       (the editor's own history: the edit-mode ↶ / ↷, §3.5)
 //  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
-//       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
+//       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, seq, truncated?}                                    (Ask agent, §3.7)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
@@ -69,7 +70,7 @@
 
   // The editor. Dirty is measured against the text right after loading (already normalized), so
   // opening the editor never makes the canvas look changed; only Ctrl+S / Save sends save{}.
-  let editing = null;                     // { crepe, version, baseline, dirty }
+  let editing = null;                     // { crepe, version, baseline, dirty, undo }
   async function startEdit(content, version) {
     const M = await loadMilkdown();
     doc.hidden = true;
@@ -82,14 +83,51 @@
       try { crepe.destroy(); } catch (_) { /* already gone */ }
       throw new Error("the editor would drop images from this canvas, so editing is off for it");
     }
-    const state = { crepe, version, baseline: editorText(crepe), dirty: false };
+    const state = { crepe, version, baseline: editorText(crepe), dirty: false, undo: null };
     editing = state;
     crepe.on((listener) => listener.markdownUpdated((_ctx, md) => {
       if (editing !== state) return;
       const dirty = CanvasCore.cleanEditorMarkdown(md) !== state.baseline;
       if (dirty !== state.dirty) { state.dirty = dirty; post({ type: "dirty", dirty }); }
+      postUndoState(state);
     }));
+    postUndoState(state);                 // loading the canvas is not a step: nothing to undo yet
   }
+
+  // --- Undo / redo: the editor's own history (§3.5, Brett 2026-10-11: "just use editor's undo/redo").
+  // prosemirror-history's commands and depths, the module crepe's history plugin uses (vendor bundle),
+  // so the host's ↶ / ↷ and Ctrl/⌘+Z in the editor walk the same stack. Agent writes are never on it.
+  function withView(state, fn) {
+    return state.crepe.editor.action((ctx) => fn(ctx.get("editorView")));   // by slice name, as in showSaved
+  }
+  // undoState{} for the host's buttons, posted only when it changed. Called after every doc change
+  // (markdownUpdated), a host command, and a key / pointer release in the editor (an undo that
+  // lands back on the text of 200 ms ago fires no markdownUpdated).
+  function postUndoState(state) {
+    if (!state || editing !== state) return;
+    const M = globalThis.KatashiroMilkdown;
+    let u;
+    try { u = withView(state, (view) => ({ canUndo: M.undoDepth(view.state) > 0, canRedo: M.redoDepth(view.state) > 0 })); }
+    catch (_) { return; }                 // the editor is being torn down
+    if (state.undo && state.undo.canUndo === u.canUndo && state.undo.canRedo === u.canRedo) return;
+    state.undo = u;
+    post({ type: "undoState", ...u });
+  }
+  function runEditCmd(cmd) {
+    const state = editing;
+    if (!state || !CanvasCore.isEditCmd(cmd)) return;
+    const M = globalThis.KatashiroMilkdown;
+    try {
+      withView(state, (view) => {
+        (cmd === "undo" ? M.undo : M.redo)(view.state, view.dispatch);
+        if (!view.hasFocus()) view.focus();   // the host keeps focus here; this is a fallback
+      });
+    } catch (_) { /* nothing to undo, or the editor is gone */ }
+    postUndoState(state);
+  }
+  const undoStateSoon = () => { const state = editing; if (state) setTimeout(() => postUndoState(state), 0); };
+  editorRoot.addEventListener("keyup", undoStateSoon);
+  editorRoot.addEventListener("pointerup", undoStateSoon);
   // The editor's markdown as stored: Milkdown's "<br />" empty-paragraph lines become blank lines.
   function editorText(crepe) {
     return CanvasCore.cleanEditorMarkdown(crepe.getMarkdown());
@@ -742,6 +780,7 @@
       return;
     }
     if (m.type === "requestSave") { requestSave(); return; }
+    if (m.type === "editCmd") { runEditCmd(m.cmd); return; }
     if (m.type === "print") {
       // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
       // reveal's print-pdf layout; give it a moment to lay the pages out. A document's diagrams go
