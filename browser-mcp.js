@@ -18,11 +18,14 @@
 //
 // Dual target: loaded as a classic <script> in sidepanel.html (exposes globalThis.BrowserMcp)
 // and require()'d by the node test suite (module.exports). No bundler, no MIME concerns.
+// Uses canvas-tabs.js (loaded before it in sidepanel.html) for the Split View tab rules it shares
+// with canvas_open beside (#90).
 (function (root, factory) {
-  const mod = factory();
-  if (typeof module !== "undefined" && module.exports) module.exports = mod; // node (test)
+  const isNode = typeof module !== "undefined" && module.exports;
+  const mod = factory(isNode ? require("./canvas-tabs.js") : root.CanvasTabs);
+  if (isNode) module.exports = mod; // node (test)
   else root.BrowserMcp = mod; // extension global
-})(typeof globalThis !== "undefined" ? globalThis : this, function () {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (CanvasTabs) {
   "use strict";
 
   /**
@@ -1859,9 +1862,11 @@
               return errText(`tabs [${picks[0].index}] and [${picks[1].index}] differ in ${mismatch.join(", ")} — ` +
                 "a split needs both in the same window with the same pinned and tab-group state");
             }
-            if (Math.abs(a.index - b.index) !== 1) {
-              // Final position right after `a`: if b sat before a, a shifts left once b is lifted out.
-              await ctx.chrome.tabs.move(b.id, { index: b.index < a.index ? a.index : a.index + 1 });
+            // Final position right after `a` (null: already adjacent) — the same rule canvas_open
+            // beside uses (CanvasTabs.adjacentIndex, #90).
+            const to = CanvasTabs.adjacentIndex(a, b);
+            if (to !== null) {
+              await ctx.chrome.tabs.move(b.id, { index: to });
               moved = ` (tab [${picks[1].index}] was already moved next to tab [${picks[0].index}] — call tabs for the current list)`;
             }
             splitViewId = await ctx.chrome.tabs.createSplit([a.id, b.id]);

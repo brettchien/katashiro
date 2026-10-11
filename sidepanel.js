@@ -2497,7 +2497,8 @@ async function restoreCanvasTab(tabId) {
   }
   const plan = CanvasTabs.planRestore({ canvasTab: tab, record, groups });
   // The record is dropped only once the move worked: a rejected call (e.g. "Tabs cannot be edited
-  // right now" while the user drags a tab) keeps it, so the next sweep tries again.
+  // right now" while the user drags a tab) keeps it, so the next sweep tries again. No cooldown or
+  // attempt cap (Brett, 2026-10-11, #90): retries come only with a canvas_open or a tab event.
   if (plan.action === "group") await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tabId] });
   else if (plan.action === "ungroup") await chrome.tabs.ungroup([tabId]);
   else if (plan.action === "recreate") await addToCanvasGroup(tab);

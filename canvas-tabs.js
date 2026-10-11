@@ -48,8 +48,8 @@
     return { action: "create" };
   }
 
-  // Where to move `b` so it sits right after `a` (split_tabs' rule): if b is before a, a shifts left
-  // once b is lifted out. null = already adjacent.
+  // Where to move `b` so it sits right after `a`: if b is before a, a shifts left once b is lifted
+  // out. null = already adjacent. Shared by canvas_open beside and katashiro.split_tabs (#90).
   function adjacentIndex(a, b) {
     if (Math.abs(a.index - b.index) === 1) return null;
     return b.index < a.index ? a.index : a.index + 1;
