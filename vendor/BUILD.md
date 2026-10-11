@@ -75,8 +75,11 @@ sandboxed `canvas-frame.html` only (when the user clicks Edit, or to normalize a
 never by the panel.
 
 - Source: `@milkdown/crepe@7.22.3` (MIT; transitive deps pinned by the lock file), bundled by
-  esbuild into `crepe.iife.js` (global `KatashiroMilkdown = { Crepe, parserCtx, serializerCtx }`,
-  entry `scripts/vendor-build/entry-crepe.js`) and `crepe.css` (`entry-crepe.css`).
+  esbuild into `crepe.iife.js` (global `KatashiroMilkdown = { Crepe, parserCtx, serializerCtx,
+  undo, redo, undoDepth, redoDepth }`, entry `scripts/vendor-build/entry-crepe.js`) and `crepe.css`
+  (`entry-crepe.css`). `undo` / `redo` / `undoDepth` / `redoDepth` are prosemirror-history's, the
+  same module instance crepe's history plugin uses (one `prosemirror-history` in the lock file), so
+  they act on the editor's own undo stack (the edit-mode ↶ / ↷ buttons, ADR §3.5).
 - `crepe.css` is crepe's `common/style.css` **minus `latex.css`** (it pulls KaTeX fonts by
   `url()`) and the AI / image-block / top-bar styles, plus `frame-dark.css`; it has no `url()` and
   no `@import`. The frame disables those features (ImageBlock, Latex, CodeMirror — which loads
@@ -124,7 +127,7 @@ add316e5136c3ed131ab6dbe99bdd05195f236462093f017426fc439eab64713  highlight.iife
 aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.js
 615ee850cbbb98a0f688b60ed37b21819a3f54c9f3e6f20e33e63693ab74a0c0  reveal/reveal.css
 47bf8605c95d61ad25c23d2e16b7de9aca79c1c5b5f1af33558f87f1faef26d0  reveal/theme-dracula.css
-caca944b724842e308162ef5a4f9b0be7c42ebae033297b768df09608c84b1c5  milkdown/crepe.iife.js
+c47e9f48acc43519c4a7b58f7a27745bbed021d944b58b469ad4459797462016  milkdown/crepe.iife.js
 7d6bb77a0d31140eb36fdec3b9831eaba9eae3f8583564f67f9c413c8f51ac5a  milkdown/crepe.css
 143c1b9345c45963ff429da4bdcd9051316a43522ea9edd7ccb7a87ff947a804  mermaid/mermaid.tiny.js
 ```
