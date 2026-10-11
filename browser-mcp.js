@@ -2786,6 +2786,7 @@
           res = await c.store.agentWrite({
             conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion,
             title: args.title, kind: args.kind, content: args.content, image, caption: args.caption,
+            confirmEvict: c.confirmEvict,                // the eviction card goes to THIS agent (#80)
           });
         } catch (e) {
           if (e && e.code === "stale") {
@@ -2887,7 +2888,7 @@
         if (typeof c.store.agentPatch !== "function") return errText("canvas_patch: not available in this host");
         let res;
         try {
-          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits });
+          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits, confirmEvict: c.confirmEvict });
         } catch (e) {
           if (e && e.code === "stale") {
             const diff = e.diffFromBase == null ? null : String(e.diffFromBase).slice(0, CANVAS_DIFF_MAX);
@@ -2938,8 +2939,10 @@
     "katashiro.canvas_delete": {
       description:
         "Delete a canvas of this conversation (its content and images). The user is asked to confirm " +
-        "in the side panel first; if they decline, nothing is deleted and you get \"declined\". It " +
-        "cannot be undone (there is no version history), so say why you want to delete it.",
+        "in the side panel chat first; if they decline, or do not answer within 2 minutes, nothing is " +
+        "deleted and you get \"declined\". If the canvas changes while they are asked (the user saves it, " +
+        "or an agent rewrites it), it is not deleted either (\"changed while asking\"). It cannot be " +
+        "undone (there is no version history), so say why you want to delete it.",
       sessionScope: true,
       inputSchema: {
         type: "object",
@@ -2961,10 +2964,19 @@
         try { ok = await c.confirmDelete({ id: meta.id, title: meta.title, kind: meta.kind, version: meta.version, author: meta.author }); }
         catch (_) { ok = false; }
         if (!ok) return okText(`declined: the user kept canvas "${meta.title}" (${meta.id})`);
+        // The user approved deleting THIS version (#80): the question can wait up to 2 minutes, and a
+        // save or another agent's write meanwhile is not what they saw. The store re-checks the
+        // version under the canvas:<id> lock, in the same critical section as the removal.
+        let r;
         try {
-          await c.store.remove({ conversationId: c.conversationId(), id: meta.id });
+          r = await c.store.remove({ conversationId: c.conversationId(), id: meta.id, expectVersion: meta.version });
         } catch (e) {
           return errText(`canvas_delete: ${(e && e.message) || e}`);
+        }
+        if (r && r.version == null) return okText(`not deleted: canvas "${meta.title}" (${meta.id}) was already deleted while asking`);
+        if (r && !r.removed) {
+          return okText(`changed while asking, not deleted: canvas "${meta.title}" (${meta.id}) is now v${r.version} ` +
+            `(the user was asked about v${meta.version}); canvas_read it and ask again if it should still go`);
         }
         return okText(`deleted canvas "${meta.title}" (${meta.id})`);
       }

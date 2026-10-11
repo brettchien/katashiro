@@ -3208,6 +3208,25 @@ test("katashiro.canvas_delete asks the user; yes deletes, no keeps (any canvas, 
   assert.match(noAsk.content[0].text, /no way to ask the user/);   // never deletes without asking
 });
 
+test("katashiro.canvas_delete: a canvas that changed (or went) while asking is not deleted (#80)", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "a" });
+  // The user saves while the card waits, then says yes: v2 is not the v1 they were asked about.
+  d.canvas.confirmDelete = async ({ id, version }) => {
+    assert.equal(version, 1);
+    await d.canvas.store.userSave({ id, baseVersion: 1, content: "user edit" });
+    return true;
+  };
+  const r = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  assert.match(r.content[0].text, /^changed while asking, not deleted: .* is now v2 \(the user was asked about v1\)/);
+  assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).content, "user edit");
+  // Deleted elsewhere (canvas tab 🗑) while asking: nothing to do, and the agent is told so.
+  d.canvas.confirmDelete = async ({ id }) => { await d.canvas.store.remove({ id }); return true; };
+  const g = await callTool(d, "katashiro.canvas_delete", { id: "cv_000000000001" });
+  assert.match(g.content[0].text, /^not deleted: .* already deleted while asking/);
+});
+
 test("katashiro.canvas_goto: slides only, positive slide, reports what is shown", async () => {
   const { deps: d } = deps({ actMode: false });
   withCanvas(d);
