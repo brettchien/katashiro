@@ -98,7 +98,7 @@ test("filterRows: content hits only at the row's current rev, with a snippet", (
   assert.equal(G.filterRows(normalized, "budget", contents).length, 0);
 });
 
-test("buildRows: canvases created in an incognito window (noMirror) are not listed", () => {
+test("buildRows: canvases left by incognito windows (noMirror, before #109) are not listed", () => {
   const rows = G.buildRows([meta({ id: "cv_000000000001" }), meta({ id: "cv_000000000002", noMirror: true })], { now: NOW });
   assert.deepEqual(rows.map((r) => r.id), ["cv_000000000001"]);
 });

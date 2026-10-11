@@ -426,6 +426,8 @@
       return lock(`canvas:${id}`, async () => {
         const got = await storage.get([metaKey(id), latestKey(id)]);
         const meta = got[metaKey(id)];
+        // noMirror: left by an incognito panel before #109. Nothing writes it any more, but one may
+        // still sit in storage until the onInstalled cleanup (background.js) removes it: never write it.
         if (!meta || meta.noMirror) return { action: "skipped" };
         const content = got[latestKey(id)] == null ? "" : got[latestKey(id)];
         const prev = fileFor(meta, root.folderId);
@@ -552,7 +554,7 @@
       const metas = Object.values(await CanvasStore.getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k)));
       const counts = {};
       for (const m of metas) {
-        if (!m || m.noMirror) continue;
+        if (!m || m.noMirror) continue;                    // incognito leftover (before #109), see sync()
         const r = await sync(m.id);
         counts[r.action] = (counts[r.action] || 0) + 1;
         if (r.action === "disconnected") break;

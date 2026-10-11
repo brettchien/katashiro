@@ -2169,7 +2169,7 @@
       description:
         "Describe this Katashiro client: version and build (release tag / git sha, or \"dev\" for an " +
         "unstamped unpacked load), install type, extension id, Chrome version, the panel's window " +
-        "(id, incognito), act mode, and which optional permissions are granted. Use it when you " +
+        "(id), act mode, and which optional permissions are granted. Use it when you " +
         "need to know which Katashiro build or capabilities you are talking to — e.g. before " +
         "relying on a recently added tool, or when reporting a bug. Read-only; no page access.",
       // sessionScope: describes the panel/extension, not the active page — works on chrome:// too.
@@ -2187,7 +2187,7 @@
           `Katashiro ${i.version || "?"} (build: ${i.build || "dev"}${i.sha && i.sha !== i.build ? `, sha ${i.sha}` : ""}${i.builtAt ? `, built ${i.builtAt}` : ""})`,
           `install: ${i.installType || "?"}; extension id ${i.extensionId || "?"}`,
           `browser: ${i.browser || "?"}`,
-          `panel window: ${i.windowId == null ? "?" : i.windowId}${i.incognito ? " (incognito)" : ""}`,
+          `panel window: ${i.windowId == null ? "?" : i.windowId}`,
           `act mode: ${i.actMode ? "on (page writes allowed)" : "off (read-only)"}`,
           `optional permissions: ${optText}`
         ];

@@ -2843,7 +2843,7 @@ test("katashiro.client_info reports build, install, browser, window, act mode, o
   d.clientInfo = async () => ({
     version: "2.6.1", build: "v2.6.1", sha: "8d98205", builtAt: "2026-10-10T07:35:10Z",
     installType: "normal", extensionId: "abc", browser: "Chrome 155.0.1.2",
-    windowId: 7, incognito: true, actMode: false, optionalPermissions: { sessions: false }
+    windowId: 7, actMode: false, optionalPermissions: { sessions: false }
   });
   const res = await callTool(d, "katashiro.client_info");
   assert.equal(res.isError, undefined);
@@ -2851,7 +2851,7 @@ test("katashiro.client_info reports build, install, browser, window, act mode, o
   assert.match(text, /^Katashiro 2\.6\.1 \(build: v2\.6\.1, sha 8d98205, built 2026-10-10T07:35:10Z\)/);
   assert.match(text, /install: normal; extension id abc/);
   assert.match(text, /browser: Chrome 155\.0\.1\.2/);
-  assert.match(text, /panel window: 7 \(incognito\)/);
+  assert.match(text, /panel window: 7$/m);
   assert.match(text, /act mode: off/);
   assert.match(text, /optional permissions: sessions not granted/);
 });

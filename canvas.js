@@ -843,6 +843,8 @@
   async function updateFileStatus() {
     const meta = current && current.meta;
     folder = { configured: false };
+    // noMirror: a canvas an incognito panel left before #109 — never mirrored, so no folder status;
+    // read until the onInstalled cleanup (background.js) has removed it.
     if (meta && !meta.noMirror) { try { folder = await CanvasMirror.folderStatus(); } catch (_) { /* no folder */ } }
     const granted = folder.configured && folder.permission === "granted";
     // Until the user reconnects, writes stay in storage and are flushed on reconnect.

@@ -1,6 +1,6 @@
 // canvas-mirror.test.js — ADR docs/adr/canvas.md §3.6 local folder mirror: slugs, path checks,
 // write-through without clobbering outside edits, conflict files, file-missing, rename, assets,
-// incognito, and catch-up — on a fake FileSystemDirectoryHandle.
+// incognito leftovers (noMirror), and catch-up — on a fake FileSystemDirectoryHandle.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const CanvasStore = require("../canvas-store.js");
@@ -112,14 +112,14 @@ function listFiles(dir, prefix = "") {
   return out.sort();
 }
 
-function setup({ noMirror = false, connected = true } = {}) {
+function setup({ connected = true } = {}) {
   const storage = memStorage();
   const lock = memLock();
   let n = 0;
   let t = Date.UTC(2026, 9, 10, 12, 0, 0);
   const now = () => t;
   const store = CanvasStore.createCanvasStore({
-    storage, lock, now, randomHex: () => (++n).toString(16).padStart(12, "0"), noMirror: () => noMirror,
+    storage, lock, now, randomHex: () => (++n).toString(16).padStart(12, "0"),
   });
   const dir = fakeDir();
   const env = { storage, store, dir, folderId: "f1", connected, advance: (ms) => { t += ms; } };
@@ -527,10 +527,10 @@ test("image canvas: the asset by magic bytes under <slug>.assets/<sha256>.<ext>,
   assert.equal(await entryAt(env.dir, "c/vector.assets"), null);
 });
 
-test("incognito canvases (noMirror) are never written", async () => {
-  const env = setup({ noMirror: true });
+test("canvases left by incognito windows (noMirror, before #109) are never written", async () => {
+  const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Secret", content: "x" });
-  assert.equal((await env.meta(id)).noMirror, true);
+  await env.storage.set({ [CanvasStore.metaKey(id)]: { ...(await env.meta(id)), noMirror: true } });
   assert.deepEqual(await env.mirror.sync(id), { action: "skipped" });
   assert.deepEqual(await env.mirror.syncAll(), {});
   assert.deepEqual(listFiles(env.dir), []);
