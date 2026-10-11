@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Pinned inputs for vendor/*.iife.js — see vendor/BUILD.md",
   "dependencies": {
+    "@mermaid-js/tiny": "12.1.0",
     "@milkdown/crepe": "7.22.3",
     "dompurify": "3.4.16",
     "esbuild": "0.28.2",
