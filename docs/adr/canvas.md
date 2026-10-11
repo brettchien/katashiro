@@ -948,6 +948,10 @@ agent's last write is the baseline.
   iframes are shown as **links** only: a click goes through `openLink` (§3.2) and opens a new tab.
   Embedding would need `frame-src` to a third party from the sandbox, a new egress path, and
   YouTube's embed may also require a Referer that an opaque-origin frame does not send.
+- **No cloud publishing (Brett, 2026-10-11).** Publishing a canvas to the cloud is not a Katashiro
+  feature: it is the agent's own capability (`canvas_read` → the agent's own storage and
+  credentials), so Katashiro binds to no host. Agents should confirm with the user before
+  publishing, since it sends canvas content (including user edits) outside the browser.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 
