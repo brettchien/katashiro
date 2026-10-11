@@ -15,7 +15,8 @@
 //     diagram shows its error inline, posts diagramError{} (not error{}), and the canvas still renders;
 //   - a `mermaid` canvas, and a slides canvas with a diagram, render;
 //   - each diagram type in KINDS draws with all of mermaid's text kept through the frame's DOMPurify
-//     pass (foreignObject labels included), and an engine that fails to load is reported, not hung;
+//     pass (foreignObject labels included), hostile HTML labels keep no handler / script URL, and
+//     an engine that fails to load is reported, not hung;
 //   - no Worker is constructed (mermaid-tiny has no ELK) and no CSP violation outside the allow-list;
 //   - re-renders leave no stray SVG / <style> / mermaid temp nodes behind; print re-themes and back;
 //   - Milkdown's normalization (§3.5) keeps ```mermaid fences as they are.
@@ -118,6 +119,12 @@ const KINDS = [
   ["flowchart htmlLabels", "%%{init: {\"htmlLabels\": true}}%%\nflowchart LR\n  A[Alpha] --> B[Beta]\n"],
   ["flowchart.htmlLabels", "%%{init: {\"flowchart\": {\"htmlLabels\": true}}}%%\nflowchart LR\n  C[Gamma] -->|edge| D[Delta]\n"],
 ];
+// HTML labels with hostile markup: whatever mermaid lets through, the frame's pass (which allows
+// HTML in foreignObject) must leave no handler and no script URL; an HTML link still goes to the host.
+const HOSTILE = "%%{init: {\"htmlLabels\": true}}%%\nflowchart LR\n" +
+  "  A[\"<img src=data:image/gif;base64,AAAA onerror=alert(1)><b onclick=alert(2)>bold</b>\"] --> B[\"<a href='javascript:alert(3)'>js</a>\"]\n" +
+  "  B --> C[\"<a href='https://example.com/fo'>fo link</a>\"]\n" +
+  "  C --> D[\"<svg><a href='javascript:alert(4)'><text>s</text></a></svg><math><mi xlink:href='javascript:alert(5)'>m</mi></math>\"]\n";
 const SLIDES = "# Slide one\n\nText\n\n---\n\n## A diagram\n\n```mermaid\nflowchart LR\n  X --> Y --> Z\n```\n";
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
@@ -303,6 +310,32 @@ try {
     else if (!r.raw) fail(`${name}: mermaid drew no text at all`);
     else r.shown === r.raw ? ok(`${name}: all text kept (${r.raw.length} chars${r.fo ? `, ${r.fo} foreignObject` : ""})`) : fail(`${name}: text lost in sanitizing\n  mermaid: ${r.raw.slice(0, 200)}\n  shown:   ${r.shown.slice(0, 200)}`);
   }
+
+  // 6b. Hostile HTML labels (htmlLabels on, so they sit in foreignObject).
+  await page.evaluate((c) => __send("mm", { type: "render", kind: "mermaid", version: 50, content: c }), HOSTILE);
+  await waitFor((m) => m.nonce === "nonce0mm" && m.type === "rendered" && m.version === 50, "hostile rendered");
+  const hz = await mmFrame.evaluate(() => {
+    const box = document.querySelector("#doc figure.ks-mermaid .ks-mermaid-svg");
+    if (!box) return null;
+    const all = Array.from(box.querySelectorAll("*"));
+    return {
+      fo: box.querySelectorAll("foreignObject").length,
+      handlers: all.flatMap((e) => Array.from(e.attributes, (a) => a.name)).filter((n) => /^on/i.test(n)),
+      scriptUrls: all.flatMap((e) => Array.from(e.attributes, (a) => a.value)).filter((v) => /^\s*(java|vb)script:/i.test(v)),
+      foLinks: Array.from(box.querySelectorAll("foreignObject a"), (a) => a.getAttribute("href")),
+      text: box.textContent.replace(/\s+/g, " "),
+    };
+  });
+  !hz ? fail("hostile: not drawn")
+    : hz.fo && !hz.handlers.length && !hz.scriptUrls.length ? ok(`hostile labels: ${hz.fo} foreignObject, no on* attribute, no script URL (links ${JSON.stringify(hz.foLinks)})`)
+    : fail(`hostile labels: ${JSON.stringify(hz)}`);
+  if (hz && hz.foLinks.includes("https://example.com/fo")) {
+    await page.evaluate(() => { window.__msgs = window.__msgs.filter((m) => m.type !== "openLink"); });
+    await mmFrame.evaluate(() => Array.from(document.querySelectorAll("#doc foreignObject a")).find((a) => a.getAttribute("href") === "https://example.com/fo").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true })));
+    const fl = await waitFor((m) => m.nonce === "nonce0mm" && m.type === "openLink", "foreignObject openLink", 5000).catch(() => null);
+    const still = await mmFrame.evaluate(() => location.pathname);
+    fl && fl.url === "https://example.com/fo" && still === "/canvas-frame.html" ? ok("an HTML link in a foreignObject goes to the host as openLink{}, the frame stays put") : fail(`foreignObject link: ${JSON.stringify(fl)} ${still}`);
+  } else fail(`hostile: the https link in a foreignObject was not kept: ${JSON.stringify(hz && hz.foLinks)}`);
 
   // 7. The engine does not load (a frame that has not loaded it yet): every fence keeps its source
   // with a note, one diagramError{} without a diagram number, and the render still completes.

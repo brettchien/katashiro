@@ -182,13 +182,19 @@
   // SVG unless the SVG parent is an integration point, so foreignObject is made one (as mermaid does).
   const SVG_DP = {
     USE_PROFILES: { svg: true, svgFilters: true, html: true }, ADD_TAGS: ["foreignObject"],
-    HTML_INTEGRATION_POINTS: { foreignobject: true }, SANITIZE_DOM: true,
+    HTML_INTEGRATION_POINTS: { foreignobject: true }, SANITIZE_DOM: true, RETURN_DOM_FRAGMENT: true,
   };
+  // Links: markdown.js's global afterSanitizeAttributes hook also runs here, so an HTML <a> in a
+  // foreignObject gets its scheme check. It matches nodeName "A" only, and an SVG <a> is "a": that
+  // one relies on DOMPurify's own URI filter, and on the host's safeLinkUrl + confirm on openLink.
   const diagramSource = new WeakMap();    // <figure class="ks-mermaid"> → its mermaid source
   function setDiagramSvg(fig, svg) {
     let box = fig.querySelector(":scope > .ks-mermaid-svg");
     if (!box) { box = document.createElement("div"); box.className = "ks-mermaid-svg"; fig.prepend(box); }
-    box.innerHTML = DOMPurify.sanitize(svg, SVG_DP);   // replaces the old SVG and its <style>
+    // The sanitized nodes themselves, not a string parsed again: svg / html / foreignObject nesting
+    // is where a re-parse could differ from what DOMPurify checked (mXSS). Replaces the old SVG and
+    // its <style>.
+    box.replaceChildren(DOMPurify.sanitize(svg, SVG_DP));
   }
   function diagramFigure(source, svg) {
     const fig = document.createElement("figure");

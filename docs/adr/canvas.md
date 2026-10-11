@@ -316,7 +316,10 @@ below is built around that.
     DOMPurify as well, a second check behind mermaid's own sanitizing: the svg, svgFilters and html
     profiles, with `foreignObject` added and made an HTML integration point (DOMPurify otherwise
     drops HTML under SVG, which blanked those labels with no error). The HTML in it is held to the
-    same html profile as the markdown sink, and `script-src 'self'` stands behind both.
+    same html profile as the markdown sink, and `script-src 'self'` stands behind both. This is a
+    separate sink from the chat's: `[MD-ADR §3.2]` (pinned config, no relaxing, no svg profile)
+    governs the chat's `renderMarkdownInto` and is unchanged; the canvas diagram config is set
+    apart on purpose. It returns a DOM fragment that is inserted as is, not re-parsed.
   - `@mermaid-js/tiny` leaves out mindmap and architecture (they need cytoscape); such a diagram
     fails like a syntax error. The smoke test draws each other type the tool names and checks that
     the sanitized SVG keeps all of mermaid's text.
