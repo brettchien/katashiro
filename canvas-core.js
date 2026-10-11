@@ -75,6 +75,22 @@
     return m;
   }
 
+  /**
+   * #103 showSaved: where the cursor goes back to after the editor is reset to the saved text.
+   * `runs` = the text nodes in document order ({ pos, len }), `n` = characters before the cursor.
+   * → the position after `n` characters, or null past the end. At a boundary between two text
+   * nodes, the end of the first, unless `atStart` (the cursor was at the start of its paragraph,
+   * #115 review): then the start of the next, so it does not jump back to the paragraph before.
+   */
+  function posAtTextOffset(runs, n, atStart = false) {
+    let left = Math.max(0, n);
+    for (const r of runs || []) {
+      if (left < r.len || (left === r.len && !atStart)) return r.pos + left;
+      left -= r.len;
+    }
+    return null;
+  }
+
   // A report that names an older render than the one in flight (its seq, #96): what it says about
   // that render no longer holds. A report without a seq is about no render in particular.
   const fromOlderRender = (m, renderingSeq) => !!m && Number.isInteger(m.seq) && m.seq !== renderingSeq;
@@ -561,5 +577,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

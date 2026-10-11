@@ -530,3 +530,18 @@ test("error{seq?}: a render failure names its render, and the host drops one fro
   assert.equal(C.fromOlderRender({ type: "error", msg: "CSP" }, 5), false);
   assert.equal(C.fromOlderRender(null, 5), false);
 });
+
+test("posAtTextOffset (#103 showSaved): after n characters; a paragraph start stays a paragraph start (#115 review)", () => {
+  // "ab" at 1..3, "cd" at 6..8 (two paragraphs)
+  const runs = [{ pos: 1, len: 2 }, { pos: 6, len: 2 }];
+  assert.equal(C.posAtTextOffset(runs, 0), 1);
+  assert.equal(C.posAtTextOffset(runs, 1), 2);
+  assert.equal(C.posAtTextOffset(runs, 2), 3);                 // end of "ab"
+  assert.equal(C.posAtTextOffset(runs, 2, true), 6);           // the cursor was at the start of "cd"
+  assert.equal(C.posAtTextOffset(runs, 3, true), 7);           // not at a boundary: same either way
+  assert.equal(C.posAtTextOffset(runs, 4), 8);
+  assert.equal(C.posAtTextOffset(runs, 4, true), null);        // at the start of a paragraph past the text
+  assert.equal(C.posAtTextOffset(runs, 9), null);
+  assert.equal(C.posAtTextOffset(runs, 0, true), 1);
+  assert.equal(C.posAtTextOffset([], 0), null);
+});

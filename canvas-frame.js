@@ -117,25 +117,29 @@
         if (!doc) return;
         // Only empty paragraphs go, so the text before the cursor is the same: put the cursor back
         // after as many characters (a position would shift by the paragraphs removed before it).
+        // A cursor at the start of a paragraph has the same count as one at the end of the text
+        // before it; it stays at the start (#115 review).
         const { state } = view;
         const offset = state.doc.textBetween(0, state.selection.from).length;
+        const atStart = state.selection.$from.parentOffset === 0;
         const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
         const Sel = state.selection.constructor;   // near() is Selection's, inherited by every kind
-        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset))));
+        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset, atStart))));
+        // Not an edit of the user's: undo must not step into it (it would bring the blank lines back).
+        tr.setMeta("addToHistory", false);
         view.dispatch(tr);
       });
     } catch (_) { /* keeps the blank lines on screen; the saved text is right either way */ }
   }
-  // The document position right after the first `n` characters of text (the end if it is shorter).
-  function posAtTextOffset(doc, n) {
-    let pos = null;
+  // The document position after the first `n` characters of text (CanvasCore.posAtTextOffset).
+  function posAtTextOffset(doc, n, atStart) {
+    const runs = [];
     doc.descendants((node, p) => {
-      if (pos !== null) return false;
       if (!node.isText) return true;
-      if (n <= node.text.length) pos = p + n;
-      else n -= node.text.length;
+      runs.push({ pos: p, len: node.text.length });
       return false;
     });
+    const pos = CanvasCore.posAtTextOffset(runs, n, atStart);
     return pos === null ? doc.content.size : pos;
   }
   // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
