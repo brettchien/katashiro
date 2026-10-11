@@ -2252,6 +2252,24 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 // Settings → 畫布存到資料夾. Picking and reconnecting need this click (File System Access).
 const canvasFolderStatusEl = document.getElementById("canvas-folder-status");
+// Settings → 畫布版本紀錄 (§3.5): N in chrome.storage.local, where every canvas store (this panel's
+// and each canvas tab's) reads it on every write. Clamped on save (CanvasStore.historyLimit), and the
+// input shows the clamped value; other panels follow through storage.onChanged.
+const canvasHistoryMaxInput = document.getElementById("canvas-history-max");
+if (canvasHistoryMaxInput) {
+  const K = CanvasStore.HISTORY_MAX_KEY;
+  const show = (raw) => { canvasHistoryMaxInput.value = String(CanvasStore.historyLimit(raw)); };
+  chrome.storage.local.get(K).then((got) => show(got[K]), () => show(undefined));
+  canvasHistoryMaxInput.addEventListener("change", () => {
+    const n = CanvasStore.historyLimit(canvasHistoryMaxInput.value);
+    show(n);
+    chrome.storage.local.set({ [K]: n }).catch(() => {});
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[K] && document.activeElement !== canvasHistoryMaxInput) show(changes[K].newValue);
+  });
+}
+
 const canvasFolderPickBtn = document.getElementById("canvas-folder-pick");
 const canvasFolderReconnectBtn = document.getElementById("canvas-folder-reconnect");
 const canvasFolderStopBtn = document.getElementById("canvas-folder-stop");

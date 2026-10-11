@@ -97,11 +97,12 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
 - **◐ 顯示變更 (ADR §3.10):** open a markdown canvas in two tabs (or two canvases) and click
   **◐ 顯示變更** in one: it turns green (`aria-pressed="true"`) in both. Ask the agent to change a
   paragraph: the changed block stays outlined (a removed one keeps its red line) instead of fading
-  after ~4 s; save an edit of your own: the markers stay and now include your edit. A second agent
-  write replaces them with that write's changes. Turn it off: the markers go, and the next agent
-  write fades as before; turn it on again: they come back at once. Reload the tab: after an agent
-  write nothing is marked (the switch's title says why); after a save of yours on top of it, your
-  edits since the agent are marked. While ✏️ editing nothing is marked; with ⇆ Compare open its
+  after ~4 s. The markers always show **previous version → latest, whoever wrote it**: save an
+  edit of your own and they move to your edit only; a second agent write moves them to that
+  write's changes. Turn it off: the markers go, and the next agent write fades as before; turn it
+  on again: they come back at once. Reload the tab: the same blocks are marked (the previous
+  version is stored). On a fresh v1 canvas nothing is marked and the switch's title says there is
+  no previous version. While ✏️ editing nothing is marked; with ⇆ Compare open its
   markers show instead, and these come back when the compare tab closes. The compare tab has no
   switch; image canvases neither. Reload Chrome: the switch keeps its state.
 - **Mermaid diagrams (ADR canvas §3.3):** ask the agent for a markdown canvas with a ```` ```mermaid ````
@@ -122,6 +123,24 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - `click A "https://example.com"`: clicking node A asks before opening the link in a new tab,
     and the canvas frame does not navigate. `click A callback` does nothing (`securityLevel: 'strict'`).
   - The canvas frame's console shows no CSP errors.
+- **Version history, ↶ / ↷ (ADR §3.5):** Settings → **畫布版本紀錄** shows 10; type 0 or 99
+  and leave the field: it shows 1 or 50 (type 10 again afterwards). Let the agent write a markdown
+  canvas, then save three edits (v1 agent, v2–v4 yours). In the canvas header **↶** is enabled and
+  **↷** disabled (hover: "只在按過 ↶ 之後可用"). Click ↶: the canvas shows v3's text, the header
+  says v5（你的修改） and the notice flashes "↶ 回到 v3 的內容（存成 v5）". ↶ again → v2's text as v6;
+  ↷ → v3's text as v7; ↷ → v4's text as v8, and ↷ is disabled again. ↶ down to v1 (the agent's)
+  disables ↶. Save an edit: ↷ is disabled (the walk ended) and ↶ starts again from your save. The
+  ↶ / ↷ buttons are hidden while ✏️ editing, in a ⇆ compare tab, and on mermaid / image canvases.
+  With the folder mirror on, each step rewrites the `.md` file. **Revert to agent's** now says
+  "之後可以按 ↶ 回到你目前的內容。" and ↶ after it brings your text back. Set N to 2, save a few
+  more edits: in DevTools (canvas tab) `chrome.storage.local.get(null)` shows only
+  `canvas:<id>:v:<n>` keys for the versions in `meta.history` (the previous one plus the agent's
+  last write, which is never trimmed), and the gallery's size column shrinks accordingly. An
+  agent write with a stale `baseVersion` that is one of your saves still in history returns a
+  `diffFromBase`. A canvas created before this version (no `meta.history`) keeps working: ↶
+  reaches its agent copy, and its next save moves `canvas:<id>:agent` to `canvas:<id>:v:<n>`.
+  With an image canvas rewritten twice, the first image survives the 10-minute image sweep while
+  its version is in history.
 - **Editing a canvas (ADR §3.5):** ✏️ Edit a markdown canvas, press Enter a few times between two
   paragraphs and Save: the notice says nothing changed (markdown keeps no extra blank lines) and the
   empty lines disappear from the editor too, with the cursor where it was (#103) — also when it was

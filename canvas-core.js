@@ -455,38 +455,23 @@
   }
 
   // Show changes (§3.10, Brett 2026-10-11): one global switch in the header; while on, the
-  // markers of the latest agent write are held (no fade) and re-applied after every render.
+  // markers are held (no fade) and re-applied after every render.
   const SHOW_CHANGES_KEY = "canvas:showChanges";
   // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
   const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
 
   /**
-   * The baseline after a render: `shown` = { agentVersion, kind, content } last rendered in this tab
-   * (null at load), `next` = { agentVersion, kind, content } about to render. An agent write newer
-   * than what was shown makes the shown text the baseline (what the tab showed before it), even when
-   * it was never rendered here (written while editing, then a user save on top); anything else keeps
-   * `base` (string | null), until the next agent write replaces it.
+   * What the held markers compare the shown canvas with → { against: string | null, from }. The
+   * baseline is the previous version in history (§3.5; Brett 2026-10-11: previous → latest, any
+   * author), `previous` = its text or null. from: "off" (switch off, a compare is open, editing, or
+   * not text), "previous" (marking previous → latest), "same" (nothing differs), "none" (no
+   * previous version: v1, or trimmed).
    */
-  function changesBaseAfter(base, shown, next) {
-    if (!next || !textKind(next.kind)) return null;
-    if (shown && shown.kind !== next.kind) return null;
-    if (shown && typeof shown.content === "string" && (next.agentVersion || 0) > (shown.agentVersion || 0)) return shown.content;
-    return typeof base === "string" ? base : null;
-  }
-
-  /**
-   * What the held markers compare the shown canvas with → { against: string | null, from }.
-   * from: "off" (switch off, a compare is open, editing, or not text), "write" (the baseline kept in
-   * this tab), "agentCopy" (no baseline, e.g. after a reload, but the user saved after the agent:
-   * their edits since the agent's last write), "same" (nothing differs), "none" (nothing to compare).
-   */
-  function heldChanges({ on, comparing, editing, kind, base, author, content, agentCopy }) {
+  function heldChanges({ on, comparing, editing, kind, previous, content }) {
     if (!on || comparing || editing || !textKind(kind)) return { against: null, from: "off" };
-    let against = null, from = "none";
-    if (typeof base === "string") { against = base; from = "write"; }
-    else if (author === "user" && typeof agentCopy === "string") { against = agentCopy; from = "agentCopy"; }
-    if (against !== null && against === content) return { against: null, from: "same" };
-    return { against, from };
+    if (typeof previous !== "string") return { against: null, from: "none" };
+    if (previous === content) return { against: null, from: "same" };
+    return { against: previous, from: "previous" };
   }
 
   /**
@@ -495,12 +480,33 @@
    * not recomputed while either lasts.
    */
   function showChangesTitle({ on, from, editing, comparing }) {
-    if (!on) return "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示（所有畫布分頁）";
+    if (!on) return "顯示變更（關）：agent 寫入時改過的段落亮幾秒後淡出。按一下改成一直標示上一版到目前版本的變更（所有畫布分頁）";
     if (editing) return "顯示變更（開）：編輯時不標示，回到檢視後再標示。按一下關閉";
     if (comparing) return "顯示變更（開）：比較開著時標示的是跟 agent 版本的差異，關閉比較後恢復。按一下關閉";
-    if (from === "agentCopy") return "顯示變更（開）：標示你在 agent 最後寫入之後改過的段落（重新載入後沒有 agent 寫入前的版本可比）";
-    if (from === "none") return "顯示變更（開）：目前沒有 agent 寫入前的版本可比較（重新載入後不保留），下一次 agent 寫入時開始標示";
-    return "顯示變更（開）：一直標示 agent 最近一次寫入前到現在改過的段落，直到下一次寫入。按一下關閉";
+    if (from === "none") return "顯示變更（開）：沒有上一版可比較（這是第一版，或上一版已不在版本紀錄裡）。按一下關閉";
+    if (from === "same") return "顯示變更（開）：目前版本跟上一版內容相同，沒有要標示的。按一下關閉";
+    return "顯示變更（開）：一直標示上一版到目前版本之間改過的段落（不論是 agent 還是你改的）。按一下關閉";
+  }
+
+  /**
+   * The ↶ / ↷ buttons (§3.5) → { show, undo: { disabled, title }, redo: { disabled, title } }.
+   * Shown in view mode on markdown and slides canvases (the kinds a user can save), never in a
+   * compare tab; `canUndo` / `canRedo` from CanvasStore (the walk), `busy` while a step runs.
+   */
+  function historyButtons({ kind, mode, compareView, deleted, canUndo, canRedo, busy }) {
+    const show = !compareView && !deleted && mode === "view" && (kind === "markdown" || kind === "slides");
+    return {
+      show,
+      undo: { disabled: !show || busy || !canUndo, title: canUndo ? "↶ 回到上一個版本的內容（存成新版本）" : "↶ 沒有更舊的版本" },
+      redo: { disabled: !show || busy || !canRedo, title: canRedo ? "↷ 往回走（存成新版本）" : "↷ 只在按過 ↶ 之後可用" },
+    };
+  }
+
+  // The flash after a step: "↶ 回到 v7 的內容（存成 v9）".
+  function historyStepNote(dir, { from, version, unchanged }) {
+    const arrow = dir === "undo" ? "↶" : "↷";
+    if (unchanged) return `${arrow} 沒有內容不同的版本可以${dir === "undo" ? "回到" : "前往"}。`;
+    return `${arrow} 回到 v${from} 的內容（存成 v${version}）`;
   }
 
   /**
@@ -581,5 +587,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { imeKey, posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, showChangesTitle, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { imeKey, posAtTextOffset, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, historyButtons, historyStepNote, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
