@@ -335,7 +335,8 @@
       return (await getOne(imageKey(hash))) || null;
     }
 
-    // Every canvas's meta, across conversations (for the budget). Reads only the meta keys.
+    // Every canvas's meta, across conversations (for the budget and the gallery, §3.7). Reads only
+    // the meta keys.
     async function allMetas() {
       const all = await getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k));
       return Object.values(all).filter((v) => v && typeof v === "object");
@@ -659,7 +660,7 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, userSave, revertToAgent, applyNormalized, list, remove, touch, usage, sweepImages, allMetas };
   }
 
   function indexEntry(meta) {

@@ -10,6 +10,8 @@
   <!-- Trusted host (ADR docs/adr/canvas.md §3.2): title, version, banner. It never renders agent
        content itself; that happens in the sandboxed canvas-frame.html below. -->
   <header class="canvas-header">
+    <!-- The canvas gallery (§3.7): every canvas across conversations. -->
+    <button id="canvas-gallery" class="canvas-btn" type="button" title="畫布總覽（所有畫布）">🗂️ 總覽</button>
     <span class="canvas-icon" aria-hidden="true">📄</span>
     <h1 id="canvas-title" class="canvas-title">Canvas</h1>
     <span id="canvas-version" class="canvas-version"></span>

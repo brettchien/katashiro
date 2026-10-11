@@ -2348,19 +2348,48 @@ async function highlightCanvasBlock(id, req) {
 }
 
 function canvasTabUrl(id) {
-  return chrome.runtime.getURL(`canvas.html?id=${encodeURIComponent(id)}`);
+  return CanvasTabs.canvasTabUrl(chrome.runtime.getURL("canvas.html"), id);
 }
 
 async function findCanvasTab(id) {
   // Match patterns do not cover chrome-extension://, so list tabs and compare URLs (needs "tabs").
-  const want = canvasTabUrl(id);
-  const tabs = await chrome.tabs.query({});
-  return tabs.find((t) => t.url === want || t.pendingUrl === want) || null;
+  // Several tabs of one canvas: the most recently used (§3.1); never a compare tab.
+  return CanvasTabs.pickCanvasTab(await chrome.tabs.query({}), chrome.runtime.getURL("canvas.html"), id);
+}
+
+// Canvas gallery (§3.7): a row click asks the panel of that canvas's conversation to open it, so it
+// goes through openCanvasTab (focus the most recently used tab, or open it in this conversation's
+// canvas group). Only from Katashiro's own canvas-gallery.html; another conversation's canvas is
+// left to that conversation's panel (the gallery opens it itself when no panel answers).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-open") return false;
+  let fromGallery = false;
+  try {
+    const u = new URL(sender && sender.url);
+    fromGallery = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas-gallery.html";
+  } catch (_) { /* no or bad url */ }
+  if (!fromGallery || !CanvasStore.ID_RE.test(String(msg.id))) { sendResponse({ ok: false, error: "not from the Katashiro canvas gallery" }); return false; }
+  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  // Answer once the tab exists, not after grouping: the group queue has no timeout, and a stalled
+  // queue must not make the gallery report a failed open for a tab that is already there.
+  let answered = false;
+  const answer = (r) => { if (!answered) { answered = true; sendResponse(r); } };
+  openCanvasTab(msg.id, { active: true, onTab: () => answer({ ok: true }) })
+    .then(() => answer({ ok: true }), (e) => answer({ ok: false, error: (e && e.message) || String(e) }));
+  return true;
+});
+
+const canvasGalleryBtn = document.getElementById("canvas-gallery-btn");
+if (canvasGalleryBtn) {
+  canvasGalleryBtn.addEventListener("click", () => {
+    CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined }).catch(() => {});
+  });
 }
 
 // Focus the canvas's tab, or open it (in the panel's window, after the active tab) and put it in
 // the conversation's canvas group (§3.1). A tab found by URL stays wherever the user left it.
-async function openCanvasTab(id, { active = true } = {}) {
+// `onTab` is called as soon as the tab is created, before the (cosmetic) grouping.
+async function openCanvasTab(id, { active = true, onTab } = {}) {
   const existing = await findCanvasTab(id);
   if (existing) {
     if (active) {
@@ -2372,6 +2401,7 @@ async function openCanvasTab(id, { active = true } = {}) {
   const opts = { url: canvasTabUrl(id), active };
   if (typeof panelWindowId === "number") opts.windowId = panelWindowId;
   const tab = await chrome.tabs.create(opts);
+  if (onTab) onTab(tab);
   // Grouping is cosmetic: a failure (old Chrome, no tabGroups, the tab already closed) never fails
   // the open. Re-read so callers see the tab's group.
   try {

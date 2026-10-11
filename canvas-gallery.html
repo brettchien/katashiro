@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>畫布總覽 — Katashiro</title>
+  <link rel="stylesheet" href="canvas.css">
+  <link rel="stylesheet" href="canvas-gallery.css">
+</head>
+<body>
+  <!-- Canvas gallery (ADR docs/adr/canvas.md §3.7): every canvas across conversations, from storage
+       metadata only. Titles are agent text: rendered with textContent, never as HTML. -->
+  <header class="canvas-header">
+    <span class="canvas-icon" aria-hidden="true">🗂️</span>
+    <h1 class="canvas-title">畫布總覽</h1>
+    <span id="gallery-count" class="canvas-version"></span>
+    <input id="gallery-search" class="gallery-search" type="search" placeholder="搜尋標題或內容…" autocomplete="off" spellcheck="false" autofocus>
+    <span class="canvas-banner">點一列開啟畫布；🗑 刪除無法復原。</span>
+  </header>
+  <div id="canvas-notice-bar" class="canvas-notice" hidden><span id="canvas-notice"></span></div>
+  <main class="gallery-main">
+    <div class="gallery-head" aria-hidden="true">
+      <span></span><span>標題</span><span>版本</span><span>最後修改</span><span>更新時間</span><span>大小</span><span>對話</span><span></span>
+    </div>
+    <ul id="gallery-list" class="gallery-list"></ul>
+    <p id="gallery-empty" class="gallery-empty" hidden></p>
+  </main>
+  <script src="canvas-store.js"></script>
+  <script src="canvas-core.js"></script>
+  <script src="canvas-tabs.js"></script>
+  <script src="canvas-gallery-core.js"></script>
+  <script src="canvas-gallery.js"></script>
+</body>
+</html>

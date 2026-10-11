@@ -655,6 +655,24 @@ is silent, the conservative choice:
   - **Download as markdown** (phase 1) beside PDF; Word export can come later.
   - **Canvas gallery** (phase 2): one page listing every canvas across conversations, with search,
     so a canvas is findable after its conversation scrolls away.
+    *As implemented (總覽頁):* `canvas-gallery.html`, an extension page like `canvas.html` (not a
+    sandbox page, never web-accessible, §3.2), opened from 🗂️ in the panel header or **🗂️ 總覽**
+    in the canvas header; one gallery tab is reused. Rows come from the metas only (`allMetas()`,
+    the budget's scan), newest first: kind icon, title, version, last author, update time
+    (relative; local absolute on hover), size (latest + agent copy) and conversation (its short
+    id until multi-conversation names exist). Search is NFKC + case folded, every term must match:
+    titles, then the content of markdown/slides canvases, read lazily and cached per version and
+    `normalized` flag (the editor's normalization rewrites `latest` without a version bump)
+    (≤ 300 canvases / 16 MB per pass; the rest by title only, and the page says so). Canvases
+    created in an incognito window (`noMirror`) are not listed: the gallery is a normal-window
+    page, and listing them there would show what incognito promised not to keep. A row asks the
+    panel of that canvas's conversation to open it (`katashiro-canvas-open`, accepted only from
+    `canvas-gallery.html`; the panel answers once the tab exists, before grouping), so it goes
+    through the card's `openCanvasTab`: the most recently used tab of that canvas (`CanvasTabs.pickCanvasTab`, never a compare tab, §3.1), else a new tab in
+    that conversation's group. With no such panel the gallery focuses that tab itself, or opens one
+    ungrouped beside it and says so. 🗑 is the canvas tab's delete (same confirm, `store.remove`):
+    open tabs close themselves unless they hold unsaved edits, and the folder file is kept (§3.6).
+    The list follows `storage.onChanged`.
   - **Agent picks title and icon**: `canvas_open` takes an optional emoji `icon` for the card and
     the tab title.
   - **Quick actions** (phase 2, seen in ChatGPT/Gemini/Mistral): one-click chips in the header

@@ -661,3 +661,16 @@ test("agentPatch runs under the canvas lock: a user save and a patch from the sa
     assert.equal(content, "head\nmiddle\nTAIL");
   }
 });
+
+test("allMetas: every canvas across conversations (the gallery, §3.7), metas only, deletes gone", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c_a", title: "A", content: "aaa" });
+  const b = await s.agentWrite({ conversationId: "c_b", title: "B", content: "bb" });
+  storage.data["canvas:budgetBytes"] = 2 * 1024 * 1024;     // not a canvas
+  const metas = await s.allMetas();
+  assert.deepEqual(metas.map((m) => m.id).sort(), [a.id, b.id].sort());
+  assert.ok(metas.every((m) => m.content === undefined));
+  assert.deepEqual(metas.map((m) => m.conversationId).sort(), ["c_a", "c_b"]);
+  await s.remove({ id: a.id });
+  assert.deepEqual((await s.allMetas()).map((m) => m.id), [b.id]);
+});

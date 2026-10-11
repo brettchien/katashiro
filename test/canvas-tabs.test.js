@@ -149,3 +149,47 @@ test("compareTabProps: right after the canvas tab, same window and pin; backgrou
   assert.deepEqual(T.compareTabProps(canvas({ pinned: true }), "u", true), { url: "u", windowId: 7, index: 6, pinned: true, active: false });
   assert.deepEqual(T.compareTabProps(canvas({}), "u", false), { url: "u", windowId: 7, index: 6, pinned: false, active: true });
 });
+
+test("pickCanvasTab: the most recently used tab of that canvas, never a compare tab or another canvas", () => {
+  const id = "cv_000000000001";
+  const url = T.canvasTabUrl(BASE, id);
+  assert.equal(url, `${BASE}?id=cv_000000000001`);
+  const older = canvas({ id: 10, lastAccessed: 100 });
+  const newer = canvas({ id: 11, lastAccessed: 200 });
+  const compare = canvas({ id: 12, lastAccessed: 999, url: T.compareTabUrl(BASE, id) });
+  const other = canvas({ id: 13, lastAccessed: 999, url: T.canvasTabUrl(BASE, "cv_000000000002") });
+  assert.equal(T.pickCanvasTab([older, compare, newer, other], BASE, id).id, 11);
+  assert.equal(T.pickCanvasTab([compare, other], BASE, id), null);
+  assert.equal(T.pickCanvasTab([], BASE, id), null);
+  // a tab still loading has only pendingUrl; without lastAccessed the first one listed wins
+  assert.equal(T.pickCanvasTab([tab({ id: 20, url: "", pendingUrl: url }), canvas({ id: 21 })], BASE, id).id, 20);
+});
+
+test("isGalleryTab / openGalleryTab: one gallery tab, reused (most recent) or opened in the given window", async () => {
+  const G = "chrome-extension://abc/canvas-gallery.html";
+  assert.ok(T.isGalleryTab(tab({ url: G }), G));
+  assert.ok(T.isGalleryTab(tab({ url: `${G}?q=x` }), G));
+  assert.ok(T.isGalleryTab(tab({ url: "", pendingUrl: `${G}#top` }), G));
+  assert.ok(!T.isGalleryTab(tab({ url: `${G}x` }), G));
+  assert.ok(!T.isGalleryTab(canvas({}), G));
+  assert.ok(!T.isGalleryTab(tab({ url: undefined }), G));
+
+  const calls = [];
+  const api = (tabs) => ({
+    tabs: {
+      query: async () => tabs,
+      update: async (id, p) => { calls.push(["update", id, p]); },
+      create: async (p) => { calls.push(["create", p]); return { id: 99, ...p }; },
+    },
+    windows: { update: async (id, p) => { calls.push(["window", id, p]); } },
+  });
+  const got = await T.openGalleryTab(api([tab({ id: 5, windowId: 2, url: G, lastAccessed: 1 }), tab({ id: 6, windowId: 3, url: G, lastAccessed: 9 })]), G, { windowId: 7 });
+  assert.equal(got.id, 6);
+  assert.deepEqual(calls, [["update", 6, { active: true }], ["window", 3, { focused: true }]]);
+  calls.length = 0;
+  await T.openGalleryTab(api([canvas({})]), G, { windowId: 7 });
+  assert.deepEqual(calls, [["create", { url: G, active: true, windowId: 7 }]]);
+  calls.length = 0;
+  await T.openGalleryTab(api([]), G);
+  assert.deepEqual(calls, [["create", { url: G, active: true }]]);
+});

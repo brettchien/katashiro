@@ -887,6 +887,11 @@
     syncFile({ check: true });
   })();
 
+  // The gallery (§3.7): reuse its tab if one is open, else open it in this window.
+  document.getElementById("canvas-gallery").addEventListener("click", () => {
+    CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html")).catch(() => {});
+  });
+
   // #70: delete. No history to fall back on, so it says it cannot be undone.
   deleteBtn.addEventListener("click", async () => {
     const title = current ? current.meta.title : "";

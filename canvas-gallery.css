@@ -1,0 +1,87 @@
+/* Canvas gallery (canvas-gallery.html, ADR §3.7): canvas.css's header, buttons and notice, plus a
+   scrolling list. One grid for the column heads and every row so the columns line up. */
+.gallery-search {
+  flex: 0 1 320px;
+  min-width: 160px;
+  padding: 4px 10px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.gallery-search:focus { outline: 1px solid #60a5fa; border-color: #60a5fa; }
+
+.gallery-main {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 8px 24px 24px;
+}
+
+.gallery-head,
+.gallery-open {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 52px 88px 120px 72px 84px;
+  gap: 10px;
+  align-items: center;
+}
+.gallery-head {
+  padding: 6px 48px 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gallery-list { list-style: none; margin: 0; padding: 0; }
+.gallery-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.gallery-row:hover { background: rgba(255, 255, 255, 0.04); }
+
+.gallery-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.gallery-open:focus-visible { outline: 1px solid #60a5fa; }
+
+.gallery-icon { font-size: 16px; text-align: center; }
+.gallery-name { min-width: 0; }
+.gallery-title {
+  display: block;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gallery-snippet {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gallery-cell {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+.gallery-delete { flex: 0 0 auto; margin-right: 6px; }
+
+.gallery-empty { color: var(--muted); font-size: 13px; padding: 24px 10px; }
+.gallery-empty[hidden] { display: none; }

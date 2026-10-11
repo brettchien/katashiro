@@ -1,6 +1,7 @@
 // canvas-tabs.js — the canvas tab group and Split View rules (ADR docs/adr/canvas.md §3.1) as pure
 // functions over plain tab / tabGroup objects, so the decisions are unit-tested and sidepanel.js
-// only makes the chrome.* calls. Dual target like canvas-core.js (globalThis.CanvasTabs /
+// only makes the chrome.* calls (openGalleryTab, shared by the panel and the canvas tab, takes
+// `chrome` as a parameter). Dual target like canvas-core.js (globalThis.CanvasTabs /
 // module.exports).
 (function (root, factory) {
   const mod = factory();
@@ -158,5 +159,43 @@
     return { url, windowId: canvasTab.windowId, index: canvasTab.index + 1, pinned: !!canvasTab.pinned, active: !split };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, planCompare, compareTabProps };
+  // --- Finding tabs (§3.1 duplicate-tab rule) -----------------------------------------------------
+  // A canvas tab is canvas.html?id=<id> exactly: a compare tab (&view=agent) never matches.
+  function canvasTabUrl(canvasBase, id) {
+    return `${canvasBase}?id=${encodeURIComponent(id)}`;
+  }
+  // The most recently used of several tabs (lastAccessed, Chrome 121+; else the first one listed).
+  function mostRecent(tabs) {
+    let best = null;
+    for (const t of tabs) if (!best || (t.lastAccessed || 0) > (best.lastAccessed || 0)) best = t;
+    return best;
+  }
+  // The tab the card, the panel and the gallery bring to the front: the most recently used tab of
+  // that canvas (the user may have duplicated it), never a compare tab. null = not open.
+  function pickCanvasTab(tabs, canvasBase, id) {
+    const want = canvasTabUrl(canvasBase, id);
+    return mostRecent((tabs || []).filter((t) => t && (t.url === want || t.pendingUrl === want)));
+  }
+
+  // --- Canvas gallery (§3.7) -----------------------------------------------------------------------
+  // One gallery tab is enough: canvas-gallery.html (any query or fragment) is reused.
+  function isGalleryTab(tab, galleryBase) {
+    const url = tab && (tab.url || tab.pendingUrl);
+    return typeof url === "string" && !!galleryBase && (url === galleryBase || url.startsWith(`${galleryBase}?`) || url.startsWith(`${galleryBase}#`));
+  }
+  // Focus the open gallery tab, or open one (in `windowId` if given). `api` = chrome (tabs, windows),
+  // passed in so the panel and the canvas tab share this and tests can fake it. → the tab.
+  async function openGalleryTab(api, galleryBase, { windowId } = {}) {
+    const open = mostRecent((await api.tabs.query({})).filter((t) => isGalleryTab(t, galleryBase)));
+    if (open) {
+      await api.tabs.update(open.id, { active: true });
+      await api.windows.update(open.windowId, { focused: true });
+      return open;
+    }
+    const opts = { url: galleryBase, active: true };
+    if (windowId != null) opts.windowId = windowId;
+    return api.tabs.create(opts);
+  }
+
+  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, openGalleryTab };
 });

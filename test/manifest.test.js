@@ -47,7 +47,8 @@ test("canvas: the frame is a sandbox page with a no-network CSP; nothing is web-
     "worker-src 'none'", "form-action 'none'", "base-uri 'none'", "img-src data: blob:"]) {
     assert.ok(csp.includes(d), `sandbox CSP lacks ${d}`);
   }
-  // ADR §3.2: canvas pages must never be web_accessible_resources (no framing by web pages).
+  // ADR §3.2: canvas pages (canvas.html, the canvas-gallery.html of §3.7) must never be
+  // web_accessible_resources (no framing by web pages), and the gallery is no sandbox page.
   assert.equal(manifest.web_accessible_resources, undefined);
   // canvas.html (an extension page) may frame only our own pages.
   assert.match(manifest.content_security_policy.extension_pages, /frame-src 'self';/);
