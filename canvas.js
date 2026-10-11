@@ -52,10 +52,18 @@
   });
   // Folder mirror (§3.6): this tab writes its own saves to the folder, so it stays current with
   // the side panel closed. Only while Chrome already grants access; Reconnect folder asks.
+  // An agent markdown write this tab is about to normalize is written once, normalized (#98): the
+  // sync waits for it, bounded (CanvasMirror.createNormalizeHold). A dirty editor renders nothing,
+  // so then there is nothing to wait for here.
+  const normalizeHold = CanvasMirror.createNormalizeHold({
+    rendering: () => !(mode === "edit" && dirty),
+    retry: () => { syncFile(); },
+  });
   const mirror = CanvasMirror.createCanvasMirror({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
     getRoot: () => CanvasMirror.grantedRoot(),
+    holdForNormalization: normalizeHold.hold,
   });
 
   let frame = null;
@@ -195,8 +203,9 @@
   let selection = null;               // { text, truncated } while the user has text selected in the view
   function onSelection(m) {
     // #107: made in an older render (debounced in the frame, it can arrive after startRender
-    // cleared the selection): its text may not be in the version the header would name.
-    if (m.version !== renderVersion) return;
+    // cleared the selection), whose DOM is gone. By seq, not version (#115 review): a re-render of
+    // the same version (§3.5 normalization, two refreshes) replaces the DOM too.
+    if (CanvasCore.fromOlderRender(m, renderingSeq)) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
     updateButtons();
@@ -355,7 +364,12 @@
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
     // Glow on every agent write (§3.10): the frame compares with what it showed before. With 顯示變更
     // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
-    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) msg.glowPrev = true;
+    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) {
+      msg.glowPrev = true;
+      // A canvas_patch (#107): the frame glows exactly the changed text, falling back to the block diff.
+      const ranges = CanvasCore.patchGlowRanges(c.meta);
+      if (ranges) msg.glowRanges = ranges;
+    }
     lastRenderedVersion = c.meta.version;
     const shown = { agentVersion: c.meta.agentVersion, kind: c.meta.kind, content };
     changesBase = CanvasCore.changesBaseAfter(changesBase, lastShown, shown);
@@ -446,14 +460,12 @@
   // the same version (meta and latest written separately → two refreshes) share a version.
   let renderSeq = 0;
   let renderingSeq = 0;
-  let renderVersion = 0;                    // render{version} last sent: selection{} must match (#107)
   let renderFailed = "";
   function startRender(msg) {
     if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
-    renderVersion = msg.version;
     toFrame({ ...msg, seq: renderingSeq });
   }
 
@@ -464,7 +476,11 @@
     const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content };
     const same = c.content === c.latest;
     if (!same && typeof c.latest === "string") { msg.glowAgainst = c.latest; msg.glowHold = true; }
-    else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) msg.glowPrev = true;
+    else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) {
+      msg.glowPrev = true;
+      const ranges = CanvasCore.patchGlowRanges(c.meta);       // same text: the agent copy is the latest
+      if (ranges) msg.glowRanges = ranges;
+    }
     lastRenderedVersion = c.meta.agentVersion;
     notice(same ? "沒有差異：agent 最後寫的版本就是目前的版本（No differences）。" : "");
     startRender(msg);
@@ -649,7 +665,7 @@
   }
   document.addEventListener("keydown", (e) => {
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
-    if (mode === "edit" && e.key === "Escape" && !e.isComposing && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
+    if (mode === "edit" && e.key === "Escape" && !CanvasCore.imeKey(e) && conflictEl.hidden) { e.preventDefault(); requestLeaveEdit(); }
   });
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
 
@@ -702,6 +718,9 @@
         onSelection(m);
         break;
       case "error":
+        // Render N failing after startRender(N+1) says nothing about N+1: it must not fail the goto /
+        // highlight waiting for it, nor mark it failed (#115 review). No seq: a CSP report or a goto.
+        if (CanvasCore.fromOlderRender(m, renderingSeq)) break;
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
         if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
         if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);

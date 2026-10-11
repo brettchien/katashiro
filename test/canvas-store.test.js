@@ -376,6 +376,18 @@ test("budget: an agent write may ask its own confirmEvict (the asking agent's tu
   assert.equal(storeAsked.length, 0);
 });
 
+test("budget: eviction sweeps images once after all removals, not once per canvas (#115 review)", async () => {
+  const names = [];
+  const inner = memLock();
+  const { s } = store({ budgetBytes: 12, confirmEvict: async () => true, lock: (name, fn) => { names.push(name); return inner(name, fn); } });
+  for (const t of ["A", "B", "C"]) await s.agentWrite({ conversationId: "c", title: t, content: "xxxx" });   // 12
+  names.length = 0;
+  await s.agentWrite({ conversationId: "d", title: "D", content: "y".repeat(12) });   // evicts all three
+  assert.equal((await s.usage()).count, 1);
+  // canvas:index: one per removal, one sweep, one index update for D
+  assert.equal(names.filter((n) => n === "canvas:index").length, 3 + 1 + 1);
+});
+
 test("budget: when even evicting everything allowed is not enough, it fails without asking", async () => {
   const asked = [];
   const { s } = store({ budgetBytes: 5, confirmEvict: async (i) => { asked.push(i); return true; } });
@@ -731,6 +743,23 @@ test("agentPatch: an agent write — version, author, agentVersion, index, agent
   assert.deepEqual([m.author, m.agentVersion, m.agentSeenVersion, m.normalized, m.bytes], ["agent", 2, 2, false, Buffer.byteLength(r.content)]);
   assert.equal((await s.list({ conversationId: "c" }))[0].version, 2);
   assert.ok(!(CanvasStore.agentKey(id) in storage.data));
+});
+
+test("agentPatch: meta.patchRanges keeps the exact ranges for the canvas tab's glow; normalization and other writes drop them (#107)", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", kind: "slides", content: "# A\n\nintro\n\n---\n\nbody" });
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, edits: [{ find: "body", replace: "new body" }, { find: "intro", replace: "" }] });
+  assert.deepEqual(r.ranges, [{ start: 5, end: 5 }, { start: 12, end: 20 }]);
+  assert.deepEqual((await s.read({ conversationId: "c", id })).patchRanges, r.ranges);
+  // A full write is not a patch: no ranges, the block diff glows.
+  await s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Doc", kind: "slides", content: "x" });
+  assert.equal("patchRanges" in (await s.read({ conversationId: "c", id })), false);
+  // markdown: the editor's normalization rewrites the text, so the offsets no longer hold.
+  const md = await s.agentWrite({ conversationId: "c", title: "Md", content: "* a\n* b" });
+  await s.agentPatch({ conversationId: "c", id: md.id, baseVersion: 1, edits: [{ find: "b", replace: "B" }] });
+  assert.deepEqual((await s.read({ conversationId: "c", id: md.id })).patchRanges, [{ start: 6, end: 7 }]);
+  await s.applyNormalized({ id: md.id, version: 2, normalized: "- a\n- B\n" });
+  assert.equal("patchRanges" in (await s.read({ conversationId: "c", id: md.id })), false);
 });
 
 test("agentPatch: after a user edit elsewhere it rebases and keeps the user's text (rebasedOver)", async () => {

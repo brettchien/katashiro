@@ -129,6 +129,8 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
   animation: ks-fade-glow var(--ks-ms, 4000ms) ease-in forwards;
 }
 @keyframes ks-fade-glow { to { outline-color: transparent; background-color: transparent; } }
+/* canvas_patch's exact ranges (#107): the changed characters, inline — a thinner box per line. */
+.ks-range.ks-changed { outline-width: 1px; outline-offset: 1px; border-radius: 2px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
 .ks-removed-before { box-shadow: inset 0 3px 0 rgba(248, 113, 113, 0.9); animation: ks-fade-mark var(--ks-ms, 4000ms) ease-in forwards; }
 .ks-removed-after { box-shadow: inset 0 -3px 0 rgba(248, 113, 113, 0.9); animation: ks-fade-mark var(--ks-ms, 4000ms) ease-in forwards; }
 @keyframes ks-fade-mark { to { box-shadow: inset 0 0 0 transparent; } }

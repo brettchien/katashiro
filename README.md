@@ -255,6 +255,9 @@ CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppe
   node scripts/smoke-mermaid.mjs [/tmp/mermaid.png]   # also writes a screenshot of the fixture
 ```
 
+`scripts/smoke-glow-ranges.mjs` (same variables) checks `canvas_patch`'s exact-range glow (ADR
+canvas §3.10) in the real canvas frame.
+
 ## 🧩 Agent skills
 
 Skills in [`skills/`](skills/) teach an agent (running under OpenAB, chatting through Katashiro)

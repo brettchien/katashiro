@@ -4,11 +4,11 @@
 //  in:  render{nonce, kind, version, seq, content, normalizeText?}
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
-//  in:  render{…, glowPrev?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
+//  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
-//  out: ready, rendered{version, seq, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
+//  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, version, truncated?}                                (Ask agent, §3.7)
+//       selection{text, seq, truncated?}                                    (Ask agent, §3.7)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
@@ -117,25 +117,29 @@
         if (!doc) return;
         // Only empty paragraphs go, so the text before the cursor is the same: put the cursor back
         // after as many characters (a position would shift by the paragraphs removed before it).
+        // A cursor at the start of a paragraph has the same count as one at the end of the text
+        // before it; it stays at the start (#115 review).
         const { state } = view;
         const offset = state.doc.textBetween(0, state.selection.from).length;
+        const atStart = state.selection.$from.parentOffset === 0;
         const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
         const Sel = state.selection.constructor;   // near() is Selection's, inherited by every kind
-        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset))));
+        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset, atStart))));
+        // Not an edit of the user's: undo must not step into it (it would bring the blank lines back).
+        tr.setMeta("addToHistory", false);
         view.dispatch(tr);
       });
     } catch (_) { /* keeps the blank lines on screen; the saved text is right either way */ }
   }
-  // The document position right after the first `n` characters of text (the end if it is shorter).
-  function posAtTextOffset(doc, n) {
-    let pos = null;
+  // The document position after the first `n` characters of text (CanvasCore.posAtTextOffset).
+  function posAtTextOffset(doc, n, atStart) {
+    const runs = [];
     doc.descendants((node, p) => {
-      if (pos !== null) return false;
       if (!node.isText) return true;
-      if (n <= node.text.length) pos = p + n;
-      else n -= node.text.length;
+      runs.push({ pos: p, len: node.text.length });
       return false;
     });
+    const pos = CanvasCore.posAtTextOffset(runs, n, atStart);
     return pos === null ? doc.content.size : pos;
   }
   // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
@@ -166,7 +170,7 @@
   // It carries the dirty state as of now: "dirty" is only posted after Milkdown's 200ms debounce,
   // so text typed just before Esc would otherwise be dropped without asking.
   document.addEventListener("keydown", (e) => {
-    if (!editing || e.key !== "Escape" || e.defaultPrevented || e.isComposing || editorRoot.querySelector(EDITOR_POPUPS)) return;
+    if (!editing || e.key !== "Escape" || e.defaultPrevented || CanvasCore.imeKey(e) || editorRoot.querySelector(EDITOR_POPUPS)) return;
     e.preventDefault();
     e.stopPropagation();                  // not selectParentNode as well
     editing.dirty = editorText(editing.crepe) !== editing.baseline;
@@ -391,26 +395,28 @@
       .filter((el) => !el.closest(".ks-note, .ks-mermaid-error") && (el.closest(".ks-mermaid") || el) === el);
     const at = new Map(els.map((el, i) => [el, i]));
     const texts = els.map(() => "");
+    const nodes = els.map(() => []);
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
       const p = n.parentElement;
       if (!p || p.closest(".copy-btn, .ks-note, .ks-mermaid, .ks-mermaid-error")) continue;
       const b = p.closest(BLOCK_SEL);
-      if (b && at.has(b)) texts[at.get(b)] += n.data;
+      if (b && at.has(b)) { texts[at.get(b)] += n.data; nodes[at.get(b)].push(n); }
     }
+    // raw / nodes: the block's own text as it is and its text nodes in order (exact-range glow, #107).
     const out = [];
     els.forEach((el, i) => {
       const mermaid = diagramSource.has(el) ? diagramSource.get(el) : el.matches("pre") && el.querySelector(":scope > code.language-mermaid") ? texts[i] : null;
       if (mermaid !== null) {
         const text = CanvasCore.normText(mermaid);
-        out.push({ el, tag: diagramSource.has(el) ? "mermaid" : "pre", text, key: CanvasCore.mermaidKey(mermaid), heading: false });
+        out.push({ el, tag: diagramSource.has(el) ? "mermaid" : "pre", text, key: CanvasCore.mermaidKey(mermaid), heading: false, raw: texts[i], nodes: nodes[i] });
         return;
       }
       const tag = el.tagName.toLowerCase();
       const text = CanvasCore.normText(texts[i]);
       if (!text && tag !== "hr" && tag !== "img") return;
       const key = tag === "img" ? `img:${el.getAttribute("src") || ""}:${el.getAttribute("alt") || ""}` : `${tag}:${text}`;
-      out.push({ el, tag, text, key, heading: /^h[1-6]$/.test(tag) });
+      out.push({ el, tag, text, key, heading: /^h[1-6]$/.test(tag), raw: texts[i], nodes: nodes[i] });
     });
     return out;
   }
@@ -471,9 +477,85 @@
     }
   }
 
+  // canvas_patch's exact ranges (§3.10, #107): which characters of which shown blocks glow. The
+  // text is rendered again, detached, with marks around the ranges (CanvasCore.markRanges); block
+  // i of that copy is block i of the view, so its marks say which characters of block i changed.
+  // → [{ i, raw, spans, points }] (offsets in the block's own text), or null when the copy's blocks
+  // do not line up with the view's (the caller falls back to the block diff).
+  function rangeGlowPlan(kind, content, ranges, blocks) {
+    if (kind !== "markdown" && kind !== "slides") return null;
+    const marked = CanvasCore.markRanges(content, ranges);
+    if (marked === null) return null;
+    let copy;
+    if (kind === "slides") {
+      copy = CanvasCore.splitSlides(marked).flatMap((t) => {
+        const sec = document.createElement("section");
+        renderMarkdownInto(sec, t, { copyText: copyViaHost });
+        return blocksOf(sec);
+      });
+    } else {
+      const art = document.createElement("article");
+      renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(marked), { copyText: copyViaHost });
+      copy = blocksOf(art);
+    }
+    if (copy.length !== blocks.length) return null;
+    const plan = [];
+    for (let i = 0; i < copy.length; i++) {
+      const d = copy[i], t = CanvasCore.takeMarks(d.raw);
+      const key = d.key.startsWith("mermaid:") ? CanvasCore.mermaidKey(t.text) : d.tag === "img" ? d.key : `${d.tag}:${CanvasCore.normText(t.text)}`;
+      if (key !== blocks[i].key) return null;            // a mark changed the block: not the same document
+      if (t.spans.length || t.points.length) plan.push({ i, raw: t.text, spans: t.spans, points: t.points });
+    }
+    return plan.length ? plan : null;
+  }
+  // Glow the planned characters: each span is wrapped (whitespace-only pieces are left alone: they
+  // may sit between table cells). A block whose text is not exactly the planned one (a diagram, or a
+  // re-render that changed it) glows whole; a deletion with nothing added marks where it was: the
+  // top of the block that now stands there, the bottom of the last block (a deletion at the end),
+  // or the whole block when it was inside its text.
+  function glowPlan(blocks, plan, ms) {
+    for (const p of plan) {
+      const b = blocks[p.i];
+      if (!b) continue;
+      if (!p.spans.length) {
+        const edge = p.points.every((x) => x === 0) ? "ks-removed-before" : p.points.every((x) => x === p.raw.length) ? "ks-removed-after" : null;
+        if (edge) for (const t of b.el.tagName === "TR" ? Array.from(b.el.cells) : [b.el]) mark(t, edge, ms);
+        else mark(b.el, "ks-changed", ms);
+        continue;
+      }
+      if (b.tag === "mermaid" || b.raw !== p.raw) { mark(b.el, "ks-changed", ms); continue; }
+      wrapSpans(b.nodes, p.spans, ms);
+    }
+  }
+  function wrapSpans(nodes, spans, ms) {
+    let off = 0;
+    for (const n of nodes) {
+      const from = off, to = off + n.data.length;
+      off = to;
+      const cuts = spans.map(([s, e]) => [Math.max(s, from) - from, Math.min(e, to) - from]).filter(([s, e]) => s < e && n.data.slice(s, e).trim());
+      if (!cuts.length || !n.parentNode) continue;
+      const frag = document.createDocumentFragment();
+      let at = 0;
+      for (const [s, e] of cuts) {
+        if (s > at) frag.append(n.data.slice(at, s));
+        const span = document.createElement("span");
+        span.className = "ks-range";
+        span.textContent = n.data.slice(s, e);
+        frag.append(span);
+        at = e;
+      }
+      if (at < n.data.length) frag.append(n.data.slice(at));
+      const spansHere = Array.from(frag.querySelectorAll(".ks-range"));
+      n.replaceWith(frag);
+      for (const el of spansHere) mark(el, "ks-changed", ms);
+    }
+  }
+
   let shownKind = "";
   let lastKeys = null;                    // the previous render's keys: what an agent write is compared with
-  let glowMemo = null;                    // { version, before, until }: a same-version re-render keeps its glow
+  // { version, before, until, plan?, keys? }: a same-version re-render keeps its glow (plan: the
+  // exact ranges', re-applied while the blocks are the same).
+  let glowMemo = null;
   function showChanges(m) {
     const units = shownUnits();
     const keys = units.map((u) => u.key);
@@ -483,12 +565,31 @@
     if (typeof m.glowAgainst === "string") { glowDiff(units, unitsOfText(m.kind, m.glowAgainst).map((u) => u.key), m.glowHold === true ? Infinity : GLOW_MS); return; }
     if (m.glowPrev && before) {
       glowMemo = { version: m.version, before, until: Date.now() + GLOW_MS };
+      if (Array.isArray(m.glowRanges) && typeof m.content === "string") {
+        const blocks = rangeBlocks();
+        const plan = rangeGlowPlan(m.kind, m.content, m.glowRanges, blocks);
+        if (plan) {
+          glowMemo.plan = plan;
+          glowMemo.keys = blocks.map((b) => b.key);
+          glowPlan(blocks, plan, GLOW_MS);
+          return;
+        }
+      }
       glowDiff(units, before, GLOW_MS);
       return;
     }
     // §3.5 normalization re-renders the same agent version moments later: keep its glow going.
-    if (glowMemo && glowMemo.version === m.version && Date.now() < glowMemo.until) glowDiff(units, glowMemo.before, glowMemo.until - Date.now());
+    if (glowMemo && glowMemo.version === m.version && Date.now() < glowMemo.until) {
+      const left = glowMemo.until - Date.now();
+      if (glowMemo.plan) {
+        const blocks = rangeBlocks();
+        if (blocks.map((b) => b.key).join("\n") === glowMemo.keys.join("\n")) { glowPlan(blocks, glowMemo.plan, left); return; }
+      }
+      glowDiff(units, glowMemo.before, left);
+    }
   }
+  // The shown blocks the exact ranges map onto: a deck's blocks across its slides, not whole slides.
+  const rangeBlocks = () => blocksOf(shownKind === "slides" ? deck.querySelector(".slides") : doc);
 
   // canvas_highlight (§3.10): find the block by its rendered text, glow it (outline and background
   // only), put the agent's label in the flow just above it, and bring it into view. `check` (the
@@ -581,12 +682,12 @@
   // Ask agent (§3.7): tell the host what the user has selected in the view (rendered text), so it
   // can offer the button; "" when the selection is gone. Debounced (selectionchange fires per
   // pixel of a drag), sent only when it changed, cut at the push cap. Not while editing: the
-  // editor holds unsaved text the agent could not find in the stored canvas. It carries the version
-  // of the render it was made in, so the host can drop one that arrives after a newer render (#107).
+  // editor holds unsaved text the agent could not find in the stored canvas. It carries the seq of
+  // the render it was made in (#107, #96), so the host can drop one that arrives after a newer render.
   const SELECTION_DEBOUNCE_MS = 250;
   let selectionTimer = 0;
   let lastSelection = "";
-  let shownVersion = 0;                   // render{version} of what the view shows
+  let shownSeq = 0;                       // render{seq} of what the view shows
   function postSelection() {
     let text = "";
     if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
@@ -596,8 +697,8 @@
     if (text === lastSelection) return;
     lastSelection = text;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
-    const version = shownVersion;
-    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), version, truncated } : { type: "selection", text, version });
+    const seq = shownSeq;
+    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), seq, truncated } : { type: "selection", text, seq });
   }
   document.addEventListener("selectionchange", () => {
     clearTimeout(selectionTimer);
@@ -675,10 +776,10 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
-    shownVersion = Number.isInteger(m.version) ? m.version : 0;
     lastSelection = "";
     const gen = ++renderGen;
     const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)
+    shownSeq = seq;
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);
@@ -697,7 +798,7 @@
       }
       post(normalized === undefined ? { type: "rendered", version: m.version, seq } : { type: "rendered", version: m.version, seq, normalized });
     }, (err) => {
-      if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err) });   // else superseded
+      if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err), seq });   // else superseded
     });
   });
 

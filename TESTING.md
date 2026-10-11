@@ -60,9 +60,17 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   **💬 Ask agent** appears in the header (not in a compare tab, not while editing, gone when the
   selection is cleared). Click it, type a request: the chat shows your request, then
   `[canvas "…" (cv_…) vN, text selected by the user …]` and the selection in a fence. Ask the
-  agent to change it with `canvas_patch`: the changed blocks glow, the card shows the new
+  agent to change it with `canvas_patch`: exactly the changed words glow (inline, not their
+  paragraph; a deleted paragraph leaves a red line on the next one), the card shows the new
   version. Edit another section yourself and save first: the patch still applies and says
   `rebasedOver`.
+- **Reply-to (#61, the last open item of #62):** hover a message: **↩** shows beside its time (not
+  over a code block's copy button). Click it: a chip above the composer quotes it (✕ cancels, a
+  click on the text jumps to it). Send: your message shows the quote, and a click on the quote
+  scrolls to the original and flashes it. Send two messages before the agent answers and ask it to
+  answer each one separately: its reply arrives as one message per part, each quoting the message it
+  answers, and each with its own **↩**. Reload the panel: the split parts and quotes come back the
+  same. With two agents in a room, ↩ on each agent's reply jumps to that reply, not the other one.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
@@ -116,6 +124,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - The canvas frame's console shows no CSP errors.
 - **Editing a canvas (ADR §3.5):** ✏️ Edit a markdown canvas, press Enter a few times between two
   paragraphs and Save: the notice says nothing changed (markdown keeps no extra blank lines) and the
-  empty lines disappear from the editor too, with the cursor where it was (#103).
+  empty lines disappear from the editor too, with the cursor where it was (#103) — also when it was
+  at the start of the next paragraph, which it keeps; Ctrl+Z then undoes your typing, never brings
+  the blank lines back.
   Esc leaves edit mode with one press, also with the cursor in a table cell and the pointer resting
   on the table (#104); with the slash menu (`/`) or the link editor open, Esc only closes it.

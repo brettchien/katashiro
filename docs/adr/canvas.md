@@ -211,16 +211,18 @@ below is built around that.
   iframe's `load` event, so an attacker page can post first. That is why the allow-lists below stay
   harmless on their own, and why the host renders `error{msg}` only with `textContent`, capped at
   500 characters.
-- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version, seq})`. The frame never
+- **Host → frame:** `postMessage({type:"render", nonce, kind, content, version, seq})` (plus the
+  §3.10 glow fields `glowPrev`, `glowRanges`, `glowAgainst`). The frame never
   fetches anything; everything it shows arrives in this message. `seq` is the host's render number,
   echoed back in `rendered{}` / `diagramError{}`, so two renders of the same version are told apart (#96).
 - **Frame → host — per-frame allow-lists.** The host checks `event.source` against that frame's
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
-  - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
+  - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg, seq?}` (`seq`:
+    the render that failed; one from an older render than the host's latest is dropped), `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, version, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
-    compare tab like `save`; `version` is the render it was made in, and one from an older render is
-    dropped, #107).
+    `selection{text, seq, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    compare tab like `save`; `seq` is the render it was made in, and one from an older render is
+    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
@@ -644,6 +646,15 @@ is silent, the conservative choice:
   still covers a file that appears there after the slug is assigned.
 - `fileSyncedVersion` also moves on when a new version has the same content as the file (an agent
   rewrite with the same text), so the Revert dialog does not under-promise.
+- **One file write per agent markdown write (#98).** Such a write is stored raw and normalized by a
+  canvas tab moments later without a version bump (§3.5); mirrored at once, the file would be
+  written twice. So while a canvas tab of it is open, the panel's and the tab's syncs hold the
+  write (`{action:"held"}`, `CanvasMirror.createNormalizeHold`) until the normalization lands, at
+  most 5 s (just over the tool result's 4 s wait); past that the raw text is written as before, and
+  the normalization is a second write. A new canvas waits too (`canvas_open` opens its tab right
+  after the write; the tab's start check holds while there is no file yet). With no canvas tab open,
+  or a tab with unsaved edits (it renders nothing), it is written at once. A user save is never
+  held, nor 📁 重新寫入, nor the start check of an existing file (it looks for outside changes).
 - Until multi-conversation gives conversations a title, the conversation slug is the slugged
   `conversationId` (`c_…`). Slugs are also capped at 160 UTF-8 bytes, so a conflict file name stays
   under the common 255-byte limit.
@@ -885,7 +896,8 @@ agent's last write is the baseline.
 - **Glow on every agent write (phase 1).** When an agent version renders, `canvas-frame.html`
   compares it with the previous content at **block level** (paragraph, heading, list item, table
   row, slide) and gives new or changed blocks a glow that fades over a few seconds; a removed
-  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly.
+  block leaves a thin marker. For `canvas_patch` the changed ranges are known exactly, and exactly
+  that text glows (below).
 - **"Changes since you last looked" without history.** The content the user last saw is not kept
   (§3.5), so `meta` stores a **block hash list** of the last render the user saw: one short hash
   per block, tens of bytes each, no content. On the next open the new render is hashed the same
@@ -946,9 +958,22 @@ agent's last write is the baseline.
     canvas tab opens the compare view as a normal tab. The compare tab closes itself when no tab of
     that canvas is left. The *"N changes since you last looked"* hash list and `canvas_patch`'s
     exact ranges are not in phase 1 (§5 lists only the three items here; `canvas_patch` is phase 2).
-    *`canvas_patch` as implemented:* a patch is an agent version like any other, so it glows by
-    the same block diff; the exact ranges are computed (`agentPatch` returns them) but not yet
-    sent to the frame.
+    *`canvas_patch` as implemented (exact ranges, #107):* the store keeps the patch's ranges
+    (`planPatch`, offsets in the new text) in `meta.patchRanges`; any other write drops them, and
+    so does the §3.5 normalization (it rewrites the text the offsets point into). While the latest is
+    that agent write, the host adds them to the render as `glowRanges` (`CanvasCore.patchGlowRanges`).
+    The frame glows **exactly the changed text**, inline, not its block: it renders a copy of the
+    text with marks around each range (`CanvasCore.markRanges`), detached, and block *i* of the copy
+    says which characters of shown block *i* changed (`takeMarks`); those characters are wrapped and
+    glow. Marks are rare Unicode punctuation (so `_em_` stays emphasis) and stay out of syntax that
+    would change the document's blocks: a line's leading markers, a fence, a delimiter row, a
+    separator, a table cell's pipes. If the copy's blocks still differ from the view's, the block
+    diff glows as before; a block whose text a mark changed, and a mermaid diagram, glow whole; a
+    deletion marks the block now standing where the text was (its top edge; the last block's bottom
+    edge for a deletion at the end; the whole block when the text went from inside it). The normalization re-render of the same version glows the same
+    characters while its blocks are unchanged. Exact ranges are for the fading glow only: ◐ 顯示變更's
+    held markers and a compare compare whole texts, so they stay block-level.
+    `scripts/smoke-glow-ranges.mjs` checks this in headless Chrome.
   - *◐ 顯示變更 (Brett, 2026-10-11: "the difference disappears after some time").* A header switch
     on markdown and slides canvases (not in a compare tab), stored once for all canvas tabs
     (`canvas:showChanges` in `chrome.storage.local`; open tabs follow through `storage.onChanged`).
