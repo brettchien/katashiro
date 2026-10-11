@@ -9,6 +9,7 @@
 //  out: ready, rendered{version, normalized?}, error{msg}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, truncated?}                                         (Ask agent, §3.7)
+//       diagramError{msg}                                    (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -127,18 +128,149 @@
     }
   });
 
+  // --- Mermaid (§3.3), loaded on first use: a ```mermaid fence in a markdown / slides canvas, or a
+  // mermaid canvas — 2.7 MB, so a canvas without a diagram never loads it. @mermaid-js/tiny has no
+  // ELK: it lays out with dagre on this thread, so worker-src 'none' costs nothing (smoke test,
+  // scripts/smoke-mermaid.mjs). securityLevel 'strict': labels are sanitized and `click` callbacks
+  // are off; a `click X "url"` link is still drawn as an SVG <a>, which onLinkClick turns into openLink.
+  let mermaidLoad = null;
+  function loadMermaid() {
+    if (!mermaidLoad) {
+      mermaidLoad = new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "vendor/mermaid/mermaid.tiny.js";       // 'self' only (sandbox CSP + meta CSP)
+        s.onload = () => (globalThis.mermaid ? resolve(globalThis.mermaid) : reject(new Error("mermaid failed to load")));
+        s.onerror = () => reject(new Error("mermaid failed to load"));
+        document.head.appendChild(s);
+      });
+      mermaidLoad.catch(() => { mermaidLoad = null; });   // a later render may try again
+    }
+    return mermaidLoad;
+  }
+  // Dark like the canvas; a printed document re-renders its diagrams with the light theme. A deck
+  // prints on its own dark slides (reveal's print-pdf layout), so it stays dark.
+  const PRINT_THEME = "default", SCREEN_THEME = "dark";
+  let mermaidTheme = "";
+  let mermaidQueue = Promise.resolve();    // one render at a time: mermaid's config is global
+  let diagramSeq = 0;
+  function renderDiagram(M, source, theme) {
+    const run = mermaidQueue.then(async () => {
+      if (theme !== mermaidTheme) {
+        M.initialize({
+          startOnLoad: false, securityLevel: "strict", theme,
+          // dagre is the only layout in mermaid-tiny; say so, rather than ask for ELK and get a warning.
+          layout: "dagre", state: { layout: "dagre" },
+          // SVG text, no <foreignObject> HTML labels: plain SVG passes DOMPurify's svg profile intact.
+          htmlLabels: false,
+          suppressErrorRendering: true,   // throw instead of drawing mermaid's own error graphic
+          fontFamily: getComputedStyle(document.body).fontFamily,
+        });
+        mermaidTheme = theme;
+      }
+      // A fresh id per render: mermaid scopes the diagram's <style> to it, and removes its temp node.
+      const { svg } = await M.render(`ks-mmd-${++diagramSeq}`, source);
+      return svg;
+    });
+    mermaidQueue = run.catch(() => {});
+    return run;
+  }
+  // Mermaid's SVG goes through DOMPurify too (svg profile), as a second check behind its 'strict'
+  // sanitizing; the frame's meta CSP blocks script either way.
+  const SVG_DP = { USE_PROFILES: { svg: true, svgFilters: true }, SANITIZE_DOM: true };
+  const diagramSource = new WeakMap();    // <figure class="ks-mermaid"> → its mermaid source
+  function setDiagramSvg(fig, svg) {
+    let box = fig.querySelector(":scope > .ks-mermaid-svg");
+    if (!box) { box = document.createElement("div"); box.className = "ks-mermaid-svg"; fig.prepend(box); }
+    box.innerHTML = DOMPurify.sanitize(svg, SVG_DP);   // replaces the old SVG and its <style>
+  }
+  function diagramFigure(source, svg) {
+    const fig = document.createElement("figure");
+    fig.className = "ks-mermaid";
+    diagramSource.set(fig, source);
+    setDiagramSvg(fig, svg);
+    // The copy button copies the diagram's source (through the host, like a code block's).
+    const btn = document.createElement("button");
+    btn.className = "copy-btn";
+    btn.type = "button";
+    btn.textContent = "copy";
+    btn.title = "複製 Mermaid 原始碼";
+    btn.addEventListener("click", () => {
+      const flash = (label) => { btn.textContent = label; setTimeout(() => (btn.textContent = "copy"), 1200); };
+      copyViaHost(source).then(() => flash("copied"), () => flash("failed"));
+    });
+    fig.appendChild(btn);
+    return fig;
+  }
+  // Render every ```mermaid fence under root in place. A bad diagram keeps its source, shows the
+  // error above it (textContent) and is reported as diagramError{}; the rest of the canvas stands.
+  // `gen` is the render it belongs to: a newer render makes it stop.
+  let renderGen = 0;
+  async function renderDiagrams(root, kind, gen, theme) {
+    if (!CanvasCore.wantsMermaid(kind, root)) return;
+    const codes = Array.from(root.querySelectorAll(CanvasCore.MERMAID_SEL));
+    if (!codes.length) return;
+    let M;
+    try { M = await loadMermaid(); } catch (e) {
+      if (gen === renderGen) post({ type: "diagramError", msg: CanvasCore.diagramErrorText(e, 1) });
+      return;
+    }
+    const errors = [];
+    for (const [i, code] of codes.entries()) {
+      const pre = code.parentElement;
+      const source = code.textContent;
+      let svg, err;
+      try { svg = await renderDiagram(M, source, theme); } catch (e) { err = e; }
+      if (gen !== renderGen) return;
+      if (svg !== undefined) { pre.replaceWith(diagramFigure(source, svg)); continue; }
+      const msg = CanvasCore.diagramErrorText(err, i + 1);
+      const note = document.createElement("div");
+      note.className = "ks-mermaid-error";
+      note.setAttribute("role", "note");
+      note.textContent = msg;                       // mermaid's message quotes agent text: textContent only
+      pre.before(note);
+      errors.push(msg);
+    }
+    if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")) });
+  }
+  // Print (§3.8): the rendered diagrams again with another theme, in place (same figures, so glow
+  // and highlight state stay). Failures keep the old SVG.
+  async function rethemeDiagrams(root, theme) {
+    const figs = Array.from(root.querySelectorAll("figure.ks-mermaid"));
+    if (!figs.length) return;
+    const M = await loadMermaid();
+    for (const fig of figs) {
+      try { setDiagramSvg(fig, await renderDiagram(M, diagramSource.get(fig) || "", theme)); } catch (_) { /* keeps the old one */ }
+    }
+  }
+
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
-  function renderMarkdown(content) {
+  function renderMarkdown(content, gen) {
     doc.hidden = false;
     // Older saves may still hold "<br />" lines; never show them as literal text.
     renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
+    return renderDiagrams(doc, "markdown", gen, SCREEN_THEME);
+  }
+
+  // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
+  // shows the source with the error, as in a document).
+  function renderMermaidCanvas(content, gen) {
+    doc.hidden = false;
+    document.body.classList.add("mode-mermaid");
+    const pre = document.createElement("pre");
+    pre.className = "hljs";
+    const code = document.createElement("code");
+    code.className = "language-mermaid";
+    code.textContent = content;
+    pre.appendChild(code);
+    doc.replaceChildren(pre);
+    return renderDiagrams(doc, "mermaid", gen, SCREEN_THEME);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
   // markdown sink; reveal.js only receives finished <section>s (no reveal markdown plugin, which
   // would pass raw HTML through). Re-renders keep the current slide.
   let revealReady = null;
-  function renderSlides(content) {
+  async function renderSlides(content, gen) {
     deck.hidden = false;
     document.body.classList.add("mode-slides");
     const container = deck.querySelector(".slides");
@@ -148,6 +280,9 @@
       return sec;
     });
     container.replaceChildren(...sections);
+    // Diagrams before reveal lays the deck out (it sizes slides by their content).
+    await renderDiagrams(container, "slides", gen, SCREEN_THEME);
+    if (gen !== renderGen) return undefined;
     if (!revealReady) {
       revealReady = Reveal.initialize({
         hash: false, history: false, respondToHashChanges: false,
@@ -182,20 +317,29 @@
   // own text (words inside a nested block belong to that block), so a loose list item is its
   // paragraph and a tight one keeps its words without its sub-list. Keys carry the tag, so h2 → h3
   // counts as a change. Our own notes and copy buttons are not content.
-  const BLOCK_SEL = "h1,h2,h3,h4,h5,h6,p,li,tr,pre,hr,img";
+  // A mermaid diagram is one block keyed by its source (CanvasCore.mermaidKey): its SVG text is not
+  // content, and a failed or not yet rendered fence has the same key as the diagram.
+  const BLOCK_SEL = "h1,h2,h3,h4,h5,h6,p,li,tr,pre,hr,img,figure.ks-mermaid";
   function blocksOf(root) {
-    const els = Array.from(root.querySelectorAll(BLOCK_SEL)).filter((el) => !el.closest(".ks-note"));
+    const els = Array.from(root.querySelectorAll(BLOCK_SEL))
+      .filter((el) => !el.closest(".ks-note, .ks-mermaid-error") && (el.closest(".ks-mermaid") || el) === el);
     const at = new Map(els.map((el, i) => [el, i]));
     const texts = els.map(() => "");
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     for (let n = walk.nextNode(); n; n = walk.nextNode()) {
       const p = n.parentElement;
-      if (!p || p.closest(".copy-btn, .ks-note")) continue;
+      if (!p || p.closest(".copy-btn, .ks-note, .ks-mermaid, .ks-mermaid-error")) continue;
       const b = p.closest(BLOCK_SEL);
       if (b && at.has(b)) texts[at.get(b)] += n.data;
     }
     const out = [];
     els.forEach((el, i) => {
+      const mermaid = diagramSource.has(el) ? diagramSource.get(el) : el.matches("pre") && el.querySelector(":scope > code.language-mermaid") ? texts[i] : null;
+      if (mermaid !== null) {
+        const text = CanvasCore.normText(mermaid);
+        out.push({ el, tag: diagramSource.has(el) ? "mermaid" : "pre", text, key: CanvasCore.mermaidKey(mermaid), heading: false });
+        return;
+      }
       const tag = el.tagName.toLowerCase();
       const text = CanvasCore.normText(texts[i]);
       if (!text && tag !== "hr" && tag !== "img") return;
@@ -209,11 +353,12 @@
   const sectionUnit = (sec) => ({ el: sec, key: blocksOf(sec).map((b) => b.key).join("\n") });
   function shownUnits() {
     if (shownKind === "slides") return slideSections().map(sectionUnit);
-    if (shownKind === "markdown") return blocksOf(doc);
+    if (shownKind === "markdown" || shownKind === "mermaid") return blocksOf(doc);
     return [];
   }
   // Another text's units (the other side of a compare), rendered detached through the same sink.
   function unitsOfText(kind, text) {
+    if (kind === "mermaid") return [{ key: CanvasCore.mermaidKey(text) }];
     if (kind === "slides") {
       return CanvasCore.splitSlides(text).map((t) => {
         const sec = document.createElement("section");
@@ -349,14 +494,20 @@
     e.preventDefault();
     if (editing) return;                  // editing: a click places the cursor; nothing opens
     e.stopPropagation();
-    const href = a.getAttribute("href") || "";
+    // An SVG <a> (a mermaid link) may carry xlink:href instead of href.
+    const href = a.getAttribute("href") || a.getAttributeNS("http://www.w3.org/1999/xlink", "href") || "";
     if (href.startsWith("#")) {
       // In-document anchor: scroll without navigating (a fragment change is not a load anyway).
       const target = href.length > 1 && document.getElementById(decodeURIComponent(href.slice(1)));
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
-    if (href) post({ type: "openLink", url: a.href || href });
+    // An SVG <a>'s `href` property is an SVGAnimatedString (postMessage cannot clone it, so the
+    // message would never leave): resolve the attribute ourselves.
+    let url = href;
+    if (typeof a.href === "string") url = a.href;
+    else { try { url = new URL(href, document.baseURI).href; } catch (_) { /* the host refuses it */ } }
+    if (href) post({ type: "openLink", url });
   }
   document.addEventListener("click", onLinkClick, true);
   document.addEventListener("auxclick", onLinkClick, true);   // middle click
@@ -417,8 +568,17 @@
     if (m.type === "requestSave") { requestSave(); return; }
     if (m.type === "print") {
       // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
-      // reveal's print-pdf layout; give it a moment to lay the pages out.
-      setTimeout(() => { try { window.print(); } finally { post({ type: "printed" }); } }, deck.hidden ? 50 : 800);
+      // reveal's print-pdf layout; give it a moment to lay the pages out. A document's diagrams go
+      // light for the paper first, and dark again after the (blocking) print dialog.
+      const light = deck.hidden && !!doc.querySelector("figure.ks-mermaid");
+      (light ? rethemeDiagrams(doc, PRINT_THEME) : Promise.resolve()).catch(() => {}).then(() => {
+        setTimeout(() => {
+          try { window.print(); } finally {
+            post({ type: "printed" });
+            if (light) rethemeDiagrams(doc, SCREEN_THEME).catch(() => {});
+          }
+        }, deck.hidden ? 50 : 800);
+      });
       return;
     }
     if (m.type === "goto") {
@@ -440,19 +600,22 @@
       // hold: kept until the next glow{} (the host re-sends it after each render); clear: drop held markers.
       clearHeld();
       if (m.clear === true) return;
-      if (!editing && typeof m.against === "string" && (shownKind === "markdown" || shownKind === "slides")) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), m.hold === true ? Infinity : GLOW_MS);
+      if (!editing && typeof m.against === "string" && CanvasCore.textKind(shownKind)) glowDiff(shownUnits(), unitsOfText(shownKind, m.against).map((u) => u.key), m.hold === true ? Infinity : GLOW_MS);
       return;
     }
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
     lastSelection = "";
+    const gen = ++renderGen;
     Promise.resolve().then(() => {
-      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "");
-      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "");
+      if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen);
+      if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen);
+      if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen);
       if (m.kind === "image") return renderImage(m.content);
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
+      if (gen !== renderGen) return;          // superseded while its diagrams rendered: the newer one reports
       try { showChanges(m); } catch (_) { /* the glow is a nicety; the render stands */ }
       // §3.5: the host asks for the normalized form of an agent markdown write (its agent copy).
       let normalized;

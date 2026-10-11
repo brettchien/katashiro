@@ -25,3 +25,8 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal pre.hljs code { max-height: none; color: #c9d1d9; padding: 0; }
 .reveal li.task-list-item { list-style: none; }
 .reveal .copy-btn { font-size: 0.4em; }
+/* A diagram on a slide uses the slide's width (mermaid's inline max-width is its natural size). */
+.reveal figure.ks-mermaid { position: relative; margin: 0.4em 0; text-align: center; }
+.reveal figure.ks-mermaid svg { width: 100%; height: auto; max-width: 100% !important; max-height: 500px; }
+.reveal figure.ks-mermaid:hover .copy-btn { opacity: 1; }
+.reveal .ks-mermaid-error { font-size: 0.45em; text-align: left; }

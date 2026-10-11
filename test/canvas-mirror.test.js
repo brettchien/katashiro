@@ -629,3 +629,12 @@ test("describeState: header text for each state", () => {
   assert.match(M.describeState({ state: "deleted" }).text, /不再同步/);
   assert.equal(M.describeState({ state: "error", error: "x" }).title, "x");
 });
+
+test("a mermaid canvas is mirrored as one ```mermaid fence, longer than any backtick run inside", async () => {
+  assert.equal(M.mermaidMarkdown("graph TD\n  A-->B\n\n"), "```mermaid\ngraph TD\n  A-->B\n```\n");
+  assert.equal(M.mermaidMarkdown("graph TD\n  A[\"````\"]"), "`````mermaid\ngraph TD\n  A[\"````\"]\n`````\n");
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c_abc", title: "Flow", kind: "mermaid", content: "graph TD\n  A-->B\n" });
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  assert.equal(await readText(env.dir, "c_abc/flow.md"), "```mermaid\ngraph TD\n  A-->B\n```\n");
+});

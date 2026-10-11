@@ -25,6 +25,9 @@
         return '<pre class="hljs"><code class="language-' + md.utils.escapeHtml(name) + '">' + out + "</code></pre>\n";
       } catch (_) { /* fall through to plain */ }
     }
+    // Mermaid stays code here (the chat shows it as code); the class lets the canvas frame find the
+    // fences it renders as diagrams (ADR canvas §3.3). A constant class, never the info string.
+    if (name === "mermaid") return '<pre class="hljs"><code class="language-mermaid">' + md.utils.escapeHtml(str) + "</code></pre>\n";
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>\n";
   }
 

@@ -30,6 +30,9 @@
     printed: () => true,
     slide: (m) => Number.isInteger(m.index) && Number.isInteger(m.total) && m.index >= 1 && m.total >= 1,
     error: (m) => typeof m.msg === "string",
+    // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
+    // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
+    diagramError: (m) => typeof m.msg === "string",
     // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
@@ -218,6 +221,29 @@
   // row, code block; one per slide for slides) and these pure functions decide what to glow.
   const normText = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
 
+  // --- Mermaid (§3.3) ---------------------------------------------------------------------------
+  // markdown.js tags a ```mermaid fence's <code> with language-mermaid (other unknown languages
+  // get no class); the frame renders exactly those, and loads the 2.7 MB engine only if there is one.
+  // A `mermaid` canvas is shown as one such fence.
+  const MERMAID_SEL = "pre > code.language-mermaid";
+  /** Does this rendered view need mermaid? `root` = the rendered element (querySelector). */
+  function wantsMermaid(kind, root) {
+    if (kind === "mermaid") return true;
+    if (kind !== "markdown" && kind !== "slides") return false;
+    return !!(root && typeof root.querySelector === "function" && root.querySelector(MERMAID_SEL));
+  }
+  /**
+   * A diagram is one block keyed by its source (§3.10), whether it rendered, failed or is still the
+   * fence (a compare's other side is never rendered): the same source is the same block.
+   */
+  const mermaidKey = (source) => `mermaid:${normText(source)}`;
+  /** The text of a failed diagram for the host (error{} rules: plain text, capped there too). */
+  function diagramErrorText(err, n) {
+    let msg = err && typeof err === "object" ? (err.message || err.str || "") : String(err == null ? "" : err);
+    msg = String(msg).replace(/\r\n?/g, "\n").trim() || "the diagram could not be drawn";
+    return clipError(`mermaid diagram ${n}: ${msg}`);
+  }
+
   // Above this many LCS cells (prev × next blocks left after trimming the common ends) every
   // remaining block counts as changed: a 2 MB rewrite must not stall the frame.
   const DIFF_CELLS_MAX = 1_000_000;
@@ -270,7 +296,8 @@
   // Show changes (§3.10, Brett 2026-10-11): one global switch in the header; while on, the
   // markers of the latest agent write are held (no fade) and re-applied after every render.
   const SHOW_CHANGES_KEY = "canvas:showChanges";
-  const textKind = (k) => k === "markdown" || k === "slides";
+  // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
+  const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
 
   /**
    * The baseline after a render: `shown` = { agentVersion, kind, content } last rendered in this tab
@@ -379,5 +406,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, changesBaseAfter, heldChanges, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

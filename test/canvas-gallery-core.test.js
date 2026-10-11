@@ -126,3 +126,9 @@ test("planContentReads: text kinds only, skips what is cached at the current rev
   assert.deepEqual(G.planContentReads(rows, cache, { maxBytes: 1000 }), { ids: ["cv_000000000001", "cv_000000000005"], skipped: 1 });
   assert.deepEqual(G.planContentReads(rows, cache, { maxCount: 1 }), { ids: ["cv_000000000001"], skipped: 2 });
 });
+
+test("mermaid canvases: their own icon and label, and their source is searchable", () => {
+  assert.equal(G.KIND_ICONS.mermaid, "🔀");
+  assert.equal(G.KIND_LABELS.mermaid, "Mermaid 圖表");
+  assert.ok(G.TEXT_KINDS.has("mermaid"));
+});

@@ -54,3 +54,13 @@ test("release zip includes the canvas pages and everything they load (ADR canvas
     for (const r of refs) assert.ok(shipped(entries, r), `${r} is loaded by ${page} but missing from the release zip`);
   }
 });
+
+test("release zip includes the vendor files canvas-frame.js loads on demand (Milkdown, mermaid)", () => {
+  const entries = zipEntries();
+  const refs = [...read("canvas-frame.js").matchAll(/"(vendor\/[^"]+)"/g)].map((m) => m[1]);
+  assert.ok(refs.includes("vendor/mermaid/mermaid.tiny.js"), "canvas-frame.js no longer loads mermaid?");
+  for (const r of refs) {
+    assert.ok(fs.existsSync(path.join(root, r)), `${r} is loaded by canvas-frame.js but not in the repo`);
+    assert.ok(shipped(entries, r), `${r} is loaded by canvas-frame.js but missing from the release zip`);
+  }
+});
