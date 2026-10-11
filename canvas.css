@@ -21,10 +21,12 @@ body {
   flex-direction: column;
 }
 
+/* A narrow tab (a Split View half): whole buttons wrap onto another row, a label never breaks. */
 .canvas-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   padding: 6px 16px;
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
@@ -44,6 +46,7 @@ body {
 
 .canvas-version {
   color: var(--muted);
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
@@ -63,6 +66,9 @@ body {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .canvas-notice {
@@ -98,6 +104,14 @@ body {
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+/* Narrow tab: the buttons with long labels show only their icon (data-icon). The label stays the
+   button's text, so its accessible name and title are unchanged; only the visible text goes. */
+@media (max-width: 720px) {
+  .canvas-header .canvas-btn[data-icon] { font-size: 0; }
+  .canvas-header .canvas-btn[data-icon]::before { content: attr(data-icon); font-size: 12px; }
 }
 .canvas-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
 .canvas-btn[hidden] { display: none; }

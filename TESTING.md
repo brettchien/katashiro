@@ -134,6 +134,11 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - `click A "https://example.com"`: clicking node A asks before opening the link in a new tab,
     and the canvas frame does not navigate. `click A callback` does nothing (`securityLevel: 'strict'`).
   - The canvas frame's console shows no CSP errors.
+- **Canvas header in a narrow tab:** open a canvas you edited (v2（你的修改）) in a Split View half
+  (or drag the window to ~600px). No button label breaks over lines: whole buttons move to a
+  second row, and below ~720px 🗂️ ↺ ⇆ ◐ ✕ 📤 💬 show only their icon (hover gives the title; a
+  screen reader still reads the full label). The version label stays on one line; a long title ends
+  in …. At full width the labels are back.
 - **Version history (ADR §3.5):** Settings → **畫布版本紀錄** shows 10; type 0 or 99
   and leave the field: it shows 1 or 50 (type 10 again afterwards). Let the agent write a markdown
   canvas, then save three edits (v1 agent, v2–v4 yours). In view mode the header has **no ↶ / ↷**
