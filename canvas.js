@@ -194,6 +194,9 @@
   // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
   let selection = null;               // { text, truncated } while the user has text selected in the view
   function onSelection(m) {
+    // #107: made in an older render (debounced in the frame, it can arrive after startRender
+    // cleared the selection): its text may not be in the version the header would name.
+    if (m.version !== renderVersion) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
     updateButtons();
@@ -443,12 +446,14 @@
   // the same version (meta and latest written separately → two refreshes) share a version.
   let renderSeq = 0;
   let renderingSeq = 0;
+  let renderVersion = 0;                    // render{version} last sent: selection{} must match (#107)
   let renderFailed = "";
   function startRender(msg) {
     if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
+    renderVersion = msg.version;
     toFrame({ ...msg, seq: renderingSeq });
   }
 

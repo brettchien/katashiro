@@ -39,8 +39,10 @@
     editFailed: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
     // Ask agent (§3.7): the text the user selected in the view, as rendered; "" = nothing selected.
-    // Capped at the push data cap (the frame cuts it and says so with truncated).
-    selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && (m.truncated === undefined || typeof m.truncated === "boolean"),
+    // Capped at the push data cap (the frame cuts it and says so with truncated). version: the
+    // render it was made in (#107) — the host drops a selection from an older one.
+    selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.version) &&
+      (m.truncated === undefined || typeof m.truncated === "boolean"),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),

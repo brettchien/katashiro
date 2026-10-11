@@ -218,8 +218,9 @@ below is built around that.
   `contentWindow`, the nonce, the type and fields, caps sizes, and treats the payload only as data.
   - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg}`, `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
-    compare tab like `save`).
+    `selection{text, version, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    compare tab like `save`; `version` is the render it was made in, and one from an older render is
+    dropped, #107).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save` and
     `selection` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
