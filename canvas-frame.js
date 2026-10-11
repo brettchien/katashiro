@@ -101,6 +101,43 @@
     // droppedBlank: cleaning removed empty paragraphs, so an "unchanged" reply can say why.
     post({ type: "save", content, baseVersion: editing.version, droppedBlank: content !== raw });
   }
+  // #103: a save drops the empty paragraphs markdown cannot keep (cleanEditorMarkdown), but the
+  // editor still showed them, so "沒有內容變更" looked like a failed save. After a save, an editor
+  // that holds exactly the saved text plus such paragraphs is reset to the saved text. Not when the
+  // user typed while the save was in flight (that text is not saved yet). The cursor stays where it
+  // was. Best effort: on any failure the editor just keeps showing the blank lines.
+  function showSaved(crepe, saved) {
+    try {
+      const raw = crepe.getMarkdown();
+      if (raw === saved || CanvasCore.cleanEditorMarkdown(raw) !== saved) return;
+      crepe.editor.action((ctx) => {
+        const M = globalThis.KatashiroMilkdown;
+        const view = ctx.get("editorView");          // by slice name: the bundle does not export editorViewCtx
+        const doc = ctx.get(M.parserCtx)(saved);
+        if (!doc) return;
+        // Only empty paragraphs go, so the text before the cursor is the same: put the cursor back
+        // after as many characters (a position would shift by the paragraphs removed before it).
+        const { state } = view;
+        const offset = state.doc.textBetween(0, state.selection.from).length;
+        const tr = state.tr.replaceWith(0, state.doc.content.size, doc.content);
+        const Sel = state.selection.constructor;   // near() is Selection's, inherited by every kind
+        tr.setSelection(Sel.near(tr.doc.resolve(posAtTextOffset(tr.doc, offset))));
+        view.dispatch(tr);
+      });
+    } catch (_) { /* keeps the blank lines on screen; the saved text is right either way */ }
+  }
+  // The document position right after the first `n` characters of text (the end if it is shorter).
+  function posAtTextOffset(doc, n) {
+    let pos = null;
+    doc.descendants((node, p) => {
+      if (pos !== null) return false;
+      if (!node.isText) return true;
+      if (n <= node.text.length) pos = p + n;
+      else n -= node.text.length;
+      return false;
+    });
+    return pos === null ? doc.content.size : pos;
+  }
   // Also after a failed startEdit (no `editing` yet): the document view comes back either way.
   function stopEdit() {
     if (editing) {
@@ -580,7 +617,7 @@
       if (editing && Number.isInteger(m.version)) {
         editing.version = m.version;
         // The baseline is what was saved; text typed while the save was in flight stays dirty.
-        if (typeof m.content === "string") editing.baseline = m.content;
+        if (typeof m.content === "string") { editing.baseline = m.content; showSaved(editing.crepe, m.content); }
         const dirty = editorText(editing.crepe) !== editing.baseline;
         if (dirty !== editing.dirty) { editing.dirty = dirty; post({ type: "dirty", dirty }); }
       }
