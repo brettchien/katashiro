@@ -346,7 +346,7 @@ below is built around that.
   not kept, so there is no diff to give; the miss message says to `canvas_read`.
   A successful rebase also returns `rebasedOver.diffFromBase` (agent copy → the latest it patched,
   same rule and cap as the `stale` diff), because the write records `agentSeenVersion` as the new
-  version; when it is `null` the result tells the agent to `canvas_read`. The budget check runs on
+  version; when it is `null` (base not the agent's last write, or the diff too large) the result tells the agent to `canvas_read`. The budget check runs on
   a lock-free dry run before the lock (§3.6 lock order); if the locked run succeeds where the dry
   run missed, that write skips the check and the soft cap can be exceeded by one canvas, the same
   race `canvas_open` updates already have.

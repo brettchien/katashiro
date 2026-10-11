@@ -2908,7 +2908,7 @@
           const { version, author, diffFromBase } = res.rebasedOver;
           text += `\nrebasedOver: ${JSON.stringify({ version, author })} — the canvas was at v${version} (last saved by ${author}), past your baseVersion ${args.baseVersion}; your edits applied on top and kept those changes`;
           if (diffFromBase == null) {
-            text += "\n(those changes are not shown: your baseVersion was not your last write — canvas_read to see them)";
+            text += "\n(those changes are not shown — canvas_read to see them)";
           } else {
             const cut = diffFromBase.length > CANVAS_DIFF_MAX;
             text += `\ndiffFromBase (what changed between your last write and v${version}, before your edits):\n${diffFromBase.slice(0, CANVAS_DIFF_MAX)}` +

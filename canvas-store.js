@@ -506,7 +506,8 @@
         if (bytes > CONTENT_MAX_BYTES) throw new Error(`the patched content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
         // Rebased: the result carries what the agent did not write (agent copy → latest, before this
         // patch), so the agentSeenVersion stored below is true. diffFromBase is null when the base is
-        // not the agent's last write (that text is gone; the result tells the agent to canvas_read).
+        // not the agent's last write (that text is gone) or the diff is too large; the result then
+        // tells the agent to canvas_read.
         const rebasedOver = cur.version === baseVersion ? null
           : { version: cur.version, author: cur.author, diffFromBase: await diffFromAgentCopy(cur, baseVersion, latest) };
         const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now() });
