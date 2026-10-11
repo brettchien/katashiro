@@ -64,6 +64,13 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   paragraph; a deleted paragraph leaves a red line on the next one), the card shows the new
   version. Edit another section yourself and save first: the patch still applies and says
   `rebasedOver`.
+- **Reply-to (#61, the last open item of #62):** hover a message: **↩** shows beside its time (not
+  over a code block's copy button). Click it: a chip above the composer quotes it (✕ cancels, a
+  click on the text jumps to it). Send: your message shows the quote, and a click on the quote
+  scrolls to the original and flashes it. Send two messages before the agent answers and ask it to
+  answer each one separately: its reply arrives as one message per part, each quoting the message it
+  answers, and each with its own **↩**. Reload the panel: the split parts and quotes come back the
+  same. With two agents in a room, ↩ on each agent's reply jumps to that reply, not the other one.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
