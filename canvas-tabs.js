@@ -129,6 +129,10 @@
     try { p = new URL(url).searchParams; } catch (_) { return false; }
     return p.get("view") === "agent" && p.get("id") === id;
   }
+  // Every open compare tab of canvas `id` (✕ 結束比較 and canvas_view({compare: false}) close them all).
+  function compareTabsFor(tabs, canvasBase, id) {
+    return (tabs || []).filter((t) => isCompareTabFor(t, canvasBase, id));
+  }
 
   /**
    * The user clicked Compare with agent's in `canvasTab`. `compareTab` = an open compare tab of the
@@ -183,19 +187,27 @@
     const url = tab && (tab.url || tab.pendingUrl);
     return typeof url === "string" && !!galleryBase && (url === galleryBase || url.startsWith(`${galleryBase}?`) || url.startsWith(`${galleryBase}#`));
   }
+  // The gallery URL with its search box prefilled (canvas_gallery({query}), §3.11): `#q=<encoded>`;
+  // the page sanitises it (CanvasGalleryCore.queryFromHash) and clears the fragment. null/undefined
+  // = no query (the box is left as it is); "" = an empty box.
+  function galleryUrl(galleryBase, query) {
+    return query == null ? galleryBase : `${galleryBase}#q=${encodeURIComponent(String(query))}`;
+  }
   // Focus the open gallery tab, or open one (in `windowId` if given). `api` = chrome (tabs, windows),
-  // passed in so the panel and the canvas tab share this and tests can fake it. → the tab.
-  async function openGalleryTab(api, galleryBase, { windowId } = {}) {
+  // passed in so the panel and the canvas tab share this and tests can fake it. With `query` the
+  // open tab is navigated to the #q= URL (a fragment change: no reload, the page hears hashchange).
+  // → the tab.
+  async function openGalleryTab(api, galleryBase, { windowId, query } = {}) {
     const open = mostRecent((await api.tabs.query({})).filter((t) => isGalleryTab(t, galleryBase)));
     if (open) {
-      await api.tabs.update(open.id, { active: true });
+      await api.tabs.update(open.id, query == null ? { active: true } : { url: galleryUrl(galleryBase, query), active: true });
       await api.windows.update(open.windowId, { focused: true });
       return open;
     }
-    const opts = { url: galleryBase, active: true };
+    const opts = { url: galleryUrl(galleryBase, query), active: true };
     if (windowId != null) opts.windowId = windowId;
     return api.tabs.create(opts);
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, openGalleryTab };
+  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
 });

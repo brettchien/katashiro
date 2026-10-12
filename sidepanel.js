@@ -233,6 +233,10 @@ class Conn {
         confirmEvict: (info) => confirmEvictCard(info, this),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
+        // canvas_view / canvas_gallery (§3.11): the agent's equivalents of the user's display switches.
+        setShowChanges: (on) => setCanvasShowChanges(on),
+        compare: (id, on) => (on ? startCanvasCompare(id) : endCanvasCompare(id)),
+        openGallery: (query) => openCanvasGallery(query),
       },
       windowId: panelWindowId,
     };
@@ -2422,6 +2426,47 @@ async function highlightCanvasBlock(id, req) {
   return r;
 }
 
+// --- canvas_view / canvas_gallery (§3.11): the user's display switches, for the agent ----------
+// ◐ 顯示變更 is one switch for every canvas tab: writing it here is what a click in a tab does, and
+// every canvas tab follows through storage.onChanged. → { was } (the state before).
+async function setCanvasShowChanges(on) {
+  const k = CanvasCore.SHOW_CHANGES_KEY;
+  const was = (await chrome.storage.local.get(k))[k] === true;
+  if (was !== on) await chrome.storage.local.set({ [k]: on });
+  return { was };
+}
+
+// ⇆ Compare with agent's: pre-checked from storage (a canvas that cannot compare is not opened for
+// nothing), then the canvas tab (opened or brought to the front) runs the button's own path, which
+// asks this panel back (katashiro-canvas-compare) — so this must not run under canvasTabQueue.
+// Only the picked tab answers (two tabs of one canvas must not both open a compare).
+async function startCanvasCompare(id) {
+  let c, agentCopy;
+  try {
+    c = await canvasStore.read({ conversationId, id });
+    agentCopy = await canvasStore.readAgentCopy(id);
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+  const blocked = CanvasCore.compareBlocker({ kind: c.kind, author: c.author, agentCopy, content: c.content, editing: false, framed: true });
+  if (blocked) return { ok: false, error: blocked };
+  const tab = await openCanvasTab(id, { active: true });
+  return askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id });
+}
+
+// ✕ 結束比較: close that canvas's compare tab(s), as the button does; the canvas tab sees the close
+// and clears its compare markers (§3.10). → { ok, closed }
+async function endCanvasCompare(id) {
+  const tabs = CanvasTabs.compareTabsFor(await chrome.tabs.query({}), chrome.runtime.getURL("canvas.html"), id);
+  if (tabs.length) await chrome.tabs.remove(tabs.map((t) => t.id));
+  return { ok: true, closed: tabs.length };
+}
+
+// 🗂️: the panel's gallery button, optionally with the search box filled (#q=, sanitised there).
+function openCanvasGallery(query) {
+  return CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined, query });
+}
+
 function canvasTabUrl(id) {
   return CanvasTabs.canvasTabUrl(chrome.runtime.getURL("canvas.html"), id);
 }
@@ -2457,7 +2502,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 const canvasGalleryBtn = document.getElementById("canvas-gallery-btn");
 if (canvasGalleryBtn) {
   canvasGalleryBtn.addEventListener("click", () => {
-    CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined }).catch(() => {});
+    openCanvasGallery().catch(() => {});
   });
 }
 

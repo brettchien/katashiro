@@ -143,3 +143,18 @@ test("buildRows: with CanvasStore.footprint the size is the whole version histor
   const [old] = G.buildRows([meta({ id: "cv_000000000002", version: 2, agentVersion: 1, bytes: 100, agentBytes: 50 })], { now: NOW, footprint: CanvasStore.footprint });
   assert.equal(old.bytes, 150);
 });
+
+test("queryFromHash (canvas_gallery, ADR §3.11): #q= decoded, control/bidi characters dropped, capped", () => {
+  assert.equal(G.queryFromHash(""), null);
+  assert.equal(G.queryFromHash("#"), null);
+  assert.equal(G.queryFromHash("#top"), null);
+  assert.equal(G.queryFromHash("#x=1"), null);
+  assert.equal(G.queryFromHash("#q="), "");
+  assert.equal(G.queryFromHash(`#q=${encodeURIComponent("設計 ADR")}`), "設計 ADR");
+  assert.equal(G.queryFromHash(`#q=${encodeURIComponent("a+b&c")}`), "a+b&c");
+  assert.equal(G.queryFromHash(`#q=${encodeURIComponent("  a\n\tb‮c\u0000d  ")}`), "a b c d");
+  assert.equal(G.queryFromHash(`#q=${encodeURIComponent("<img src=x onerror=1>")}`), "<img src=x onerror=1>");   // a value, never markup
+  assert.equal(typeof G.queryFromHash("#q=%E0%A4%A"), "string");                                                   // malformed escape: lenient, no throw
+  const long = G.queryFromHash(`#q=${encodeURIComponent("😀".repeat(300))}`);
+  assert.equal(Array.from(long).length, G.QUERY_MAX);
+});

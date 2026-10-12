@@ -522,6 +522,23 @@
     return "顯示變更（開）：一直標示上一版到目前版本之間改過的段落（不論是 agent 還是你改的）。按一下關閉";
   }
 
+  /**
+   * Why ⇆ Compare with agent's cannot start for this canvas now, or null (§3.10). The button's own
+   * rule (shown when the latest is a user edit that differs from the agent's last write, a text
+   * kind, the frame mounted, not editing), as one answer for the agent's canvas_view (§3.11).
+   * `agentCopy` = the agent's last write (null: none); `framed` / `editing` are known only in the
+   * canvas tab (the panel's pre-check passes framed: true, editing: false).
+   */
+  function compareBlocker({ kind, author, agentCopy, content, editing, framed, deleted }) {
+    if (!textKind(kind)) return `a ${kind || "?"} canvas has no compare (markdown, slides and mermaid only)`;
+    if (deleted) return "the canvas was deleted";
+    if (typeof agentCopy !== "string") return "the canvas has no agent copy to compare with";
+    if (author !== "user" || agentCopy === content) return "the latest version is the agent's last write: nothing to compare";
+    if (editing) return "the user is editing this canvas";
+    if (!framed) return "the canvas is not shown in its tab";
+    return null;
+  }
+
   // What the host may ask the editor to run (§3.5): editCmd{cmd} → the editor's own history.
   const EDIT_CMDS = ["undo", "redo"];
   const isEditCmd = (cmd) => EDIT_CMDS.includes(cmd);
@@ -620,5 +637,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

@@ -220,6 +220,8 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.canvas_delete",
     "katashiro.canvas_goto",
     "katashiro.canvas_highlight",
+    "katashiro.canvas_view",
+    "katashiro.canvas_gallery",
     "katashiro.canvas_list",
     "katashiro.chat_history",
     "katashiro.notify"
@@ -3062,7 +3064,7 @@ test("katashiro.canvas_open redact shows the title and size, never the document"
 });
 
 test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated by act mode)", () => {
-  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_list"]) {
+  for (const name of ["katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_list", "katashiro.canvas_view", "katashiro.canvas_gallery"]) {
     assert.equal(BrowserMcp.TOOLS[name].sessionScope, true);
     assert.ok(!BrowserMcp.TOOLS[name].write);
   }
@@ -3070,11 +3072,18 @@ test("canvas tools are session-scoped and not write tools (ADR §3.4: not gated 
 
 // --- screenshot of Katashiro's own canvas tab ---------------------------------------
 
-test("katashiro.screenshot may capture Katashiro's own canvas tab; other extension pages stay refused", async () => {
+test("katashiro.screenshot may capture Katashiro's own canvas tab and gallery; other extension pages stay refused", async () => {
   const base = "chrome-extension://kata/canvas.html";
+  const gallery = "chrome-extension://kata/canvas-gallery.html";
   for (const [url, allowed] of [
     [`${base}?id=cv_000000000001`, true],
     [base, true],
+    [gallery, true],                                    // §3.11: the agent opens it with canvas_gallery
+    [`${gallery}#q=plan`, true],
+    [`${gallery}?x=1`, true],
+    [`${gallery}x`, false],
+    ["chrome-extension://other/canvas-gallery.html", false],
+    ["chrome-extension://kata/canvas-frame.html", false],
     ["chrome-extension://kata/sidepanel.html", false],
     ["chrome-extension://other/canvas.html?id=x", false],
     [`${base}x?id=1`, false],
@@ -3088,11 +3097,16 @@ test("katashiro.screenshot may capture Katashiro's own canvas tab; other extensi
   }
 });
 
-test("DOM tools stay refused on the canvas tab (only screenshot is ownCanvas)", async () => {
-  const { deps: d } = deps({ tabUrl: "chrome-extension://kata/canvas.html?id=cv_000000000001" });
-  d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
-  const res = await callTool(d, "katashiro.snapshot", {});
-  assert.equal(res.isError, true);
+test("DOM tools stay refused on the canvas and gallery tabs (only screenshot is ownCanvas)", async () => {
+  for (const url of ["chrome-extension://kata/canvas.html?id=cv_000000000001", "chrome-extension://kata/canvas-gallery.html"]) {
+    const { deps: d } = deps({ tabUrl: url });
+    d.chrome.runtime = { getURL: (p) => `chrome-extension://kata/${p}` };
+    for (const tool of ["katashiro.snapshot", "katashiro.click"]) {
+      const res = await callTool(d, tool, tool === "katashiro.click" ? { selector: "button" } : {});
+      assert.equal(res.isError, true, `${tool} on ${url}`);
+      assert.match(res.content[0].text, /no grantable web origin/);
+    }
+  }
   assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.ownCanvas).map(([n]) => n), ["katashiro.screenshot"]);
 });
 
@@ -3437,4 +3451,64 @@ test("canvas_open kind:mermaid (Brett 2026-10-11): stored as sent, not normalize
   assert.match(read.content[0].text, /"kind":"mermaid"[\s\S]*\n\nflowchart LR\n {2}A --> B$/);
   const p = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, edits: [{ find: "A --> B", replace: "A --> C" }] });
   assert.equal(p.isError, undefined, JSON.stringify(p));
+});
+
+// --- canvas_view / canvas_gallery (ADR canvas §3.11) ---------------------------------------------
+
+test("katashiro.canvas_view: showChanges is the global switch; compare needs an id and a text canvas", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });    // not act-gated, sessionScope
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "x" });
+  await callTool(d, "katashiro.canvas_open", { title: "Pic", kind: "image", data: "iVBORw0KGgo=", mimeType: "image/png" });
+  let show = false;
+  const calls = [];
+  d.canvas.setShowChanges = async (on) => { calls.push(["show", on]); const was = show; show = on; return { was }; };
+  d.canvas.compare = async (id, on) => { calls.push(["compare", id, on]); return on ? { ok: true } : { ok: true, closed: 1 }; };
+  const on = await callTool(d, "katashiro.canvas_view", { showChanges: true });
+  assert.equal(on.isError, undefined, JSON.stringify(on));
+  assert.match(on.content[0].text, /^顯示變更 is now on for every canvas tab \(a global switch/);
+  assert.match((await callTool(d, "katashiro.canvas_view", { showChanges: true })).content[0].text, /is already on/);
+  const both = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", showChanges: false, compare: true });
+  assert.match(both.content[0].text, /^顯示變更 is now off .*\ncomparing "Doc" with your last write \(v1\) in Split View/);
+  const end = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: false });
+  assert.equal(end.content[0].text, 'ended the compare of "Doc" (closed its compare tab)');
+  assert.deepEqual(calls, [["show", true], ["show", true], ["show", false], ["compare", "cv_000000000001", true], ["compare", "cv_000000000001", false]]);
+  calls.length = 0;
+  for (const [args, re] of [
+    [{}, /give `showChanges` and\/or `compare`/],
+    [{ showChanges: "on" }, /must be true or false/],
+    [{ compare: 1, id: "cv_000000000001" }, /must be true or false/],
+    [{ compare: true }, /needs the canvas `id`/],
+    [{ id: "cv_000000000009", compare: true }, /cv_000000000009/],
+    [{ id: "cv_000000000002", compare: true }, /"Pic" is image; only markdown, slides and mermaid/],
+  ]) {
+    const r = await callTool(d, "katashiro.canvas_view", args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.content[0].text, re);
+  }
+  assert.deepEqual(calls, []);                                  // none of those reached the panel
+  // The panel / canvas tab's refusal (the button's rule) comes back as the reason.
+  d.canvas.compare = async (_id, on) => (on ? { ok: false, error: "the latest version is the agent's last write: nothing to compare" } : { ok: true, closed: 0 });
+  const no = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: true });
+  assert.equal(no.isError, true);
+  assert.match(no.content[0].text, /^canvas_view: cannot compare "Doc": the latest version is the agent's last write/);
+  assert.equal((await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: false })).content[0].text, 'no compare of "Doc" was open');
+  delete d.canvas.compare;
+  assert.match((await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: true })).content[0].text, /not available/);
+});
+
+test("katashiro.canvas_gallery: opens the gallery, query trimmed and capped", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  assert.match((await callTool(d, "katashiro.canvas_gallery", {})).content[0].text, /not available/);
+  withCanvas(d);
+  const asked = [];
+  d.canvas.openGallery = async (q) => { asked.push(q); };
+  assert.equal((await callTool(d, "katashiro.canvas_gallery", {})).content[0].text, "opened the canvas gallery tab");
+  assert.equal((await callTool(d, "katashiro.canvas_gallery", { query: "  設計 ADR " })).content[0].text, 'opened the canvas gallery tab searching "設計 ADR"');
+  assert.equal((await callTool(d, "katashiro.canvas_gallery", { query: "" })).content[0].text, "opened the canvas gallery tab with an empty search");
+  const long = await callTool(d, "katashiro.canvas_gallery", { query: "x".repeat(201) });
+  assert.equal(long.isError, true);
+  assert.match(long.content[0].text, /201 chars; at most 200/);
+  assert.equal((await callTool(d, "katashiro.canvas_gallery", { query: 5 })).isError, true);
+  assert.deepEqual(asked, [undefined, "設計 ADR", ""]);
 });

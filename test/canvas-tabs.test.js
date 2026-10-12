@@ -193,3 +193,38 @@ test("isGalleryTab / openGalleryTab: one gallery tab, reused (most recent) or op
   await T.openGalleryTab(api([]), G);
   assert.deepEqual(calls, [["create", { url: G, active: true }]]);
 });
+
+test("galleryUrl / openGalleryTab with a query (canvas_gallery, §3.11): #q= on a new or the open tab", async () => {
+  const G = "chrome-extension://abc/canvas-gallery.html";
+  assert.equal(T.galleryUrl(G), G);
+  assert.equal(T.galleryUrl(G, null), G);
+  assert.equal(T.galleryUrl(G, ""), `${G}#q=`);
+  assert.equal(T.galleryUrl(G, "a b&c#+"), `${G}#q=a%20b%26c%23%2B`);
+  const calls = [];
+  const api = (tabs) => ({
+    tabs: {
+      query: async () => tabs,
+      update: async (id, p) => { calls.push(["update", id, p]); },
+      create: async (p) => { calls.push(["create", p]); return { id: 99, ...p }; },
+    },
+    windows: { update: async (id, p) => { calls.push(["window", id, p]); } },
+  });
+  await T.openGalleryTab(api([tab({ id: 6, windowId: 3, url: G })]), G, { query: "plan" });
+  assert.deepEqual(calls, [["update", 6, { url: `${G}#q=plan`, active: true }], ["window", 3, { focused: true }]]);
+  calls.length = 0;
+  await T.openGalleryTab(api([]), G, { windowId: 7, query: "設計" });
+  assert.deepEqual(calls, [["create", { url: `${G}#q=${encodeURIComponent("設計")}`, active: true, windowId: 7 }]]);
+});
+
+test("compareTabsFor: every compare tab of that canvas, never the canvas tab or another canvas's", () => {
+  const id = "cv_000000000001";
+  const tabs = [
+    canvas({ id: 10 }),
+    canvas({ id: 11, url: `${BASE}?id=${id}&view=agent` }),
+    canvas({ id: 12, url: "", pendingUrl: `${BASE}?id=${id}&view=agent` }),
+    canvas({ id: 13, url: `${BASE}?id=cv_000000000002&view=agent` }),
+    tab({ id: 14, url: `https://example.com/?id=${id}&view=agent` }),
+  ];
+  assert.deepEqual(T.compareTabsFor(tabs, BASE, id).map((t) => t.id), [11, 12]);
+  assert.deepEqual(T.compareTabsFor([], BASE, id), []);
+});

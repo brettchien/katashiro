@@ -198,12 +198,15 @@
   // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
   // pre-reject pages with no scriptable web origin (chrome://, about:, the Web Store, file://, PDF
   // viewer) here, so those return a clear message instead of a raw Chrome error.
-  // Katashiro's own canvas page (canvas.html?id=…), by exact extension URL prefix.
+  // Katashiro's own canvas page (canvas.html?id=…) or canvas gallery (canvas-gallery.html, ADR canvas
+  // §3.11), by exact extension URL prefix. No other extension page, ours included.
   function isOwnCanvasTab(chrome, tab) {
     const getURL = chrome && chrome.runtime && chrome.runtime.getURL;
     if (typeof getURL !== "function" || !tab || typeof tab.url !== "string") return false;
     const base = getURL("canvas.html");
-    return tab.url === base || tab.url.startsWith(`${base}?`);
+    if (tab.url === base || tab.url.startsWith(`${base}?`)) return true;
+    const gallery = getURL("canvas-gallery.html");
+    return tab.url === gallery || tab.url.startsWith(`${gallery}?`) || tab.url.startsWith(`${gallery}#`);
   }
 
   function pageOrigin(url) {
@@ -331,6 +334,8 @@
   const CANVAS_HIGHLIGHT_MAX_MS = 10000;
   const CANVAS_HIGHLIGHT_COOLDOWN_MS = 1500;
   const lastCanvasHighlight = new Map();   // canvas id → { at } of the last call that showed something
+  const CANVAS_GALLERY_QUERY_MAX = 200;    // canvas_gallery query (CanvasGalleryCore.QUERY_MAX)
+  const canvasTextKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";   // CanvasCore.textKind
   const SHOW_IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
 
   // inject_css: anything that makes the stylesheet fetch is refused — `url()` / `image-set()` /
@@ -1106,13 +1111,13 @@
     "katashiro.screenshot": {
       description:
         "Capture a screenshot (image) of the active tab (a web page, or one of Katashiro's own canvas " +
-        "tabs — switch_tab to it to check how a canvas you wrote looks). EXPENSIVE and slow to reason over — use " +
+        "tabs or its canvas gallery tab — switch_tab to it to check how a canvas you wrote looks). EXPENSIVE and slow to reason over — use " +
         "only when a text `snapshot` cannot answer: visual layout, images/charts/canvas. Never to " +
         "read text or to confirm an action succeeded (action tools already return the new snapshot). " +
         "Also returns an `imageId`: pass it to `paste_image` (paste into an editor, e.g. a Jira " +
         "description) or `upload_file` (`files: [{ imageId }]`) to put this screenshot into another " +
         "page — the image stays in the extension, you never handle its bytes.",
-      ownCanvas: true,                   // may capture Katashiro's own canvas tab (see callBrowserTool)
+      ownCanvas: true,                   // may capture Katashiro's own canvas / gallery tab (see callBrowserTool)
       inputSchema: { type: "object", properties: {} },
       redact: redactDefault,
       /** @param {object} _args (none) */
@@ -3145,6 +3150,101 @@
       }
     },
 
+    // canvas_view / canvas_gallery (§3.11, Brett 2026-10-12): every display switch the user can turn
+    // on in a canvas tab gets an agent equivalent, with the button's preconditions and path. Never
+    // arbitrary clicking: canvas tabs are extension pages the page tools cannot touch, on purpose.
+    "katashiro.canvas_view": {
+      description:
+        "Set how canvases are DISPLAYED — the agent's equivalent of the canvas header's view switches " +
+        "(it never changes content). `showChanges`: true / false turns ◐ 顯示變更 on / off — a GLOBAL " +
+        "switch for every canvas tab, exactly like the user's button (while on, markdown / slides / " +
+        "mermaid canvases keep marking what changed from the previous version to the latest, instead " +
+        "of a glow that fades). `compare` (needs `id`): true opens ⇆ Compare with agent's — the " +
+        "agent's last write read-only in Split View beside the canvas, the differing blocks marked; " +
+        "possible only when the user's saved edits differ from your last write (not for image " +
+        "canvases, nor while the user is editing; the result says why not). false ends it (✕ 結束比較). " +
+        "Use it to show the user what changed, e.g. before you canvas_read their edits; screenshot to check.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id (required with compare)" },
+          showChanges: { type: "boolean", description: "◐ 顯示變更 on/off — global, all canvas tabs" },
+          compare: { type: "boolean", description: "true: open the compare with your last write for this canvas; false: close it" }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ id?: string, showChanges?: boolean, compare?: boolean }} args */
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        const hasShow = args.showChanges != null, hasCompare = args.compare != null;
+        if (!hasShow && !hasCompare) return errText("canvas_view: give `showChanges` and/or `compare`");
+        if (hasShow && typeof args.showChanges !== "boolean") return errText("canvas_view: `showChanges` must be true or false");
+        if (hasCompare && typeof args.compare !== "boolean") return errText("canvas_view: `compare` must be true or false");
+        if (hasCompare && args.id == null) return errText("canvas_view: `compare` needs the canvas `id`");
+        let meta = null;
+        if (args.id != null) {
+          try { meta = await c.store.read({ conversationId: c.conversationId(), id: args.id }); }
+          catch (e) { return errText(`canvas_view: ${(e && e.message) || e}`); }
+        }
+        if (hasCompare && args.compare && !canvasTextKind(meta.kind)) {
+          return errText(`canvas_view: canvas "${meta.title}" is ${meta.kind}; only markdown, slides and mermaid canvases can be compared`);
+        }
+        if ((hasShow && typeof c.setShowChanges !== "function") || (hasCompare && typeof c.compare !== "function")) {
+          return errText("canvas_view: not available in this host");
+        }
+        const out = [];
+        if (hasShow) {
+          let r;
+          try { r = await c.setShowChanges(args.showChanges); }
+          catch (e) { return errText(`canvas_view: could not set 顯示變更: ${(e && e.message) || e}`); }
+          const state = args.showChanges ? "on" : "off";
+          out.push(`顯示變更 is ${r && r.was === args.showChanges ? "already" : "now"} ${state} for every canvas tab (a global switch, like the user's ◐ button)`);
+        }
+        if (hasCompare) {
+          let r;
+          try { r = await c.compare(meta.id, args.compare); }
+          catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+          if (!r || !r.ok) {
+            const why = `canvas_view: ${args.compare ? "cannot compare" : "cannot end the compare of"} "${meta.title}": ${(r && r.error) || "failed"}`;
+            return out.length ? errText(`${out.join("\n")}\n${why}`) : errText(why);
+          }
+          if (args.compare) out.push(`comparing "${meta.title}" with your last write (v${meta.agentVersion}) in Split View beside it${r.note ? ` — note: ${r.note}` : ""}`);
+          else out.push(r.closed ? `ended the compare of "${meta.title}" (closed its compare tab)` : `no compare of "${meta.title}" was open`);
+        }
+        return okText(out.join("\n"));
+      }
+    },
+
+    "katashiro.canvas_gallery": {
+      description:
+        "Open the canvas gallery (🗂️ 總覽): one tab listing every canvas across conversations, newest " +
+        "first — the same as the user's 🗂️ button; an open gallery tab is reused and brought to the " +
+        "front. `query` fills its search box (title and text; every word must match). It shows the " +
+        "list to the user only — use canvas_list for your own conversation's canvases, or screenshot " +
+        "the gallery tab to see it.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: `search text for the gallery's box (≤ ${CANVAS_GALLERY_QUERY_MAX} chars); "" clears it` }
+        }
+      },
+      redact: redactDefault,
+      /** @param {{ query?: string }} args */
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || typeof c.openGallery !== "function") return errText("the canvas gallery is not available in this host (no side panel)");
+        if (args.query != null && typeof args.query !== "string") return errText("canvas_gallery: `query` must be a string");
+        const query = args.query == null ? undefined : args.query.trim();
+        if (query != null && Array.from(query).length > CANVAS_GALLERY_QUERY_MAX) return errText(`canvas_gallery: \`query\` is ${Array.from(query).length} chars; at most ${CANVAS_GALLERY_QUERY_MAX}`);
+        try { await c.openGallery(query); }
+        catch (e) { return errText(`canvas_gallery: ${(e && e.message) || e}`); }
+        return okText(`opened the canvas gallery tab${query ? ` searching ${JSON.stringify(query)}` : query === "" ? " with an empty search" : ""}`);
+      }
+    },
+
     "katashiro.canvas_list": {
       description: "List this conversation's canvases: id, title, kind, version, size, last update.",
       sessionScope: true,
@@ -3391,7 +3491,8 @@
     // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
     // One exception: a tool marked ownCanvas (screenshot) may look at Katashiro's OWN canvas tab
-    // (canvas.html, ADR canvas), so the agent can check what it rendered. Never another extension's
+    // (canvas.html, ADR canvas) or canvas gallery (canvas-gallery.html, §3.11), so the agent can
+    // check what it rendered or opened. Never another extension's
     // page, never any other page of ours; DOM tools stay refused there (no script can be injected).
     if (!pageOrigin(tab.url) && !(tool.ownCanvas && isOwnCanvasTab(chrome, tab))) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
