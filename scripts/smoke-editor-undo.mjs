@@ -7,7 +7,9 @@
 //     node scripts/smoke-editor-undo.mjs
 //
 // Same harness as smoke-glow-ranges.mjs. The host page has a button that, like canvas.html's ↶ / ↷,
-// keeps focus in the frame on mousedown and sends editCmd{cmd} on click. Checks:
+// takes no focus on mousedown, and on click focuses the frame and sends editCmd{cmd}. Headless Chrome
+// does not reproduce the window-focus loss a real window has (2026-10-12: typing after ↶ went nowhere
+// in real Chrome while this check passed), so the frame focus is mirrored here, not proven. Checks:
 //   - opening the editor reports undoState{false, false} (loading is not an undoable step);
 //   - typing enables undo; editCmd undo / redo run the editor's own history and report undoState;
 //   - Ctrl+Z inside the editor walks the same stack (reported after the key is released);
@@ -33,8 +35,8 @@ const HOST = `<!doctype html><meta charset="utf-8"><body>
   window.__send = (msg) => document.getElementById("f").contentWindow.postMessage({ ...msg, nonce: "nonce0" }, "*");
   for (const cmd of ["undo", "redo"]) {
     const b = document.getElementById(cmd);
-    b.addEventListener("mousedown", (e) => e.preventDefault());       // as canvas.js: focus stays in the editor
-    b.addEventListener("click", () => __send({ type: "editCmd", cmd }));
+    b.addEventListener("mousedown", (e) => e.preventDefault());       // as canvas.js: the button takes no focus
+    b.addEventListener("click", () => { document.getElementById("f").focus(); __send({ type: "editCmd", cmd }); });   // as canvas.js editCmd
   }
 </script>`;
 const server = http.createServer((req, res) => {

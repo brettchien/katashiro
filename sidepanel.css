@@ -552,6 +552,15 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* A flex item may not shrink below its content's min width by default, so a wide table or code
+     block widened the bubble past .message's max-width instead of scrolling inside it. */
+  min-width: 0;
+}
+
+/* A wide panel (Split View, a wide window): the agent's bubbles may use almost the whole width, so
+   tables and code fit; the user's stay at 80%. */
+@media (min-width: 640px) {
+  .message.received { max-width: 95%; }
 }
 
 .sender-name {
