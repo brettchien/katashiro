@@ -1076,7 +1076,13 @@ class Conn {
     }
     maybeScroll();
     canvasTabQueue(sweepCanvasRestores, conv).catch(() => {});
-    if (beside === "current") return showCanvasBeside(id, created, conv);
+    if (beside === "current") {
+      // Shown to the user (Split View, or in front): the conversation's working tab (multi-conversation
+      // §4.3). A plain new canvas opens in the background and does not count.
+      const note = await showCanvasBeside(id, created, conv);
+      const tab = await findCanvasTab(id).catch(() => null);
+      return tab && (tab.active || CanvasTabs.inSplit(tab)) ? { note, tabId: tab.id } : note;
+    }
     if (!created) return (await findCanvasTab(id)) ? "its open tab updated" : "";
     await openCanvasTab(id, { active: false, conv });
     return "opened in a background tab";
@@ -3236,6 +3242,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // @mentions come from the user's note only, never from the diff / error text inside the fence.
   const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
   if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
+  // §4.3: the user is working in this canvas tab; the next send from the composer stays here.
+  if (sender.tab && Number.isInteger(sender.tab.id)) noteWorkingTab(cid, sender.tab.id).catch(() => {});
   // A canvas tab in another window posts here: it says so (P1b §4.8), or the user sees nothing happen.
   sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、"), elsewhere: !!sender.tab && sender.tab.windowId !== panelWindowId });
   return false;
@@ -3536,10 +3544,12 @@ async function waitCanvasNormalized(id, version, raw) {
 
 // canvas_goto: bring the canvas's tab to the front (opening it if needed) and ask it — an extension
 // page, reached by runtime messaging — to show slide N. A freshly opened tab may not listen yet,
-// so retry for a few seconds. Returns { ok, index, total } or { ok:false, error }.
+// so retry for a few seconds. Returns { ok, index, total } or { ok:false, error }, plus the tabId it
+// put in front (the working tab, multi-conversation §4.3).
 async function gotoCanvasSlide(id, slide) {
-  await openCanvasTab(id, { active: true });
-  return askCanvasTab({ type: "katashiro-canvas-goto", id, slide });
+  const tab = await openCanvasTab(id, { active: true });
+  const r = await askCanvasTab({ type: "katashiro-canvas-goto", id, slide });
+  return tab ? { ...r, tabId: tab.id } : r;
 }
 
 // Ask the canvas tab (runtime messaging; only canvas tabs of that id answer, never compare tabs),
@@ -3564,19 +3574,21 @@ async function askCanvasTab(msg, ms = 6000) {
 
 // canvas_highlight (§3.10): an open tab is asked first and brought to the front only once it has
 // shown the block — while the user edits it answers `deferred` and must not take focus. A canvas
-// not open in a tab is opened in front (nobody is editing it). Returns the canvas tab's answer.
+// not open in a tab is opened in front (nobody is editing it). Returns the canvas tab's answer, plus
+// the tabId when it put the tab in front (the working tab, multi-conversation §4.3).
 async function highlightCanvasBlock(id, req) {
   const existing = await findCanvasTab(id);
-  if (!existing) await openCanvasTab(id, { active: true });
+  let front = existing ? null : await openCanvasTab(id, { active: true });
   const r = await askCanvasTab({ type: "katashiro-canvas-highlight", id, ...req });
   if (existing && r && r.ok && !r.deferred) {
     try {
       const tab = (await findCanvasTab(id)) || existing;
       await chrome.tabs.update(tab.id, { active: true });
       await chrome.windows.update(tab.windowId, { focused: true });
+      front = tab;
     } catch (_) { /* highlighted either way */ }
   }
-  return r;
+  return front && r ? { ...r, tabId: front.id } : r;
 }
 
 // --- canvas_view / canvas_gallery (§3.11): the user's display switches, for the agent ----------
@@ -3610,6 +3622,7 @@ async function startCanvasCompare(id) {
   const base = chrome.runtime.getURL("canvas.html");
   const existing = await findCanvasTab(id);
   const tab = existing || (await openCanvasTab(id, { active: true }));
+  let shown = existing ? null : tab;                    // the working tab (multi-conversation §4.3)
   let r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
   if (!r.ok && r.error === CANVAS_TAB_TIMEOUT) {
     if (!CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) {
@@ -3625,9 +3638,10 @@ async function startCanvasCompare(id) {
       const front = cmp && cmp.active ? cmp : ((await findCanvasTab(id)) || existing);
       await chrome.tabs.update(front.id, { active: true });
       await chrome.windows.update(front.windowId, { focused: true });
+      shown = front;
     } catch (_) { /* compared either way */ }
   }
-  return r;
+  return shown ? { ...r, tabId: shown.id } : r;
 }
 
 // ✕ 結束比較: close that canvas's compare tab(s), as the button does; the canvas tab sees the close

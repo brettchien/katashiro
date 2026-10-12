@@ -3602,6 +3602,39 @@ test("P1b: the tab a page tool acts on, new_tab's tab (opened) and switch_tab's 
   assert.equal((await call(d, "katashiro.new_tab", { url: "https://bg/", active: false })).isError, undefined);
 });
 
+test("P1b: a canvas tool that puts a canvas tab in front reports it to onTabUsed; a background write does not", async () => {
+  const used = [];
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  withCanvas(d);
+  d.onTabUsed = (id, o) => used.push([id, o || null]);
+  let t = 1_000_000;
+  d.now = () => t;
+  await callTool(d, "katashiro.canvas_open", { title: "Deck", kind: "slides", content: "# A\n---\nb" });
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "# A\n\ntext" });
+  assert.deepEqual(used, []);                                   // created in a background tab: not the working tab
+  // beside: the host answers { note, tabId } when it showed the canvas; the note still reaches the result.
+  d.canvas.onWrite = async (_res, o) => (o.beside ? { note: "shown beside \"P\" in Split View", tabId: 70 } : "its open tab updated");
+  const beside = await callTool(d, "katashiro.canvas_open", { id: "cv_000000000002", baseVersion: 1, title: "Doc", content: "# A\n\ntext 2", beside: "current" });
+  assert.match(beside.content[0].text, /version 2 \(shown beside "P" in Split View\)/);
+  await callTool(d, "katashiro.canvas_open", { id: "cv_000000000002", baseVersion: 2, title: "Doc", content: "# A\n\ntext 3" });
+  d.canvas.gotoSlide = async () => ({ ok: true, index: 1, total: 2, tabId: 71 });
+  await callTool(d, "katashiro.canvas_goto", { id: "cv_000000000001", slide: 1 });
+  d.canvas.highlight = async () => ({ ok: true, tag: "h1", text: "A", tabId: 72 });
+  await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000002", heading: "A" });
+  t += 10_000;
+  d.canvas.highlight = async () => ({ ok: true, deferred: true, tag: "h1", text: "A" });   // the user is editing: stays put
+  await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000002", heading: "A" });
+  d.canvas.compare = async (_id, on) => (on ? { ok: true, tabId: 73 } : { ok: true, closed: 1 });
+  await callTool(d, "katashiro.canvas_view", { id: "cv_000000000002", compare: true });
+  await callTool(d, "katashiro.canvas_view", { id: "cv_000000000002", compare: false });
+  assert.deepEqual(used, [[70, null], [71, null], [72, null], [73, null]]);   // never { opened }: already grouped
+  // a throwing host hook never fails the tool
+  d.onTabUsed = () => { throw new Error("boom"); };
+  t += 10_000;
+  d.canvas.highlight = async () => ({ ok: true, tag: "h1", text: "A", tabId: 72 });
+  assert.equal((await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000002", heading: "A" })).isError, undefined);
+});
+
 test("P1b: switch_tab({tab: \"working\"}) activates the host's working tab, or says there is none", async () => {
   const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/", title: "A" }, { id: 55, windowId: 8, url: "chrome://newtab/", title: "B" }] });
   d.workingTab = async () => 55;
