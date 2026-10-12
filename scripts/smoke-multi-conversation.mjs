@@ -97,7 +97,11 @@ const STUB = String.raw`
       sendMessage: async (msg) => { window.__messages.push(msg); return undefined; },
       reload() {},
     },
-    storage: { local: area("local"), sync: area("sync", { agents: [{ name: "Orca", url: "ws://fake/acp" }], activeAgentUrl: "ws://fake/acp" }), session: area("session", {}), onChanged: { addListener: (f) => listeners.push(f), removeListener() {} } },
+    storage: { local: area("local"), sync: area("sync", { agents: [{ name: "Orca", url: "ws://fake/acp" }], activeAgentUrl: "ws://fake/acp" }), session: area("session", (() => {
+      // ?reopen=<id>: a 重新打開 the gallery left for a panel that was not open yet (pickUpReopenRequest).
+      const r = new URLSearchParams(location.search).get("reopen");
+      return r ? { ["katashiro.convOpen." + WIN]: { id: r, reqId: "smoke-reopen", at: Date.now() } } : {};
+    })()), onChanged: { addListener: (f) => listeners.push(f), removeListener() {} } },
     windows: {
       getCurrent: (cb) => cb({ id: WIN }),
       getAll: async () => (read("__live") || [WIN]).map((id) => ({ id })),
@@ -443,6 +447,24 @@ try {
   await until(p1, () => window.__acp.log.filter((m) => m.method === "session/resume").length === 2, "the reopened conversation resumes its session");
   log = await acpLog(p1);
   check(log.filter((m) => m.method === "session/resume")[1].params.sessionId === "sess_1", "…the same ACP session", log.filter((m) => m.method === "session/resume")[1]);
+
+  // 重新打開 into a window with no panel while 3 are open elsewhere: the panel loads full (picker →
+  // "new conversation"), then picks up the pending reopen. After the pick the REOPEN must win.
+  st = await storage(p1);
+  const archivedNow = Object.entries(st["conv:index"]).filter(([, e]) => e.archivedAt && e.title).map(([id, e]) => ({ id, title: e.title }));
+  check(archivedNow.length > 0, "an archived conversation to reopen", archivedNow);
+  await p1.close();                                    // window 1 stays live; its locks are free
+  const pr = await browser.newPage();
+  pr.on("pageerror", (e) => fail(`page error (win 2, reopen): ${e.message}`));
+  await pr.goto(`${origin}/sidepanel.html?win=2&reopen=${archivedNow[0].id}`, { waitUntil: "load" });
+  await until(pr, () => !!document.querySelector(".conv-picker"), "the full panel shows the picker");
+  await sleep(500);
+  check(await pr.evaluate(() => document.querySelectorAll(".conv-picker").length) === 1, "one picker, not two", null);
+  await pr.evaluate(() => document.querySelector(".conv-picker-option:not(:disabled)").click());
+  await until(pr, (title) => Array.from(document.querySelectorAll(".conv-tab-title")).some((e) => e.textContent === title), "after the pick, the requested conversation is reopened (not a new blank one)", archivedNow[0].title);
+  t = await tabs(pr);
+  check(t.length === 1 && t[0].current && t[0].title === archivedNow[0].title, "…as window 2's only, current conversation", t);
+  await pr.close();
 } finally {
   await browser.close();
   server.close();

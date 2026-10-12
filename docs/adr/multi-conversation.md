@@ -337,8 +337,12 @@ Where the MVP had to read this section one way, it took the safer reading:
 
 - **Adoption with no free slot adopts nothing** (§3.7): the orphan record stays for a later window,
   so a second window opened while 3 are open elsewhere does not archive a closed window's
-  conversations. With some room, what does not fit is archived (never left in no record). "Most
-  recently saved" orphan = the newer of the record's `savedAt` and its conversations'
+  conversations. That window still writes its own record, empty (`{open:[]}`), so it never adopts
+  later either: an orphan is only adopted by a window that has no record yet. Accepted — the
+  orphan's conversations stay reopenable from the gallery. With some room, what does not fit is
+  archived (never left in no record). The new record is written before the adopted one is
+  removed, so closing the panel in between leaves the conversations in two records, never in
+  none. "Most recently saved" orphan = the newer of the record's `savedAt` and its conversations'
   `lastMessageAt`.
 - **Migration never disturbs an open set** (§3.2 step 4): conversations already in a window record
   (an earlier run, or the newer version running before a downgrade) keep their slots; a

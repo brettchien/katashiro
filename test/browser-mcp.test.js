@@ -1114,9 +1114,9 @@ test("a server cannot be reached through another server's connection", async () 
   assert.match(res.result.content[0].text, /unknown tool/);
 });
 
-// Multi-conversation §3.9: one browser server per (conversation, agent). With several declared, an
-// mcp/connect naming none of them (a late connect for an archived conversation) is refused, never
-// routed to another conversation's server; with one declared the old fallback stays.
+// Multi-conversation §3.9: one browser server per (conversation, agent). An mcp/connect whose
+// acpId names no declared server (a late connect for an archived conversation) is refused, never
+// routed to another conversation's server — however many are left. Only a missing acpId falls back.
 test("mcp/connect: an unknown acpId is refused when several servers are declared", async () => {
   const bag = await twoServers();
   const before = Object.keys(bag.state.connections).length;
@@ -1127,11 +1127,31 @@ test("mcp/connect: an unknown acpId is refused when several servers are declared
   assert.equal(Object.keys(bag.state.connections).length, before);
 });
 
-test("mcp/connect: with a single declared server an unknown acpId still falls back to it", async () => {
+test("mcp/connect: with a single declared server an unknown acpId is still refused", async () => {
   const bag = deps({ uuid: ["conn-1"] });
   const only = BrowserMcp.createServer({ id: "srv-1", name: "katashiro" });
   const state = { servers: [only], connections: {} };
   await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: { acpId: "srv-other" } }, bag.deps, state);
+  assert.match(bag.sent[0].error.message, /unknown server: srv-other/);
+  assert.deepEqual(state.connections, {});
+});
+
+test("mcp/connect: archiving one of two conversations, a late connect for it is not routed to the survivor", async () => {
+  const bag = deps({ uuid: ["conn-1"] });
+  const a = BrowserMcp.createServer({ id: "srv-a", name: "katashiro" });
+  const b = BrowserMcp.createServer({ id: "srv-b", name: "katashiro" });
+  const state = { servers: [a, b], connections: {} };
+  state.servers = state.servers.filter((s) => s !== a);          // what Conn.dropState does
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: { acpId: "srv-a" } }, bag.deps, state);
+  assert.match(bag.sent[0].error.message, /unknown server: srv-a/);
+  assert.deepEqual(state.connections, {});
+});
+
+test("mcp/connect: with a single declared server a missing acpId falls back to it", async () => {
+  const bag = deps({ uuid: ["conn-1"] });
+  const only = BrowserMcp.createServer({ id: "srv-1", name: "katashiro" });
+  const state = { servers: [only], connections: {} };
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: {} }, bag.deps, state);
   assert.equal(bag.sent[0].result.connectionId, "conn-1");
   assert.equal(state.connections["conn-1"], only);
 });

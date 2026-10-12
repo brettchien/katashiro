@@ -1611,11 +1611,13 @@ async function loadConversations() {
         }
       }
     }
+    // Write this window's record BEFORE dropping the adopted one: closing the panel in between
+    // must leave the conversations in a record, not in none.
+    windowRec = { open, current };
+    await writeWindowRec();
     if (plan.archive.length) await convStore.archiveIds(plan.archive);
     const drop = [...plan.prune, ...(plan.adopt !== null && !own ? [plan.adopt] : [])].map(ConvCore.windowKey);
     if (drop.length) await chrome.storage.local.remove(drop);
-    windowRec = { open, current };
-    await writeWindowRec();
     return { elsewhere, full };
   });
   convIndex = await convStore.readIndex();
@@ -1707,11 +1709,13 @@ function activateSessions() {
 }
 
 // §3.5: may conversation `id` be left (switch, ＋, × on it)? → the refusal text, or null.
+// Queued prompts only flush for the conversation on screen, so for any other only a running turn
+// counts — otherwise its × and picker entry would say 回覆中 with nothing replying.
 function convSwitchBlock(id = conversationId) {
   if (!id) return null;
   return ConvCore.switchBlocked(room.map((c) => {
     const st = c.states.get(id);
-    return st && { turnActive: st.turnActive, queued: st.promptQueue.length, online: !!(c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized) };
+    return st && { turnActive: st.turnActive, queued: id === conversationId ? st.promptQueue.length : 0, online: !!(c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized) };
   }));
 }
 
@@ -1873,16 +1877,22 @@ async function archiveAnywhere(id) {
 // The picker (§3.4): with 3 open (in any window), which one to archive first. A system card, not
 // agent-styled; a conversation that is replying here cannot be picked (one replying in another
 // window refuses there). 取消 reopens nothing.
+// One card at a time, claimed before the first await so two calls cannot each build one. What
+// follows the pick is the LATEST request's: on load a full panel first asks for "new
+// conversation", then a pending 重新打開 from the gallery asks again — that reopen must win.
 let pickerCard = null;
+let pickerThen = null;
 async function showArchivePicker(then) {
+  pickerThen = then;
   if (pickerCard) { pickerCard.scrollIntoView({ block: "nearest" }); return; }
+  const row = document.createElement("div");
+  pickerCard = row;
   let ids = [];
   try {
     const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
     windows[String(panelWindowId)] = windowRec;
     ids = [...ConvCore.liveOpenIds(windows, live)];
   } catch (_) { /* nothing to list */ }
-  const row = document.createElement("div");
   row.className = "message system";
   const card = document.createElement("div");
   card.className = "conv-picker";
@@ -1898,7 +1908,7 @@ async function showArchivePicker(then) {
   const status = document.createElement("div");
   status.className = "conv-picker-status";
   status.hidden = true;
-  const close = () => { row.remove(); pickerCard = null; };
+  const close = () => { row.remove(); pickerCard = null; pickerThen = null; };
   const buttons = [];
   for (const id of ids) {
     const mine = convs.has(id);
@@ -1911,7 +1921,7 @@ async function showArchivePicker(then) {
     b.addEventListener("click", async () => {
       buttons.forEach((x) => { x.disabled = true; });
       const r = await archiveAnywhere(id);
-      if (r && r.ok) { close(); then(); return; }
+      if (r && r.ok) { const next = pickerThen; close(); if (next) next(); return; }
       status.textContent = `沒有封存：${(r && r.error) || "未知錯誤"}`;
       status.hidden = false;
       buttons.forEach((x) => { x.disabled = x.dataset.busy === "1"; });
@@ -1932,7 +1942,6 @@ async function showArchivePicker(then) {
   card.append(head, hint, list, status, cancel);
   row.appendChild(card);
   chatList.appendChild(row);
-  pickerCard = row;
   maybeScroll();
 }
 

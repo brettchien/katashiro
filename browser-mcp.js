@@ -3626,17 +3626,19 @@
   // `mcp/connect` only; every later frame carries the `connectionId` we handed back, so the
   // connect step is where the mapping is established.
   //
-  // `acpId` may fall back: a side panel declaring only the browser server needs no
-  // `state.servers` wiring at all, and with ONE declared server an unknown `acpId` still means
-  // it. With several declared (one per conversation, ADR multi-conversation §3.9) an unknown
-  // `acpId` is refused (null): a late `mcp/connect` for an archived conversation's server must
-  // not be routed to another conversation's. `connectionId` may NOT — a handle we never minted names no
-  // server, and quietly serving it the browser tools would hand browser control to a caller
-  // that was never granted a tunnel. Unknown connections are refused, not guessed at.
+  // Only a MISSING `acpId` falls back (to the single declared server, or the default instance
+  // when nothing is declared), so a side panel serving just the browser server needs no wiring.
+  // An `acpId` that names no declared server is refused (null) however many are declared (ADR
+  // multi-conversation §3.9): archiving one of two conversations leaves ONE declared server, and a
+  // late `mcp/connect` for the archived one must not be routed to the survivor.
+  // `connectionId` may NOT fall back at all — a handle we never minted names no server, and
+  // quietly serving it the browser tools would hand browser control to a caller that was never
+  // granted a tunnel. Unknown connections are refused, not guessed at.
   function serverForAcpId(state, acpId) {
     const declared = state.servers || [];
     const known = declared.find((s) => s.id === acpId);
     if (known) return known;
+    if (acpId != null) return null;
     if (declared.length > 1) return null;
     return declared[0] || defaultServer;
   }
