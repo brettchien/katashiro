@@ -159,3 +159,13 @@ test("queryFromHash (canvas_gallery, ADR §3.11): #q= decoded, control/bidi char
   const long = G.queryFromHash(`#q=${encodeURIComponent("😀".repeat(300))}`);
   assert.equal(Array.from(long).length, G.QUERY_MAX);
 });
+
+test("buildRows: the 對話 column shows the conversation's title when known (multi-conversation §3.3)", () => {
+  const rows = G.buildRows([
+    { id: "cv_000000000001", conversationId: "c_0123456789ab", title: "A", at: 2 },
+    { id: "cv_000000000002", conversationId: "c_ba9876543210", title: "B", at: 1 },
+  ], { now: NOW, titles: { c_0123456789ab: "  Release plan " } });
+  assert.equal(rows[0].conversation, "Release plan");
+  assert.equal(rows[1].conversation, "c_ba9876");
+  assert.equal(G.conversationLabel("c_0123456789ab", { c_0123456789ab: "   " }), "c_012345");
+});

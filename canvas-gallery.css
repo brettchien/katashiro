@@ -85,3 +85,26 @@
 
 .gallery-empty { color: var(--muted); font-size: 13px; padding: 24px 10px; }
 .gallery-empty[hidden] { display: none; }
+
+/* Multi-conversation (ADR docs/adr/multi-conversation.md §3.4): the 對話 section above the canvases —
+   conversations not open in any live window, each with 重新打開. */
+.gallery-section-title {
+  margin: 14px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.conv-section-hint { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+.conv-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.conv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 84px 120px auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.conv-row:hover { background: rgba(255, 255, 255, 0.04); }
+.conv-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-reopen { white-space: nowrap; }
