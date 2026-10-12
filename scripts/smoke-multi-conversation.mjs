@@ -19,7 +19,15 @@
 //   - with 3 open, ＋ shows the picker; picking archives one (asks close as 對話已封存);
 //   - a second window: a conversation open in window 1 is not opened again (Web Lock), and with 3
 //     open there it gets the picker instead of a 4th;
-//   - the gallery's 對話 section lists the archived conversation with its title.
+//   - the gallery's 對話 section lists the archived conversation with its title;
+//   - P1b (ADR §4), on a small model of tabs and groups: new_tab joins the conversation's group
+//     (titled after it) and becomes the working tab; set_title (sanitised; never over a user name);
+//     Q4 b order (a card asked after a queued message stays open); Q6 (send brings the working tab
+//     forward); Q5 (collapse the left conversation's group, never with the active tab in it); Q12
+//     (❓ + notification, whose click switches back); per-conversation drafts; archive closes the
+//     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
+//     已封存 vs "that window's panel is closed"; reopen and a browser restart bring the tabs back
+//     into one group, adopting open ones instead of duplicating them.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -86,7 +94,20 @@ const STUB = String.raw`
     for (const l of onMessage.ls) if (l(msg, sender, respond) === true) async = true;
     if (!async) setTimeout(() => respond(undefined), 50);
   });
-  let tabId = 100;
+  const TM = "__tabmodel";
+  const tm = () => JSON.parse(localStorage.getItem(TM) || '{"tabs":[],"groups":{},"next":100,"nextGroup":500,"clock":1}');
+  const tmSave = (m) => localStorage.setItem(TM, JSON.stringify(m));
+  const tabsEv = { onUpdated: ev(), onRemoved: ev() };
+  const fireT = (e, ...a) => { for (const l of tabsEv[e].ls) try { l(...a); } catch (x) { console.error(x); } };
+  const notifyClicked = ev();
+  window.__removed = [];
+  window.__collapsedActive = [];
+  window.__notes = [];
+  window.__notifyClick = (id) => { for (const l of notifyClicked.ls) l(id); };
+  // A tab the USER opens (not through Katashiro): active in this window.
+  window.__userTab = (url) => window.chrome.tabs.create({ url, active: true });
+  window.__tm = tm;
+  window.__tmSave = tmSave;
   window.__focused = [];
   window.__sidePanelOpened = [];
   window.chrome = {
@@ -97,7 +118,7 @@ const STUB = String.raw`
       sendMessage: async (msg) => { window.__messages.push(msg); return undefined; },
       reload() {},
     },
-    storage: { local: area("local"), sync: area("sync", { agents: [{ name: "Orca", url: "ws://fake/acp" }], activeAgentUrl: "ws://fake/acp" }), session: area("session", (() => {
+    storage: { local: area("local"), sync: area("sync", { agents: [{ name: "Orca", url: "ws://fake/acp" }], activeAgentUrl: "ws://fake/acp", actMode: true }), session: area("session", (() => {
       // ?reopen=<id>: a 重新打開 the gallery left for a panel that was not open yet (pickUpReopenRequest).
       const r = new URLSearchParams(location.search).get("reopen");
       return r ? { ["katashiro.convOpen." + WIN]: { id: r, reqId: "smoke-reopen", at: Date.now() } } : {};
@@ -108,14 +129,72 @@ const STUB = String.raw`
       update: async (id) => { window.__focused.push(id); return { id }; },
     },
     tabs: {
-      query: async () => [], create: async (o) => ({ id: ++tabId, windowId: WIN, ...o }), get: async (id) => ({ id, windowId: WIN, groupId: -1 }),
-      update: async () => ({}), remove: async () => {}, group: async () => 1, ungroup: async () => {},
+      // A small model of the browser's tabs and groups (P1b), in localStorage so every page ("window")
+      // sees the same browser. Events fire only in the page that made the change.
+      query: async (q = {}) => tm().tabs.filter((t) => (q.windowId == null || t.windowId === q.windowId) && (q.groupId == null || t.groupId === q.groupId) && (q.active == null || t.active === q.active)).map((t) => ({ ...t })),
+      create: async (o) => {
+        const m = tm();
+        const t = { id: ++m.next, windowId: o.windowId ?? WIN, url: o.url || "chrome://newtab/", active: o.active !== false, groupId: -1, splitViewId: -1, pinned: false, index: m.tabs.length, lastAccessed: ++m.clock };
+        if (t.active) m.tabs.forEach((x) => { if (x.windowId === t.windowId) x.active = false; });
+        m.tabs.push(t);
+        tmSave(m);
+        return { ...t };
+      },
+      get: async (id) => { const t = tm().tabs.find((x) => x.id === id); if (!t) throw new Error("No tab with id: " + id); return { ...t }; },
+      update: async (id, u) => {
+        const m = tm();
+        const t = m.tabs.find((x) => x.id === id);
+        if (!t) throw new Error("No tab with id: " + id);
+        if (u.active) {
+          m.tabs.forEach((x) => { if (x.windowId === t.windowId) x.active = false; });
+          t.active = true;
+          t.lastAccessed = ++m.clock;
+          if (m.groups[t.groupId]) m.groups[t.groupId].collapsed = false;   // Chrome expands it
+        }
+        if (u.url) t.url = u.url;
+        tmSave(m);
+        if (u.url) fireT("onUpdated", id, { url: u.url }, { ...t });
+        return { ...t };
+      },
+      remove: async (ids) => {
+        const m = tm();
+        const list = [].concat(ids);
+        m.tabs = m.tabs.filter((x) => !list.includes(x.id));
+        tmSave(m);
+        window.__removed.push(...list);
+        for (const id of list) fireT("onRemoved", id, { windowId: WIN, isWindowClosing: false });
+      },
+      group: async (o) => {
+        const m = tm();
+        let g = o.groupId;
+        if (g == null) { g = ++m.nextGroup; m.groups[g] = { id: g, windowId: (o.createProperties && o.createProperties.windowId) ?? WIN, collapsed: false, title: "" }; }
+        for (const id of o.tabIds) { const t = m.tabs.find((x) => x.id === id); if (t) t.groupId = g; }
+        tmSave(m);
+        for (const id of o.tabIds) fireT("onUpdated", id, { groupId: g }, {});
+        return g;
+      },
+      ungroup: async (ids) => { const m = tm(); for (const id of [].concat(ids)) { const t = m.tabs.find((x) => x.id === id); if (t) t.groupId = -1; } tmSave(m); },
       getCurrent: async () => ({ id: 1, windowId: WIN, index: 0 }),
-      onUpdated: ev(), onRemoved: ev(), onActivated: ev(),
+      onUpdated: tabsEv.onUpdated, onRemoved: tabsEv.onRemoved, onActivated: ev(), onAttached: ev(), onDetached: ev(),
     },
-    tabGroups: { get: async () => { throw new Error("no group"); }, update: async () => ({}) },
+    tabGroups: {
+      get: async (id) => { const m = tm(); if (!m.groups[id] || !m.tabs.some((t) => t.groupId === id)) throw new Error("No group with id: " + id); return { ...m.groups[id] }; },
+      update: async (id, u) => {
+        const m = tm();
+        if (!m.groups[id]) throw new Error("No group with id: " + id);
+        // Chrome cannot keep the active tab in a collapsed group: the plan must have moved it first.
+        if (u.collapsed && m.tabs.some((t) => t.groupId === id && t.active)) window.__collapsedActive.push(id);
+        Object.assign(m.groups[id], u);
+        tmSave(m);
+        return { ...m.groups[id] };
+      },
+    },
     sidePanel: { open: async (o) => { window.__sidePanelOpened.push(o); } },
-    notifications: { onClicked: ev() },
+    notifications: {
+      onClicked: notifyClicked,
+      create: async (id, o) => { window.__notes.push({ id, ...o }); return id; },
+      clear: async () => true,
+    },
     permissions: { contains: async () => false, request: async () => false, remove: async () => false },
     management: { getSelf: async () => ({ installType: "development" }) },
   };
@@ -142,6 +221,7 @@ const STUB = String.raw`
       if (m.method === undefined) {                      // our answer to a server request (tunnel)
         acp.responses[m.id] = m;
         if (m.id === 9001 && m.result) { acp.conn = m.result.connectionId; acp.callTool(acp.conn, "katashiro.ask_user", { question: "Pick one?", options: ["A", "B"] }); }
+        if (m.id === 9002 && m.result) acp.conn = m.result.connectionId;          // connectOnPrompt: just the tunnel
         return undefined;
       }
       acp.log.push(m);
@@ -164,6 +244,7 @@ const STUB = String.raw`
         if (acp.lateUpdateFor) this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: acp.lateUpdateFor, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LATE CHUNK FROM ANOTHER SESSION" } } } });
         this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply in " + sid } } } });
         if (acp.askOnPrompt) { acp.askOnPrompt = false; this.emit({ jsonrpc: "2.0", id: 9001, method: "mcp/connect", params: { acpId: acp.servers[sid] } }); }
+        if (acp.connectOnPrompt) { acp.connectOnPrompt = false; acp.conn = null; this.emit({ jsonrpc: "2.0", id: 9002, method: "mcp/connect", params: { acpId: acp.servers[sid] } }); }
         if (acp.hold) { acp.held.push(m); return undefined; }
         return this.reply(m.id, { stopReason: "end_turn" });
       }
@@ -465,6 +546,156 @@ try {
   t = await tabs(pr);
   check(t.length === 1 && t[0].current && t[0].title === archivedNow[0].title, "…as window 2's only, current conversation", t);
   await pr.close();
+
+  // --- P1b (ADR §4): a tab group per conversation, working tab, Q5/Q6/Q12, drafts, set_title, ---
+  // archive closes / reopen restores, browser-restart adoption, push refusals, Q4 b order.
+  {
+    const pb = await browser.newPage();
+    await pb.goto(`${origin}/manifest.json`);
+    await pb.evaluate(() => { localStorage.clear(); localStorage.setItem("ls:__live", "[5]"); });
+    await pb.close();
+  }
+  const q = await openPanel(5);
+  await until(q, () => window.__acp.log.some((m) => m.method === "session/new"), "P1b: conversation A has a session");
+  const turnIdle = () => until(q, () => document.getElementById("stop-btn").hidden, "turn idle");
+  const tool = async (name, args) => {
+    const id = await q.evaluate((n, a) => window.__acp.callTool(window.__acp.conn, n, a), name, args);
+    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id);
+    return q.evaluate((i) => window.__acp.responses[i], id);
+  };
+  const tm = () => q.evaluate(() => window.__tm());
+  const convA = await q.evaluate(() => JSON.parse(localStorage.getItem("ls:window:5")).current);
+  // A turn whose tunnel is connected; the agent opens a tab in the background.
+  await q.evaluate(() => { window.__acp.hold = true; window.__acp.connectOnPrompt = true; });
+  await send(q, "Research topic A");
+  await until(q, () => !!window.__acp.conn, "P1b: A's tunnel");
+  let r = await tool("katashiro.new_tab", { url: "https://agent.example/a", active: false });
+  check(r.result && !r.result.isError, "new_tab works", r);
+  let model = await tm();
+  const agentTab = model.tabs.find((t) => t.url === "https://agent.example/a");
+  check(agentTab && agentTab.groupId > 0, "the agent's new tab joins a tab group", agentTab);
+  const gA = agentTab && agentTab.groupId;
+  check(model.groups[gA] && model.groups[gA].title === "Research topic A", "…titled after the conversation", model.groups[gA]);
+  await until(q, (id) => { const c = JSON.parse(localStorage.getItem("ls:conv:" + id)); return c && c.groupTabs && c.groupTabs.includes("https://agent.example/a") && c.workingTab && c.workingTab.url === "https://agent.example/a"; }, "conv:<A> records groupTabs and the working tab", convA);
+  r = await tool("katashiro.set_title", { title: "  Topic\u202E A  by agent " });
+  check(r.result && !r.result.isError && /renamed to "Topic A by agent"/.test(r.result.content[0].text), "set_title renames (sanitised)", r);
+  check((await tabs(q))[0].title === "Topic A by agent", "…the tab strip shows it", await tabs(q));
+  await until(q, () => Object.values(JSON.parse(localStorage.getItem("ls:conv:index"))).some((e) => e.title === "Topic A by agent" && e.titleSource === "agent"), "…stored as titleSource agent");
+  await until(q, (g) => window.__tm().groups[g].title === "Topic A by agent", "…and the group follows", gA);
+
+  // Q4 b order (§3.8): a card pending at the send closes; one asked after it (message queued) stays.
+  r = await tool("katashiro.ask_user", { question: "Before?", options: ["x", "y"] });
+  await send(q, "typed while the turn runs");
+  r = await tool("katashiro.ask_user", { question: "After?", options: ["x", "y"] });
+  const cards = await q.evaluate(() => Array.from(document.querySelectorAll(".ask-card")).map((c) => [c.querySelector(".ask-card-question").textContent, c.className]));
+  check(cards.length === 2 && /unanswered/.test(cards[0][1]) && /pending/.test(cards[1][1]), "Q4 b: the card pending at the send closes, the one asked after it stays", cards);
+  await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
+  await turnIdle();
+  await sleep(300);
+  await turnIdle();
+
+  // Q6: the user is on a tab of their own; pressing send brings the working tab forward.
+  const userTab = await q.evaluate(() => window.__userTab("https://user.example/"));
+  model = await tm();
+  check(!model.tabs.find((t) => t.id === userTab.id).groupId || model.tabs.find((t) => t.id === userTab.id).groupId === -1, "a tab the user opened is never grouped", null);
+  await send(q, "now look");
+  await until(q, (id) => window.__tm().tabs.find((t) => t.id === id).active, "Q6: the working tab is activated at the send", agentTab.id);
+  await turnIdle();
+
+  // Draft: typed text stays with its conversation.
+  await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for A"; i.dispatchEvent(new Event("input")); });
+  // Q12: a card left waiting in A.
+  await q.evaluate(() => { window.__acp.hold = true; });
+  await send(q, "ask me");
+  r = await tool("katashiro.ask_user", { question: "Waiting?", options: ["x", "y"] });
+  await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
+  await turnIdle();
+  await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for A"; i.dispatchEvent(new Event("input")); });
+  // ＋ → B: Q5 collapses A's group (activating a tab outside it first), Q12 marks A and notifies.
+  await q.click(".conv-tab-new");
+  await until(q, () => document.querySelectorAll(".conv-tab").length === 2, "P1b: conversation B");
+  await until(q, (g) => window.__tm().groups[g].collapsed === true, "Q5: A's group collapses on the switch", gA);
+  model = await tm();
+  check(!model.tabs.find((t) => t.active && t.windowId === 5 && t.groupId === gA), "Q5: the active tab is outside the collapsed group", model.tabs.filter((t) => t.active));
+  check((await q.evaluate(() => window.__collapsedActive)).length === 0, "Q5: never collapses a group holding the active tab", null);
+  check(await q.evaluate(() => document.getElementById("message-input").value) === "", "draft: B starts with an empty composer", null);
+  const marks = await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).map((t) => [t.classList.contains("waiting"), (t.querySelector(".conv-tab-mark") || {}).textContent]));
+  check(marks[0][0] && marks[0][1] === "❓" && !marks[1][0], "Q12: A's tab shows ❓", marks);
+  const notes = await q.evaluate(() => window.__notes);
+  check(notes.length === 1 && notes[0].id.startsWith("katashiro-notify:5:conv:" + convA + ":"), "Q12: a notification names A", notes);
+  await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for B"; i.dispatchEvent(new Event("input")); });
+  // The notification click goes back to A, with its draft.
+  await q.evaluate((id) => window.__notifyClick(id), notes[0].id);
+  await until(q, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "Topic A by agent", "Q12: the notification click switches to A");
+  check(await q.evaluate(() => document.getElementById("message-input").value) === "draft for A", "draft: A's draft is back", await q.evaluate(() => document.getElementById("message-input").value));
+  await until(q, (g) => window.__tm().groups[g].collapsed === false, "Q5: A's group expands again", gA);
+  await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
+  check(await q.evaluate(() => document.getElementById("message-input").value) === "draft for B", "draft: B's draft is back", null);
+  await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
+
+  // set_title never overrides a user name.
+  await q.evaluate(() => document.querySelector(".conv-tab.current").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await until(q, () => !!document.querySelector(".conv-tab-rename"), "the rename box (A)");
+  await q.evaluate(() => { const i = document.querySelector(".conv-tab-rename"); i.value = "Brett's A"; i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  await q.evaluate(() => { window.__acp.hold = true; window.__acp.connectOnPrompt = true; });
+  await send(q, "rename it?");
+  await until(q, () => !!window.__acp.conn, "A's tunnel again");
+  r = await tool("katashiro.set_title", { title: "Agent's idea" });
+  check(r.result && r.result.isError && /user named this conversation/.test(r.result.content[0].text), "set_title refuses over a user name", r);
+  check((await tabs(q)).find((t) => t.current).title === "Brett's A", "…the user's name stays", await tabs(q));
+  await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
+  await turnIdle();
+
+  // Archive A: its group's tabs close (a canvas tab that does not answer the dirty check stays),
+  // the list of URLs is kept for the reopen.
+  const canvasUrl = `${origin}/canvas.html?id=cv_000000000abc`;
+  await q.evaluate((u, g) => { const m = window.__tm(); m.tabs.push({ id: 900, windowId: 5, url: u, active: false, groupId: g, splitViewId: -1, pinned: false, index: 99, lastAccessed: 1 }); window.__tmSave(m); }, canvasUrl, gA);
+  await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-close").click());
+  await until(q, () => document.querySelectorAll(".conv-tab").length === 1, "P1b: A archived", null, 12000);
+  model = await tm();
+  check(!model.tabs.some((t) => t.url === "https://agent.example/a"), "archive closes the agent's tab", model.tabs.map((t) => t.url));
+  check(model.tabs.some((t) => t.id === 900), "…but not a canvas tab that may hold unsaved edits", null);
+  check((await visibleText(q)).includes("未儲存的修改"), "…and says so", await visibleText(q));
+  check(model.tabs.some((t) => t.id === userTab.id), "the user's own tab stays", null);
+  let stA = (await storage(q))[`conv:${convA}`];
+  check(stA.groupTabs.includes("https://agent.example/a") && stA.groupTabs.includes(canvasUrl), "the closed tabs' URLs stay recorded", stA.groupTabs);
+
+  // Push refusals (§4.8): conversation A is archived → 已封存; a conversation open in a live window
+  // whose panel is closed → that window's panel is closed.
+  r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: convA, text: "x", note: "", reqId: "p1" });
+  check(r && r.ok === false && r.error === "這段對話已封存，先從總覽重新打開", "push for an archived conversation: 已封存", r);
+  await q.evaluate((id) => { localStorage.setItem("ls:__live", "[5,6]"); localStorage.setItem("ls:window:6", JSON.stringify({ open: [id], current: id, savedAt: Date.now() })); }, ID(77));
+  r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: ID(77), text: "x", note: "", reqId: "p2" });
+  check(r && r.ok === false && /另一個視窗，那個視窗的側邊欄沒開/.test(r.error) && r.windowId === 6, "push for a conversation whose window's panel is closed says so, with the window", r);
+  await q.evaluate(() => { localStorage.setItem("ls:__live", "[5]"); localStorage.removeItem("ls:window:6"); });
+
+  // Reopen A from the gallery: its tabs come back into one group; the open canvas tab is adopted, not duplicated.
+  r = await q.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, windowId: 5, reqId: "r1" }, "/canvas-gallery.html"), convA);
+  check(r && r.ok, "reopen A", r);
+  await until(q, () => window.__tm().tabs.some((t) => t.url === "https://agent.example/a"), "reopen: the agent's tab is opened again");
+  await until(q, () => { const m = window.__tm(); const a = m.tabs.find((t) => t.url === "https://agent.example/a"); const c = m.tabs.find((t) => t.id === 900); return a && c && a.groupId > 0 && a.groupId === c.groupId; }, "reopen: back in one group with the canvas tab");
+  model = await tm();
+  check(model.tabs.filter((t) => t.url === canvasUrl).length === 1, "reopen: the open canvas tab is adopted, not opened twice", model.tabs.map((t) => t.url));
+  const reA = model.tabs.find((t) => t.url === "https://agent.example/a");
+  check(reA.active === false, "reopen: tabs come back in the background", reA);
+
+  // Browser restart: window 5 is gone; Chrome restored the agent tab (new id, ungrouped) in window 7.
+  await q.close();
+  {
+    const pb = await browser.newPage();
+    await pb.goto(`${origin}/manifest.json`);
+    await pb.evaluate((u) => {
+      localStorage.setItem("ls:__live", "[7]");
+      localStorage.setItem("__tabmodel", JSON.stringify({ tabs: [{ id: 5000, windowId: 7, url: u, active: true, groupId: -1, splitViewId: -1, pinned: false, index: 0, lastAccessed: 2 }], groups: {}, next: 6000, nextGroup: 800, clock: 10 }));
+    }, "https://agent.example/a");
+    await pb.close();
+  }
+  const q7 = await openPanel(7);
+  await until(q7, () => window.__tm().tabs.length >= 2, "restart: the missing tab is reopened");
+  await until(q7, () => { const m = window.__tm(); const a = m.tabs.find((t) => t.id === 5000); const c = m.tabs.find((t) => t.url.includes("/canvas.html?id=cv_000000000abc")); return a && c && a.groupId > 0 && a.groupId === c.groupId; }, "restart: Chrome's restored tab is adopted into the conversation's group with the reopened canvas tab");
+  model = await q7.evaluate(() => window.__tm());
+  check(model.tabs.filter((t) => t.url === "https://agent.example/a").length === 1, "restart: no duplicate of a tab Chrome restored", model.tabs.map((t) => t.url));
+  await q7.close();
 } finally {
   await browser.close();
   server.close();

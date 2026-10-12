@@ -81,6 +81,7 @@
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
   let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
   let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
+  let savesPending = 0;               // queued or running saves: archiving keeps the tab open meanwhile (§4.5)
   // The editor's undo stack as the frame last reported it (undoState{}, §3.5): the edit-mode ↶ / ↷.
   let editUndo = { canUndo: false, canRedo: false };
   const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
@@ -175,8 +176,43 @@
         type: "katashiro-canvas-push", conversationId: current.meta.conversationId, text, note: note || "", reqId: crypto.randomUUID(),
       });
     } catch (_) { r = undefined; }
-    if (!r) return { ok: false, error: "Katashiro 側邊面板沒有開（或不在同一個對話）" };
+    if (!r) {
+      // No panel answered (multi-conversation P1b §4.8): the panel of this tab's window answers every
+      // push it gets, so none answering usually means this window has no side panel open. Say so, and
+      // offer to open it — chrome.sidePanel.open needs a user gesture, which the notice button's
+      // click is. The note stays in the popover (or the user types it again for Send to agent).
+      const win = await panellessWindow();
+      if (win != null) {
+        notice("這個視窗的 Katashiro 側邊欄沒開：打開側邊欄後再送一次。", { label: "打開側邊欄", fn: () => openSidePanel(win) });
+        return { ok: false, error: "這個視窗的 Katashiro 側邊欄沒開", shown: true };
+      }
+      return { ok: false, error: "Katashiro 側邊面板沒有回應（或不在同一個對話）" };
+    }
+    if (r.ok && r.elsewhere) r.agent = `${r.agent || "agent"}（在另一個視窗）`;
+    if (!r.ok && r.windowId != null) {
+      // Open in another window whose panel is closed: a button to go there.
+      notice(`送出失敗：${CanvasCore.clipError(r.error)}`, { label: "前往那個視窗", fn: () => chrome.windows.update(r.windowId, { focused: true }).catch(() => {}) });
+      r.shown = true;                           // callers keep this notice (it has the button)
+    }
     return r;
+  }
+  // This tab's window id if no Katashiro side panel is open in it (chrome.runtime.getContexts,
+  // Chrome 116+), else null (a panel is open, or we cannot tell).
+  async function panellessWindow() {
+    try {
+      const me = await chrome.tabs.getCurrent();
+      if (!me || typeof chrome.runtime.getContexts !== "function") return null;
+      const panels = await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"], windowIds: [me.windowId] });
+      return panels.length ? null : me.windowId;
+    } catch (_) { return null; }
+  }
+  // Called synchronously from the click (the user gesture sidePanel.open needs).
+  function openSidePanel(windowId) {
+    try {
+      const p = chrome.sidePanel.open({ windowId });
+      if (p && typeof p.then === "function") return p.then(() => notice("側邊欄打開了：再按一次送出。"), (e) => notice(`打不開側邊欄：${CanvasCore.clipError(String((e && e.message) || e))}`));
+    } catch (e) { notice(`打不開側邊欄：${CanvasCore.clipError(String((e && e.message) || e))}`); }
+    return undefined;
   }
 
   sendBtn.addEventListener("click", async () => {
@@ -200,7 +236,7 @@
         note, header: diff == null ? `${head} — the diff is too large; call canvas_read` : head, data: diff || null, lang: "diff",
       });
       const r = await pushToAgent(text, note);
-      if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
+      if (!r.ok) { if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
       await store.markSeen({ id: canvasId, version: c.meta.version });
       flash(`📤 已送給 ${r.agent || "agent"}（v${c.meta.version}）`);
     } finally {
@@ -346,7 +382,7 @@
     const r = await pushToAgent(text, note);
     const ok = r.ok ? `💬 已問 ${r.agent || "agent"}（v${cap.version} 的選取文字）` : `送出失敗：${CanvasCore.clipError(r.error)}`;
     if (ask.phase !== "sending") {                // closed meanwhile (edit mode, frame reloaded): say it here
-      if (r.ok) flash(ok); else notice(ok);
+      if (r.ok) flash(ok); else if (!r.shown) notice(ok);
       return;
     }
     if (!r.ok) {
@@ -404,7 +440,7 @@
           data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
-        notice(r.ok ? `📤 已把錯誤送給 ${r.agent || "agent"}` : `送出失敗：${CanvasCore.clipError(r.error)}`);
+        if (r.ok) notice(`📤 已把錯誤送給 ${r.agent || "agent"}`); else if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`);
       },
     });
   }
@@ -663,7 +699,8 @@
   // Saves are serialized (refresh() waits on them). The frame gets back the content that was
   // stored, so its baseline is what is saved, not what it holds when the reply arrives.
   function saveFromEditor(content, baseVersion, droppedBlank = false) {
-    const run = saving.then(() => doSave(content, baseVersion, droppedBlank));
+    savesPending++;
+    const run = saving.then(() => doSave(content, baseVersion, droppedBlank)).finally(() => { savesPending--; });
     saving = run.catch(() => {});
     return run;
   }
@@ -1006,6 +1043,14 @@
     // Only the side panel: not a content script (sender.tab), not another extension page.
     if (!sender || sender.id !== chrome.runtime.id || sender.tab || sender.url !== PANEL_URL) return false;
     if (compareView) return false;              // goto / highlight are for the canvas, never its compare tab
+    // Multi-conversation P1b §4.5: archiving asks before closing this tab. Only the tab the panel
+    // asked answers (two tabs of one canvas each have their own editor).
+    if (msg && msg.type === "katashiro-canvas-dirty") {
+      if (myTabId == null || msg.tabId !== myTabId) return false;
+      // A save still running counts: the editor already reported clean, the content is not stored yet.
+      sendResponse({ ok: true, dirty: (mode === "edit" && dirty) || savesPending > 0 });
+      return false;
+    }
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
     if (msg && msg.type === "katashiro-canvas-compare-start" && msg.id === canvasId) {
       // Only the tab the panel picked: two tabs of one canvas must not both open a compare.

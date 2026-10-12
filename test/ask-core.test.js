@@ -247,3 +247,31 @@ test("createAsk: a throwing onSettle does not undo the outcome", () => {
   assert.equal(a.cancel(), true);
   assert.equal(a.state, "cancelled");
 });
+
+// Multi-conversation §3.8 / P1b §4.8: which cards a close reaches. The 2026-10-12 18:31 report:
+// the user's message was sent (and queued behind the running turn) at 18:31:06.675, the agent asked
+// two cards at 18:31:07, before the queued message reached it. Supersede acts at send time, so those
+// two stay open; cards pending at send time in the same conversation close.
+test("selectToSettle: scope by conversation and agent; a card asked after the send stays (Q4 b order)", () => {
+  const c = fakeClock();
+  const connA = { name: "A" }, connB = { name: "B" };
+  const pending = new Map();
+  const add = (id, conn, conversationId) => {
+    const e = { conn, conversationId, ask: A.createAsk({ ...c, onSettle: () => pending.delete(id) }) };
+    pending.set(id, e);
+    return e;
+  };
+  const supersede = (convId) => { for (const e of A.selectToSettle([...pending.values()], { convId })) e.ask.supersede(); };
+  const before = add("ask_1", connA, "c_000000000001");
+  const elsewhere = add("ask_2", connA, "c_000000000002");
+  supersede("c_000000000001");                         // the user sends in conversation 1
+  const after = add("ask_3", connA, "c_000000000001");  // the agent asks while that message waits in the queue
+  assert.equal(before.ask.state, "superseded");
+  assert.equal(elsewhere.ask.state, "pending");          // another conversation's card stays
+  assert.equal(after.ask.state, "pending");              // asked after the send: the user has not seen it yet
+  // agent scope (disconnect): every conversation, that agent only
+  const other = add("ask_4", connB, "c_000000000001");
+  assert.deepEqual(A.selectToSettle([...pending.values()], { conn: connA }).map((e) => e.conversationId).sort(), ["c_000000000001", "c_000000000002"]);
+  assert.deepEqual(A.selectToSettle([...pending.values()], { conn: connB, convId: "c_000000000001" }), [other]);
+  assert.deepEqual(A.selectToSettle([null, undefined], {}), []);
+});

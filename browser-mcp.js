@@ -1396,6 +1396,9 @@
         const created = { active: makeActive };
         if (url) created.url = url;
         const tab = await ctx.chrome.tabs.create(created);
+        // Multi-conversation P1b (§4.1, §4.3): the panel puts a tab the agent opened in the calling
+        // conversation's tab group and makes it the working tab. Cosmetic for the tool: never fails it.
+        if (typeof ctx.onTabUsed === "function") { try { ctx.onTabUsed(tab.id, { opened: true }); } catch (_) { /* host bookkeeping only */ } }
         // Report the index in the same enumeration `tabs` / `switch_tab` use, so the three agree.
         const all = await ctx.chrome.tabs.query({});
         const index = all.findIndex((t) => t.id === tab.id);
@@ -1413,8 +1416,9 @@
     "katashiro.switch_tab": {
       description:
         "Switch to (activate) an already-open tab so subsequent tools act on it. Identify it by " +
-        "`index` from a fresh `tabs` listing, or by `url` (the first tab whose URL contains this " +
-        "substring — more stable than an index, which shifts as tabs open and close). Focuses the tab " +
+        "`index` from a fresh `tabs` listing, by `url` (the first tab whose URL contains this " +
+        "substring — more stable than an index, which shifts as tabs open and close), or with " +
+        "`tab: \"working\"` for this conversation's working tab (the last tab you acted on here). Focuses the tab " +
         "and its window; returns the now-active tab plus, for a scriptable http(s) page, its snapshot. " +
         "Gated by act mode.",
       write: true,
@@ -1423,17 +1427,24 @@
         type: "object",
         properties: {
           index: { type: "number", description: "tab index from a fresh `tabs` listing" },
-          url: { type: "string", description: "substring of the target tab's URL (alternative to index)" }
+          url: { type: "string", description: "substring of the target tab's URL (alternative to index)" },
+          tab: { type: "string", enum: ["working"], description: "\"working\": this conversation's working tab (alternative to index / url)" }
         }
       },
       redact: redactDefault,
-      /** @param {{ index?: number, url?: string }} args */
+      /** @param {{ index?: number, url?: string, tab?: string }} args */
       async call(args, ctx) {
         const all = await ctx.chrome.tabs.query({});
         if (!all.length) return errText("no open tabs to switch to");
         let target = null;
         const needle = (args.url != null) ? String(args.url).trim() : "";
-        if (needle) {
+        if (args.tab != null) {
+          if (args.tab !== "working") return errText('`tab` takes only "working"');
+          // Multi-conversation P1b §4.3: the host re-validates it (same tab + origin, else same URL).
+          const id = typeof ctx.workingTab === "function" ? await ctx.workingTab() : null;
+          target = id == null ? null : all.find((t) => t.id === id) || null;
+          if (!target) return errText("this conversation has no working tab yet (or it was closed) — open one with new_tab or pick one from tabs");
+        } else if (needle) {
           target = all.find((t) => tabUrlHas(t, needle));
           if (!target) return errText(`no open tab whose URL contains "${needle}" — call tabs to see what's open`);
         } else if (Number.isInteger(args.index)) {
@@ -1442,9 +1453,10 @@
           }
           target = all[args.index];
         } else {
-          return errText("switch_tab needs an `index` (from tabs) or a `url` substring to identify the tab");
+          return errText("switch_tab needs an `index` (from tabs), a `url` substring or `tab: \"working\"` to identify the tab");
         }
         await ctx.chrome.tabs.update(target.id, { active: true });
+        if (typeof ctx.onTabUsed === "function") { try { ctx.onTabUsed(target.id); } catch (_) { /* host bookkeeping only */ } }
         // The tab may live in a background window; focus that window too, else "active" is invisible.
         // chrome.windows is absent under `node --test`, so a missing API is not a failure.
         if (target.windowId != null && ctx.chrome.windows && ctx.chrome.windows.update) {
@@ -3311,6 +3323,31 @@
       }
     },
 
+    "katashiro.set_title": {
+      description:
+        "Name THIS conversation (the title on its tab in the Katashiro side panel and on its tab group). " +
+        "Call it once, after the first exchange, when the topic is clear — a few words, the subject " +
+        "rather than the first request; again only if the topic really changes. Plain text, at most " +
+        "80 characters (control and layout characters are removed). A name the user typed is never " +
+        "replaced: the call then changes nothing and says so. Not a page action, so act mode does not gate it.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: { title: { type: "string", description: "the conversation's name (≤ 80 chars)" } },
+        required: ["title"]
+      },
+      redact: redactDefault,
+      /** @param {{ title: string }} args */
+      async call(args, ctx) {
+        if (typeof ctx.setTitle !== "function") return errText("set_title is not available in this host (no side panel)");
+        if (typeof args.title !== "string") return errText("set_title needs a `title` string");
+        let r;
+        try { r = await ctx.setTitle(args.title); } catch (e) { return errText(`set_title failed: ${(e && e.message) || e}`); }
+        if (!r || !r.ok) return errText(`not renamed: ${(r && r.error) || "unknown error"}`);
+        return okText(`conversation renamed to ${JSON.stringify(r.title)}`);
+      }
+    },
+
     "katashiro.notify": {
       description:
         "Show a desktop (OS) notification to the user via chrome.notifications — for something they " +
@@ -3484,7 +3521,7 @@
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
       // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, askUser: deps.askUser, canvas: deps.canvas };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, askUser: deps.askUser, canvas: deps.canvas, onTabUsed: deps.onTabUsed, workingTab: deps.workingTab, setTitle: deps.setTitle };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
@@ -3499,7 +3536,10 @@
     if (!pageOrigin(tab.url) && !(tool.ownCanvas && isOwnCanvasTab(chrome, tab))) return errText(ORIGIN_UNSUPPORTED);
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
-    return withTabContext(await tool.call(args, ctx), tab);
+    const result = await tool.call(args, ctx);
+    // Multi-conversation P1b §4.3: the tab a page tool acted on is the calling conversation's working tab.
+    if (typeof deps.onTabUsed === "function") { try { deps.onTabUsed(tab.id); } catch (_) { /* host bookkeeping only */ } }
+    return withTabContext(result, tab);
   }
 
   /**

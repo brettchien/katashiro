@@ -1629,6 +1629,9 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .conv-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .conv-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-tab-mark { flex: none; font-size: 11px; }   /* Q12: a card waiting in this conversation */
+.conv-tab-mark[hidden] { display: none; }
+.conv-tab.waiting { color: var(--text-primary); }
 .conv-tab-time { flex: none; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .conv-tab-close,
 .conv-tab-new {

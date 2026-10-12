@@ -224,6 +224,7 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.canvas_gallery",
     "katashiro.canvas_list",
     "katashiro.chat_history",
+    "katashiro.set_title",
     "katashiro.notify"
   ]);
   // every tool carries a JSON-Schema inputSchema
@@ -378,7 +379,7 @@ test("katashiro.switch_tab with no index or url is a clean error", async () => {
     d
   );
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /needs an `index`.*or a `url`/);
+  assert.match(res.content[0].text, /needs an `index`.*a `url` substring or `tab: "working"`/);
 });
 
 test("katashiro.close_tab by index removes that tab", async () => {
@@ -3572,4 +3573,51 @@ test("katashiro.canvas_gallery: opens the gallery, query trimmed and capped", as
   assert.match(long.content[0].text, /201 chars; at most 200/);
   assert.equal((await callTool(d, "katashiro.canvas_gallery", { query: 5 })).isError, true);
   assert.deepEqual(asked, [undefined, "設計 ADR", ""]);
+});
+
+// --- multi-conversation P1b (ADR §4.3, §4.6): working tab hooks, switch_tab working, set_title ------
+
+test("P1b: the tab a page tool acts on, new_tab's tab (opened) and switch_tab's target reach onTabUsed", async () => {
+  const used = [];
+  const { deps: d } = deps({ createdTab: { id: 99, windowId: 7, url: "https://bg/" }, tabsList: [{ id: 42, windowId: 7, url: "https://a/" }, { id: 55, windowId: 7, url: "https://b/" }] });
+  d.onTabUsed = (id, o) => used.push([id, o || null]);
+  await call(d, "katashiro.read_dom", {});
+  await call(d, "katashiro.new_tab", { url: "https://bg/", active: false });
+  await call(d, "katashiro.switch_tab", { index: 1 });
+  assert.deepEqual(used, [[42, null], [99, { opened: true }], [55, null]]);
+  // a throwing host hook never fails the tool
+  d.onTabUsed = () => { throw new Error("boom"); };
+  assert.equal((await call(d, "katashiro.new_tab", { url: "https://bg/", active: false })).isError, undefined);
+});
+
+test("P1b: switch_tab({tab: \"working\"}) activates the host's working tab, or says there is none", async () => {
+  const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/", title: "A" }, { id: 55, windowId: 8, url: "chrome://newtab/", title: "B" }] });
+  d.workingTab = async () => 55;
+  const res = await call(d, "katashiro.switch_tab", { tab: "working" });
+  assert.equal(res.isError, undefined);
+  assert.deepEqual(calls.tabsUpdate, [{ tabId: 55, upd: { active: true } }]);
+  assert.match(res.content[0].text, /switched to tab \[1\] — B/);
+  d.workingTab = async () => null;
+  assert.match((await call(d, "katashiro.switch_tab", { tab: "working" })).content[0].text, /no working tab yet/);
+  d.workingTab = async () => 1234;                      // closed meanwhile
+  assert.match((await call(d, "katashiro.switch_tab", { tab: "working" })).content[0].text, /no working tab yet/);
+  assert.match((await call(d, "katashiro.switch_tab", { tab: "first" })).content[0].text, /takes only "working"/);
+  delete d.workingTab;
+  assert.match((await call(d, "katashiro.switch_tab", { tab: "working" })).content[0].text, /no working tab yet/);
+});
+
+test("P1b: set_title goes to the host and reports its verdict; not gated by act mode", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const seen = [];
+  d.setTitle = async (t) => { seen.push(t); return t === "mine" ? { ok: false, error: "the user named this conversation" } : { ok: true, title: t.trim() }; };
+  const ok = await call(d, "katashiro.set_title", { title: " Market research " });
+  assert.equal(ok.isError, undefined);
+  assert.match(ok.content[0].text, /renamed to "Market research"/);
+  const no = await call(d, "katashiro.set_title", { title: "mine" });
+  assert.equal(no.isError, true);
+  assert.match(no.content[0].text, /not renamed: the user named this conversation/);
+  assert.match((await call(d, "katashiro.set_title", { title: 3 })).content[0].text, /needs a `title` string/);
+  delete d.setTitle;
+  assert.match((await call(d, "katashiro.set_title", { title: "x" })).content[0].text, /not available in this host/);
+  assert.deepEqual(seen, [" Market research ", "mine"]);
 });

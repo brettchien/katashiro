@@ -292,6 +292,12 @@ class Conn {
       showImage: (img) => this.showImage(img),
       // ask_user shows its card in THIS agent's turn, and the answer comes back to THIS session only.
       askUser: (args) => this.askUser(args, st),
+      // P1b (ADR §4.3): the tab this conversation's agent acted on becomes its working tab; a tab it
+      // opened (new_tab) also joins the conversation's tab group (§4.1).
+      onTabUsed: (tabId, o) => { noteWorkingTab(st.convId, tabId, o).catch(() => {}); },
+      workingTab: async () => { const t = await resolveWorkingTab(st.convId); return t ? t.id : null; },
+      // P1b §4.6: set_title names the calling conversation; a user title always wins.
+      setTitle: (title) => setAgentTitle(st.convId, title),
       // Canvas (ADR docs/adr/canvas.md): one store for the panel, keyed by the calling
       // conversation; a write shows its card in THIS agent's turn and opens a new canvas's tab.
       canvas: {
@@ -1352,6 +1358,9 @@ if (chrome.notifications && chrome.notifications.onClicked) {
     if (panelWindowId == null || id.indexOf(`${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:`) !== 0) return;
     if (typeof panelWindowId === "number") chrome.windows.update(panelWindowId, { focused: true });
     chrome.notifications.clear(id);
+    // Q12 (multi-conversation §4.7): a card waiting in another conversation → switch to it.
+    const m = id.slice(`${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:`.length).match(/^conv:(c_[0-9a-f]{12}):/);
+    if (m && convs.has(m[1])) switchConversation(m[1]);
   });
 }
 
@@ -1460,6 +1469,10 @@ function makeConv(id, data) {
     id,
     messages: Array.isArray(d.messages) ? d.messages.slice(-HISTORY_CAP) : [],
     sessions: d.sessions && typeof d.sessions === "object" ? { ...d.sessions } : {},
+    // P1b (ADR §4.3, §4.4): the last tab its agent acted on, and the URLs of its tab group's tabs.
+    workingTab: d.workingTab && typeof d.workingTab === "object" && typeof d.workingTab.url === "string" ? { ...d.workingTab } : null,
+    groupTabs: Array.isArray(d.groupTabs) ? d.groupTabs.filter((u) => typeof u === "string") : [],
+    draft: null,                          // §4.8: the composer's text + staged attachments while not current (memory only)
     listEl: null,                         // its message list, built the first time it is shown (§3.5)
     scrollTop: 0, stick: true,            // scroll position while hidden
     indexTimeAt: 0, indexTimeValue: 0,    // the last lastMessageAt written to conv:index, and when
@@ -1497,7 +1510,7 @@ function saveConv(conv = currentConv) {
     if (st.acpSessionId) conv.sessions[c.agent.url] = st.acpSessionId;
     else delete conv.sessions[c.agent.url];
   });
-  return chrome.storage.local.set({ [ConvCore.convKey(conv.id)]: { id: conv.id, sessions: conv.sessions, messages: conv.messages, savedAt: Date.now() } })
+  return chrome.storage.local.set({ [ConvCore.convKey(conv.id)]: { id: conv.id, sessions: conv.sessions, messages: conv.messages, workingTab: conv.workingTab, groupTabs: conv.groupTabs, savedAt: Date.now() } })
     .catch(() => { /* quota — the on-screen chat is unaffected */ });
 }
 
@@ -1535,7 +1548,7 @@ function maybeAutoTitle(conv, text) {
   const next = ConvCore.titleAfterUserMessage(convIndex[conv.id] || freshIndexEntry(), text);
   if (!next) return;
   convIndex[conv.id] = next;
-  patchIndex(conv.id, (e) => (e.titleSource === "user" || (e.title && e.titleSource === "auto") ? {} : { title: next.title, titleSource: "auto" }));
+  patchIndex(conv.id, (e) => (e.titleSource === "user" || (e.title && (e.titleSource === "auto" || e.titleSource === "agent")) ? {} : { title: next.title, titleSource: "auto" }));
   renderConvTabs();
   updateCanvasGroupTitle(conv.id);
 }
@@ -1618,7 +1631,9 @@ async function loadConversations() {
     if (plan.archive.length) await convStore.archiveIds(plan.archive);
     const drop = [...plan.prune, ...(plan.adopt !== null && !own ? [plan.adopt] : [])].map(ConvCore.windowKey);
     if (drop.length) await chrome.storage.local.remove(drop);
-    return { elsewhere, full };
+    // P1b §4.4: conversations adopted from an orphan record (a browser restart) are "coming back".
+    const adopted = !own && plan.adopt !== null ? open.filter((id) => plan.take.includes(id)) : [];
+    return { elsewhere, full, adopted };
   });
   convIndex = await convStore.readIndex();
   const got = windowRec.open.length ? await chrome.storage.local.get(windowRec.open.map(ConvCore.convKey)) : {};
@@ -1628,6 +1643,14 @@ async function loadConversations() {
   renderConvTabs();
   for (const id of out.elsewhere) noticeOpenElsewhere(id);
   if (out.full) showArchivePicker(() => newConversation());
+  if (out.adopted.length) {
+    // §4.4: their group tabs come back (current first), then §4.2 collapses the others.
+    const order = [windowRec.current, ...out.adopted.filter((id) => id !== windowRec.current)].filter((id) => out.adopted.includes(id));
+    (async () => {
+      for (const id of order) { try { await restoreGroupTabs(id); } catch (e) { console.warn("katashiro: reopening a conversation's tabs failed:", e); } }
+      await applyGroupSwitch();
+    })();
+  }
 }
 
 // --- showing / switching ----------------------------------------------------------------------
@@ -1659,7 +1682,8 @@ function afterShow() {
 function showConversation(id) {
   const conv = convs.get(id);
   if (!conv) return;
-  if (currentConv !== conv) hideCurrentList();
+  const switching = currentConv !== conv;
+  if (switching) { stashDraft(currentConv); hideCurrentList(); }
   lobbyList.hidden = true;
   currentConv = conv;
   conversationId = id;
@@ -1686,10 +1710,47 @@ function showConversation(id) {
   if (stickToBottom) scrollToBottom(); else messagesList.scrollTop = conv.scrollTop;
   // A reply chip quotes a message of the conversation it was set in.
   if (replyTarget && !String(replyTarget.id || "").startsWith(`${id}:`)) setReplyTarget(null);
+  if (switching) restoreDraft(conv);
   afterShow();
 }
 
+// P1b §4.8: the composer's draft (text + staged images and files) belongs to its conversation:
+// kept on the conversation object while another one is current (memory only, like the staged
+// attachments themselves).
+function stashDraft(conv) {
+  if (!conv) return;
+  const text = messageInput.value;
+  conv.draft = text || stagedImages.length || stagedFiles.length ? { text, images: stagedImages, files: stagedFiles } : null;
+}
+function restoreDraft(conv) {
+  const d = conv ? conv.draft : null;
+  if (conv) conv.draft = null;
+  messageInput.value = d ? d.text : "";
+  stagedImages = d ? d.images : [];
+  stagedFiles = d ? d.files : [];
+  messageInput.style.height = "auto";
+  if (messageInput.value) messageInput.style.height = (messageInput.scrollHeight - 2) + "px";
+  renderStagedPreviews();
+  updateSendEnabled();
+}
+// Where an attachment still being encoded goes: the composer if its conversation is current, else
+// that conversation's draft (a switch happened meanwhile). null: its conversation is gone.
+function stagingTarget(conv) {
+  if (!conv || conv === currentConv) return { images: stagedImages, files: stagedFiles, live: true };
+  if (!convs.has(conv.id)) return null;
+  if (!conv.draft) conv.draft = { text: "", images: [], files: [] };
+  return { images: conv.draft.images, files: conv.draft.files, live: false };
+}
+
+// P1b: after leaving conversation `prevId` for the current one — collapse / expand the groups
+// (Q5, §4.2), and if a card still waits in the one left, mark it and notify (Q12, §4.7).
+function afterLeaving(prevId) {
+  applyGroupSwitch();
+  if (prevId && prevId !== conversationId && convs.has(prevId) && hasWaitingCard(prevId)) notifyWaitingCard(prevId);
+}
+
 function showLobby() {
+  stashDraft(currentConv);
   hideCurrentList();
   currentConv = null;
   conversationId = null;
@@ -1724,8 +1785,10 @@ function switchConversation(id) {
   const blocked = convSwitchBlock();
   if (blocked) { appendSystemMessage(blocked); return false; }
   if (currentConv) writeIndexTime(currentConv);          // §3.2: always on switch
+  const prev = conversationId;
   showConversation(id);
   activateSessions();
+  afterLeaving(prev);
   return true;
 }
 
@@ -1750,8 +1813,10 @@ async function newConversation() {
   if (currentConv) writeIndexTime(currentConv);
   convIndex[r.id] = r.entry;
   convs.set(r.id, makeConv(r.id, null));
+  const prev = conversationId;
   showConversation(r.id);
   activateSessions();
+  afterLeaving(prev);
   return true;
 }
 
@@ -1765,6 +1830,10 @@ async function archiveConversation(id) {
   const blocked = convSwitchBlock(id);
   if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
   const wasCurrent = id === conversationId;
+  // P1b §4.4–4.5: the group's tab list is final before its tabs close (they come back on reopen).
+  await refreshGroupTabs(id).catch(() => {});
+  const gid = await storedCanvasGroupId(id);
+  const title = ConvCore.displayTitle(convIndex[id], id);
   await saveConv(conv);
   conv.indexTimeAt = 0;
   await writeIndexTime(conv);                            // §3.2: always on archive
@@ -1779,13 +1848,17 @@ async function archiveConversation(id) {
   releaseConvLock(id);
   convs.delete(id);
   if (conv.listEl) conv.listEl.remove();
+  await forgetCanvasGroupId(id);
   if (wasCurrent) {
     currentConv = null;
     conversationId = null;
-    if (windowRec.current && convs.has(windowRec.current)) { showConversation(windowRec.current); activateSessions(); }
+    if (windowRec.current && convs.has(windowRec.current)) { showConversation(windowRec.current); activateSessions(); applyGroupSwitch(); }
     else await newConversation();
   }
   renderConvTabs();
+  // §4.5: close its group's tabs (no longer tracked: it left `convs` above). After the switch, so
+  // what was kept open is said in the conversation now on screen.
+  if (gid != null) await canvasTabQueue(() => closeConversationTabs(gid, title), id).catch((e) => console.warn("katashiro: closing an archived conversation's tabs failed:", e));
   return { ok: true };
 }
 
@@ -1823,8 +1896,11 @@ async function reopenConversation(id) {
   if (got[ConvCore.INDEX_KEY]) adoptIndex(got[ConvCore.INDEX_KEY]);
   if (currentConv) writeIndexTime(currentConv);
   convs.set(id, makeConv(id, got[ConvCore.convKey(id)]));
+  const prev = conversationId;
   showConversation(id);
   activateSessions();
+  // §4.4: it comes back with its group's tabs; then §4.2 (and Q12 for the one left).
+  restoreGroupTabs(id).catch((e) => console.warn("katashiro: reopening a conversation's tabs failed:", e)).then(() => afterLeaving(prev));
   return { ok: true };
 }
 
@@ -2022,12 +2098,18 @@ function renderConvTabs() {
     const e = convIndex[id];
     const title = ConvCore.displayTitle(e, id);
     const busy = !!convSwitchBlock(id);
+    const waiting = id !== conversationId && hasWaitingCard(id);   // Q12 (§4.7)
     const tab = document.createElement("div");
-    tab.className = `conv-tab${id === conversationId ? " current" : ""}${busy ? " busy" : ""}`;
+    tab.className = `conv-tab${id === conversationId ? " current" : ""}${busy ? " busy" : ""}${waiting ? " waiting" : ""}`;
     tab.setAttribute("role", "tab");
     tab.setAttribute("aria-selected", id === conversationId ? "true" : "false");
     tab.tabIndex = 0;
-    tab.title = `${title}\n（雙擊改名）`;
+    tab.title = `${title}${waiting ? "\n❓ 有問題等你回答" : ""}\n（雙擊改名）`;
+    const mark = document.createElement("span");
+    mark.className = "conv-tab-mark";
+    mark.setAttribute("aria-label", "有問題等你回答");
+    if (waiting) mark.textContent = "❓";
+    mark.hidden = !waiting;
     const name = document.createElement("span");
     name.className = "conv-tab-title";
     name.textContent = title;                             // textContent: a title is user/agent text
@@ -2040,7 +2122,7 @@ function renderConvTabs() {
     x.textContent = "×";
     x.title = busy ? "回覆中不能封存" : "封存這段對話（可從 🗂️ 總覽重新打開）";
     x.addEventListener("click", (ev) => { ev.stopPropagation(); archiveConversation(id); });
-    tab.append(name, time, x);
+    tab.append(mark, name, time, x);
     tab.addEventListener("click", () => switchConversation(id));
     tab.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); switchConversation(id); } });
     tab.addEventListener("dblclick", (ev) => { ev.preventDefault(); startRename(tab, name, id); });
@@ -2713,13 +2795,16 @@ async function encodeForAgent(blob, budget) {
   }
 }
 
-async function stageImages(blobs) {
+// `target` = the conversation it was pasted / dropped in: a switch while it encodes must not move it
+// into another conversation's composer (multi-conversation §4.8).
+async function stageImages(blobs, target = currentConv) {
   for (const blob of blobs) {
     if (blob.size > MAX_SOURCE_BYTES) {
       appendSystemMessage(`圖片太大（約 ${Math.round(blob.size / 1048576)}MB），未附加`);
       continue;
     }
-    const budget = Composer.MAX_TOTAL_IMAGE_B64 - Composer.stagedSize(stagedImages);
+    if (!stagingTarget(target)) return;                  // its conversation was archived meanwhile
+    const budget = Composer.MAX_TOTAL_IMAGE_B64 - Composer.stagedSize(stagingTarget(target).images);
     let img = null;
     try {
       img = budget > 0 ? await encodeForAgent(blob, budget) : null;
@@ -2731,9 +2816,10 @@ async function stageImages(blobs) {
       appendSystemMessage("圖片超過單次傳送上限（所有圖片合計約 1MB，已縮小並壓縮過），未附加");
       continue;
     }
-    stagedImages.push({ ...img, dataUrl: `data:${img.mimeType};base64,${img.data}` });
-    renderStagedPreviews();
-    updateSendEnabled();
+    const into = stagingTarget(target);
+    if (!into) return;
+    into.images.push({ ...img, dataUrl: `data:${img.mimeType};base64,${img.data}` });
+    if (into.live) { renderStagedPreviews(); updateSendEnabled(); }
   }
 }
 
@@ -2742,8 +2828,10 @@ async function stageImages(blobs) {
 // paste pipeline above; text files become chips. Everything stays in memory.
 const chatDropZone = chatView && chatView.querySelector(".chat-container");
 
-async function stageDroppedFiles(files) {
-  const plan = Composer.planDrop(stagedImages.length + stagedFiles.length,
+async function stageDroppedFiles(files, target = currentConv) {
+  const at = stagingTarget(target);
+  if (!at) return;
+  const plan = Composer.planDrop(at.images.length + at.files.length,
     files.map((f) => ({ size: f.size })), attachConfig.maxFileMB * 1024 * 1024);
   const names = (idx) => idx.map((i) => Composer.displayName(files[i].name)).join("、");
   if (plan.tooBig.length) appendSystemMessage(`檔案超過大小上限 ${attachConfig.maxFileMB} MB（${names(plan.tooBig)}），未附加。可到設定 → 附加檔案調整。`);
@@ -2775,9 +2863,10 @@ async function stageDroppedFiles(files) {
       appendSystemMessage(`${name} 不是有效的 UTF-8 文字檔，未附加`);
       continue;
     }
-    stagedFiles.push({ name: file.name, size: file.size, text });
-    renderStagedPreviews();
-    updateSendEnabled();
+    const into = stagingTarget(target);
+    if (!into) return;
+    into.files.push({ name: file.name, size: file.size, text });
+    if (into.live) { renderStagedPreviews(); updateSendEnabled(); }
   }
   if (binary.length) appendSystemMessage(`不支援的檔案類型（看起來是二進位檔）：${binary.join("、")}，未附加`);
   if (!images.length) return;
@@ -2786,7 +2875,7 @@ async function stageDroppedFiles(files) {
     appendSystemMessage(`${active.name} 不支援圖片，未附加`);
     return;
   }
-  await stageImages(images);
+  await stageImages(images, target);
 }
 
 function dragHasFiles(e) {
@@ -2820,8 +2909,9 @@ document.addEventListener("drop", (e) => {
   if (!files.length) return;
   stagingPending++;
   updateSendEnabled();
+  const target = currentConv;
   stagingChain = stagingChain
-    .then(() => stageDroppedFiles(files))
+    .then(() => stageDroppedFiles(files, target))
     .catch(() => appendSystemMessage("檔案處理失敗，未附加"))     // keep the chain alive
     .finally(() => { stagingPending--; updateSendEnabled(); });
 });
@@ -2850,12 +2940,15 @@ messageInput.addEventListener("paste", (e) => {
   const blobs = plan.images.map((i) => items[i].getAsFile()).filter(Boolean);
   stagingPending++;
   updateSendEnabled();
+  const target = currentConv;
   stagingChain = stagingChain
     .then(() => {
       // Counted when the chain gets here, after any drop still being staged.
-      const room = Math.max(0, Composer.MAX_ATTACHMENTS - stagedImages.length - stagedFiles.length);
+      const at = stagingTarget(target);
+      if (!at) return undefined;
+      const room = Math.max(0, Composer.MAX_ATTACHMENTS - at.images.length - at.files.length);
       if (blobs.length > room) appendSystemMessage(`一則訊息最多附加 ${Composer.MAX_ATTACHMENTS} 個檔案，${blobs.length - room} 張圖片未附加。`);
-      return stageImages(blobs.slice(0, room));
+      return stageImages(blobs.slice(0, room), target);
     })
     .catch(() => appendSystemMessage("圖片處理失敗，未附加"))  // keep the chain alive for later pastes
     .finally(() => { stagingPending--; updateSendEnabled(); });
@@ -2916,6 +3009,9 @@ function sendMessage() {
   const replyTo = replyTarget;                           // what this message answers (or null)
   setReplyTarget(null);
   postUserText(text, images, replyTo, undefined, files);
+  // Q6 (multi-conversation §4.3): at the send — never mid-turn — bring the conversation's working
+  // tab to the front if the user is looking at another tab.
+  switchToWorkingTab(conversationId).catch(() => {});
 
   messageInput.value = "";
   messageInput.style.height = "auto";
@@ -2986,11 +3082,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const cid = msg.conversationId;
   if (!convs.has(cid)) {
     if (!ConvCore.isConvId(cid) || !sender.tab || sender.tab.windowId !== panelWindowId) return false;
-    // Held by another panel → that one answers; free → nobody has it open: say it is archived.
-    navigator.locks.query().then((st) => {
+    // Held by another panel → that one answers. Free → no panel has it: say what is really the case
+    // (P1b §4.8): open in another window whose panel is closed, or not open anywhere (archived).
+    navigator.locks.query().then(async (st) => {
       if ((st.held || []).some((l) => l.name === `conv:${cid}`)) return;
-      sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT });
-    }, () => sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT }));
+      const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+      const r = ConvCore.pushRefusal({ windows, liveIds: live, id: cid, ownWindowId: panelWindowId });
+      sendResponse({ ok: false, error: r.text, windowId: r.windowId == null ? null : Number(r.windowId) });
+    }).catch(() => sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT }));
     return true;
   }
   if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.PUSH_TEXT_MAX || typeof msg.note !== "string") {
@@ -3009,7 +3108,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // @mentions come from the user's note only, never from the diff / error text inside the fence.
   const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
   if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
-  sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、") });
+  // A canvas tab in another window posts here: it says so (P1b §4.8), or the user sees nothing happen.
+  sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、"), elsewhere: !!sender.tab && sender.tab.windowId !== panelWindowId });
   return false;
 });
 
@@ -3532,6 +3632,191 @@ async function addToCanvasGroup(tab, conv = conversationId) {
   return groupId;
 }
 
+// --- one tab group per conversation (multi-conversation ADR §4; plans in canvas-tabs.js) -----------
+// The canvas group above is the conversation's group: it also takes the tabs the agent opens
+// (new_tab). The GROUP is the membership: a tab the user drags out is theirs again.
+const canvasBase = () => chrome.runtime.getURL("canvas.html");
+
+// A conversation's group id if that group still exists, else null.
+async function liveGroupId(conv) {
+  if (!canGroupTabs()) return null;
+  const gid = await storedCanvasGroupId(conv);
+  if (gid == null) return null;
+  try { await chrome.tabGroups.get(gid); return gid; } catch (_) { return null; }
+}
+async function forgetCanvasGroupId(conv) {
+  canvasGroupIds.delete(conv);
+  try { await chrome.storage.session.remove(canvasGroupKey(conv)); } catch (_) { /* memory only */ }
+}
+
+// §4.3: the agent of conversation `convId` acted on `tabId` (opened it, with o.opened).
+async function noteWorkingTab(convId, tabId, { opened = false } = {}) {
+  const conv = convs.get(convId);
+  if (!conv || !Number.isInteger(tabId)) return;
+  const tab = await getTab(tabId);
+  if (!tab) return;
+  // §4.1: an agent-opened tab joins the conversation's group (a tab the user opened never does).
+  if (opened) await canvasTabQueue(() => addToCanvasGroup(tab, convId), convId).catch(() => {});
+  conv.workingTab = { id: tab.id, url: tab.url || tab.pendingUrl || "", at: Date.now() };
+  saveConv(conv);
+}
+
+// §4.3: the working tab, re-validated (same id + origin, else the exact URL), or null.
+async function resolveWorkingTab(convId) {
+  const conv = convs.get(convId);
+  if (!conv || !conv.workingTab) return null;
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch (_) { return null; }
+  return CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs });
+}
+
+// Q6 (§4.3): the user pressed send. If the conversation has a working tab in this window and it is
+// not the active tab, activate it now — at the send, never during the turn.
+async function switchToWorkingTab(convId) {
+  if (typeof panelWindowId !== "number") return;
+  const t = await resolveWorkingTab(convId);
+  if (!t || t.windowId !== panelWindowId || t.active) return;
+  try { await chrome.tabs.update(t.id, { active: true }); } catch (_) { /* closed meanwhile, or being dragged */ }
+}
+
+// §4.4: conv.groupTabs follows the group (debounced). A conversation with no known group (after a
+// browser restart, before its tabs came back) keeps the list it has.
+const groupTabsTimers = new Map();
+function scheduleGroupTabsRefresh(convId) {
+  clearTimeout(groupTabsTimers.get(convId));
+  groupTabsTimers.set(convId, setTimeout(() => { groupTabsTimers.delete(convId); refreshGroupTabs(convId).catch(() => {}); }, 400));
+}
+function scheduleAllGroupTabsRefresh() { for (const id of convs.keys()) scheduleGroupTabsRefresh(id); }
+async function refreshGroupTabs(convId) {
+  const conv = convs.get(convId);
+  if (!conv || !canGroupTabs()) return;
+  const gid = await storedCanvasGroupId(convId);
+  if (gid == null) return;
+  let tabs;
+  try { tabs = await chrome.tabs.query({ groupId: gid }); } catch (_) { return; }
+  const urls = CanvasTabs.groupTabUrls(tabs, gid, canvasBase());
+  if (convs.get(convId) !== conv || JSON.stringify(urls) === JSON.stringify(conv.groupTabs)) return;
+  conv.groupTabs = urls;
+  saveConv(conv);
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!("url" in changeInfo) && !("groupId" in changeInfo)) return;
+  scheduleAllGroupTabsRefresh();
+  // The working tab's URL follows navigation, so its origin check (§4.3) stays meaningful.
+  if ("url" in changeInfo) {
+    for (const conv of convs.values()) {
+      if (conv.workingTab && conv.workingTab.id === tabId && conv.workingTab.url !== changeInfo.url) {
+        conv.workingTab = { ...conv.workingTab, url: changeInfo.url };
+        saveConv(conv);
+      }
+    }
+  }
+});
+// A tab closed with its window (also the browser quitting) leaves the lists alone: they are what
+// brings the tabs back (§4.4).
+chrome.tabs.onRemoved.addListener((_tabId, info) => { if (!(info && info.isWindowClosing)) scheduleAllGroupTabsRefresh(); });
+if (chrome.tabs.onAttached) chrome.tabs.onAttached.addListener(() => scheduleAllGroupTabsRefresh());
+if (chrome.tabs.onDetached) chrome.tabs.onDetached.addListener(() => scheduleAllGroupTabsRefresh());
+
+// §4.4: a conversation comes back (browser-restart adoption, 重新打開): open its group's tabs again
+// in the background, adopting the ones already open (by URL) instead of opening them twice. Not
+// when its group still exists (a panel reload, a plain switch).
+async function restoreGroupTabs(convId) {
+  const conv = convs.get(convId);
+  if (!conv || !conv.groupTabs.length || typeof panelWindowId !== "number") return;
+  if ((await liveGroupId(convId)) != null) return;
+  await canvasTabQueue(async () => {
+    const all = await chrome.tabs.query({});
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedCanvasGroupId);
+    const plan = CanvasTabs.planGroupRestore({ urls: conv.groupTabs, tabs: all, windowId: panelWindowId, otherGroupIds: others });
+    const ids = [...plan.adopt];
+    for (const url of plan.open) {
+      try { ids.push((await chrome.tabs.create({ url, active: false, windowId: panelWindowId })).id); } catch (_) { /* a URL Chrome will not open */ }
+    }
+    if (!ids.length || !canGroupTabs()) return;
+    let gid = plan.reuseGroupId;
+    if (gid != null) {
+      await rememberCanvasGroupId(convId, gid);
+      await chrome.tabs.group({ groupId: gid, tabIds: ids });
+    } else {
+      gid = await chrome.tabs.group({ tabIds: ids, createProperties: { windowId: panelWindowId } });
+      await rememberCanvasGroupId(convId, gid);
+    }
+    try { await chrome.tabGroups.update(gid, { title: canvasGroupTitle(convId), color: CanvasTabs.GROUP_COLOR }); } catch (_) { /* cosmetic */ }
+  }, convId);
+}
+
+// Q5 (§4.2): after a switch, collapse the other open conversations' groups and expand the current
+// one's — first activating a tab outside a group that is about to collapse. Serialized; best effort.
+let groupSwitchChain = Promise.resolve();
+function applyGroupSwitch() {
+  const run = groupSwitchChain.then(async () => {
+    const cur = conversationId;
+    if (!cur || !canGroupTabs() || typeof panelWindowId !== "number") return;
+    const tabs = await chrome.tabs.query({ windowId: panelWindowId });
+    const groupId = await storedCanvasGroupId(cur);
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
+    const conv = convs.get(cur);
+    const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
+    const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });
+    if (cur !== conversationId) return;                  // switched again meanwhile: the next run decides
+    if (plan.activate != null) await chrome.tabs.update(plan.activate, { active: true });
+    for (const g of plan.collapse) { try { await chrome.tabGroups.update(g, { collapsed: true }); } catch (_) { /* gone, or Chrome busy */ } }
+    if (plan.expand != null) { try { await chrome.tabGroups.update(plan.expand, { collapsed: false }); } catch (_) { /* gone */ } }
+  });
+  groupSwitchChain = run.catch(() => {});
+  return groupSwitchChain;
+}
+
+// §4.5: may this canvas tab be closed? Asks that tab (only it answers); no answer in time → treated
+// as dirty: an edit must never be lost to an archive. A discarded / unloaded tab holds no editor.
+async function canvasTabDirty(tab) {
+  if (tab.discarded || tab.status === "unloaded") return false;
+  let timer;
+  const timeout = new Promise((res) => { timer = setTimeout(() => res(null), 1500); });
+  let r;
+  try { r = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-canvas-dirty", tabId: tab.id }), timeout]); } catch (_) { r = null; }
+  clearTimeout(timer);
+  return !(r && r.dirty === false);
+}
+
+// §4.5: archive closes the group's tabs (they come back with it, §4.4), keeping any canvas tab with
+// unsaved edits, and never the window's last tab.
+async function closeConversationTabs(gid, title) {
+  if (gid == null || !canGroupTabs()) return;
+  const all = await chrome.tabs.query({});
+  const inGroup = all.filter((t) => t.groupId === gid);
+  if (!inGroup.length) return;
+  const win = inGroup[0].windowId;
+  const dirty = [];
+  for (const t of inGroup) if (CanvasTabs.classifyTab(t, canvasBase()) === "canvas" && (await canvasTabDirty(t))) dirty.push(t.id);
+  const plan = CanvasTabs.planArchiveClose({ tabs: all.filter((t) => t.windowId === win), groupId: gid, dirtyIds: dirty });
+  if (plan.needNewTab) await chrome.tabs.create({ windowId: win, active: true });
+  if (plan.close.length) await chrome.tabs.remove(plan.close);
+  if (plan.keep.length) {
+    try { await chrome.tabGroups.update(gid, { collapsed: true }); } catch (_) { /* cosmetic */ }
+    appendSystemMessage(`「${title}」有 ${plan.keep.length} 個畫布分頁還有未儲存的修改（或沒有回應），沒有關掉；存好後可以自己關。`);
+  }
+}
+
+// §4.6 katashiro.set_title: the calling conversation's name, decided again under the index lock
+// (the user may have renamed it meanwhile; a user title always wins).
+async function setAgentTitle(convId, title) {
+  if (!convs.has(convId)) return { ok: false, error: "this conversation was closed in Katashiro" };
+  let out = null;
+  await convStore.updateIndex((idx) => {
+    out = ConvCore.agentTitledEntry(idx[convId] || convIndex[convId] || freshIndexEntry(), title);
+    if (!out.ok) return undefined;
+    idx[convId] = out.entry;
+    return idx;
+  });
+  if (!out || !out.ok) return out || { ok: false, error: "not renamed" };
+  convIndex[convId] = { ...(convIndex[convId] || freshIndexEntry()), title: out.title, titleSource: "agent" };
+  renderConvTabs();
+  updateCanvasGroupTitle(convId);
+  return { ok: true, title: out.title };
+}
+
 // Canvas tabs moved out of their group for a split: canvasTabId → { movedToGroupId, windowId,
 // returnGroupId, canvasGroup, pageTabId, conv }. In memory only: a panel reload forgets them, and those
 // tabs simply stay in the page's group (acceptable, §3.1).
@@ -3831,6 +4116,7 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
     timeoutMs: s.timeoutMs,
     onSettle: (state) => {
       pendingConfirms.delete(decision);
+      renderConvTabs();
       if (turn) turn.confirms.delete(decision);
       hint.remove();
       actions.remove();
@@ -3992,6 +4278,7 @@ function askCard(spec, conn, st = conn.cur) {
     timeoutMs: spec.timeoutMs,
     onSettle: (state, answer) => {
       pendingAsks.delete(id);
+      renderConvTabs();                                  // a ❓ on another conversation's tab may go (§4.7)
       controls.remove();
       hint.remove();
       card.className = `ask-card ${state === "answered" ? "answered" : "unanswered"}`;
@@ -4025,15 +4312,30 @@ function askCard(spec, conn, st = conn.cur) {
 // conversation, that agent) or disconnect (the agent deliberately disconnected: its cards in EVERY
 // conversation). A transient socket drop closes nothing. Nothing is sent to any agent.
 function settlePendingAsks(how, { conn = null, convId = null } = {}) {
-  for (const e of [...pendingAsks.values()]) {
-    if (conn && e.conn !== conn) continue;
-    if (convId && e.conversationId !== convId) continue;
-    e.ask[how]();
-  }
+  for (const e of AskCore.selectToSettle([...pendingAsks.values()], { conn, convId })) e.ask[how]();
 }
 function supersedePendingAsks(convId) { settlePendingAsks("supersede", { convId }); }
 function cancelPendingAsks(convId) { settlePendingAsks("cancel", { convId }); }
 function closePendingAsks(conn, how = "disconnect", convId = null) { settlePendingAsks(how, { conn, convId }); }
+
+// Q12 (multi-conversation §4.7): an ask or 🔒 confirm card still waiting in conversation `id`.
+function hasWaitingCard(id) {
+  for (const e of pendingAsks.values()) if (e.conversationId === id) return true;
+  for (const c of pendingConfirms.values()) if (c === id) return true;
+  return false;
+}
+// …raised when the user leaves a conversation with one: its tab shows ❓ and the OS shows this. The
+// id carries the panel's window (only this panel claims the click) and the conversation to go back to.
+let waitingNotifySeq = 0;
+function notifyWaitingCard(id) {
+  if (!chrome.notifications || typeof chrome.notifications.create !== "function" || panelWindowId == null) return;
+  const title = ConvCore.displayTitle(convIndex[id], id);
+  const nid = `${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:conv:${id}:${Date.now()}-${++waitingNotifySeq}`;
+  try {
+    const p = chrome.notifications.create(nid, { type: "basic", iconUrl: "icon128.png", title: "Katashiro：有問題等你回答", message: `「${title}」裡有一張卡片還沒回答。點這裡回到那段對話。` });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_) { /* notifications off: the ❓ on the tab still shows it */ }
+}
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
 let lastMsgMs = 0;

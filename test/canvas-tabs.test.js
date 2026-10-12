@@ -228,3 +228,103 @@ test("compareTabsFor: every compare tab of that canvas, never the canvas tab or 
   assert.deepEqual(T.compareTabsFor(tabs, BASE, id).map((t) => t.id), [11, 12]);
   assert.deepEqual(T.compareTabsFor([], BASE, id), []);
 });
+
+// --- one tab group per conversation (multi-conversation ADR §4) ------------------------------------
+const web = (id, url, o) => tab({ id, index: id, url, ...o });
+
+test("restorableUrl / groupTabUrls: canvases and web pages of the group, in tab order, once", () => {
+  assert.equal(T.restorableUrl(canvas({}), BASE), `${BASE}?id=cv_000000000001`);
+  assert.equal(T.restorableUrl(tab({ url: "chrome://newtab/" }), BASE), null);
+  assert.equal(T.restorableUrl(canvas({ url: `${BASE}?id=cv_1&view=agent` }), BASE), null);   // compare tab
+  const tabs = [
+    web(3, "https://b.example/", { groupId: 5, index: 3 }),
+    web(1, "https://a.example/", { groupId: 5, index: 1 }),
+    web(2, "chrome://newtab/", { groupId: 5, index: 2 }),
+    web(4, "https://a.example/", { groupId: 5, index: 4 }),
+    web(6, "https://other.example/", { groupId: 6, index: 6 }),
+    canvas({ id: 7, index: 7, groupId: 5 }),
+  ];
+  assert.deepEqual(T.groupTabUrls(tabs, 5, BASE), ["https://a.example/", "https://b.example/", `${BASE}?id=cv_000000000001`]);
+  assert.deepEqual(T.groupTabUrls(tabs, NONE, BASE), []);
+  assert.deepEqual(T.groupTabUrls(tabs, null, BASE), []);
+});
+
+test("planGroupRestore: adopt what is open (no duplicates), open the rest, reuse Chrome's restored group", () => {
+  const tabs = [
+    web(1, "https://a.example/", { groupId: 40 }),
+    web(2, "https://b.example/", { groupId: 40 }),
+    web(3, "https://c.example/", { pinned: true }),
+    web(4, "https://d.example/", { groupId: 9 }),                // another open conversation's group
+    web(5, "https://e.example/", { windowId: 8 }),              // another window
+    web(6, "https://f.example/", { splitViewId: 2 }),
+  ];
+  const p = T.planGroupRestore({
+    urls: ["https://a.example/", "https://b.example/", "https://c.example/", "https://d.example/", "https://e.example/", "https://f.example/", "https://g.example/", "https://g.example/"],
+    tabs, windowId: 7, otherGroupIds: [9],
+  });
+  assert.deepEqual(p.adopt, [1, 2]);
+  assert.equal(p.reuseGroupId, 40);
+  // pinned / split matches are open already: not opened again; d (another conversation's) and e (another window) are
+  assert.deepEqual(p.open, ["https://d.example/", "https://e.example/", "https://g.example/"]);
+  // adopted tabs from two groups (or ungrouped): no reuse
+  const q = T.planGroupRestore({ urls: ["https://a.example/", "https://x.example/"], tabs: [...tabs, web(9, "https://x.example/")], windowId: 7, otherGroupIds: new Set() });
+  assert.deepEqual(q.adopt, [1, 9]);
+  assert.equal(q.reuseGroupId, null);
+  // a URL saved twice is one tab
+  const r = T.planGroupRestore({ urls: ["https://z.example/", "https://z.example/"], tabs: [web(1, "https://z.example/")], windowId: 7 });
+  assert.deepEqual(r, { adopt: [1], open: [], reuseGroupId: null });
+  assert.deepEqual(T.planGroupRestore({ urls: null, tabs, windowId: 7 }), { adopt: [], open: [], reuseGroupId: null });
+});
+
+test("otherGroupIds: every other conversation's group through the lookup (storage-backed after a panel reload)", async () => {
+  const stored = new Map([["a", 10], ["b", 20], ["c", 20], ["d", null]]);
+  const lookup = async (id) => (stored.has(id) ? stored.get(id) : null);
+  assert.deepEqual(await T.otherGroupIds(["a", "b", "c", "d", "e"], "a", lookup), [20]);
+  assert.deepEqual(await T.otherGroupIds(["a", "b"], "x", lookup), [10, 20]);
+  assert.deepEqual(await T.otherGroupIds(null, "a", lookup), []);
+  // the restore then neither adopts B's same-URL tab nor reuses B's group
+  const others = await T.otherGroupIds(["a", "b"], "a", lookup);
+  const p = T.planGroupRestore({ urls: ["https://s.example/"], tabs: [web(1, "https://s.example/", { groupId: 20 })], windowId: 7, otherGroupIds: others });
+  assert.deepEqual(p, { adopt: [], open: ["https://s.example/"], reuseGroupId: null });
+});
+
+test("pickWorkingTab: same id + same origin, else the exact URL (ids are reused after a restart), else none", () => {
+  const tabs = [web(1, "https://a.example/page2"), web(2, "https://b.example/x"), web(3, "https://c.example/")];
+  assert.equal(T.pickWorkingTab({ saved: { id: 1, url: "https://a.example/page1" }, tabs }).id, 1);
+  // id 2 now shows another site: not it; no tab has the URL either
+  assert.equal(T.pickWorkingTab({ saved: { id: 2, url: "https://a.example/page1" }, tabs }), null);
+  assert.equal(T.pickWorkingTab({ saved: { id: 99, url: "https://c.example/" }, tabs }).id, 3);
+  assert.equal(T.pickWorkingTab({ saved: { id: 2, url: "https://c.example/" }, tabs }).id, 3);
+  assert.equal(T.pickWorkingTab({ saved: null, tabs }), null);
+  assert.equal(T.pickWorkingTab({ saved: { id: 1 }, tabs }), null);
+});
+
+test("planGroupSwitch (Q5): activate outside the old group first, collapse the others, expand the new one", () => {
+  const tabs = [
+    web(1, "https://old.example/", { groupId: 10, active: true, lastAccessed: 50 }),
+    web(2, "https://new.example/", { groupId: 20, lastAccessed: 10 }),
+    web(3, "https://new2.example/", { groupId: 20, lastAccessed: 30 }),
+    web(4, "https://free.example/", { lastAccessed: 40 }),
+  ];
+  // the working tab wins when it is outside the groups being collapsed
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 4 }), { activate: 4, collapse: [10], expand: 20 });
+  // no working tab: the new group's most recently used tab
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10] }), { activate: 3, collapse: [10], expand: 20 });
+  // a working tab inside a group being collapsed does not count
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 1 }), { activate: 3, collapse: [10], expand: 20 });
+  // no group for the new conversation: the most recently used free tab
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: null, otherGroupIds: [10, 20] }), { activate: 4, collapse: [10, 20], expand: null });
+  // the active tab is outside: nothing to activate; groups that are gone are skipped
+  const calm = tabs.map((t) => ({ ...t, active: t.id === 4 }));
+  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10, 77] }), { activate: null, collapse: [10], expand: 20 });
+  // every tab is in a group being collapsed: collapse nothing
+  const all = [web(1, "https://old.example/", { groupId: 10, active: true })];
+  assert.deepEqual(T.planGroupSwitch({ tabs: all, groupId: null, otherGroupIds: [10] }), { activate: null, collapse: [], expand: null });
+});
+
+test("planArchiveClose: close the group's tabs, keep dirty canvases, never empty the window", () => {
+  const tabs = [web(1, "https://a.example/", { groupId: 5 }), canvas({ id: 2, groupId: 5 }), web(3, "https://mine.example/")];
+  assert.deepEqual(T.planArchiveClose({ tabs, groupId: 5, dirtyIds: [2] }), { close: [1], keep: [2], needNewTab: false });
+  assert.deepEqual(T.planArchiveClose({ tabs: tabs.slice(0, 2), groupId: 5, dirtyIds: [] }), { close: [1, 2], keep: [], needNewTab: true });
+  assert.deepEqual(T.planArchiveClose({ tabs, groupId: null }), { close: [], keep: [], needNewTab: false });
+});
