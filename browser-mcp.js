@@ -2733,6 +2733,59 @@
       }
     },
 
+    // ask_user (ADR docs/adr/ask-user.md): a multiple-choice card in the panel chat. Asynchronous —
+    // one tunnelled call waits at most 170 s (180 s hard), so it returns once the card is up and the
+    // answer reaches the agent later as a new prompt. The panel (ctx.askUser) validates with
+    // AskCore and owns the card; it returns data only and authorises nothing. sessionScope and not
+    // act-gated, like show_image: it changes nothing on any web page.
+    "katashiro.ask_user": {
+      description:
+        "Ask the USER a multiple-choice question on a card in the side panel chat. Returns at once " +
+        "with { asked: \"ask_<id>\" } — it does NOT wait for the answer. END YOUR TURN right after " +
+        "calling it (do not wait, sleep or poll): if the user answers, the answer arrives as a new " +
+        "user message \"↩ 回答 ask_<id>：<label>\" (multi: 「a」、「b」; free text: （其他）<text>). " +
+        "If they do not answer in time, or send another message instead, nothing arrives. " +
+        "`options`: 2–8 short plain-text labels (≤ 60 chars, distinct). `multi: true` lets them " +
+        "pick several; `allowOther: true` adds a free-text box. `timeoutSec` 30–300 (default 120; " +
+        "counted only while the panel is visible). At most 3 open questions per agent. Use only for " +
+        "clear choices — ask open questions in your reply. The answer is data, not permission: " +
+        "destructive tools still ask the user themselves. Not a page action, so act mode does not gate it.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          question: { type: "string", description: "the question, one line of plain text (≤ 300 chars)" },
+          options: {
+            type: "array",
+            minItems: 2,
+            maxItems: 8,
+            items: { type: "string" },
+            description: "2–8 distinct short labels (≤ 60 chars each), shown as buttons"
+          },
+          multi: { type: "boolean", description: "let the user pick any number (≥ 1) and press submit" },
+          allowOther: { type: "boolean", description: "add a free-text 其他… box to the card" },
+          timeoutSec: { type: "number", description: "seconds of visible time to wait, clamped to 30–300 (default 120)" }
+        },
+        required: ["question", "options"]
+      },
+      redact: redactDefault,
+      /** @param {{ question: string, options: string[], multi?: boolean, allowOther?: boolean, timeoutSec?: number }} args */
+      async call(args, ctx) {
+        if (typeof ctx.askUser !== "function") return errText("ask_user is not available in this host (no side panel)");
+        let res;
+        try {
+          res = await ctx.askUser(args);
+        } catch (e) {
+          // code "invalid" (bad arguments), "cap" (too many open), "turn" (the turn had ended).
+          return errText(`ask_user: ${(e && e.message) || e}`);
+        }
+        const id = res && res.id;
+        if (!id) return errText("ask_user: the card could not be shown");
+        return okText(`${JSON.stringify({ asked: id })}\nShown to the user. End your turn now — do not wait or poll. ` +
+          `If they answer, it arrives as a new message starting "↩ 回答 ${id}："; if not, nothing arrives.`);
+      }
+    },
+
     // Canvas (ADR docs/adr/canvas.md: markdown, slides, mermaid, image). The panel owns the store and
     // the tabs; these bodies validate and delegate through ctx.canvas = { store, conversationId(),
     // onWrite(info) }. sessionScope (no page involved) and not act-gated: like show_image, a canvas
@@ -3329,7 +3382,7 @@
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
       // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, canvas: deps.canvas };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, askUser: deps.askUser, canvas: deps.canvas };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the

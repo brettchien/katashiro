@@ -10,8 +10,9 @@
 // And one an agent asks after its turn already ended is not shown at all (shouldAsk): the agent's
 // tool calls run one after another, so a second canvas_delete can arrive after the user stopped the
 // turn while the first card was up; a card then would act for a turn that no longer exists.
-// The API is general on purpose (title + lines + labels + timeout), so a later ask_user tool can
-// reuse it; today only canvas_delete and the storage-full eviction ask.
+// The API is general on purpose (title + lines + labels + timeout); today only canvas_delete and the
+// storage-full eviction ask. katashiro.ask_user (ask-core.js) reuses plainText and shouldAsk but not
+// the card: an agent's question must not look like this system confirm (ADR docs/adr/ask-user.md).
 //
 // Dual target like room-core.js (globalThis.ConfirmCore / module.exports).
 (function (root, factory) {

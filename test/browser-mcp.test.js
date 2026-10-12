@@ -213,6 +213,7 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.reload",
     "katashiro.inject_css",
     "katashiro.show_image",
+    "katashiro.ask_user",
     "katashiro.canvas_open",
     "katashiro.canvas_read",
     "katashiro.canvas_patch",
@@ -3109,6 +3110,43 @@ test("katashiro.show_image: a panel memory cap is reported as such, not as a dec
   const res = await callTool(d, "katashiro.show_image", { data: PNG_1PX, mimeType: "image/png" });
   assert.equal(res.isError, true);
   assert.match(res.content[0].text, /^show_image refused: at most 10 images per reply/);
+});
+
+// --- ask_user (ADR docs/adr/ask-user.md) -------------------------------------------
+
+test("katashiro.ask_user returns at once with { asked } and tells the agent to end its turn", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });   // not act-gated, sessionScope
+  const asked = [];
+  d.askUser = (args) => { asked.push(args); return { id: "ask_0a1b2c3d" }; };
+  const args = { question: "Which?", options: ["A", "B"], multi: true, timeoutSec: 60 };
+  const res = await callTool(d, "katashiro.ask_user", args);
+  assert.equal(res.isError, undefined, JSON.stringify(res));
+  assert.deepEqual(asked, [args]);                       // the panel validates; the raw args go through
+  const [first, ...rest] = res.content[0].text.split("\n");
+  assert.deepEqual(JSON.parse(first), { asked: "ask_0a1b2c3d" });
+  assert.match(rest.join("\n"), /End your turn now/);
+  assert.match(rest.join("\n"), /↩ 回答 ask_0a1b2c3d：/);
+});
+
+test("katashiro.ask_user reports a refusal from the panel as a tool error", async () => {
+  const { deps: d } = deps({ actMode: false });
+  d.askUser = () => { throw Object.assign(new Error("3 questions are already open"), { code: "cap" }); };
+  const res = await callTool(d, "katashiro.ask_user", { question: "Q", options: ["a", "b"] });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /^ask_user: 3 questions are already open/);
+  delete d.askUser;
+  const none = await callTool(d, "katashiro.ask_user", { question: "Q", options: ["a", "b"] });
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /not available/);
+});
+
+test("katashiro.ask_user declares 2–8 options and is neither a write nor page-scoped", () => {
+  const def = BrowserMcp.TOOLS["katashiro.ask_user"];
+  assert.equal(def.write, undefined);
+  assert.equal(def.sessionScope, true);
+  assert.deepEqual(def.inputSchema.required, ["question", "options"]);
+  assert.equal(def.inputSchema.properties.options.minItems, 2);
+  assert.equal(def.inputSchema.properties.options.maxItems, 8);
 });
 
 test("katashiro.notify: a failed create gives the slot back only if no later call took it (#57)", async () => {

@@ -203,6 +203,8 @@ class Conn {
       clientInfo: clientInfoSnapshot,
       // show_image renders into THIS agent's current turn (or as its own message between turns).
       showImage: (img) => this.showImage(img),
+      // ask_user shows its card in THIS agent's turn, and the answer comes back to THIS agent only.
+      askUser: (args) => this.askUser(args),
       // Canvas (ADR docs/adr/canvas.md): one store for the panel, keyed by this window's
       // conversation; a write shows its card in THIS agent's turn and opens a new canvas's tab.
       canvas: {
@@ -358,6 +360,8 @@ class Conn {
     this.acpReady = false;
     this.alive = false;
     this.finalizeStream();
+    // An open ask_user card of this agent closes: its answer would reach no session that asked.
+    closePendingAsks(this);
     // Captures are page data: none outlive this agent being active. (A transient socket drop
     // keeps them — the resumed session still holds their imageIds.)
     if (this.mcpServer) this.mcpServer.clearImages();
@@ -419,6 +423,8 @@ class Conn {
         // A resume can fail if the session id is unknown → fall back to a fresh one.
         if (this.acpSessionId) {
           this.acpSessionId = null; // stale in-memory session → fall back to a fresh session/new
+          // The fresh session never asked: an answer to a card from the old one has no context.
+          closePendingAsks(this, "restart");
           if (this.ws && this.ws.readyState === WebSocket.OPEN) this.handshake();
         } else {
           appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
@@ -775,6 +781,24 @@ class Conn {
     return { width: im.naturalWidth, height: im.naturalHeight };
   }
 
+  // katashiro.ask_user (ADR docs/adr/ask-user.md): validate, show the card in this turn and return
+  // its id at once; the answer reaches this agent later as a new prompt (askCard). Throws an Error
+  // the tool reports to the agent. Asked after this agent's turn ended (the user stopped it): no
+  // card, same rule as the confirm card (ConfirmCore.shouldAsk via AskCore.canAsk).
+  askUser(args) {
+    const can = AskCore.canAsk({ turnActive: this.turnActive, pending: pendingAsksOf(this) });
+    if (can.reason === "turn") {
+      appendSystemMessage(`${this.name} 的回合已結束，它的提問沒有顯示。`);
+      throw Object.assign(new Error("your turn had ended (the user stopped it) before the question could be shown; ask in your next reply instead"), { code: "turn" });
+    }
+    if (can.reason === "cap") {
+      throw Object.assign(new Error(`${AskCore.PENDING_MAX} of your questions are already open; wait for an answer (or for them to time out) before asking another`), { code: "cap" });
+    }
+    const n = AskCore.normalizeSpec(args);
+    if (!n.ok) throw Object.assign(new Error(n.error), { code: "invalid" });
+    return { id: askCard(n.spec, this) };
+  }
+
   // katashiro.canvas_open saved a canvas: put its card in this turn (or, between turns, as its own
   // row), and open a NEW canvas in a background tab of the canvas group (§3.1). An update needs no
   // tab work: an open canvas tab re-renders itself from storage.onChanged. beside:"current" also
@@ -867,7 +891,9 @@ class Conn {
       // turn — keep the row (and its tool-activity strip) so the user still sees what happened;
       // only the empty typing bubble is dropped.
       // A confirm card asked in the turn keeps the row too: its outcome stays readable (#80).
-      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount || (s.confirms && s.contentEl.querySelector(".confirm-card"))) {
+      // So does an ask_user card: it outlives the turn by design (ADR ask-user §2.4).
+      if ((s.toolStrip && s.toolStrip.childElementCount > 0) || s.imageCount || (s.confirms && s.contentEl.querySelector(".confirm-card")) ||
+          (s.asked && s.contentEl.querySelector(".ask-card"))) {
         s.bubble.remove();
         if (s.imageCount) recordMessage({ kind: "received", senderId: this.id, senderName: this.name, text: Composer.historyText("", s.imageCount), timestamp: Date.now() });
         if (cancelled) appendSystemMessage(`⏹ 已停止 ${this.name}`);
@@ -1443,6 +1469,7 @@ function switchView(viewName) {
     if (stickToBottom) requestAnimationFrame(scrollToBottom);
   }
   else if (viewName === "settings") settingsView.classList.add("active");
+  refreshAskVisibility();                                // an ask card's clock runs only while the chat shows
 }
 
 // --- UI event listeners ------------------------------------------------------
@@ -1474,6 +1501,7 @@ settingsView.addEventListener("click", (e) => {
 function clearChat() {
   if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
   cancelPendingConfirms();       // a confirm card leaving the screen is a "no" (#80)
+  cancelPendingAsks();           // …and an ask card closes unanswered, telling the agent nothing
   messagesList.replaceChildren();
   historyMessages.length = 0;
   shownImageChars = 0;           // the shown images left the DOM with the messages
@@ -2008,6 +2036,9 @@ function sendMessage() {
 // canvas data that must not pick the recipients. Returns the agents it was enqueued to.
 function postUserText(text, images, replyTo, mentions) {
   images = images || [];
+  // Q4 (ADR ask-user §2.3): a message instead of answering closes every open ask card; nothing is
+  // sent for them, this message goes out as usual.
+  supersedePendingAsks();
   const sentAt = Date.now();
   appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
@@ -2732,7 +2763,8 @@ function canvasCard({ id, version, title }) {
 // Every string goes in with textContent (agent text included), and the card is a "system" element:
 // the 🔒 header and its border come from sidepanel.css on an element markdown cannot produce
 // (html:false, and the card sits outside any .bubble), so an agent reply cannot imitate one.
-// General on purpose (title / lines / labels / timeout) so a later ask_user can reuse it.
+// General on purpose (title / lines / labels / timeout). ask_user has its own card (below): an
+// agent's question must not look like this one.
 const pendingConfirms = new Set();
 
 /**
@@ -2832,6 +2864,169 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
 function cancelPendingConfirms() {
   for (const d of [...pendingConfirms]) d.cancel();
 }
+
+// --- ask card (katashiro.ask_user, ADR docs/adr/ask-user.md) -------------------------------------
+// An agent's multiple-choice question. Unlike the confirm card it is the AGENT talking, not the
+// system: no 🔒, its own border and accent (sidepanel.css), and a title the panel writes
+// ("<agent> 問你"); the agent supplies only the question and labels, as plain text (AskCore).
+// Asynchronous: the tool has already returned when the user answers, so the answer goes to the
+// asking agent as a new prompt through its own queue (Conn.enqueue) — batched into its next turn if
+// one is running. A card does not close when the turn ends; it closes on an answer, on a timeout that
+// counts only visible time (Q1), when the user sends another message (Q4), when the chat is cleared,
+// or when its agent is disconnected. Only an answer sends anything. The answer is data: it
+// authorises nothing (destructive tools still ask on their own 🔒 card). Memory-only, like confirm cards.
+const pendingAsks = new Map();                           // id → { ask, conn, conversationId }
+
+// Hook for multi-conversation (ADR ask-user §2.3, Q1): is this card's conversation the one on screen?
+// Today a panel shows exactly one conversation, so this only guards against a stale id.
+function askConversationShown(entry) {
+  return entry.conversationId === conversationId;
+}
+
+// Can the user see the card right now? Panel document visible, chat view (not Settings / setup)
+// shown, and its conversation the current one. Scroll position is deliberately not part of it.
+function askVisible(entry) {
+  return document.visibilityState === "visible" && chatView.classList.contains("active") && askConversationShown(entry);
+}
+
+function refreshAskVisibility() {
+  for (const e of pendingAsks.values()) e.ask.setVisible(askVisible(e));
+}
+document.addEventListener("visibilitychange", refreshAskVisibility);
+
+function pendingAsksOf(conn) {
+  let n = 0;
+  for (const e of pendingAsks.values()) if (e.conn === conn) n++;
+  return n;
+}
+
+// Show `spec` (already AskCore.normalizeSpec'd) as a card in `conn`'s in-flight turn; returns its id.
+function askCard(spec, conn) {
+  let id;
+  do { id = AskCore.newAskId((n) => crypto.getRandomValues(new Uint8Array(n))); } while (pendingAsks.has(id));
+  const card = document.createElement("div");
+  card.className = "ask-card pending";
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", `${conn.name} 問你`);
+  const head = document.createElement("div");
+  head.className = "ask-card-head";
+  const icon = document.createElement("span");
+  icon.className = "ask-card-icon";
+  icon.textContent = "💬";
+  const title = document.createElement("span");
+  title.className = "ask-card-title";
+  title.textContent = `${conn.name} 問你`;
+  title.title = "agent 的提問：回答只會傳給它，不代表同意任何動作";
+  head.append(icon, title);
+  const question = document.createElement("div");
+  question.className = "ask-card-question";
+  question.textContent = spec.question;
+  card.append(head, question);
+
+  // Everything the user can act on sits in `controls`, removed as one when the card settles.
+  const controls = document.createElement("div");
+  controls.className = "ask-card-controls";
+  const options = document.createElement("div");
+  options.className = `ask-card-options${spec.multi ? " multi" : ""}`;
+  controls.appendChild(options);
+  let submit = () => {};
+  if (spec.multi) {
+    const boxes = spec.options.map((label) => {
+      const row = document.createElement("label");
+      row.className = "ask-card-check";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      const text = document.createElement("span");
+      text.textContent = label;
+      row.append(box, text);
+      options.appendChild(row);
+      return box;
+    });
+    const send = document.createElement("button");
+    send.type = "button";
+    send.className = "ask-card-submit";
+    send.textContent = "送出";
+    send.disabled = true;
+    options.addEventListener("change", () => { send.disabled = !boxes.some((b) => b.checked); });
+    send.addEventListener("click", () => submit({ choices: boxes.flatMap((b, i) => (b.checked ? [i] : [])) }));
+    controls.appendChild(send);
+  } else {
+    spec.options.forEach((label, i) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "ask-card-option";
+      b.textContent = label;
+      b.addEventListener("click", () => submit({ choice: i }));
+      options.appendChild(b);
+    });
+  }
+  if (spec.allowOther) {
+    const form = document.createElement("form");
+    form.className = "ask-card-other";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.maxLength = AskCore.OTHER_MAX;
+    input.placeholder = "其他…";
+    input.setAttribute("aria-label", "其他回答");
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.textContent = "送出";
+    form.append(input, go);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      if (input.value.trim()) submit({ other: input.value });
+    });
+    controls.appendChild(form);
+  }
+  const hint = document.createElement("div");
+  hint.className = "ask-card-hint";
+  hint.textContent = AskCore.timeoutHint(spec);
+  const result = document.createElement("div");
+  result.className = "ask-card-result";
+  result.hidden = true;
+  card.append(controls, hint, result);
+
+  const entry = { conn, conversationId, ask: null };
+  entry.ask = AskCore.createAsk({
+    timeoutMs: spec.timeoutMs,
+    onSettle: (state, answer) => {
+      pendingAsks.delete(id);
+      controls.remove();
+      hint.remove();
+      card.className = `ask-card ${state === "answered" ? "answered" : "unanswered"}`;
+      result.textContent = AskCore.outcomeText(state, answer);
+      result.hidden = false;
+    },
+  });
+  pendingAsks.set(id, entry);
+  // The answer: settle first (a second click is a no-op), then send it to the asking agent only,
+  // framed like any user message. It is the user speaking, so it resets the agent↔agent loop guard.
+  submit = (raw) => {
+    const answer = AskCore.normalizeAnswer(spec, raw);
+    if (!answer || !entry.ask.answer(answer)) return;
+    loopGuard.onHuman();
+    conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)));
+  };
+
+  // Asked in the turn (AskCore.canAsk guarantees one): the card sits in it, above the reply.
+  if (!conn.stream || !conn.stream.bubble) conn.startStream();
+  const turn = conn.stream;
+  turn.asked = true;                                     // finalizeStream keeps the row for the card
+  turn.contentEl.insertBefore(card, turn.bubble);
+  entry.ask.setVisible(askVisible(entry));
+  maybeScroll();
+  return id;
+}
+
+// Close open ask cards unanswered: `how` is supersede (another message), cancel (chat
+// cleared), disconnect or restart (`conn`'s only; restart = its session could not be resumed).
+// Nothing is sent to any agent.
+function settlePendingAsks(how, conn) {
+  for (const e of [...pendingAsks.values()]) if (!conn || e.conn === conn) e.ask[how]();
+}
+function supersedePendingAsks() { settlePendingAsks("supersede"); }
+function cancelPendingAsks() { settlePendingAsks("cancel"); }
+function closePendingAsks(conn, how = "disconnect") { settlePendingAsks(how, conn); }
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
 let lastMsgMs = 0;
