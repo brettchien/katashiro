@@ -220,9 +220,12 @@ below is built around that.
   - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg, seq?}` (`seq`:
     the render that failed; one from an older render than the host's latest is dropped), `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, seq, truncated?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    `selection{text, seq, truncated?, rect?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
     compare tab like `save`; `seq` is the render it was made in, and one from an older render is
-    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too), and
+    dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too; `rect`
+    `{top, bottom, left, right, x}` is where the selection is in the frame's viewport, `x` its end,
+    absent while it is out of view — finite and bounded, and the host clamps it to the frame box:
+    it only places the host's 💬, §3.7), and
     `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
     refused from a compare tab, and acted on only in edit mode).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save`,
@@ -796,12 +799,44 @@ is silent, the conservative choice:
     knows exactly which part to change (`selection{}`, §3.2).
     *As implemented:* the frame posts `selection{}` in view mode only (debounced 250 ms; the
     editor's unsaved text is never quoted, since the agent could not find it in storage), for
-    `markdown` and `slides`; the host shows **💬 Ask agent** while text is selected and asks for
-    the request with a prompt (an empty request sends nothing). The host line is
+    `markdown` and `slides`; the host shows **💬 Ask agent** while text is selected, and a small
+    **💬** beside the selection (below its end, above it when there is no room below; never over the
+    selected text unless the selection fills the view). Either opens a popover for the request (an
+    empty one shows an inline hint and sends nothing). The host line is
     `[canvas "X" (<id>) v7, text selected by the user — as rendered, not the markdown source;
     canvas_read before canvas_patch]`: the selection is rendered text, so the agent reads the
     stored markdown before patching. It goes through the same `katashiro-canvas-push` path as Send
     to agent (panel sender checks, `reqId` dedupe, refused while no agent is connected).
+    *Selection popover (Brett, 2026-10-12 16:07, option a — replaces the `window.prompt`, which
+    blocked the page, took one line and looked out of place):*
+    - **Drawn by the host, not the frame.** The 💬 and the popover are `canvas.html` elements
+      positioned over the iframe, so canvas content (agent-authored) cannot draw, imitate or cover
+      them. The frame only adds `rect` to `selection{}` (§3.2): the selection's bounding rect and
+      the x of its end in the frame's viewport, re-posted when the frame scrolls or resizes or a
+      slide changes, and left out while the selection is out of view (the 💬 then hides). The host
+      checks the numbers (finite, bounded), adds the iframe's offset and clamps to the frame box.
+      Placement and key handling are pure functions (`CanvasCore.askPlace`, `askKey`, the state in
+      `askReduce`).
+    - **Popover:** a one-line excerpt of the selection (text only; whitespace, control and bidi
+      characters flattened), a multi-line note, **送出** and **✕**; `role="dialog"`. **Enter**
+      sends, **Shift+Enter** is a new line, **Esc** closes; a key that belongs to an IME composition
+      never sends or closes (`CanvasCore.imeKey`). The selection, the canvas version and its title
+      are captured when the popover **opens** (as the old button click did), and the push is the
+      same `composeAskAgent` + `katashiro-canvas-push`. The result shows in the popover
+      (「💬 已問 <agent>」, then it closes); on an error it stays open with the note kept, to retry.
+    - **Closing:** Esc, ✕, a click outside it (in the header, or into the canvas), entering edit
+      mode, the canvas being deleted or its frame reloaded. While it is open, selection messages
+      do not touch it (focus moving to the note can clear the frame's selection); a click into the
+      canvas closes it first anyway. **A re-render or a new version while it is open keeps it
+      open, with the version it captured:** the user is writing about the text they saw, the host
+      line names that version, and the agent `canvas_read`s before patching (`canvas_patch`
+      rebases). Only the 💬 goes with the old DOM. While a send is in flight nothing but edit /
+      delete closes it, so its result is not lost. A note closed unsent (Esc, outside click) comes
+      back if the popover reopens on the same selection.
+    - After a send or Esc the 💬 stays hidden for that selection until the selection changes; the
+      header button still opens the popover for it. On close, focus goes back to the header button
+      when the popover was opened from there, else to the canvas frame.
+    - **Not in this change:** the quick-action chips (below) stay unbuilt.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
     message, sent as data (rules below). **The `html` frame never gets this button with its
