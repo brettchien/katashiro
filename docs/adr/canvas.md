@@ -4,7 +4,7 @@
 - **Date:** 2026-10-10
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [chat markdown rendering](./chat-markdown-rendering.md) (§3.1 vendoring, §3.6 diagram
-  engine, §3.7 CSP); `katashiro.show_image` (#59); reply-to (#61); multi-conversation (ADR pending).
+  engine, §3.7 CSP); `katashiro.show_image` (#59); reply-to (#61); [multi-conversation](./multi-conversation.md).
 
 > Citations are inline as `[Key]` at the point of the claim; each key resolves in **References**.
 
@@ -129,7 +129,8 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   found again by URL (ignoring compare tabs, `view=agent`, §3.10).
 - With multi-conversation, switching conversation collapses the old conversation's group and
   expands the new one's. **Not in phase 1** (§6 Q5): per-conversation group titles and
-  collapse-on-switch wait for multi-conversation.
+  collapse-on-switch wait for multi-conversation ([multi-conversation](./multi-conversation.md):
+  group titles in its MVP §3.3, collapse in P1b §4, where the group also takes the agent's own tabs).
 - **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
   column like GitHub's file view. Documents fill the viewport with modest side padding (~24 px);
   tables and code blocks take all the width they need, and slides scale to the tab. The host
@@ -602,7 +603,8 @@ below is built around that.
   - **`imageId` is copied in.** A screenshot passed by `imageId` is copied into `canvas:img:` at
     write time, not referenced in `show_image`'s temporary store, which is cleared.
 - **Keyed by `conversationId` from day one** (already minted by #61), so multi-conversation needs no
-  migration. Until it lands, the window's conversation owns its canvases.
+  migration. Until it lands, the window's conversation owns its canvases
+  ([multi-conversation](./multi-conversation.md) §3.2 moves only the chat history).
 - **Incognito is not supported (#109).** This ADR first had incognito canvases in
   `storage.session`, like the chat history (#54), but the implementation wrote them to
   `storage.local` (on disk) marked `meta.noMirror` and only skipped the folder. Instead of a
