@@ -158,9 +158,52 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
 - **Canvas gallery (ADR §3.7):** 🗂️ in the panel header (or **🗂️ 總覽** in a canvas tab) opens
   `canvas-gallery.html`; a second click focuses that tab instead of opening another. Every canvas
   is listed, newest first; typing filters by title, then by content (markdown / slides). A row opens
-  the canvas like its chat card (its open tab, else a new tab in the Canvas group); with the panel
-  closed it opens ungrouped beside the gallery and says so. 🗑 asks first, then the canvas's open
+  the canvas like its chat card (its open tab, else a new tab in its conversation's group); with no
+  panel showing that conversation it opens ungrouped beside the gallery and says so. The 對話 column
+  shows the conversation's title. 🗑 asks first, then the canvas's open
   tab closes and the row disappears; an agent write elsewhere updates the list live.
+- **Multi-conversation (ADR multi-conversation, MVP §3).** Headless first:
+  `CHROME=… node scripts/smoke-multi-conversation.mjs` drives the real side panel and gallery with
+  stubbed `chrome.*` and a fake agent (migration, tab strip, sessions, U2 line, picker, Web Lock,
+  archive, gallery reopen). In Chrome, with a real agent:
+  - **Upgrade:** load this build over an older one that has chats in two windows (and one closed
+    window's chat): each window opens on its own chat (title = its first message, time on the tab),
+    the closed window's chat is in 🗂️ → 對話 (or open, if it fit under 3); the first reply after
+    the upgrade says it was reconnected or simply continues (the U2 line is in the prompt, never in
+    the chat). DevTools: no `history:` keys left; `conv:schema` is 1.
+  - **Tab strip:** ＋ opens 未命名 <7 hex>; send a message: the tab takes its first 40 characters.
+    Double-click a tab, type a name, Enter: kept after more messages; an empty name goes back to
+    the auto title. Switch tabs: each keeps its scroll position, cards and ↩ buttons; the roster
+    chip says 握手中 → 已連線 and the chat says 已續接 the first time per connection. Long titles end
+    in … with the full title on hover.
+  - **Turn guard:** while the agent replies, clicking another tab, ＋ or × on the current tab
+    shows 「回覆中不能切換——等回完或先按 ⏹ 停止」; after ⏹ it works. Stop a turn in A, switch to
+    B at once: nothing from A's late output appears in B (DevTools console: "dropped a session/update").
+  - **3 open across windows:** with 3 tabs in window 1, ＋ shows the picker (a neutral card, not an
+    agent's) listing the 3; a replying one is disabled; 取消 opens nothing. In window 2, open the
+    panel: the picker lists window 1's conversations as （另一個視窗）; 取消 leaves 前往「…」 buttons
+    that focus window 1; picking one archives it in window 1 (its tab goes away there) and window 2
+    gets a new conversation.
+  - **One window per conversation:** close window 2's panel, give window 2's record a
+    conversation window 1 has open (or race two panels): window 2 says 這段對話開在另一個視窗 with
+    a 前往那個視窗 button.
+  - **Archive and reopen:** × on a conversation with messages: it appears in 🗂️ → 對話 (已封存,
+    canvas count, time); × on an empty one: it is gone (not listed). 重新打開 with the panel open:
+    the panel switches to it and resumes its ACP session (same id in the chip tooltip); with the
+    panel closed: the panel opens and then switches to it. With 3 open, 重新打開 shows the picker
+    in the panel first. Search filters conversation titles too.
+  - **Cards:** an ask card in A, switch to B: its clock stops (the hint's seconds do not run
+    down), it is still pending when you come back; sending a message in B leaves it pending; × on A:
+    the card is gone with A (internally `archived`). Make another agent active: A's and B's cards
+    close as agent 已中斷連線.
+  - **Canvas:** the canvas group is named after the conversation and follows a rename. From the
+    gallery, a canvas of an open but not current conversation opens in that conversation's group
+    without switching; Send to agent from it switches to its conversation first (refused while the
+    current one replies); from an archived conversation's canvas tab: 「這段對話已封存，先從總覽重新打開」.
+  - **Browser restart:** quit Chrome with chats open in two windows, restart: each restored window
+    opens on its conversations (as many as fit under 3), the rest are in 對話.
+  - **Downgrade:** load the previous release over this one: it starts empty; chat a bit; load this
+    build again: that chat is one more conversation (open if it fits, else in 對話); nothing lost.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito
