@@ -367,6 +367,8 @@ below is built around that.
 | `katashiro.canvas_patch({id, baseVersion, edits:[{find, replace}]})` | Patches a long document without resending it (§3.5 rules). Implemented: `markdown`/`slides` only, ≤ 50 edits, `find` ≤ 32 K and `replace` ≤ 512 K chars, result ≤ 2 MB. Matching and writing run in `CanvasStore.agentPatch` under the `canvas:<id>` lock; the write itself is the same agent write as `canvas_open` (card, normalization wait, mirror, index, budget). Errors are JSON: `stale` (+ `failedEdit`) when the canvas moved on and a `find` missed, else `{error:"patch", edit, count, overlaps?}`; success after a user edit adds `rebasedOver` (+ `diffFromBase`) |
 | `katashiro.canvas_delete({id})` | Deletes a canvas of the conversation after the **user confirms** in the side panel (Brett, 2026-10-10: any canvas, the confirmation is the only gate); declined → nothing deleted, `declined`. The question is a **confirm card** in the asking agent's turn (#80), not `window.confirm`, which blocked the panel's main thread and froze every agent in the room: 🔒 header and a fixed amber border that agent markdown cannot produce, the title as one plain-text line (newlines, control and bidi characters become spaces, so a title cannot add lines such as "(temp file, safe to delete)"), **允許 / 拒絕**, no answer in **2 minutes = declined**, a cleared chat = declined; the card then stays in the chat as 已允許 / 已拒絕 / 已拒絕（逾時）. A request an agent makes **after its turn has ended** (it was stopped or failed while an earlier card waited, and its next `canvas_delete` arrives afterwards — tool calls run one after another) gets **no card**: it declines at once, a one-line notice says the agent's turn had ended and the request was not carried out, and the agent gets `declined: the turn ended before the user was asked` (one still on screen when the turn ends: 已拒絕（回合已結束）, `declined: the turn ended before the user answered`). A card on its own row (asked outside an agent's turn) is left-aligned and full width. Several cards can wait at once; nothing blocks. It says so when the canvas is open in a canvas tab (unsaved edits there are lost). After 允許 the store re-reads the meta under the `canvas:<id>` lock and removes only the version the user was asked about (`remove({expectVersion})`); if it moved meanwhile (a user save, another agent's write) nothing is deleted and the agent gets `changed while asking, not deleted`. A deleted canvas's open tab closes (any delete path), unless it holds unsaved edits, which stay on screen to be copied out |
 | `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out). Only the side panel's messages are accepted (not content scripts); every goto is answered (frame error or drop, newer goto, 5 s canvas timer, panel deadline). If the canvas is open in two tabs both move and the first answer wins |
+| `katashiro.canvas_view({id?, showChanges?, compare?})` | The agent's equivalent of the header's display switches (§3.11, Brett 2026-10-12): `showChanges` sets ◐ 顯示變更, which is **global** (every canvas tab, like the button); `compare: true` / `false` (needs `id`) starts ⇆ Compare with agent's for that canvas or ends it (✕ 結束比較), with the button's preconditions and the button's path |
+| `katashiro.canvas_gallery({query?})` | Opens 🗂️ the gallery tab (§3.7), or brings the open one to the front, optionally with its search box set to `query` (§3.11) |
 | `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only; label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
 
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
@@ -827,7 +829,8 @@ is silent, the conservative choice:
     that conversation's group. With no such panel the gallery focuses that tab itself, or opens one
     ungrouped beside it and says so. 🗑 is the canvas tab's delete (same confirm, `store.remove`):
     open tabs close themselves unless they hold unsaved edits, and the folder file is kept (§3.6).
-    The list follows `storage.onChanged`.
+    The list follows `storage.onChanged`. The agent opens it with `canvas_gallery({query?})`, the
+    search prefilled from `#q=` (§3.11).
   - **Agent picks title and icon**: `canvas_open` takes an optional emoji `icon` for the card and
     the tab title.
   - **Quick actions** (phase 2, seen in ChatGPT/Gemini/Mistral): one-click chips in the header
@@ -1061,7 +1064,8 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
     (`canvas:showChanges` in `chrome.storage.local`; open tabs follow through `storage.onChanged`).
     While on, the markers are **held** (the compare's no-fade mode) and re-applied after every
     render (`glow{against, hold}` on `rendered{}`); turning it off clears them (later agent writes
-    fade as before), turning it on marks at once.
+    fade as before), turning it on marks at once. The agent sets the same switch with
+    `canvas_view({showChanges})`, and starts or ends a compare with `canvas_view({id, compare})` (§3.11).
     **Baseline: previous → latest, any author (Brett, 2026-10-11, with §3.5 history).** The
     markers compare the latest with the version before it in history (`store.readPrevious`,
     `CanvasCore.heldChanges`), whoever wrote either: after an agent write they show that write,
@@ -1076,6 +1080,43 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
 - **Skill (Brett, 2026-10-10).** `skills/katashiro-point-at` (#67) teaches agents when and how to
   point: `katashiro.highlight` on the displayed page first, `katashiro.inject_css` for several
   elements (cleared afterwards), and `canvas_highlight` on canvases.
+
+### 3.11 Agent equivalents of the user's view switches (Brett, 2026-10-12)
+
+> "For features that are clicked (enabled) by user, we should have an equivalent switch for
+> agents." (Brett, 2026-10-12)
+
+Canvas tabs and the gallery are `chrome-extension://` pages, so the agent's page tools (`snapshot`,
+`click`, …) cannot touch them (§3.2), and that stays so on purpose: most header buttons are the
+user's decisions. **The rule: every display switch the user can turn on gets a dedicated agent
+tool, with the same preconditions and the same code path as the button; never arbitrary clicking.**
+
+| Button | Agent tool | Behaves like the button |
+|---|---|---|
+| ◐ 顯示變更 on / off | `canvas_view({showChanges})` | Writes `canvas:showChanges` in `chrome.storage.local`; every canvas tab follows through `storage.onChanged`, exactly as after a click in one tab. It is **global**, not per canvas, and the tool description and result say so. |
+| ⇆ Compare with agent's | `canvas_view({id, compare: true})` | Refused, with the reason, where the button is hidden: not a text kind (image, html), no agent copy, the latest is the agent's own write (identical), the user is editing, the canvas is not shown in its tab. Otherwise the canvas tab is asked (an open one stays where it is until the compare has started, so a refused request never takes focus from an edit; a canvas with no tab is opened in front) (panel → canvas tab, runtime messaging, side panel only, never a compare tab) to run the button's own handler: `katashiro-canvas-compare` back to the panel, which splits as in §3.10, and the tab holds the compare markers. An open compare is just focused. The answer waits on the tab queue, so the panel allows 20 s (the only outer bound is the tunnel's `tunnel_timeout_seconds`, 170 s by default, on the facade path too); past that, a compare tab that did open counts as success, and otherwise the error says the compare may still open. |
+| ✕ 結束比較 | `canvas_view({id, compare: false})` | Closes that canvas's compare tab(s), as the button does; the canvas tab sees the close and clears its compare markers (§3.10). "No compare was open" is not an error. |
+| 🗂️ 總覽 | `canvas_gallery({query?})` | The panel's 🗂️: one reused gallery tab, in the panel's window. `query` fills the search box: the URL carries `#q=<encoded>`, the gallery reads it on load and on `hashchange`, strips control and bidi-control characters, drops zero-width ones, collapses whitespace, caps it at 200 characters, puts it in the box (`value`, never markup) and clears the fragment, so the next query is a new navigation. |
+
+- **Seeing the result.** `katashiro.screenshot` already captured canvas tabs (§3.2 allow-list by
+  exact URL prefix). It now also captures `canvas-gallery.html`, and only that page: other
+  extension pages, Katashiro's own included, stay refused, and DOM tools stay refused on both.
+- **May an agent see other conversations' canvases? — (a) accepted (Brett, 2026-10-12 16:01 TPE).**
+  The gallery lists every conversation's canvases with snippets, and `canvas_gallery({query})`
+  searches their text, so an agent that screenshots it reads canvases of other conversations (and
+  other agents) that `canvas_list` (session scope) does not show it. (A canvas tab of another
+  conversation that happens to be in front is screenshot-able already, before §3.11.)
+  - **(a) Accept — chosen.** It is the view the user has, in the user's own browser; `canvas_list`'s
+    scope keeps tool results tidy and is not a boundary between conversations. Written down here.
+  - (b) Scope it (not chosen; the way to tighten it later). An agent-opened gallery shows only that conversation (`#conv=`), and
+    screenshot refuses canvas tabs of other conversations.
+- **Not gated by act mode**, like the other canvas tools (§3.4): they change what is shown, not any
+  web page, and never content.
+- **Deliberately not offered to the agent** (the user's decisions): ✏️ edit / 💾 save / ↶ ↷ undo
+  and redo, Revert to agent's, Send to agent, 💬 Ask agent, 📁 Reconnect folder, 重新寫入, ⬇ `.md`
+  / `.mmd` download, PDF / print, and the conflict view's buttons. The agent changes content only
+  through `canvas_open` / `canvas_patch` (§3.5), and the user's own edits only through those
+  buttons.
 
 ---
 
@@ -1147,6 +1188,9 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
 - **No incognito (#109).** `manifest.json` sets `"incognito": "not_allowed"`: content sent to the
   agent cannot be forgotten, so an incognito promise cannot be kept (§3.6). Canvases older versions
   stored for incognito panels are removed on install/update.
+- **No agent tool for the user's decisions (§3.11).** The agent gets the display switches only;
+  edit / save / undo, Revert, Send / Ask, the folder, 重新寫入, downloads, print and the conflict
+  view stay the user's buttons.
 - Non-goals: real-time multi-user collaboration; network access from canvas content; arbitrary npm
   packages at runtime; pixel-faithful pptx.
 

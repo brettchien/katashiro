@@ -544,9 +544,13 @@ body {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
 }
 
-.message.received:nth-child(even) .avatar {
-  background: linear-gradient(135deg, #10b981, #3b82f6);
-}
+/* One colour per agent (RoomCore.avatarTone: a stable hash of its id → tone-0…5), the same in every
+   row, live or replayed; never per row position. */
+.avatar.tone-1 { background: linear-gradient(135deg, #10b981, #3b82f6); }
+.avatar.tone-2 { background: linear-gradient(135deg, #d97706, #dc2626); }
+.avatar.tone-3 { background: linear-gradient(135deg, #8b5cf6, #06b6d4); }
+.avatar.tone-4 { background: linear-gradient(135deg, #0d9488, #65a30d); }
+.avatar.tone-5 { background: linear-gradient(135deg, #db2777, #f97316); }
 
 .message-content {
   display: flex;

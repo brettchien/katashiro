@@ -203,5 +203,18 @@
   // "3 分鐘前" stays true: refresh the relative times every minute (metas only, cheap).
   setInterval(reload, 60 * 1000);
 
+  // canvas_gallery({query}) (§3.11): the agent's search arrives as #q=…, on load or as a fragment
+  // change of this open tab. Sanitised (queryFromHash), set as the box's value, then the fragment is
+  // cleared so the same query asked again is a new navigation (and hashchange) once more.
+  function takeHashQuery() {
+    const q = G.queryFromHash(location.hash);
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+    if (q == null) return false;
+    searchEl.value = q;
+    return true;
+  }
+  window.addEventListener("hashchange", () => { if (takeHashQuery()) { clearTimeout(searchTimer); search(); } });
+
+  takeHashQuery();
   reload();
 })();

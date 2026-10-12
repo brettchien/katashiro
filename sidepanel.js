@@ -233,6 +233,10 @@ class Conn {
         confirmEvict: (info) => confirmEvictCard(info, this),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
+        // canvas_view / canvas_gallery (§3.11): the agent's equivalents of the user's display switches.
+        setShowChanges: (on) => setCanvasShowChanges(on),
+        compare: (id, on) => (on ? startCanvasCompare(id) : endCanvasCompare(id)),
+        openGallery: (query) => openCanvasGallery(query),
       },
       windowId: panelWindowId,
     };
@@ -664,7 +668,7 @@ class Conn {
     msgDiv.className = "message received";
 
     const avatar = document.createElement("div");
-    avatar.className = "avatar";
+    avatar.className = `avatar tone-${RoomCore.avatarTone(this.id)}`;   // per agent, not per row
     avatar.textContent = this.name.charAt(0).toUpperCase();
 
     const contentEl = document.createElement("div");
@@ -2039,7 +2043,8 @@ function postUserText(text, images, replyTo, mentions) {
   // Q4 (ADR ask-user §2.3): a message instead of answering closes every open ask card; nothing is
   // sent for them, this message goes out as usual.
   supersedePendingAsks();
-  const sentAt = Date.now();
+  // Unique per ms in this panel: the header's milliseconds name exactly this message (#62 follow-up).
+  const sentAt = uniqueMsgMs(Date.now());
   appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
@@ -2388,8 +2393,9 @@ async function gotoCanvasSlide(id, slide) {
 
 // Ask the canvas tab (runtime messaging; only canvas tabs of that id answer, never compare tabs),
 // retrying for a few seconds while a fresh tab starts listening.
-async function askCanvasTab(msg) {
-  const deadline = Date.now() + 6000;
+const CANVAS_TAB_TIMEOUT = "the canvas tab did not answer in time";
+async function askCanvasTab(msg, ms = 6000) {
+  const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     // Each send is bounded by what is left of the deadline: a listener that returned true but never
     // answers must not hold the tool call (Jellyfish #79).
@@ -2402,7 +2408,7 @@ async function askCanvasTab(msg) {
     if (r) return r;
     await new Promise((res) => setTimeout(res, 300));
   }
-  return { ok: false, error: "the canvas tab did not answer in time" };
+  return { ok: false, error: CANVAS_TAB_TIMEOUT };
 }
 
 // canvas_highlight (§3.10): an open tab is asked first and brought to the front only once it has
@@ -2420,6 +2426,70 @@ async function highlightCanvasBlock(id, req) {
     } catch (_) { /* highlighted either way */ }
   }
   return r;
+}
+
+// --- canvas_view / canvas_gallery (§3.11): the user's display switches, for the agent ----------
+// ◐ 顯示變更 is one switch for every canvas tab: writing it here is what a click in a tab does, and
+// every canvas tab follows through storage.onChanged. → { was } (the state before).
+async function setCanvasShowChanges(on) {
+  const k = CanvasCore.SHOW_CHANGES_KEY;
+  const was = (await chrome.storage.local.get(k))[k] === true;
+  if (was !== on) await chrome.storage.local.set({ [k]: on });
+  return { was };
+}
+
+// ⇆ Compare with agent's: pre-checked from storage (a canvas that cannot compare is not opened for
+// nothing), then the canvas tab (the open one, or a new one in front) runs the button's own path, which
+// asks this panel back (katashiro-canvas-compare) — so this must not run under canvasTabQueue.
+// Only the picked tab answers (two tabs of one canvas must not both open a compare). An open tab is
+// brought to the front only once the compare started: while the user edits it refuses, and must not
+// take focus (Jellyfish #123). Its answer waits on the tab queue, so the deadline is longer than other
+// asks; past it, a compare tab that did open meanwhile still counts (Jellyfish #123).
+const COMPARE_ASK_MS = 20000;
+async function startCanvasCompare(id) {
+  let c, agentCopy;
+  try {
+    c = await canvasStore.read({ conversationId, id });
+    agentCopy = await canvasStore.readAgentCopy(id);
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+  const blocked = CanvasCore.compareBlocker({ kind: c.kind, author: c.author, agentCopy, content: c.content, editing: false, framed: true });
+  if (blocked) return { ok: false, error: blocked };
+  const base = chrome.runtime.getURL("canvas.html");
+  const existing = await findCanvasTab(id);
+  const tab = existing || (await openCanvasTab(id, { active: true }));
+  let r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
+  if (!r.ok && r.error === CANVAS_TAB_TIMEOUT) {
+    if (!CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) {
+      return { ok: false, error: `${CANVAS_TAB_TIMEOUT}; the compare may still open — check the tabs before asking again` };
+    }
+    r = { ok: true };                       // it did open: shown below like any started compare
+  }
+  if (existing && r.ok) {
+    // Started: now show it — the compare tab when it opened as a plain tab, else the canvas tab
+    // (Split View brings its pair along).
+    try {
+      const cmp = CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id)[0];
+      const front = cmp && cmp.active ? cmp : ((await findCanvasTab(id)) || existing);
+      await chrome.tabs.update(front.id, { active: true });
+      await chrome.windows.update(front.windowId, { focused: true });
+    } catch (_) { /* compared either way */ }
+  }
+  return r;
+}
+
+// ✕ 結束比較: close that canvas's compare tab(s), as the button does; the canvas tab sees the close
+// and clears its compare markers (§3.10). → { ok, closed }
+async function endCanvasCompare(id) {
+  const tabs = CanvasTabs.compareTabsFor(await chrome.tabs.query({}), chrome.runtime.getURL("canvas.html"), id);
+  if (tabs.length) await chrome.tabs.remove(tabs.map((t) => t.id));
+  return { ok: true, closed: tabs.length };
+}
+
+// 🗂️: the panel's gallery button, optionally with the search box filled (#q=, sanitised there).
+function openCanvasGallery(query) {
+  return CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined, query });
 }
 
 function canvasTabUrl(id) {
@@ -2457,7 +2527,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 const canvasGalleryBtn = document.getElementById("canvas-gallery-btn");
 if (canvasGalleryBtn) {
   canvasGalleryBtn.addEventListener("click", () => {
-    CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html"), { windowId: typeof panelWindowId === "number" ? panelWindowId : undefined }).catch(() => {});
+    openCanvasGallery().catch(() => {});
   });
 }
 
@@ -3142,26 +3212,18 @@ function attachReplyButton(contentEl, target) {
   (ts || contentEl).appendChild(b);
 }
 
-// The newest recorded message sent in the second this ISO stamp names, as a reply target.
+// The recorded message an ISO stamp names, as a reply target: exactly that millisecond when the
+// stamp has one (headers carry ms, #62 follow-up), else the second rule (RoomCore.findByStamp).
 function findMessageByTime(stamp) {
-  // Agents almost always answer the USER, so when several messages share that second prefer the
-  // user's; otherwise the newest match.
-  let fallback = null;
-  for (let i = historyMessages.length - 1; i >= 0; i--) {
-    const m = historyMessages[i];
-    if (!m || !Number.isFinite(m.timestamp) || m.kind === "error" || !RoomCore.sameSecond(stamp, m.timestamp)) continue;
-    const t = { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
-    if (m.kind === "sent") return t;
-    if (!fallback) fallback = t;
-  }
-  return fallback;
+  const m = RoomCore.findByStamp(historyMessages, stamp);
+  return m ? { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text } : null;
 }
 
 // The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
 // says the original was not found (its quote does not jump anywhere).
 function replyTargetFor(stamp) {
   return findMessageByTime(stamp) ||
-    { id: null, senderName: "?", timestamp: Date.parse(stamp), text: "（找不到原訊息）" };
+    { id: null, senderName: "?", timestamp: (RoomCore.parseStamp(stamp) || { ms: NaN }).ms, text: "（找不到原訊息）" };
 }
 
 // What a history record keeps of the message a reply answers.
@@ -3214,7 +3276,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
 
   if (!isMe) {
     const avatar = document.createElement("div");
-    avatar.className = "avatar";
+    // Per sender (its id; the name for old records without one), the same as its live rows.
+    avatar.className = `avatar tone-${RoomCore.avatarTone(senderId || senderName)}`;
     avatar.textContent = senderName ? senderName[0] : "?";
     msgDiv.appendChild(avatar);
   }

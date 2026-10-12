@@ -413,6 +413,15 @@
     applyHeldChanges();                     // clears the compare's markers; 顯示變更's come back if on
   }
 
+  // A reloaded canvas tab picks up a compare tab that is still open; rendered{} then marks.
+  async function startCompareIfOpen() {
+    if (comparing || !(await compareStillOpen()) || comparing) return;
+    compareGen++;
+    comparing = true;
+    updateShowChangesBtn();
+    if (rendered) holdCompareGlow();
+  }
+
   // 顯示變更 (§3.10, Brett 2026-10-11): one switch for every canvas tab (chrome.storage.local). While
   // on, the markers are held and re-applied after every render. The baseline is the previous
   // version in history (§3.5): previous → latest, any author, so a reloaded tab marks the same. A
@@ -463,8 +472,7 @@
   if (!compareView) {
     chrome.tabs.onRemoved.addListener(endCompareIfClosed);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
-    // A reloaded canvas tab picks up a compare tab that is still open; rendered{} then marks.
-    compareStillOpen().then((open) => { if (open && !comparing) { compareGen++; comparing = true; updateShowChangesBtn(); if (rendered) holdCompareGlow(); } });
+    startCompareIfOpen();
   }
 
   // goto / highlight wait for the frame to report THIS render (an older one's rendered{} would let
@@ -640,25 +648,47 @@
   // The side panel does the tab moves (it holds the §3.1 split records and the canvas group); it
   // checks that the request comes from this canvas tab. Without a panel, the compare view opens
   // here as a normal tab beside this one.
+  // The button and the agent's canvas_view({compare: true}) (§3.11) run this same path.
+  // → { ok, note? } | { ok: false, error }
+  async function startCompare() {
+    let r;
+    try { r = await chrome.runtime.sendMessage({ type: "katashiro-canvas-compare", id: canvasId, conversationId: current.meta.conversationId }); }
+    catch (_) { r = undefined; }
+    if (!r) r = await openCompareHere();
+    if (!r.ok) { notice(`無法開啟比較：${CanvasCore.clipError(r.error)}`); return r; }
+    if (r.note) flash(r.note);
+    // Both panes mark the differing blocks, held while the compare is open.
+    compareGen++;
+    comparing = true;
+    updateShowChangesBtn();
+    holdCompareGlow();
+    return r;
+  }
   compareBtn.addEventListener("click", async () => {
     if (!current || compareView || compareBtn.disabled) return;
     compareBtn.disabled = true;
-    try {
-      let r;
-      try { r = await chrome.runtime.sendMessage({ type: "katashiro-canvas-compare", id: canvasId, conversationId: current.meta.conversationId }); }
-      catch (_) { r = undefined; }
-      if (!r) r = await openCompareHere();
-      if (!r.ok) { notice(`無法開啟比較：${CanvasCore.clipError(r.error)}`); return; }
-      if (r.note) flash(r.note);
-      // Both panes mark the differing blocks, held while the compare is open.
-      compareGen++;
-      comparing = true;
-      updateShowChangesBtn();
-      holdCompareGlow();
-    } finally {
-      compareBtn.disabled = false;
-    }
+    try { await startCompare(); } finally { compareBtn.disabled = false; }
   });
+
+  // canvas_view({compare: true}) from the side panel (§3.11): the button's preconditions
+  // (CanvasCore.compareBlocker, with what only this tab knows: editing, the frame), then its path.
+  // No answer while the canvas is still loading (the panel retries); one compare at a time.
+  async function onCompareRequest(sendResponse) {
+    let agentCopy = null;
+    try { agentCopy = await store.readAgentCopy(canvasId); } catch (_) { /* none */ }
+    const c = current;                        // re-read after the await: deleted meanwhile → null
+    if (!c) { sendResponse({ ok: false, error: "the canvas was deleted" }); return; }
+    const blocked = CanvasCore.compareBlocker({
+      kind: c.meta.kind, author: c.meta.author, agentCopy, content: c.content,
+      editing: mode !== "view", framed: !!frame, deleted,
+    });
+    if (blocked) { sendResponse({ ok: false, error: blocked }); return; }
+    if (compareBtn.disabled) { sendResponse({ ok: false, error: "a compare is already being opened" }); return; }
+    compareBtn.disabled = true;
+    try { sendResponse(await startCompare()); }
+    catch (e) { sendResponse({ ok: false, error: (e && e.message) || String(e) }); }
+    finally { compareBtn.disabled = false; }
+  }
 
   async function openCompareHere() {
     try {
@@ -817,11 +847,20 @@
     respond(result);
   }
   const PANEL_URL = chrome.runtime.getURL("sidepanel.html");
+  let myTabId = null;                         // canvas_view compare targets one tab (§3.11)
+  chrome.tabs.getCurrent().then((t) => { myTabId = t && t.id != null ? t.id : null; }, () => {});
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Only the side panel: not a content script (sender.tab), not another extension page.
     if (!sender || sender.id !== chrome.runtime.id || sender.tab || sender.url !== PANEL_URL) return false;
     if (compareView) return false;              // goto / highlight are for the canvas, never its compare tab
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
+    if (msg && msg.type === "katashiro-canvas-compare-start" && msg.id === canvasId) {
+      // Only the tab the panel picked: two tabs of one canvas must not both open a compare.
+      if (myTabId == null || msg.tabId !== myTabId) return false;
+      if (!current) return false;               // still loading: the panel asks again
+      onCompareRequest(sendResponse);
+      return true;                              // answer asynchronously
+    }
     if (!msg || msg.type !== "katashiro-canvas-goto" || msg.id !== canvasId) return false;
     if (!Number.isInteger(msg.slide) || msg.slide < 1) { sendResponse({ ok: false, error: "slide must be a positive integer" }); return false; }
     if (current && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}, not slides` }); return false; }

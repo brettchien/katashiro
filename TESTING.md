@@ -75,6 +75,9 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   answer each one separately: its reply arrives as one message per part, each quoting the message it
   answers, and each with its own **↩**. Reload the panel: the split parts and quotes come back the
   same. With two agents in a room, ↩ on each agent's reply jumps to that reply, not the other one.
+  Send two short messages within one second (e.g. `` ` `` then `2`) and ask the agent to answer the
+  first: its quote shows the first, not the second (headers carry milliseconds,
+  `[2026-10-12T14:54:11.234+08:00 user]`, and a `↩` with milliseconds matches only that message; a miscopied one falls back to its second only when that second holds a single message).
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
@@ -127,6 +130,17 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   no previous version. While ✏️ editing nothing is marked; with ⇆ Compare open its
   markers show instead, and these come back when the compare tab closes. The compare tab has no
   switch; image canvases neither. Reload Chrome: the switch keeps its state.
+- **Agent view switches (ADR canvas §3.11):** with two canvas tabs open, ask the agent to
+  `canvas_view({showChanges: true})`: ◐ turns on in both, exactly as after a click; `false` turns it
+  off. Edit and save a markdown canvas, then ask for `canvas_view({id, compare: true})`: its tab
+  comes to the front and ⇆ Compare opens in Split View beside it with both panes marked, as from the
+  button; asked again, it just focuses. Ask for it while ✏️ editing, on an image canvas, and on a
+  canvas whose latest is the agent's own write: each is refused with the reason and nothing opens.
+  With the canvas duplicated into two tabs, only the most recently used one opens a compare.
+  `canvas_view({id, compare: false})` closes the compare tab and the canvas tab's markers clear.
+  `canvas_gallery({query: "plan"})` opens (or focuses) 🗂️ with *plan* in the search box; asked again
+  with another query the open tab's box changes without a reload. With the gallery tab active,
+  `katashiro.screenshot` captures it; `snapshot` there is still refused.
 - **Mermaid diagrams (ADR canvas §3.3):** ask the agent for a markdown canvas with a ```` ```mermaid ````
   flowchart, a sequence diagram and one deliberately broken diagram. The two good ones are drawn
   (dark theme). The broken one shows a red `mermaid diagram N: Parse error …` box above its source,

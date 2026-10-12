@@ -597,3 +597,18 @@ test("imeKey: Esc during an IME composition is the IME's — isComposing or keyC
   assert.equal(C.imeKey({ key: "Escape", isComposing: false, keyCode: 27 }), false);
   assert.equal(C.imeKey(null), false);
 });
+
+test("compareBlocker: the ⇆ button's rule, one reason for the agent's canvas_view (§3.11)", () => {
+  const ok = { kind: "markdown", author: "user", agentCopy: "a", content: "b", editing: false, framed: true, deleted: false };
+  assert.equal(C.compareBlocker(ok), null);
+  assert.equal(C.compareBlocker({ ...ok, kind: "slides" }), null);
+  assert.equal(C.compareBlocker({ ...ok, kind: "mermaid" }), null);
+  assert.match(C.compareBlocker({ ...ok, kind: "image" }), /image canvas has no compare/);
+  assert.match(C.compareBlocker({ ...ok, kind: "html" }), /html canvas has no compare/);
+  assert.match(C.compareBlocker({ ...ok, deleted: true }), /deleted/);
+  assert.match(C.compareBlocker({ ...ok, agentCopy: null }), /no agent copy/);
+  assert.match(C.compareBlocker({ ...ok, agentCopy: "b" }), /agent's last write: nothing to compare/);
+  assert.match(C.compareBlocker({ ...ok, author: "agent", agentCopy: "b" }), /nothing to compare/);
+  assert.match(C.compareBlocker({ ...ok, editing: true }), /editing/);
+  assert.match(C.compareBlocker({ ...ok, framed: false }), /not shown in its tab/);
+});
