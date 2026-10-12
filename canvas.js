@@ -628,7 +628,7 @@
   // element here, in the click, before the command (real Chrome 2026-10-12: typing after ↶ went nowhere).
   function editCmd(cmd) {
     if (compareView || mode !== "edit" || deleted || !conflictEl.hidden || !CanvasCore.isEditCmd(cmd)) return;
-    if (frame) frame.focus();
+    if (frame) frame.focus({ preventScroll: true });
     toFrame({ type: "editCmd", cmd });
   }
   for (const [btn, cmd] of [[undoBtn, "undo"], [redoBtn, "redo"]]) {
