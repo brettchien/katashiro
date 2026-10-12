@@ -463,7 +463,8 @@ heartbeat tore it down (§8.6) — **and** received its last inbound frame **les
 before the new socket opened: a network blip cannot send a close frame, and a quick reconnect after
 one means the same openab process is almost certainly still running. Otherwise the run starts afresh
 at the open time: the first socket since the panel loaded, a retargeted agent, a gap ≥ 2 min, a
-manual reconnect, a conn turned off and on — and **any clean close** (1000, 1001 going away, 1012
+manual reconnect that replaces an open socket (a manual retry while the link is down keeps the
+last drop's verdict), a conn turned off and on — and **any clean close** (1000, 1001 going away, 1012
 service restart, …), however fast the reconnect. A clean close means the server side closed on
 purpose; in an ECS rolling deploy the new task is already up when the old one gets SIGTERM, so the
 reconnect 5 s later reaches a new process (cloudflared hands both connectors the same tunnel), and an
