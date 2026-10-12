@@ -117,55 +117,105 @@ function acpProtocols(token) {
   return t ? [`openab.bearer.${t}`, "acp.v1"] : ["acp.v1"];
 }
 
-// --- Conn: one agent's connection + session + turn state ---------------------
+// --- SessionState: one conversation's ACP session with one agent --------------
+// Multi-conversation (ADR docs/adr/multi-conversation.md §3.5): everything that belongs to a
+// session lives here, one per open conversation, not on the Conn. The Conn keeps the socket,
+// heartbeat and liveness. In the MVP only the current conversation's state runs a turn (a switch is
+// refused while one runs), so the Conn's rendering methods below act on the current state; P2 lets
+// any state run.
+class SessionState {
+  constructor(convId, acpSessionId) {
+    this.convId = convId;
+    this.acpSessionId = acpSessionId || null;            // conv:<id>.sessions[agentUrl], replaceable
+    this.readyGen = -1;                                  // the socket generation it was resumed / created on
+    this.opening = null;                                 // the in-flight session/resume | session/new
+    this.hintPending = false;                            // U2 (§3.5): the next accepted prompt carries the host line
+    this.promptQueue = [];
+    this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
+    this.turnActive = false;
+    this.lastPrompt = null;                              // last turn's text, for retry (never the host line)
+    this.lastImages = [];                                // …and its images, so a retry re-sends them
+    this.stream = null;                                  // { bubble, text } while streaming
+    this.skippedToolCalls = null;                        // katashiro tool calls seen this turn
+    this.lastTurnActivityAt = 0;                         // ts of the last sign of life of its turn
+    this.mcpServer = null;                               // this conversation's browser MCP server (§3.9)
+  }
+}
+
+// --- Conn: one agent's connection; one SessionState per open conversation -----
 class Conn {
   constructor(agent) {
     this.agent = agent;                                 // { name, url, token, browserAccess }
     this.id = agent.url;                                // stable routing identity (unique per agent)
     this.enabled = true;                                // user intent: should this conn be up?
     this.ws = null;
-    // Per-window isolation: each side panel (one per Chrome window) gets its OWN openab session
-    // via session/new — do NOT seed from the chrome.storage-shared acpSessionByUrl, or two windows
-    // on the same agent would resume the SAME session → one channel → one browser tunnel → mixed.
-    // Resume across a WS reconnect still works (this field survives in memory on the Conn); resume
-    // across a full reload is intentionally dropped for isolation.
-    this.acpSessionId = null;
-    this.acpReady = false;
+    // One session per (conversation, agent), seeded from conv:<id>.sessions on first use — so a
+    // reopened panel resumes the same session (the "已續接 …" path). Two windows never share one:
+    // a conversation is open in one window at a time (Web Lock, §3.6).
+    this.states = new Map();                             // conversationId → SessionState
+    this.socketGen = 0;                                  // bumped per socket: "resumed on this socket?"
+    this.initialized = false;                            // ACP initialize done on the current socket
     this.online = false;
     this.nextReqId = 1;
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
-    this.promptQueue = [];
-    this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
-    this.turnActive = false;
-    this.lastPrompt = null;                              // last turn's text, for retry
-    this.lastImages = [];                                // …and its images, so a retry re-sends them
     this.canImage = false;                               // initialize → promptCapabilities.image
-    this.mcpServer = null;                               // our type:acp MCP server instance
-    // Router state: declared instances + connectionId → instance. A second client-side MCP
-    // server would just be another entry in `servers`; the gateway tunnels to each separately.
+    // Router state, shared by the socket: every declared instance (one per conversation) +
+    // connectionId → instance. The tunnel a frame arrives on names its conversation (§3.9).
     this.mcpState = { servers: [], connections: {}, mcpConnectionId: null };
-    this.browserAttached = false;
     this.reconnectTimer = null;
-    this.stream = null;                                  // { bubble, text } while streaming
     this.lastFailure = null;                             // null | "auth" | "unreachable"
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
     this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
     this.alive = false;                                  // last heartbeat verdict (socket responding?)
     this.lastRecvAt = 0;                                 // ts of the last inbound frame (passive liveness §8.6)
-    this.lastTurnActivityAt = 0;                         // ts of the last sign of life of the current turn
     this.lastTunnelMsgAt = 0;                            // ts of the last inbound mcp/message (tunnel freshness §8.3)
     this.missedProbes = 0;                               // consecutive idle-probe timeouts (debounce §8.6)
   }
 
   get name() { return this.agent.name || "Agent"; }
 
-  // Declared in session/new / session/resume so the gateway opens a browser tunnel to us.
-  // Per-conn id so N tunnels to the same active tab coexist. (Phase 3 will gate this on
-  // agent.browserAccess; Phase 1 always declares it.)
-  browserMcpServers() {
+  /** The session state of a conversation, created (seeded from its saved session id) on first use. */
+  stateFor(convId) {
+    let st = this.states.get(convId);
+    if (!st) {
+      const conv = convs.get(convId);
+      st = new SessionState(convId, conv && conv.sessions ? conv.sessions[this.agent.url] : null);
+      this.states.set(convId, st);
+    }
+    return st;
+  }
+  /** The current conversation's state (null while the panel has none, §3.3). */
+  get cur() { return conversationId && convs.has(conversationId) ? this.stateFor(conversationId) : null; }
+  stateBySession(sessionId) {
+    if (!sessionId) return null;
+    for (const st of this.states.values()) if (st.acpSessionId === sessionId) return st;
+    return null;
+  }
+  stateOfServer(server) {
+    for (const st of this.states.values()) if (st.mcpServer === server) return st;
+    return null;
+  }
+
+  // Views of the current state, for the roster, the stop button and the rendering methods below.
+  get acpSessionId() { const s = this.cur; return s ? s.acpSessionId : null; }
+  // Ready = the socket is initialized and the conversation on screen has its session on it.
+  get acpReady() { const s = this.cur; return this.initialized && (!s || (s.readyGen === this.socketGen && !!s.acpSessionId)); }
+  get turnActive() { for (const s of this.states.values()) if (s.turnActive) return true; return false; }
+  get stream() { const s = this.cur; return s ? s.stream : null; }
+  set stream(v) { const s = this.cur; if (s) s.stream = v; }
+  get skippedToolCalls() { const s = this.cur; return s ? s.skippedToolCalls : null; }
+  // Attached = a tunnel is open to the CURRENT conversation's browser server.
+  get browserAttached() {
+    const s = this.cur;
+    return !!(s && s.mcpServer && Object.values(this.mcpState.connections || {}).includes(s.mcpServer));
+  }
+
+  // Declared in that conversation's session/new / session/resume so the gateway opens a browser
+  // tunnel for that session: one server instance per (conversation, agent), never shared (§3.9).
+  browserMcpServers(st) {
     if (this.agent.browserAccess === false) return [];   // per-agent browser access control (off)
-    if (!this.mcpServer) {
-      this.mcpServer = BrowserMcp.createServer({
+    if (!st.mcpServer) {
+      st.mcpServer = BrowserMcp.createServer({
         id: crypto.randomUUID(),
         name: "katashiro",
         serverName: "katashiro-browser",
@@ -173,19 +223,54 @@ class Conn {
         // would drift — "which katashiro is this?" should have one answer.
         version: chrome.runtime.getManifest().version
       });
-      this.mcpState.servers = [this.mcpServer];
+      st.mcpServer.setImageStoreMax(screenshotConfig.storeMax);
+      this.mcpState.servers.push(st.mcpServer);
     }
-    return this.mcpState.servers.map((s) => s.declaration());
+    return [st.mcpServer.declaration()];
   }
 
-  mcpDeps() {
+  /** Archive (§3.4): forget a conversation's session state, its server and that server's tunnels. */
+  dropState(convId) {
+    const st = this.states.get(convId);
+    if (!st) return;
+    this.states.delete(convId);
+    if (!st.mcpServer) return;
+    st.mcpServer.clearImages();
+    this.mcpState.servers = this.mcpState.servers.filter((s) => s !== st.mcpServer);
+    for (const [k, s] of Object.entries(this.mcpState.connections || {})) if (s === st.mcpServer) delete this.mcpState.connections[k];
+    if (this.mcpState.mcpConnectionId && !this.mcpState.connections[this.mcpState.mcpConnectionId]) this.mcpState.mcpConnectionId = null;
+    updateRoster();
+  }
+
+  socketSend(obj) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+  }
+
+  // What the tunnel router (BrowserMcp.handleServerRequest) runs with: the socket, and per server the
+  // deps of the conversation it belongs to.
+  routerDeps() {
     return {
       chrome,
       crypto,
-      send: (obj) => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
-      },
+      send: (obj) => this.socketSend(obj),
       onStatus: (attached) => this.setBrowserAttached(attached),
+      depsFor: (server) => {
+        const st = this.stateOfServer(server);
+        return st ? this.mcpDeps(st) : { chrome, crypto, send: (obj) => this.socketSend(obj), refuse: "this conversation was closed in Katashiro" };
+      },
+    };
+  }
+
+  // One conversation's tool deps. Every per-conversation dependency (canvases, chat_history, where
+  // a card or an image goes) is bound to `st`, never to "the panel's" (§3.9).
+  mcpDeps(st) {
+    return {
+      chrome,
+      crypto,
+      send: (obj) => this.socketSend(obj),
+      // MVP §3.9: tool calls from a conversation that is not on screen are refused (a turn the user
+      // stopped whose agent kept going, or a facade call outside a turn). Read at dispatch time.
+      refuse: st.convId === conversationId ? null : "this conversation is not on screen in Katashiro",
       // Per-tool activity signal for the chat transcript: name + outcome + MASKED args/summary/ms
       // (browser-mcp.js applies each tool's redact hook; raw args never reach the UI).
       onToolCall: (info) => this.renderToolActivity(info),
@@ -199,20 +284,20 @@ class Conn {
       // (the panel has a canvas; browser-mcp.js stays DOM-free).
       screenshot: screenshotConfig,
       reencodeImage: reencodeJpeg,
-      // chat_history reads this window's persisted scrollback; notify tags its toasts with the
-      // window so the click handler below focuses the right one.
-      chatHistory: () => historyMessages,
+      // chat_history reads the calling conversation's persisted scrollback; notify tags its toasts
+      // with the window so the click handler below focuses the right one.
+      chatHistory: () => { const c = convs.get(st.convId); return c ? c.messages : []; },
       clientInfo: clientInfoSnapshot,
       // show_image renders into THIS agent's current turn (or as its own message between turns).
       showImage: (img) => this.showImage(img),
-      // ask_user shows its card in THIS agent's turn, and the answer comes back to THIS agent only.
-      askUser: (args) => this.askUser(args),
-      // Canvas (ADR docs/adr/canvas.md): one store for the panel, keyed by this window's
+      // ask_user shows its card in THIS agent's turn, and the answer comes back to THIS session only.
+      askUser: (args) => this.askUser(args, st),
+      // Canvas (ADR docs/adr/canvas.md): one store for the panel, keyed by the calling
       // conversation; a write shows its card in THIS agent's turn and opens a new canvas's tab.
       canvas: {
         store: canvasStore,
-        conversationId: () => conversationId,
-        onWrite: (res, opts) => this.onCanvasWrite(res, opts),
+        conversationId: () => st.convId,
+        onWrite: (res, opts) => this.onCanvasWrite(res, opts, st),
         waitNormalized: (id, version, raw) => waitCanvasNormalized(id, version, raw),
         // canvas_delete (Brett): any canvas, but only after the user says yes, here in the panel —
         // on a confirm card in this agent's turn, not window.confirm, which froze the whole room
@@ -244,9 +329,9 @@ class Conn {
     };
   }
 
+  // Tunnel set changed (the router's first-open / last-close events; per-conversation connects are
+  // re-rendered from handleAcpMessage). `browserAttached` itself is derived from the connections.
   setBrowserAttached(attached) {
-    if (attached === this.browserAttached) return;       // only real transitions
-    this.browserAttached = attached;
     // A fresh attach (mcp/connect) is itself proof the tunnel is live right now — stamp it so the
     // segment reads 活躍 immediately, not 閒置 until the first mcp/message arrives (Falcon review).
     if (attached) this.lastTunnelMsgAt = Date.now();
@@ -297,7 +382,8 @@ class Conn {
     }
     clearTimeout(this.reconnectTimer);
     this.online = false;
-    this.acpReady = false;
+    this.initialized = false;
+    this.socketGen++;                                    // every session must be resumed on the new socket
     this.alive = false;
     this.missedProbes = 0;                               // fresh socket ⇒ fresh debounce count
     this.openedThisAttempt = false;
@@ -323,7 +409,7 @@ class Conn {
 
       this.ws.onclose = () => {
         this.online = false;
-        this.acpReady = false;
+        this.initialized = false;
         this.alive = false;
         this.stopHeartbeat();
         this.mcpState.connections = {};                  // every tunnel dies with the socket
@@ -335,7 +421,7 @@ class Conn {
         if (!this.openedThisAttempt && this.enabled) this.probe();
         updateRoster();
         // Auto reconnect (only if the user still wants this conn up) — the next handshake
-        // resumes acpSessionId if we have one.
+        // resumes the current conversation's session if it has one.
         if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_INTERVAL_MS);
       };
 
@@ -349,7 +435,7 @@ class Conn {
     }
   }
 
-  // Tear down permanently (no reconnect) — used on delete / retarget.
+  // Tear down permanently (no reconnect) — used on delete / retarget / another agent made active.
   disconnect() {
     this.enabled = false;
     this.stopHeartbeat();
@@ -363,14 +449,16 @@ class Conn {
       this.ws = null;
     }
     this.online = false;
-    this.acpReady = false;
+    this.initialized = false;
+    this.socketGen++;
     this.alive = false;
-    this.finalizeStream();
-    // An open ask_user card of this agent closes: its answer would reach no session that asked.
+    for (const st of this.states.values()) this.finalizeStream(undefined, st);
+    // This agent's open ask_user cards close in EVERY conversation (§3.8): none of its sessions
+    // will be flushed, so an answer would reach no session that asked.
     closePendingAsks(this);
     // Captures are page data: none outlive this agent being active. (A transient socket drop
     // keeps them — the resumed session still holds their imageIds.)
-    if (this.mcpServer) this.mcpServer.clearImages();
+    for (const st of this.states.values()) if (st.mcpServer) st.mcpServer.clearImages();
   }
 
   // The WS handshake failed without ever opening. Probe the endpoint over plain HTTP (the
@@ -385,7 +473,10 @@ class Conn {
       .finally(() => updateRoster());
   }
 
+  // Socket handshake: ACP initialize once per socket, then the current conversation's session.
+  // Other open conversations are resumed when they are switched to (§3.5), not here.
   handshake() {
+    const gen = this.socketGen;
     BUILD_INFO
       .then(({ version, detail }) => this.acpRequest("initialize", {
         protocolVersion: ACP_PROTOCOL_VERSION,
@@ -393,49 +484,68 @@ class Conn {
         clientInfo: RoomCore.acpClientInfo(version, detail),
       }))
       .then((init) => {
+        if (gen !== this.socketGen) return undefined;
         // Only send image blocks to an agent that declares it takes them; the gateway answers
         // `image: false` (and -32602 on an image block) until it supports them.
         this.canImage = Composer.canImage(init);
-        if (this.acpSessionId) {
-          return this.acpRequest("session/resume", {
-            sessionId: this.acpSessionId,
-            cwd: ACP_CWD,
-            mcpServers: this.browserMcpServers(),
-          }).then(() => {
-            this.acpReady = true;
-            this.alive = true;
-            this.startHeartbeat();
-            updateRoster();
-            saveHistory();                 // persist the (confirmed) resumable session id
-            appendSystemMessage(`已續接 ${this.name} 的 ACP session（${(this.acpSessionId || "").slice(0, 13) || "?"}）。`);
-            this.flushQueue();
-          });
-        }
-        return this.acpRequest("session/new", {
-          cwd: ACP_CWD,
-          mcpServers: this.browserMcpServers(),
-        }).then((res) => {
-          this.acpSessionId = res && res.sessionId; // seeded per-window; persisted below
-          this.acpReady = true;
-          this.alive = true;
-          this.startHeartbeat();
-          updateRoster();
-          saveHistory();                 // persist the new session id for this window
-          appendSystemMessage(`已連線至 ${this.name}（ACP session ${(this.acpSessionId || "").slice(0, 13) || "?"}）。`);
-          this.flushQueue();
-        });
+        this.initialized = true;
+        this.alive = true;
+        this.startHeartbeat();
+        updateRoster();
+        const st = this.cur;
+        return st ? this.openSession(st) : undefined;
       })
       .catch((err) => {
-        // A resume can fail if the session id is unknown → fall back to a fresh one.
-        if (this.acpSessionId) {
-          this.acpSessionId = null; // stale in-memory session → fall back to a fresh session/new
-          // The fresh session never asked: an answer to a card from the old one has no context.
-          closePendingAsks(this, "restart");
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.handshake();
-        } else {
-          appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
-        }
+        if (gen === this.socketGen) appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
       });
+  }
+
+  // Resume (or create) one conversation's ACP session on this socket — once per socket (§3.5
+  // steps): session/resume with its id and its OWN MCP server declaration, or session/new if it
+  // has none for this agent. Messages typed meanwhile wait in its queue. Resolves when settled.
+  openSession(st) {
+    if (!this.initialized || !(this.ws && this.ws.readyState === WebSocket.OPEN)) return Promise.resolve();
+    if (st.readyGen === this.socketGen) { this.flushQueue(st); return Promise.resolve(); }
+    if (st.opening) return st.opening;
+    const gen = this.socketGen;
+    const resuming = !!st.acpSessionId;
+    const gone = () => gen !== this.socketGen || this.states.get(st.convId) !== st;   // socket replaced / archived meanwhile
+    const req = resuming
+      ? this.acpRequest("session/resume", { sessionId: st.acpSessionId, cwd: ACP_CWD, mcpServers: this.browserMcpServers(st) })
+      : this.acpRequest("session/new", { cwd: ACP_CWD, mcpServers: this.browserMcpServers(st) });
+    const p = req.then((res) => {
+      if (gone()) return undefined;
+      if (!resuming) st.acpSessionId = res && res.sessionId;
+      st.readyGen = gen;
+      const conv = convs.get(st.convId);
+      // U2 (§3.5): Katashiro cannot tell a resumed session from one the broker silently recreated,
+      // so the first prompt after ANY resume/new of a conversation with earlier messages carries
+      // the host line. Cleared only once session/prompt is accepted.
+      st.hintPending = ConvCore.needsReconnectHint({ messageCount: conv ? conv.messages.length : 0, queuedCount: st.promptQueue.length });
+      updateRoster();
+      saveConv(conv);                                    // persist the (confirmed) resumable session id
+      const short = (st.acpSessionId || "").slice(0, 13) || "?";
+      appendSystemMessage(resuming ? `已續接 ${this.name} 的 ACP session（${short}）。` : `已連線至 ${this.name}（ACP session ${short}）。`, conv);
+      this.flushQueue(st);
+      return undefined;
+    }, (err) => {
+      if (gone()) return undefined;
+      // The socket died under the request: keep the session id, the reconnect resumes it.
+      if (RoomCore.isDeadProbeReason(String(err))) return undefined;
+      if (resuming) {
+        // A resume can fail if the session id is unknown → fall back to a fresh one. The fresh
+        // session never asked: this conversation's cards for this agent close as `restarted`.
+        st.acpSessionId = null;
+        closePendingAsks(this, "restart", st.convId);
+        st.opening = null;
+        return this.openSession(st);
+      }
+      appendSystemMessage(`${this.name} ACP 握手失敗：` + err, convs.get(st.convId));
+      return undefined;
+    });
+    st.opening = p;
+    p.finally(() => { if (st.opening === p) st.opening = null; });
+    return p;
   }
 
   // Route an incoming JSON-RPC message for this conn.
@@ -449,13 +559,16 @@ class Conn {
     this.missedProbes = 0;
     if (this.alive !== true) this.markAlive(true);       // markAlive no-ops when already alive (no render spam)
     if (msg.method === "mcp/message") { this.lastTunnelMsgAt = this.lastRecvAt; updateRoster(); }
-    // Turn activity (pushes the turn's idle deadline out): any update for our session — text, tool
-    // events, or whatever else the gateway sends — and the agent driving our browser tunnel (mcp/message;
-    // the tunnel is per connection, not per session, so another session using it also counts — the
-    // 35-min cap still bounds the turn).
-    if ((msg.method === "session/update" && msg.params && msg.params.sessionId === this.acpSessionId) ||
-        msg.method === "mcp/message") {
-      this.lastTurnActivityAt = this.lastRecvAt;
+    // Turn activity (pushes the turn's idle deadline out): any update for a session — text, tool
+    // events, or whatever else the gateway sends — and the agent driving that session's browser
+    // tunnel (the connection names the server, the server its conversation, §3.9).
+    if (msg.method === "session/update" && msg.params) {
+      const st = this.stateBySession(msg.params.sessionId);
+      if (st) st.lastTurnActivityAt = this.lastRecvAt;
+    } else if (msg.method === "mcp/message") {
+      const server = this.mcpState.connections && msg.params && this.mcpState.connections[msg.params.connectionId];
+      const st = server && this.stateOfServer(server);
+      if (st) st.lastTurnActivityAt = this.lastRecvAt;
     }
 
     // Response to one of our requests.
@@ -469,15 +582,25 @@ class Conn {
       return;
     }
 
-    // Server-initiated request (id + method): the gateway driving THIS conn's browser MCP
-    // tunnel (mcp/connect, mcp/message, mcp/disconnect). Route + respond on this socket.
+    // Server-initiated request (id + method): the gateway driving one of THIS conn's browser MCP
+    // tunnels (mcp/connect, mcp/message, mcp/disconnect). Route + respond on this socket; a
+    // connect or disconnect may change whether the conversation on screen is attached.
     if (msg.id !== undefined && msg.method) {
-      BrowserMcp.handleServerRequest(msg, this.mcpDeps(), this.mcpState);
+      const done = BrowserMcp.handleServerRequest(msg, this.routerDeps(), this.mcpState);
+      if (msg.method !== "mcp/message") Promise.resolve(done).then(() => this.setBrowserAttached(msg.method === "mcp/connect"), () => {});
       return;
     }
 
-    // Streaming agent reply.
+    // Streaming agent reply — only the conversation on screen's (§3.5). A turn the user stopped
+    // in another conversation whose agent kept going (§1.2) must not append its late chunks and
+    // tool calls here; MVP drops and logs them, P2 routes them to their own state.
     if (msg.method === "session/update" && msg.params && msg.params.update) {
+      const cur = this.cur;
+      const sid = msg.params.sessionId;
+      if (!cur || (sid && sid !== cur.acpSessionId)) {
+        console.info(`ACP[${this.name}]: dropped a session/update for ${sid || "?"} (not the conversation on screen)`);
+        return;
+      }
       const u = msg.params.update;
       if (u.sessionUpdate === "agent_message_chunk" && u.content) {
         this.appendToStream(u.content.text || "");
@@ -487,74 +610,88 @@ class Conn {
     }
   }
 
-  enqueue(text, images) {
-    this.promptQueue.push(text);
-    if (images && images.length) this.pendingImages.push(...images);
-    this.flushQueue();
+  // Queue a prompt for a conversation's session (the current one by default; an ask card's answer
+  // goes to the session that asked, §3.8).
+  enqueue(text, images, st = this.cur) {
+    if (!st) return;
+    st.promptQueue.push(text);
+    if (images && images.length) st.pendingImages.push(...images);
+    this.flushQueue(st);
   }
 
-  // Send the next queued turn if THIS conn is idle and ready.
-  flushQueue() {
-    if (this.turnActive || this.promptQueue.length === 0) return;
-    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady && this.acpSessionId)) return;
+  // Send the next queued turn if this session is idle and ready.
+  flushQueue(st = this.cur) {
+    if (!st || st.turnActive || st.promptQueue.length === 0) return;
+    // MVP: only the conversation on screen runs a turn; another one's queue waits until it is
+    // current again (P2 lifts this).
+    if (st.convId !== conversationId) return;
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized && st.readyGen === this.socketGen && st.acpSessionId)) return;
 
     // Batch delivery: drain the WHOLE backlog and send it as one turn, not one-per-round. If the
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
-    const batch = this.promptQueue.splice(0);
+    const batch = st.promptQueue.splice(0);
     // The reply hint exactly once, at the end — also when a retried prompt (which carries it) is
     // batched with newer messages (#62).
     let text = RoomCore.batchWithReplyHint(batch);
     let images = [];
-    if (this.pendingImages.length && !this.canImage) {
-      const n = this.pendingImages.splice(0).length;
+    if (st.pendingImages.length && !this.canImage) {
+      const n = st.pendingImages.splice(0).length;
       appendSystemMessage(`${this.name} 不支援圖片，${text ? "只送出文字" : "這則沒有送出"}（${n} 張圖片未送出）。`);
     } else {
       // Batched backlog may hold several messages' images: send what fits one frame's budget and
       // leave the rest (plus an empty prompt to carry them) for the next turn.
-      while (this.pendingImages.length && (images.length === 0 || Composer.fitsBudget(images, this.pendingImages[0].data.length))) {
-        images.push(this.pendingImages.shift());
+      while (st.pendingImages.length && (images.length === 0 || Composer.fitsBudget(images, st.pendingImages[0].data.length))) {
+        images.push(st.pendingImages.shift());
       }
-      if (this.pendingImages.length) this.promptQueue.push("");
+      if (st.pendingImages.length) st.promptQueue.push("");
     }
     if (!text && images.length === 0) return;            // nothing sendable — stay idle
-    this.lastPrompt = text;                              // remember for retry (the whole batch)
-    this.lastImages = images;
-    this.turnActive = true;
-    this.skippedToolCalls = new Set();                   // katashiro tool calls seen this turn
+    st.lastPrompt = text;                                // remember for retry (the whole batch, no host line)
+    st.lastImages = images;
+    st.turnActive = true;
+    st.skippedToolCalls = new Set();                     // katashiro tool calls seen this turn
     updateStopButton();
+    renderConvTabs();
     this.startStream();
 
+    // U2 host line (§3.5): first, at flush time only — never stored, never in the retry copy.
+    const hinted = st.hintPending;
+    const sent = hinted ? ConvCore.withReconnectHint(text) : text;
     const startedAt = Date.now();
-    this.lastTurnActivityAt = startedAt;
+    st.lastTurnActivityAt = startedAt;
     this.acpRequest("session/prompt", {
-      sessionId: this.acpSessionId,
-      prompt: Composer.promptBlocks(text, images),
+      sessionId: st.acpSessionId,
+      prompt: Composer.promptBlocks(sent, images),
     }, 0, () => RoomCore.turnDeadline({
-      startedAt, lastActivityAt: this.lastTurnActivityAt,
+      startedAt, lastActivityAt: st.lastTurnActivityAt,
       idleMs: RoomCore.TURN_IDLE_TIMEOUT_MS, maxMs: RoomCore.TURN_MAX_TIMEOUT_MS,
     }))
       .then((res) => {
-        this.turnActive = false;
+        if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
+        st.turnActive = false;
         updateStopButton();
-        const replyText = this.stream ? this.stream.text : "";
-        this.finalizeStream(res && res.stopReason);      // stopReason "cancelled" ⇒ partial reply kept
+        renderConvTabs();
+        const replyText = st.stream ? st.stream.text : "";
+        this.finalizeStream(res && res.stopReason, st);  // stopReason "cancelled" ⇒ partial reply kept
         relayAgentReply(this, replyText); // fan this agent's reply out to the room
-        this.flushQueue();
+        this.flushQueue(st);
       })
       .catch((err) => {
-        this.turnActive = false;
+        st.turnActive = false;
         updateStopButton();
+        renderConvTabs();
         const socketOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
         const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
         if (action === "requeue") {
           // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
           // that rejects the in-flight turn with "connection closed"). The prompt almost certainly
           // never landed, so re-queue it — the onclose-scheduled reconnect flushes it on a fresh
-          // session (ADR R3). Safe: a dead socket means the agent never received this turn.
-          this.promptQueue.unshift(text);
-          this.pendingImages.unshift(...images);         // the images never landed either
-          this.finalizeStream();
+          // session (ADR R3). Safe: a dead socket means the agent never received this turn. The
+          // host line is not re-queued: the flag still stands, so the resend carries it again.
+          st.promptQueue.unshift(text);
+          st.pendingImages.unshift(...images);           // the images never landed either
+          this.finalizeStream(undefined, st);
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
           // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer
@@ -563,19 +700,18 @@ class Conn {
           // resume and the agent ran the same message 2–3× (the reconnect-duplication bug). Never
           // auto-re-send into a live session: cancel the stale turn and let the USER re-issue via the
           // retry button. No reconnect either — the socket + tunnel are fine.
-          if (this.acpSessionId) {
-            this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
-          }
-          this.finalizeStream();
+          if (hinted) st.hintPending = false;            // the prompt was received
+          if (st.acpSessionId) this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
+          this.finalizeStream(undefined, st);
           const why = /\(max\)/.test(String(err))
             ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
             : `回合 ${RoomCore.TURN_IDLE_TIMEOUT_MS / 60000} 分鐘沒有任何動靜`;
-          appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast());
+          appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast(st));
         } else {
-          this.finalizeStream("error");                  // render any partial reply, then a distinct
-          appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast()); // error bubble
+          this.finalizeStream("error", st);              // render any partial reply, then a distinct
+          appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast(st)); // error bubble
         }
-        this.flushQueue();
+        this.flushQueue(st);
       });
   }
 
@@ -583,23 +719,26 @@ class Conn {
   // the prompt's cancel signal, which resolves our session/prompt request with stopReason
   // "cancelled" — so the normal .then path finalizes the (partial) reply; nothing to settle here.
   cancelTurn() {
-    if (!this.turnActive || !this.acpSessionId) return;
-    if (!(this.ws && this.ws.readyState === WebSocket.OPEN)) return;
-    this.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: this.acpSessionId } }));
+    for (const st of this.states.values()) {
+      if (!st.turnActive || !st.acpSessionId) continue;
+      this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
+    }
   }
 
   // Re-send the last turn (after an error / stop). If the socket isn't live, reconnect first and
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
-  retryLast() {
+  retryLast(st = this.cur) {
     // Single-active: a stale error bubble from a now-dormant agent still has a live 重試 button;
     // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
     // alongside the active one (review: Orca, the C2 race).
     if (this.agent.url !== activeAgentUrl) return;
-    if ((!this.lastPrompt && this.lastImages.length === 0) || this.turnActive) return;
-    this.promptQueue.push(this.lastPrompt || "");        // "" still carries an image-only turn
-    this.pendingImages.push(...this.lastImages);
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady) this.flushQueue();
+    // Its conversation must be the one on screen (and still open): a turn runs only there.
+    if (!st || st !== this.cur) return;
+    if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
+    st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
+    st.pendingImages.push(...st.lastImages);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized) this.openSession(st);   // flushes once ready
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }
 
@@ -623,7 +762,7 @@ class Conn {
   }
 
   heartbeatTick() {
-    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.acpReady)) return; // nothing to probe
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized)) return; // nothing to probe
     // Passive-first (§8.6): a turn in flight, or any inbound frame within the last interval, is
     // self-evident proof of life — only genuine silence gets a probe (decision in RoomCore, tested).
     const interval = roomConfig.heartbeatIntervalMs || 60000;
@@ -690,7 +829,7 @@ class Conn {
     contentEl.append(nameEl, bubble, ts);
 
     msgDiv.append(avatar, contentEl);
-    messagesList.appendChild(msgDiv);
+    chatList.appendChild(msgDiv);
     this.stream.bubble = bubble;
     this.stream.contentEl = contentEl;   // anchor for the tool-activity strip (inserted above bubble)
     maybeScroll();
@@ -779,7 +918,7 @@ class Conn {
       // Between turns: its own message (so history keeps the "image not saved" marker), rendered
       // like the in-turn figure (#60): click to open, caption as text — not markdown.
       appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src], historyCaption: caption });
-      const row = messagesList.lastElementChild;
+      const row = chatList.lastElementChild;
       const placed = row && row.querySelector(".bubble-image");
       if (placed) placed.replaceWith(fig);
     }
@@ -791,8 +930,8 @@ class Conn {
   // its id at once; the answer reaches this agent later as a new prompt (askCard). Throws an Error
   // the tool reports to the agent. Asked after this agent's turn ended (the user stopped it): no
   // card, same rule as the confirm card (ConfirmCore.shouldAsk via AskCore.canAsk).
-  askUser(args) {
-    const can = AskCore.canAsk({ turnActive: this.turnActive, pending: pendingAsksOf(this) });
+  askUser(args, st = this.cur) {
+    const can = AskCore.canAsk({ turnActive: !!(st && st.turnActive), pending: st ? pendingAsksOf(this, st.convId) : 0 });
     if (can.reason === "turn") {
       appendSystemMessage(`${this.name} 的回合已結束，它的提問沒有顯示。`);
       throw Object.assign(new Error("your turn had ended (the user stopped it) before the question could be shown; ask in your next reply instead"), { code: "turn" });
@@ -802,15 +941,16 @@ class Conn {
     }
     const n = AskCore.normalizeSpec(args);
     if (!n.ok) throw Object.assign(new Error(n.error), { code: "invalid" });
-    return { id: askCard(n.spec, this) };
+    return { id: askCard(n.spec, this, st) };
   }
 
   // katashiro.canvas_open saved a canvas: put its card in this turn (or, between turns, as its own
   // row), and open a NEW canvas in a background tab of the canvas group (§3.1). An update needs no
   // tab work: an open canvas tab re-renders itself from storage.onChanged. beside:"current" also
   // shows it in Split View next to the user's page. Returns a short note for the tool result.
-  async onCanvasWrite({ id, version, created, title }, { beside = null } = {}) {
-    const card = canvasCard({ id, version, title });
+  async onCanvasWrite({ id, version, created, title }, { beside = null } = {}, st = this.cur) {
+    const conv = st ? st.convId : conversationId;
+    const card = canvasCard({ id, version, title, conv });
     if (this.turnActive) {
       if (!this.stream || !this.stream.bubble) this.startStream();
       this.stream.contentEl.insertBefore(card, this.stream.bubble);
@@ -818,13 +958,13 @@ class Conn {
       const row = document.createElement("div");
       row.className = "message system";
       row.appendChild(card);
-      messagesList.appendChild(row);
+      chatList.appendChild(row);
     }
     maybeScroll();
-    canvasTabQueue(sweepCanvasRestores).catch(() => {});
-    if (beside === "current") return showCanvasBeside(id, created);
+    canvasTabQueue(sweepCanvasRestores, conv).catch(() => {});
+    if (beside === "current") return showCanvasBeside(id, created, conv);
     if (!created) return (await findCanvasTab(id)) ? "its open tab updated" : "";
-    await openCanvasTab(id, { active: false });
+    await openCanvasTab(id, { active: false, conv });
     return "opened in a background tab";
   }
 
@@ -881,9 +1021,9 @@ class Conn {
     maybeScroll();
   }
 
-  finalizeStream(stopReason) {
-    const s = this.stream;
-    this.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
+  finalizeStream(stopReason, st = this.cur) {
+    const s = st ? st.stream : null;
+    if (st) st.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
     // A confirm card still waiting in this turn declines: the turn ended (stop, timeout, error,
     // disconnect), so a late "yes" must not act for an agent that can no longer hear it (#80).
     if (s && s.confirms) for (const d of [...s.confirms]) d.end();
@@ -963,9 +1103,9 @@ function buildRoom() {
   room.forEach((c) => c.disconnect());
   room.length = 0;
   agents.forEach((a) => {
+    // Each conversation's saved session id seeds its state on first use (Conn.stateFor), so the
+    // first handshake resumes (not session/new).
     const c = new Conn(a);
-    // Seed this window's saved session id so the first handshake resumes (not session/new).
-    if (savedSessions[a.url]) c.acpSessionId = savedSessions[a.url];
     // Single-active (ADR single-active-agent): a dormant agent stays enabled:false so it renders
     // 已停用 rather than "連線中…"; only the active one is connected by connectAll.
     c.enabled = (a.url === activeAgentUrl);
@@ -1192,12 +1332,16 @@ loadConfig().then(async (r) => {
     renderSyncBadge();
 
     switchView("chat");
-    await loadHistory();   // seed saved session ids + replay scrollback BEFORE building/connecting
+    // Conversations (migration, this window's open set and locks) BEFORE building/connecting, so
+    // each conn resumes the current conversation's saved session.
+    try { await loadConversations(); } catch (e) { console.error("katashiro: loading conversations failed:", e); }
     // Folder mirror catch-up (§3.6): canvases saved while the folder was not connected.
     canvasMirror.syncAll().catch(() => {});
     buildRoom();
     connectAll();
     updateRoster();
+    markPanelReady();
+    pickUpReopenRequest();
   }
 );
 
@@ -1254,30 +1398,53 @@ function persist() {
   });
 }
 
-// --- Chat history (per-window, chrome.storage.local) --------------------------
+// --- Conversations (ADR docs/adr/multi-conversation.md, MVP §3) ----------------
 // The side panel is a plain extension page: closing it tears down the DOM, losing the scrollback.
-// Persist the messages AND each agent's resumable ACP session id to chrome.storage.local, keyed
-// by window, so reopening the panel restores the same conversation and resumes the same session
-// (the "已續接 …" path). Keyed by window so two windows keep separate history + sessions — the
-// per-window isolation, but now restorable (the old shared-by-url seed was the thing that mixed
-// tunnels; a per-window key does not). storage.local (not storage.session) so the scrollback also
-// survives an extension reload / update — that is what lets a restarted agent recover the
-// conversation via `chat_history`. It IS written to disk (the Chrome profile), never synced.
-// Window ids are only stable for one browser run: after a browser restart the old keys belong to no
-// window, so loadHistory() prunes every `history:<id>` whose window is gone.
+// So each conversation persists in chrome.storage.local: conv:<id> = { id, sessions: { <agentUrl>:
+// acpSessionId }, messages (≤ 200), savedAt }, its title and times in conv:index, and the
+// conversations a window has open (tab order + current) in window:<windowId>. Reopening the panel
+// restores them and resumes the same sessions (the "已續接 …" path). storage.local (not
+// storage.session) so the scrollback also survives an extension reload / update — that is what lets
+// a restarted agent recover the conversation via `chat_history`. It IS written to disk (the Chrome
+// profile), never synced. Two rules hold it together:
+//  - one window per conversation: the panel holds the Web Lock conv:<id> for every conversation in
+//    its open list (§3.6); closing the panel or the window releases them, no heartbeat;
+//  - at most 3 open across all LIVE windows (§3.3, Q4: the broker pool of 3 is global), counted and
+//    changed under the conv:windows lock (which replaces #56's history:adopt).
+// The decisions are in conv-core.js (unit-tested); this file does the DOM, the locks and the calls.
 const HISTORY_CAP = 200;
-const HISTORY_PREFIX = "history:";
-let historyKey = null;                    // "history:<windowId>"
-let panelWindowId = null;                 // the window this panel lives in (set by loadHistory)
-let savedSessions = {};                   // { <agentUrl>: acpSessionId } seeded at startup
-const historyMessages = [];               // in-memory mirror of the persisted scrollback
-// This scrollback's stable conversation id — message ids are `<conversationId>:<ms timestamp>`
-// (RoomCore.messageId), the reference a reply points at. Minted once, kept across clears/reloads.
+// getAll() lists only normal + popup windows by default, so ask for every type — a panel in an
+// app/devtools window would otherwise treat its own record as orphaned (#56).
+const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
+let panelWindowId = null;                 // the window this panel lives in (set by loadConversations)
+const convs = new Map();                  // id → open conversation { id, messages, sessions, listEl, … }
+let convIndex = {};                       // conv:index as last read (+ this panel's unsaved times)
+let windowRec = { open: [], current: null };   // this window's record (this panel is its only writer)
+let currentConv = null;                   // the conversation on screen (null: none, §3.3 picker)
+// The current conversation's stable id — message ids are `<conversationId>:<ms timestamp>`
+// (RoomCore.messageId), the reference a reply points at. Minted once per conversation.
 let conversationId = null;
-function newConversationId() {
-  return "c_" + globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 12);
-}
+let historyMessages = [];                 // the current conversation's records (its `messages`)
 let restoring = false;                    // true while replaying — suppresses re-recording
+const convLockReleases = new Map();       // id → release() of the conv:<id> Web Lock this panel holds
+let markPanelReady;
+const panelReady = new Promise((r) => { markPanelReady = r; });
+
+async function liveWindowIds() {
+  let ids = new Set();
+  try { ids = new Set((await chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES })).map((w) => String(w.id))); } catch (_) { /* none known */ }
+  if (panelWindowId != null) ids.add(String(panelWindowId));   // this panel's own window is live
+  return ids;
+}
+const convStore = ConvCore.createConvStore({
+  storage: chrome.storage.local,
+  lock: (name, fn) => navigator.locks.request(name, fn),
+  liveWindowIds,
+  randomUUID: () => crypto.randomUUID(),
+});
+const withWindowsLock = (fn) => navigator.locks.request(ConvCore.LOCK_WINDOWS, fn);
+const newConversationId = () => ConvCore.mintId(() => crypto.randomUUID());
+const freshIndexEntry = () => ({ title: null, titleSource: null, createdAt: Date.now(), lastMessageAt: null, archivedAt: null });
 
 function currentWindow() {
   return new Promise((resolve) => {
@@ -1287,21 +1454,101 @@ function currentWindow() {
   });
 }
 
-function saveHistory() {
-  if (!historyKey) return;
-  const sessions = {};
-  room.forEach((c) => { if (c.acpSessionId) sessions[c.agent.url] = c.acpSessionId; });
-  chrome.storage.local.set({ [historyKey]: { conversationId, sessions, messages: historyMessages, savedAt: Date.now() } })
+function makeConv(id, data) {
+  const d = data && typeof data === "object" ? data : {};
+  return {
+    id,
+    messages: Array.isArray(d.messages) ? d.messages.slice(-HISTORY_CAP) : [],
+    sessions: d.sessions && typeof d.sessions === "object" ? { ...d.sessions } : {},
+    listEl: null,                         // its message list, built the first time it is shown (§3.5)
+    scrollTop: 0, stick: true,            // scroll position while hidden
+    indexTimeAt: 0, indexTimeValue: 0,    // the last lastMessageAt written to conv:index, and when
+  };
+}
+
+// The Web Lock conv:<id>, held until released on archive (§3.6). ifAvailable: never waits.
+function holdConvLock(id) {
+  if (convLockReleases.has(id)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    navigator.locks.request(`conv:${id}`, { ifAvailable: true }, (lock) => {
+      if (!lock) { resolve(false); return undefined; }
+      return new Promise((release) => { convLockReleases.set(id, release); resolve(true); });
+    }).catch(() => resolve(false));
+  });
+}
+function releaseConvLock(id) {
+  const release = convLockReleases.get(id);
+  convLockReleases.delete(id);
+  if (release) release();
+}
+
+function writeWindowRec() {
+  if (panelWindowId == null) return Promise.resolve();
+  return chrome.storage.local.set({ [ConvCore.windowKey(panelWindowId)]: { open: windowRec.open, current: windowRec.current, savedAt: Date.now() } })
+    .catch(() => { /* quota — the record is rewritten on the next change */ });
+}
+
+// Persist a conversation's messages and its agents' resumable session ids.
+function saveConv(conv = currentConv) {
+  if (!conv || !convs.has(conv.id)) return Promise.resolve();
+  room.forEach((c) => {
+    const st = c.states.get(conv.id);
+    if (!st) return;
+    if (st.acpSessionId) conv.sessions[c.agent.url] = st.acpSessionId;
+    else delete conv.sessions[c.agent.url];
+  });
+  return chrome.storage.local.set({ [ConvCore.convKey(conv.id)]: { id: conv.id, sessions: conv.sessions, messages: conv.messages, savedAt: Date.now() } })
     .catch(() => { /* quota — the on-screen chat is unaffected */ });
 }
 
-// Append a record to the persisted scrollback (skipped while restoring). System/status notices are
-// deliberately NOT recorded — they are regenerated on each (re)connect (the 已續接/已連線 lines).
+// Read-modify-write one index entry under conv:index; `patch(entry)` returns the fields to change.
+function patchIndex(id, patch) {
+  return convStore.updateIndex((idx) => {
+    const e = idx[id] || freshIndexEntry();
+    idx[id] = { ...e, ...patch(e) };
+    return idx;
+  }).catch(() => {});
+}
+
+// lastMessageAt (Q1: any message, the agent's included): on screen at once, in conv:index at most
+// every 5 s per conversation, and always on switch, archive and panel hide (§3.2).
+function noteActivity(conv, ts) {
+  if (!conv || !Number.isFinite(ts)) return;
+  const e = convIndex[conv.id] || freshIndexEntry();
+  if ((e.lastMessageAt || 0) >= ts) return;
+  convIndex[conv.id] = { ...e, lastMessageAt: ts };
+  renderConvTabs();
+  if (ConvCore.shouldWriteIndexTime(conv.indexTimeAt, Date.now())) writeIndexTime(conv);
+}
+function writeIndexTime(conv) {
+  if (!conv) return Promise.resolve();
+  const at = (convIndex[conv.id] || {}).lastMessageAt || 0;
+  if (at <= conv.indexTimeValue) return Promise.resolve();
+  conv.indexTimeAt = Date.now();
+  conv.indexTimeValue = at;
+  return patchIndex(conv.id, (e) => ({ lastMessageAt: Math.max(e.lastMessageAt || 0, at) }));
+}
+
+// §3.3: the first user message names a conversation that has no title (a user name never changes).
+function maybeAutoTitle(conv, text) {
+  if (!conv) return;
+  const next = ConvCore.titleAfterUserMessage(convIndex[conv.id] || freshIndexEntry(), text);
+  if (!next) return;
+  convIndex[conv.id] = next;
+  patchIndex(conv.id, (e) => (e.titleSource === "user" || (e.title && e.titleSource === "auto") ? {} : { title: next.title, titleSource: "auto" }));
+  renderConvTabs();
+  updateCanvasGroupTitle(conv.id);
+}
+
+// Append a record to the current conversation's persisted scrollback (skipped while restoring).
+// System/status notices are deliberately NOT recorded — they are regenerated on each (re)connect.
 function recordMessage(rec) {
-  if (restoring) return;
-  historyMessages.push(rec);
-  if (historyMessages.length > HISTORY_CAP) historyMessages.splice(0, historyMessages.length - HISTORY_CAP);
-  saveHistory();
+  if (restoring || !currentConv) return;
+  const conv = currentConv;
+  conv.messages.push(rec);
+  if (conv.messages.length > HISTORY_CAP) conv.messages.splice(0, conv.messages.length - HISTORY_CAP);
+  saveConv(conv);
+  noteActivity(conv, rec.timestamp);
 }
 
 function replayMessage(rec) {
@@ -1309,55 +1556,533 @@ function replayMessage(rec) {
   else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || null });
 }
 
-// History of windows that no longer exist (#56). After a browser restart every window id changes,
-// so instead of pruning those keys at once, a window with no history of its own ADOPTS the most
-// recently saved orphan — its scrollback, conversationId and ACP session ids, so the agent's
-// session resumes too — and orphans older than 7 days are pruned. Several restored windows each
-// adopt one (the lock makes "pick + move" atomic across panels). Only numeric window keys count;
-// "default" is left alone. getAll() lists only normal + popup windows by default, so ask for every
-// type — a panel in an app/devtools window would otherwise treat its own key as orphaned. Best
-// effort: never blocks the panel.
-const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
-const HISTORY_ORPHAN_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
-async function adoptOrPruneOrphanHistory(ownKey) {
-  try {
-    await navigator.locks.request("history:adopt", async () => {
-      const [entries, wins] = await Promise.all([
-        CanvasStore.getMatching(chrome.storage.local, (k) => k.startsWith(HISTORY_PREFIX)),
-        chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES }),
-      ]);
-      const plan = RoomCore.planHistoryAdoption({
-        entries, liveIds: new Set(wins.map((w) => String(w.id))), ownKey, prefix: HISTORY_PREFIX,
-        now: Date.now(), keepMs: HISTORY_ORPHAN_KEEP_MS,
-      });
-      if (plan.adopt) {
-        await chrome.storage.local.set({ [ownKey]: entries[plan.adopt] });
-        await chrome.storage.local.remove(plan.adopt);
-      }
-      if (plan.prune.length) await chrome.storage.local.remove(plan.prune);
-    });
-  } catch (_) { /* housekeeping — never block the panel on it */ }
+// Other panels write conv:index too (titles, archive, reopen): follow it, keeping this panel's own
+// newer times that are not written yet (§3.2 throttle).
+function adoptIndex(stored) {
+  const next = { ...(stored || {}) };
+  for (const id of convs.keys()) {
+    const mine = convIndex[id];
+    if (!mine) continue;
+    if (!next[id]) next[id] = mine;
+    else if ((mine.lastMessageAt || 0) > (next[id].lastMessageAt || 0)) next[id] = { ...next[id], lastMessageAt: mine.lastMessageAt };
+  }
+  convIndex = next;
 }
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes[ConvCore.INDEX_KEY]) return;
+  adoptIndex(changes[ConvCore.INDEX_KEY].newValue);
+  renderConvTabs();
+});
 
-// Load per-window history + saved session ids and replay the scrollback. Runs BEFORE the room is
-// built so each conn seeds its acpSessionId (→ session/resume restores the same conversation) and
-// the restored messages sit above the reconnect notices.
-async function loadHistory() {
+// Load this window's conversations (§3.2, §3.6, §3.7). Runs BEFORE the room is built so each conn
+// seeds the sessions from conv:<id> (→ session/resume restores the same conversation) and the
+// restored messages sit above the reconnect notices.
+async function loadConversations() {
   const win = await currentWindow();
   panelWindowId = win.id;
-  historyKey = `${HISTORY_PREFIX}${win.id}`;
-  await adoptOrPruneOrphanHistory(historyKey);
-  const got = await chrome.storage.local.get(historyKey);
-  const data = (got && got[historyKey]) || {};
-  savedSessions = data.sessions || {};
-  conversationId = data.conversationId || newConversationId();
-  const msgs = Array.isArray(data.messages) ? data.messages : [];
-  if (msgs.length) {
-    restoring = true;
-    historyMessages.push(...msgs);                       // first, so replayed "↩ time" markers resolve
-    msgs.forEach(replayMessage);
-    restoring = false;
+  // §3.2: AWAIT the migration (never ifAvailable), so a panel never builds from a half-migrated state.
+  try { await convStore.migrate(); } catch (e) { console.warn("katashiro: conversation migration failed (retried on the next load):", e); }
+  const wid = String(win.id);
+  const out = await withWindowsLock(async () => {
+    const [windows, index, live] = await Promise.all([convStore.readWindows(), convStore.readIndex(), liveWindowIds()]);
+    const own = windows[wid];
+    // §3.7: a window with no record adopts the most recently used orphan record (browser restart);
+    // old orphan records are pruned and their conversations archived.
+    const plan = ConvCore.planAdoption({ ownWindowId: wid, windows, liveIds: live, index, now: Date.now() });
+    const wanted = own
+      ? { open: (Array.isArray(own.open) ? own.open : []).filter(ConvCore.isConvId), current: own.current }
+      : { open: plan.take, current: plan.current };
+    // §3.6: drop every id whose lock another window took while this panel was closed.
+    const open = [];
+    const elsewhere = [];
+    for (const id of wanted.open) ((await holdConvLock(id)) ? open : elsewhere).push(id);
+    let current = open.includes(wanted.current) ? wanted.current : (open[0] || null);
+    let full = false;
+    if (!open.length) {
+      windows[wid] = { open: [] };
+      // Nothing to open: a new conversation — unless 3 are open elsewhere (§3.3: the picker).
+      if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) full = true;
+      else {
+        const id = newConversationId();
+        if (await holdConvLock(id)) {
+          await convStore.updateIndex((idx) => { idx[id] = freshIndexEntry(); return idx; });
+          open.push(id);
+          current = id;
+        }
+      }
+    }
+    if (plan.archive.length) await convStore.archiveIds(plan.archive);
+    const drop = [...plan.prune, ...(plan.adopt !== null && !own ? [plan.adopt] : [])].map(ConvCore.windowKey);
+    if (drop.length) await chrome.storage.local.remove(drop);
+    windowRec = { open, current };
+    await writeWindowRec();
+    return { elsewhere, full };
+  });
+  convIndex = await convStore.readIndex();
+  const got = windowRec.open.length ? await chrome.storage.local.get(windowRec.open.map(ConvCore.convKey)) : {};
+  for (const id of windowRec.open) convs.set(id, makeConv(id, got[ConvCore.convKey(id)]));
+  if (windowRec.current) showConversation(windowRec.current);
+  else showLobby();
+  renderConvTabs();
+  for (const id of out.elsewhere) noticeOpenElsewhere(id);
+  if (out.full) showArchivePicker(() => newConversation());
+}
+
+// --- showing / switching ----------------------------------------------------------------------
+// One DOM list per open conversation (§3.5), inside #messages-list (the scroll container): built
+// from conv:<id> the first time it is shown, then kept, hidden while not current — so memory-only
+// cards, reply buttons and scroll position survive a switch. The lobby holds notices while the
+// panel has no conversation (3 open in other windows).
+const lobbyList = document.createElement("div");
+lobbyList.className = "conv-messages conv-lobby";
+messagesList.appendChild(lobbyList);
+let chatList = lobbyList;                 // where rows are appended: the current conversation's list
+
+function hideCurrentList() {
+  if (currentConv && currentConv.listEl) {
+    currentConv.scrollTop = messagesList.scrollTop;
+    currentConv.stick = stickToBottom;
+    currentConv.listEl.hidden = true;
   }
+}
+
+function afterShow() {
+  if (jumpLatestBtn) jumpLatestBtn.hidden = true;
+  refreshAskVisibility();                                // a card in a hidden conversation does not count down
+  updateRoster();
+  updateStopButton();
+  renderConvTabs();
+}
+
+function showConversation(id) {
+  const conv = convs.get(id);
+  if (!conv) return;
+  if (currentConv !== conv) hideCurrentList();
+  lobbyList.hidden = true;
+  currentConv = conv;
+  conversationId = id;
+  historyMessages = conv.messages;
+  if (windowRec.current !== id) {
+    windowRec = { ...windowRec, current: id };
+    writeWindowRec();
+  }
+  if (!conv.listEl) {
+    conv.listEl = document.createElement("div");
+    conv.listEl.className = "conv-messages";
+    messagesList.appendChild(conv.listEl);
+    chatList = conv.listEl;
+    if (conv.messages.length) {
+      restoring = true;                                  // the records are already in conv.messages,
+      try { conv.messages.slice().forEach(replayMessage); } finally { restoring = false; }   // so "↩ time" markers resolve
+    }
+    conv.stick = true;
+  } else {
+    chatList = conv.listEl;
+    chatList.hidden = false;
+  }
+  stickToBottom = conv.stick !== false;
+  if (stickToBottom) scrollToBottom(); else messagesList.scrollTop = conv.scrollTop;
+  // A reply chip quotes a message of the conversation it was set in.
+  if (replyTarget && !String(replyTarget.id || "").startsWith(`${id}:`)) setReplyTarget(null);
+  afterShow();
+}
+
+function showLobby() {
+  hideCurrentList();
+  currentConv = null;
+  conversationId = null;
+  historyMessages = [];
+  chatList = lobbyList;
+  lobbyList.hidden = false;
+  setReplyTarget(null);
+  afterShow();
+}
+
+// The active agent resumes (or creates) the current conversation's session if it has not been on
+// this socket yet; otherwise its queue is flushed (§3.5 steps).
+function activateSessions() {
+  room.forEach((c) => {
+    if (c.enabled && c.agent.url === activeAgentUrl && c.cur) c.openSession(c.cur);
+  });
+}
+
+// §3.5: may conversation `id` be left (switch, ＋, × on it)? → the refusal text, or null.
+function convSwitchBlock(id = conversationId) {
+  if (!id) return null;
+  return ConvCore.switchBlocked(room.map((c) => {
+    const st = c.states.get(id);
+    return st && { turnActive: st.turnActive, queued: st.promptQueue.length, online: !!(c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized) };
+  }));
+}
+
+function switchConversation(id) {
+  if (id === conversationId || !convs.has(id)) return true;
+  const blocked = convSwitchBlock();
+  if (blocked) { appendSystemMessage(blocked); return false; }
+  if (currentConv) writeIndexTime(currentConv);          // §3.2: always on switch
+  showConversation(id);
+  activateSessions();
+  return true;
+}
+
+// ＋ (§3.3): a new, empty conversation, switched to. With 3 open in any window, first the picker.
+async function newConversation() {
+  const blocked = convSwitchBlock();
+  if (blocked) { appendSystemMessage(blocked); return false; }
+  const r = await withWindowsLock(async () => {
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    windows[String(panelWindowId)] = windowRec;
+    if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) return { full: true };
+    const id = newConversationId();
+    if (!(await holdConvLock(id))) return {};
+    const entry = freshIndexEntry();
+    await convStore.updateIndex((idx) => { idx[id] = entry; return idx; });
+    windowRec = ConvCore.withOpened(windowRec, id);
+    await writeWindowRec();
+    return { id, entry };
+  });
+  if (r.full) { showArchivePicker(() => newConversation()); return false; }
+  if (!r.id) return false;
+  if (currentConv) writeIndexTime(currentConv);
+  convIndex[r.id] = r.entry;
+  convs.set(r.id, makeConv(r.id, null));
+  showConversation(r.id);
+  activateSessions();
+  return true;
+}
+
+// × (§3.4): archive — Katashiro-side only (there is no session/close): archivedAt set, out of the
+// window's open list, Web Lock released, in-memory state, MCP server and its tunnels dropped, its
+// ask cards closed as `archived`. Messages, sessions, canvases and their tabs stay. An empty
+// conversation (no messages, no canvases) is deleted instead. Closing the last tab leaves a new one.
+async function archiveConversation(id) {
+  const conv = convs.get(id);
+  if (!conv) return { ok: false, error: "這段對話沒有開在這個側邊欄" };
+  const blocked = convSwitchBlock(id);
+  if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
+  const wasCurrent = id === conversationId;
+  await saveConv(conv);
+  conv.indexTimeAt = 0;
+  await writeIndexTime(conv);                            // §3.2: always on archive
+  settlePendingAsks("archive", { convId: id });
+  cancelPendingConfirms(id);                             // none in practice: a confirm lives in a running turn
+  room.forEach((c) => c.dropState(id));
+  await withWindowsLock(async () => {
+    windowRec = ConvCore.withClosed(windowRec, id);
+    await convStore.archiveIds([id]);
+    await writeWindowRec();
+  });
+  releaseConvLock(id);
+  convs.delete(id);
+  if (conv.listEl) conv.listEl.remove();
+  if (wasCurrent) {
+    currentConv = null;
+    conversationId = null;
+    if (windowRec.current && convs.has(windowRec.current)) { showConversation(windowRec.current); activateSessions(); }
+    else await newConversation();
+  }
+  renderConvTabs();
+  return { ok: true };
+}
+
+// Reopen (§3.4, from the gallery's 對話 section): take the lock, move it out of a closed window's
+// record if it is in one, clear archivedAt, add it to this window and switch to it.
+async function reopenConversation(id) {
+  if (convs.has(id)) { switchConversation(id); return { ok: true }; }
+  const blocked = convSwitchBlock();
+  if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
+  const r = await withWindowsLock(async () => {
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    const wid = String(panelWindowId);
+    windows[wid] = windowRec;
+    const holder = ConvCore.windowHolding(windows, live, id);
+    if (holder !== null && holder !== wid && live.has(holder)) return { elsewhere: true };
+    if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) return { full: true };
+    if (!(await holdConvLock(id))) return { elsewhere: true };
+    const writes = {};
+    for (const [w, rec] of Object.entries(windows)) {
+      if (w === wid || !Array.isArray(rec && rec.open) || !rec.open.includes(id)) continue;
+      writes[ConvCore.windowKey(w)] = { ...ConvCore.withClosed(rec, id), savedAt: rec.savedAt || 0 };
+    }
+    if (Object.keys(writes).length) await chrome.storage.local.set(writes);
+    await convStore.updateIndex((idx) => { idx[id] = { ...(idx[id] || freshIndexEntry()), archivedAt: null }; return idx; });
+    windowRec = ConvCore.withOpened(windowRec, id);
+    await writeWindowRec();
+    return { ok: true };
+  });
+  if (r.full) {
+    showArchivePicker(() => reopenConversation(id));
+    return { ok: false, error: "已經開了 3 段對話：在側邊欄選一段封存後就會打開" };
+  }
+  if (r.elsewhere) { noticeOpenElsewhere(id); return { ok: false, error: ConvCore.OPEN_ELSEWHERE_TEXT }; }
+  const got = await chrome.storage.local.get([ConvCore.convKey(id), ConvCore.INDEX_KEY]);
+  if (got[ConvCore.INDEX_KEY]) adoptIndex(got[ConvCore.INDEX_KEY]);
+  if (currentConv) writeIndexTime(currentConv);
+  convs.set(id, makeConv(id, got[ConvCore.convKey(id)]));
+  showConversation(id);
+  activateSessions();
+  return { ok: true };
+}
+
+// A conversation open in another window: focus the window that has it (§3.6).
+async function focusConversationWindow(id) {
+  try {
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    const w = ConvCore.windowHolding(windows, live, id);
+    if (w !== null && live.has(w) && /^\d+$/.test(w)) await chrome.windows.update(Number(w), { focused: true });
+  } catch (_) { /* the window closed meanwhile */ }
+}
+
+function noticeOpenElsewhere(id) {
+  appendSystemActions(`${ConvCore.OPEN_ELSEWHERE_TEXT}：「${ConvCore.displayTitle(convIndex[id], id)}」`, [
+    { label: "前往那個視窗", onClick: () => focusConversationWindow(id) },
+  ]);
+}
+
+// Archive a conversation wherever it is open: here; in another window's panel (it holds the lock,
+// so ask it); or, with no panel showing it (lock free), straight in the records.
+async function archiveAnywhere(id) {
+  if (convs.has(id)) return archiveConversation(id);
+  if (await holdConvLock(id)) {
+    try {
+      await withWindowsLock(async () => {
+        const windows = await convStore.readWindows();
+        const writes = {};
+        for (const [w, rec] of Object.entries(windows)) {
+          if (Array.isArray(rec && rec.open) && rec.open.includes(id)) writes[ConvCore.windowKey(w)] = { ...ConvCore.withClosed(rec, id), savedAt: rec.savedAt || 0 };
+        }
+        if (Object.keys(writes).length) await chrome.storage.local.set(writes);
+        await convStore.archiveIds([id]);
+      });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e && e.message) || String(e) };
+    } finally {
+      releaseConvLock(id);
+    }
+  }
+  let timer;
+  const timeout = new Promise((res) => { timer = setTimeout(() => res(null), 5000); });
+  let r;
+  try { r = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-conv-archive", id }), timeout]); }
+  catch (_) { r = null; }
+  clearTimeout(timer);
+  return r || { ok: false, error: "另一個視窗的側邊欄沒有回應" };
+}
+
+// The picker (§3.4): with 3 open (in any window), which one to archive first. A system card, not
+// agent-styled; a conversation that is replying here cannot be picked (one replying in another
+// window refuses there). 取消 reopens nothing.
+let pickerCard = null;
+async function showArchivePicker(then) {
+  if (pickerCard) { pickerCard.scrollIntoView({ block: "nearest" }); return; }
+  let ids = [];
+  try {
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    windows[String(panelWindowId)] = windowRec;
+    ids = [...ConvCore.liveOpenIds(windows, live)];
+  } catch (_) { /* nothing to list */ }
+  const row = document.createElement("div");
+  row.className = "message system";
+  const card = document.createElement("div");
+  card.className = "conv-picker";
+  card.setAttribute("role", "group");
+  const head = document.createElement("div");
+  head.className = "conv-picker-head";
+  head.textContent = `已經開了 ${ConvCore.MAX_OPEN} 段對話（所有視窗合計）。要封存哪一段？`;
+  const hint = document.createElement("div");
+  hint.className = "conv-picker-hint";
+  hint.textContent = "封存的對話可以從 🗂️ 總覽重新打開。";
+  const list = document.createElement("div");
+  list.className = "conv-picker-list";
+  const status = document.createElement("div");
+  status.className = "conv-picker-status";
+  status.hidden = true;
+  const close = () => { row.remove(); pickerCard = null; };
+  const buttons = [];
+  for (const id of ids) {
+    const mine = convs.has(id);
+    const busy = mine && !!convSwitchBlock(id);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "conv-picker-option";
+    b.textContent = `${ConvCore.displayTitle(convIndex[id], id)}${mine ? "" : "（另一個視窗）"}${busy ? "（回覆中）" : ""}`;
+    b.disabled = busy;
+    b.addEventListener("click", async () => {
+      buttons.forEach((x) => { x.disabled = true; });
+      const r = await archiveAnywhere(id);
+      if (r && r.ok) { close(); then(); return; }
+      status.textContent = `沒有封存：${(r && r.error) || "未知錯誤"}`;
+      status.hidden = false;
+      buttons.forEach((x) => { x.disabled = x.dataset.busy === "1"; });
+    });
+    b.dataset.busy = busy ? "1" : "";
+    buttons.push(b);
+    list.appendChild(b);
+  }
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "conv-picker-cancel";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", () => {
+    close();
+    if (!currentConv) noticeAllOpenElsewhere(ids);
+  });
+  buttons.push(cancel);
+  card.append(head, hint, list, status, cancel);
+  row.appendChild(card);
+  chatList.appendChild(row);
+  pickerCard = row;
+  maybeScroll();
+}
+
+// The panel has no conversation and the user cancelled the picker: say where the 3 are.
+function noticeAllOpenElsewhere(ids) {
+  appendSystemActions(`已經有 ${ConvCore.MAX_OPEN} 段對話開在其他視窗。`, [
+    ...ids.map((id) => ({ label: `前往「${ConvCore.displayTitle(convIndex[id], id)}」`, onClick: () => focusConversationWindow(id) })),
+    { label: "封存一段，開新對話", onClick: () => showArchivePicker(() => newConversation()) },
+  ]);
+}
+
+// A sender that is one of Katashiro's own pages (`path`, e.g. "/canvas-gallery.html").
+function fromOwnPage(sender, path) {
+  try {
+    const u = new URL(sender && sender.url);
+    return sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === path;
+  } catch (_) { return false; }
+}
+
+// Another window's picker archives a conversation open in THIS panel.
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-conv-archive") return false;
+  if (!fromOwnPage(sender, "/sidepanel.html") || !convs.has(msg.id)) return false;
+  archiveConversation(msg.id).then(sendResponse, (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+  return true;
+});
+
+// 重新打開 in the gallery (§3.4): accepted only from canvas-gallery.html, answered by the panel of
+// the gallery's window. A gallery that found no panel opened one and left the request in
+// storage.session; the panel picks it up on load (pickUpReopenRequest). reqId dedupes the two.
+const handledReopens = new Set();
+async function handleReopen(id, reqId) {
+  if (reqId) {
+    if (handledReopens.has(reqId)) return { ok: true };
+    handledReopens.add(reqId);
+    const k = `${ConvCore.REOPEN_KEY_PREFIX}${panelWindowId}`;
+    try {
+      const got = await chrome.storage.session.get(k);
+      if (got[k] && got[k].reqId === reqId) await chrome.storage.session.remove(k);
+    } catch (_) { /* no storage.session */ }
+  }
+  return reopenConversation(id);
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-conv-open") return false;
+  if (!fromOwnPage(sender, "/canvas-gallery.html") || !ConvCore.isConvId(msg.id)) {
+    sendResponse({ ok: false, error: "not from the Katashiro gallery" });
+    return false;
+  }
+  if (panelWindowId == null || String(msg.windowId) !== String(panelWindowId)) return false;
+  panelReady
+    .then(() => handleReopen(msg.id, typeof msg.reqId === "string" ? msg.reqId : null))
+    .then(sendResponse, (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
+  return true;
+});
+async function pickUpReopenRequest() {
+  const k = `${ConvCore.REOPEN_KEY_PREFIX}${panelWindowId}`;
+  let r = null;
+  try { r = (await chrome.storage.session.get(k))[k]; } catch (_) { return; }
+  if (!r) return;
+  try { await chrome.storage.session.remove(k); } catch (_) { /* best effort */ }
+  if (ConvCore.isConvId(r.id) && Date.now() - Number(r.at || 0) < 60 * 1000) handleReopen(r.id, r.reqId || null);
+}
+
+// §3.2: lastMessageAt always on panel hide.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") for (const conv of convs.values()) writeIndexTime(conv);
+});
+
+// --- tab strip (§3.3) ---------------------------------------------------------------------------
+const convTabsEl = document.getElementById("conv-tabs");
+let convRenaming = null;                  // the id whose name is being edited (no re-render meanwhile)
+
+function renderConvTabs() {
+  if (!convTabsEl || convRenaming) return;
+  const now = Date.now();
+  const tabs = windowRec.open.filter((id) => convs.has(id)).map((id) => {
+    const e = convIndex[id];
+    const title = ConvCore.displayTitle(e, id);
+    const busy = !!convSwitchBlock(id);
+    const tab = document.createElement("div");
+    tab.className = `conv-tab${id === conversationId ? " current" : ""}${busy ? " busy" : ""}`;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", id === conversationId ? "true" : "false");
+    tab.tabIndex = 0;
+    tab.title = `${title}\n（雙擊改名）`;
+    const name = document.createElement("span");
+    name.className = "conv-tab-title";
+    name.textContent = title;                             // textContent: a title is user/agent text
+    const time = document.createElement("span");
+    time.className = "conv-tab-time";
+    time.textContent = ConvCore.tabTime(e && e.lastMessageAt, now);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "conv-tab-close";
+    x.textContent = "×";
+    x.title = busy ? "回覆中不能封存" : "封存這段對話（可從 🗂️ 總覽重新打開）";
+    x.addEventListener("click", (ev) => { ev.stopPropagation(); archiveConversation(id); });
+    tab.append(name, time, x);
+    tab.addEventListener("click", () => switchConversation(id));
+    tab.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); switchConversation(id); } });
+    tab.addEventListener("dblclick", (ev) => { ev.preventDefault(); startRename(tab, name, id); });
+    return tab;
+  });
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "conv-tab-new";
+  plus.textContent = "＋";
+  plus.title = `新對話（所有視窗合計最多 ${ConvCore.MAX_OPEN} 段）`;
+  plus.addEventListener("click", () => newConversation());
+  convTabsEl.replaceChildren(...tabs, plus);
+}
+setInterval(() => renderConvTabs(), 60 * 1000);          // "today" vs M/D
+
+// Double-click a tab to rename it (titleSource "user"); an empty name returns to the auto title.
+function startRename(tab, nameEl, id) {
+  const conv = convs.get(id);
+  if (!conv) return;
+  convRenaming = id;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "conv-tab-rename";
+  input.maxLength = ConvCore.USER_TITLE_MAX * 2;
+  input.value = (convIndex[id] && convIndex[id].title) || "";
+  input.placeholder = ConvCore.displayTitle(null, id);
+  input.setAttribute("aria-label", "對話名稱");
+  let done = false;
+  const finish = (save) => {
+    if (done) return;
+    done = true;
+    convRenaming = null;
+    if (save) {
+      const next = ConvCore.renamedEntry(convIndex[id] || freshIndexEntry(), input.value, conv.messages);
+      convIndex[id] = next;
+      patchIndex(id, () => ({ title: next.title, titleSource: next.titleSource }));
+      updateCanvasGroupTitle(id);
+    }
+    renderConvTabs();
+  };
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+    ev.stopPropagation();
+  });
+  input.addEventListener("blur", () => finish(true));
+  input.addEventListener("click", (ev) => ev.stopPropagation());
+  input.addEventListener("dblclick", (ev) => ev.stopPropagation());
+  nameEl.replaceWith(input);
+  input.focus();
+  input.select();
 }
 
 // --- Roster (per-agent online + browser status) ------------------------------
@@ -1502,19 +2227,21 @@ settingsView.addEventListener("click", (e) => {
   if (e.target === settingsView) switchView("chat");
 });
 
-// Clear the on-screen scrollback + this window's persisted mirror (storage.local). The agents'
+// Clear the current conversation's scrollback + its persisted copy (conv:<id>), and nothing else
+// (§3.3: other conversations, and its title, stay). The agents'
 // resumable ACP sessions are deliberately KEPT — this wipes the local transcript without making the
 // agents forget, so `session/resume` still restores their side of the conversation on reconnect,
 // just not the cleared bubbles. Guarded by a confirm since the stored copy (storage.local) is the
 // only one.
 function clearChat() {
-  if (!confirm("清除聊天畫面？agent 端的對話記憶會保留，只清掉這個視窗顯示的訊息。")) return;
-  cancelPendingConfirms();       // a confirm card leaving the screen is a "no" (#80)
-  cancelPendingAsks();           // …and an ask card closes unanswered, telling the agent nothing
-  messagesList.replaceChildren();
+  if (!currentConv) return;
+  if (!confirm("清除這段對話的聊天畫面？agent 端的對話記憶會保留，只清掉這段對話顯示的訊息。")) return;
+  cancelPendingConfirms(conversationId);   // a confirm card leaving the screen is a "no" (#80)
+  cancelPendingAsks(conversationId);       // …and an ask card closes unanswered, telling the agent nothing
+  chatList.replaceChildren();
   historyMessages.length = 0;
-  shownImageChars = 0;           // the shown images left the DOM with the messages
-  saveHistory();                 // persist the now-empty scrollback (session ids untouched)
+  shownImageChars = 0;           // the shown images left the DOM with the messages (an estimate across conversations)
+  saveConv();                    // persist the now-empty scrollback (session ids untouched)
   if (jumpLatestBtn) jumpLatestBtn.hidden = true;
   appendSystemMessage("已清除聊天畫面（agent 端記憶仍保留）。");
 }
@@ -1558,7 +2285,7 @@ function renderScreenshotConfig() {
     });
     renderScreenshotConfig();
     // A lower storeMax trims what each agent already holds now, not at its next capture.
-    room.forEach((c) => { if (c.mcpServer) c.mcpServer.setImageStoreMax(screenshotConfig.storeMax); });
+    room.forEach((c) => { for (const st of c.states.values()) if (st.mcpServer) st.mcpServer.setImageStoreMax(screenshotConfig.storeMax); });
     persist();
   });
 });
@@ -2168,6 +2895,7 @@ messagesList.addEventListener("click", (e) => {
 // [time user (↩ quoted)] header (RoomCore.framePrompt; the gateway adds its own sender_context on
 // top); agent→agent relay stays <message from>-wrapped. @mention routing reads the raw text.
 function sendMessage() {
+  if (!currentConv) { appendSystemMessage("目前沒有開著的對話：先封存一段，或從 🗂️ 總覽重新打開。"); return; }
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
   const files = stagedFiles.slice();
@@ -2197,9 +2925,11 @@ function sendMessage() {
 function postUserText(text, images, replyTo, mentions, files) {
   images = images || [];
   files = files || [];
-  // Q4 (ADR ask-user §2.3): a message instead of answering closes every open ask card; nothing is
-  // sent for them, this message goes out as usual.
-  supersedePendingAsks();
+  if (!currentConv) return [];
+  // Q4 (ADR ask-user §2.3): a message instead of answering closes the open ask cards OF THIS
+  // CONVERSATION (multi-conversation §3.8); nothing is sent for them, this message goes out as usual.
+  supersedePendingAsks(conversationId);
+  maybeAutoTitle(currentConv, text);                     // §3.3: the first user message names it
   // Unique per ms in this panel: the header's milliseconds name exactly this message (#62 follow-up).
   const sentAt = uniqueMsgMs(Date.now());
   appendMessage({
@@ -2226,9 +2956,11 @@ function postUserText(text, images, replyTo, mentions, files) {
 }
 
 // §3.7: a canvas tab asks this panel to post as the user (Send to agent / Send error). Only from
-// Katashiro's own canvas.html (never a content script in a web page), only for THIS window's
-// conversation (every open panel hears the broadcast), only while an agent is connected, capped,
-// and deduped by request id against double clicks.
+// Katashiro's own canvas.html (never a content script in a web page), only for a conversation open
+// in THIS panel (every open panel hears the broadcast), only while an agent is connected, capped,
+// and deduped by request id against double clicks. Multi-conversation §3.10: an open but not
+// current conversation is switched to first (refused while the current one is replying); one open
+// nowhere (archived, or left in a closed window) is refused by the panel of the canvas tab's window.
 const seenPushIds = new Set();
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "katashiro-canvas-push") return false;
@@ -2242,14 +2974,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: false, error: "not from a Katashiro canvas" });
     return false;
   }
-  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  const cid = msg.conversationId;
+  if (!convs.has(cid)) {
+    if (!ConvCore.isConvId(cid) || !sender.tab || sender.tab.windowId !== panelWindowId) return false;
+    // Held by another panel → that one answers; free → nobody has it open: say it is archived.
+    navigator.locks.query().then((st) => {
+      if ((st.held || []).some((l) => l.name === `conv:${cid}`)) return;
+      sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT });
+    }, () => sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT }));
+    return true;
+  }
   if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.PUSH_TEXT_MAX || typeof msg.note !== "string") {
     sendResponse({ ok: false, error: "nothing to send, or too long" });
     return false;
   }
   if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
   const active = connById(activeAgentUrl);
-  if (!active || !active.acpReady) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
+  if (!active || !active.initialized) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
+  if (cid !== conversationId) {
+    const blocked = convSwitchBlock();
+    if (blocked) { sendResponse({ ok: false, error: blocked }); return false; }
+    switchConversation(cid);
+  }
   seenPushIds.add(msg.reqId);
   // @mentions come from the user's note only, never from the diff / error text inside the fence.
   const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
@@ -2660,10 +3406,11 @@ async function findCanvasTab(id) {
   return CanvasTabs.pickCanvasTab(await chrome.tabs.query({}), chrome.runtime.getURL("canvas.html"), id);
 }
 
-// Canvas gallery (§3.7): a row click asks the panel of that canvas's conversation to open it, so it
-// goes through openCanvasTab (focus the most recently used tab, or open it in this conversation's
-// canvas group). Only from Katashiro's own canvas-gallery.html; another conversation's canvas is
-// left to that conversation's panel (the gallery opens it itself when no panel answers).
+// Canvas gallery (§3.7): a row click asks the panel that has that canvas's conversation OPEN
+// (current or not, multi-conversation §3.10) to open it, so it goes through openCanvasTab (focus the
+// most recently used tab, or open it in that conversation's canvas group) without switching. Only
+// from Katashiro's own canvas-gallery.html; a conversation open nowhere is left to the gallery,
+// which opens the tab itself, ungrouped, when no panel answers.
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "katashiro-canvas-open") return false;
   let fromGallery = false;
@@ -2672,12 +3419,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     fromGallery = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas-gallery.html";
   } catch (_) { /* no or bad url */ }
   if (!fromGallery || !CanvasStore.ID_RE.test(String(msg.id))) { sendResponse({ ok: false, error: "not from the Katashiro canvas gallery" }); return false; }
-  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
+  if (!convs.has(msg.conversationId)) return false;                  // another window's panel answers
   // Answer once the tab exists, not after grouping: the group queue has no timeout, and a stalled
   // queue must not make the gallery report a failed open for a tab that is already there.
   let answered = false;
   const answer = (r) => { if (!answered) { answered = true; sendResponse(r); } };
-  openCanvasTab(msg.id, { active: true, onTab: () => answer({ ok: true }) })
+  openCanvasTab(msg.id, { active: true, conv: msg.conversationId, onTab: () => answer({ ok: true }) })
     .then(() => answer({ ok: true }), (e) => answer({ ok: false, error: (e && e.message) || String(e) }));
   return true;
 });
@@ -2690,9 +3437,10 @@ if (canvasGalleryBtn) {
 }
 
 // Focus the canvas's tab, or open it (in the panel's window, after the active tab) and put it in
-// the conversation's canvas group (§3.1). A tab found by URL stays wherever the user left it.
-// `onTab` is called as soon as the tab is created, before the (cosmetic) grouping.
-async function openCanvasTab(id, { active = true, onTab } = {}) {
+// its conversation's canvas group (§3.1; `conv`, the current one by default). A tab found by URL
+// stays wherever the user left it. `onTab` is called as soon as the tab is created, before the
+// (cosmetic) grouping.
+async function openCanvasTab(id, { active = true, onTab, conv = conversationId } = {}) {
   const existing = await findCanvasTab(id);
   if (existing) {
     if (active) {
@@ -2708,7 +3456,7 @@ async function openCanvasTab(id, { active = true, onTab } = {}) {
   // Grouping is cosmetic: a failure (old Chrome, no tabGroups, the tab already closed) never fails
   // the open. Re-read so callers see the tab's group.
   try {
-    await canvasTabQueue(() => addToCanvasGroup(tab));
+    await canvasTabQueue(() => addToCanvasGroup(tab, conv), conv);
     return (await chrome.tabs.get(tab.id)) || tab;
   } catch (_) {
     return tab;
@@ -2716,43 +3464,52 @@ async function openCanvasTab(id, { active = true, onTab } = {}) {
 }
 
 // --- canvas tab group + Split View (§3.1; decisions in canvas-tabs.js) -----------------------
-// One queue for every group / split move, so two quick canvas_open calls create one group, not
-// two (§3.1 "one queue per conversation" — a panel holds one conversation). A queued fn must not
-// call openCanvasTab or canvasTabQueue: it would wait on itself. No timeout — a Chrome call that
-// never settles stalls later group moves (accepted for phase 1).
-let canvasTabChain = Promise.resolve();
-function canvasTabQueue(fn) {
-  const run = canvasTabChain.then(fn, fn);
-  canvasTabChain = run.catch(() => {});
+// One queue per conversation for its group / split moves (§3.1 "one queue per conversation";
+// multi-conversation §3.10), so two quick canvas_open calls create one group, not two. A queued fn
+// must not call openCanvasTab or canvasTabQueue for the same conversation: it would wait on itself.
+// No timeout — a Chrome call that never settles stalls later group moves (accepted for phase 1).
+const canvasTabChains = new Map();                       // conversationId → chain
+function canvasTabQueue(fn, conv = conversationId) {
+  const run = (canvasTabChains.get(conv) || Promise.resolve()).then(fn, fn);
+  canvasTabChains.set(conv, run.catch(() => {}));
   return run;
 }
 
 const canGroupTabs = () => !!(chrome.tabGroups && typeof chrome.tabGroups.update === "function" && typeof chrome.tabs.group === "function");
 const canSplitTabs = () => typeof chrome.tabs.createSplit === "function";
 
-// The conversation's group id: in memory, mirrored to storage.session (survives a panel reload,
-// not a browser restart — group ids do not either). Always verified before reuse.
+// A conversation's group id (taken explicitly, §3.10): in memory, mirrored to storage.session
+// (survives a panel reload, not a browser restart — group ids do not either). Always verified before reuse.
 const canvasGroupIds = new Map();                       // conversationId → groupId
 const canvasGroupKey = (conv) => `katashiro.canvasGroup.${conv}`;
-async function storedCanvasGroupId() {
-  if (canvasGroupIds.has(conversationId)) return canvasGroupIds.get(conversationId);
+async function storedCanvasGroupId(conv) {
+  if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);
   try {
-    const k = canvasGroupKey(conversationId);
+    const k = canvasGroupKey(conv);
     const got = await chrome.storage.session.get(k);
-    if (Number.isInteger(got[k])) canvasGroupIds.set(conversationId, got[k]);
+    if (Number.isInteger(got[k])) canvasGroupIds.set(conv, got[k]);
   } catch (_) { /* no storage.session: memory only */ }
-  return canvasGroupIds.has(conversationId) ? canvasGroupIds.get(conversationId) : null;
+  return canvasGroupIds.has(conv) ? canvasGroupIds.get(conv) : null;
 }
-async function rememberCanvasGroupId(groupId) {
-  canvasGroupIds.set(conversationId, groupId);
-  try { await chrome.storage.session.set({ [canvasGroupKey(conversationId)]: groupId }); } catch (_) { /* memory only */ }
+async function rememberCanvasGroupId(conv, groupId) {
+  canvasGroupIds.set(conv, groupId);
+  try { await chrome.storage.session.set({ [canvasGroupKey(conv)]: groupId }); } catch (_) { /* memory only */ }
+}
+// The group is named after its conversation (§3.3, replacing "Canvas").
+const canvasGroupTitle = (conv) => ConvCore.displayTitle(convIndex[conv], conv);
+async function updateCanvasGroupTitle(conv) {
+  if (!canGroupTabs()) return;
+  const gid = await storedCanvasGroupId(conv);
+  if (gid == null) return;
+  try { await chrome.tabGroups.update(gid, { title: canvasGroupTitle(conv) }); } catch (_) { /* gone, or cosmetic */ }
 }
 
-// Put a tab in the canvas group of its window: reuse the stored group if it still exists there,
-// else create one (title "Canvas", fixed color). Returns the group id, or null without tabGroups.
-async function addToCanvasGroup(tab) {
+// Put a tab in its conversation's canvas group in the tab's window: reuse the stored group if it
+// still exists there, else create one (titled after the conversation, fixed color). Returns the
+// group id, or null without tabGroups.
+async function addToCanvasGroup(tab, conv = conversationId) {
   if (!canGroupTabs()) return null;
-  const stored = await storedCanvasGroupId();
+  const stored = await storedCanvasGroupId(conv);
   let groups = [];
   if (stored != null) { try { groups = [await chrome.tabGroups.get(stored)]; } catch (_) { /* gone */ } }
   const plan = CanvasTabs.planCanvasGroup({ storedGroupId: stored, groups, windowId: tab.windowId });
@@ -2761,13 +3518,13 @@ async function addToCanvasGroup(tab) {
     return plan.groupId;
   }
   const groupId = await chrome.tabs.group({ tabIds: [tab.id], createProperties: { windowId: tab.windowId } });
-  await rememberCanvasGroupId(groupId);
-  try { await chrome.tabGroups.update(groupId, { title: CanvasTabs.GROUP_TITLE, color: CanvasTabs.GROUP_COLOR }); } catch (_) { /* cosmetic */ }
+  await rememberCanvasGroupId(conv, groupId);
+  try { await chrome.tabGroups.update(groupId, { title: canvasGroupTitle(conv) || CanvasTabs.GROUP_TITLE, color: CanvasTabs.GROUP_COLOR }); } catch (_) { /* cosmetic */ }
   return groupId;
 }
 
 // Canvas tabs moved out of their group for a split: canvasTabId → { movedToGroupId, windowId,
-// returnGroupId, canvasGroup, pageTabId }. In memory only: a panel reload forgets them, and those
+// returnGroupId, canvasGroup, pageTabId, conv }. In memory only: a panel reload forgets them, and those
 // tabs simply stay in the page's group (acceptable, §3.1).
 const canvasSplitMoves = new Map();
 
@@ -2789,7 +3546,7 @@ async function restoreCanvasTab(tabId) {
   // attempt cap (Brett, 2026-10-11, #90): retries come only with a canvas_open or a tab event.
   if (plan.action === "group") await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tabId] });
   else if (plan.action === "ungroup") await chrome.tabs.ungroup([tabId]);
-  else if (plan.action === "recreate") await addToCanvasGroup(tab);
+  else if (plan.action === "recreate") await addToCanvasGroup(tab, record.conv || conversationId);
   if (canvasSplitMoves.get(tabId) === record) canvasSplitMoves.delete(tabId);
 }
 
@@ -2805,12 +3562,12 @@ async function sweepCanvasRestores() {
 // covers it if not. A closed page ends its split, so its canvas tab goes back too.
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!canvasSplitMoves.has(tabId) || !("splitViewId" in changeInfo)) return;
-  canvasTabQueue(() => restoreCanvasTab(tabId)).catch(() => {});
+  canvasTabQueue(() => restoreCanvasTab(tabId), canvasSplitMoves.get(tabId).conv).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (canvasSplitMoves.delete(tabId)) return;          // the canvas tab itself closed
   for (const [canvasTabId, r] of canvasSplitMoves) {
-    if (r.pageTabId === tabId) canvasTabQueue(() => restoreCanvasTab(canvasTabId)).catch(() => {});
+    if (r.pageTabId === tabId) canvasTabQueue(() => restoreCanvasTab(canvasTabId), r.conv).catch(() => {});
   }
 });
 
@@ -2828,8 +3585,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       u.searchParams.get("id") === msg.id && !u.searchParams.get("view");
   } catch (_) { /* no or bad url */ }
   if (!fromCanvasTab) { sendResponse({ ok: false, error: "not from a Katashiro canvas tab" }); return false; }
-  if (msg.conversationId !== conversationId) return false;           // another window's panel answers
-  canvasTabQueue(() => compareCanvasTab(sender.tab.id, msg.id))
+  if (!convs.has(msg.conversationId)) return false;                  // another window's panel answers
+  canvasTabQueue(() => compareCanvasTab(sender.tab.id, msg.id), msg.conversationId)
     .then((r) => sendResponse(r), (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
   return true;
 });
@@ -2887,23 +3644,23 @@ async function compareCanvasTab(canvasTabId, id) {
 
 // canvas_open(…, beside: "current"): Split View with the active tab of the panel's window.
 // Returns the note for the tool result — never throws (the canvas is saved either way).
-async function showCanvasBeside(id, created) {
+async function showCanvasBeside(id, created, conv = conversationId) {
   try {
     if (!canSplitTabs()) {
-      await openCanvasTab(id, { active: true });
+      await openCanvasTab(id, { active: true, conv });
       return "Split View is unavailable in this browser (needs Chrome 155+); its tab was brought to the front instead";
     }
-    const canvasTab = await openCanvasTab(id, { active: false });
-    const note = await canvasTabQueue(() => splitCanvasWithActive(canvasTab));
+    const canvasTab = await openCanvasTab(id, { active: false, conv });
+    const note = await canvasTabQueue(() => splitCanvasWithActive(canvasTab, conv), conv);
     if (note.ok) return note.text;
-    await openCanvasTab(id, { active: true });
+    await openCanvasTab(id, { active: true, conv });
     return `${created ? "opened" : "its tab was brought to the front"}, not in Split View: ${note.text}`;
   } catch (e) {
     return `not shown in Split View: ${(e && e.message) || e}`;
   }
 }
 
-async function splitCanvasWithActive(canvasTab) {
+async function splitCanvasWithActive(canvasTab, conv = conversationId) {
   const query = { active: true };
   if (typeof panelWindowId === "number") query.windowId = panelWindowId;
   const [page] = await chrome.tabs.query(query);
@@ -2925,10 +3682,10 @@ async function splitCanvasWithActive(canvasTab) {
     const g = CanvasTabs.groupOf(p);
     if (CanvasTabs.groupOf(c) === g) return;
     if (!record) {
-      const stored = await storedCanvasGroupId();
+      const stored = await storedCanvasGroupId(conv);
       record = {
         windowId: canvasTab.windowId, pageTabId: page.id, returnGroupId: from,
-        canvasGroup: from !== CanvasTabs.TAB_GROUP_NONE && from === stored,
+        canvasGroup: from !== CanvasTabs.TAB_GROUP_NONE && from === stored, conv,
       };
     }
     record.movedToGroupId = CanvasTabs.groupOf(c);      // where Katashiro's moves have left it so far
@@ -2964,7 +3721,7 @@ async function splitCanvasWithActive(canvasTab) {
 }
 
 // The chat card for a canvas write: "📄 <title> · v<N> — 開啟". Title is agent text → textContent.
-function canvasCard({ id, version, title }) {
+function canvasCard({ id, version, title, conv = conversationId }) {
   const card = document.createElement("button");
   card.type = "button";
   card.className = "canvas-card";
@@ -2979,7 +3736,7 @@ function canvasCard({ id, version, title }) {
   meta.textContent = `v${version} — 開啟`;
   card.append(icon, name, meta);
   card.title = "在分頁中開啟這個畫布";
-  card.addEventListener("click", () => { openCanvasTab(id, { active: true }).catch(() => {}); });
+  card.addEventListener("click", () => { openCanvasTab(id, { active: true, conv }).catch(() => {}); });
   return card;
 }
 
@@ -2993,7 +3750,7 @@ function canvasCard({ id, version, title }) {
 // (html:false, and the card sits outside any .bubble), so an agent reply cannot imitate one.
 // General on purpose (title / lines / labels / timeout). ask_user has its own card (below): an
 // agent's question must not look like this one.
-const pendingConfirms = new Set();
+const pendingConfirms = new Map();                       // decision → the conversation it was asked in
 
 /**
  * Ask the user on a card in the chat: in `conn`'s turn while it is in flight, else as its own row.
@@ -3054,9 +3811,11 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
   result.hidden = true;
   card.append(hint, actions, result);
 
-  // Asked in a turn: the card sits in that turn and declines when it ends (finalizeStream).
+  // Asked in a turn: the card sits in that turn and declines when it ends (finalizeStream). Turns
+  // run only in the conversation on screen (MVP), so the card is always on screen (§3.8).
   if (conn && conn.turnActive && (!conn.stream || !conn.stream.bubble)) conn.startStream();
   const turn = conn && conn.turnActive ? conn.stream : null;
+  const askedIn = conversationId;
 
   // The card stays in the chat with the outcome; the buttons go, so a late click cannot act.
   const decision = ConfirmCore.createDecision({
@@ -3071,7 +3830,7 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
       result.hidden = false;
     },
   });
-  pendingConfirms.add(decision);
+  pendingConfirms.set(decision, askedIn);
   if (turn) (turn.confirms || (turn.confirms = new Set())).add(decision);
   allow.addEventListener("click", () => decision.allow());
   deny.addEventListener("click", () => decision.deny());
@@ -3082,15 +3841,16 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
     const row = document.createElement("div");
     row.className = "message system";
     row.appendChild(card);
-    messagesList.appendChild(row);
+    chatList.appendChild(row);
   }
   maybeScroll();
   return decision.outcome;
 }
 
-// Every card still waiting resolves as declined (the chat is being cleared).
-function cancelPendingConfirms() {
-  for (const d of [...pendingConfirms]) d.cancel();
+// Every card still waiting in conversation `convId` resolves as declined (its chat is being
+// cleared, or it is archived); 🧹 cancels only the current conversation's (§3.8).
+function cancelPendingConfirms(convId) {
+  for (const [d, c] of [...pendingConfirms]) if (!convId || c === convId) d.cancel();
 }
 
 // --- ask card (katashiro.ask_user, ADR docs/adr/ask-user.md) -------------------------------------
@@ -3103,10 +3863,10 @@ function cancelPendingConfirms() {
 // counts only visible time (Q1), when the user sends another message (Q4), when the chat is cleared,
 // or when its agent is disconnected. Only an answer sends anything. The answer is data: it
 // authorises nothing (destructive tools still ask on their own 🔒 card). Memory-only, like confirm cards.
-const pendingAsks = new Map();                           // id → { ask, conn, conversationId }
+const pendingAsks = new Map();                           // id → { ask, conn, state, conversationId }
 
-// Hook for multi-conversation (ADR ask-user §2.3, Q1): is this card's conversation the one on screen?
-// Today a panel shows exactly one conversation, so this only guards against a stale id.
+// Multi-conversation §3.8 (ADR ask-user §2.3, Q1): is this card's conversation the one on screen?
+// A switch calls refreshAskVisibility(), so a card in a hidden conversation does not count down.
 function askConversationShown(entry) {
   return entry.conversationId === conversationId;
 }
@@ -3122,14 +3882,16 @@ function refreshAskVisibility() {
 }
 document.addEventListener("visibilitychange", refreshAskVisibility);
 
-function pendingAsksOf(conn) {
+// The 3-pending-card cap is per agent per conversation (ask-user §2.5, multi-conversation §3.8).
+function pendingAsksOf(conn, convId) {
   let n = 0;
-  for (const e of pendingAsks.values()) if (e.conn === conn) n++;
+  for (const e of pendingAsks.values()) if (e.conn === conn && e.conversationId === convId) n++;
   return n;
 }
 
-// Show `spec` (already AskCore.normalizeSpec'd) as a card in `conn`'s in-flight turn; returns its id.
-function askCard(spec, conn) {
+// Show `spec` (already AskCore.normalizeSpec'd) as a card in `conn`'s in-flight turn of session
+// state `st` (the asking conversation); returns its id.
+function askCard(spec, conn, st = conn.cur) {
   let id;
   do { id = AskCore.newAskId((n) => crypto.getRandomValues(new Uint8Array(n))); } while (pendingAsks.has(id));
   const card = document.createElement("div");
@@ -3214,7 +3976,9 @@ function askCard(spec, conn) {
   result.hidden = true;
   card.append(controls, hint, result);
 
-  const entry = { conn, conversationId, ask: null };
+  // The entry keeps the session state, not just the Conn: the answer goes to the asking
+  // conversation's session (§3.8), which stays true when P2 lets several run.
+  const entry = { conn, state: st, conversationId: st ? st.convId : conversationId, ask: null };
   entry.ask = AskCore.createAsk({
     timeoutMs: spec.timeoutMs,
     onSettle: (state, answer) => {
@@ -3233,7 +3997,7 @@ function askCard(spec, conn) {
     const answer = AskCore.normalizeAnswer(spec, raw);
     if (!answer || !entry.ask.answer(answer)) return;
     loopGuard.onHuman();
-    conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)));
+    conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)), [], entry.state);
   };
 
   // Asked in the turn (AskCore.canAsk guarantees one): the card sits in it, above the reply.
@@ -3246,15 +4010,21 @@ function askCard(spec, conn) {
   return id;
 }
 
-// Close open ask cards unanswered: `how` is supersede (another message), cancel (chat
-// cleared), disconnect or restart (`conn`'s only; restart = its session could not be resumed).
-// Nothing is sent to any agent.
-function settlePendingAsks(how, conn) {
-  for (const e of [...pendingAsks.values()]) if (!conn || e.conn === conn) e.ask[how]();
+// Close open ask cards unanswered (multi-conversation §3.8 scopes): `how` is supersede (another
+// message in that conversation), cancel (that conversation's chat cleared), archive (that
+// conversation archived), restart (one conversation's session could not be resumed: that
+// conversation, that agent) or disconnect (the agent deliberately disconnected: its cards in EVERY
+// conversation). A transient socket drop closes nothing. Nothing is sent to any agent.
+function settlePendingAsks(how, { conn = null, convId = null } = {}) {
+  for (const e of [...pendingAsks.values()]) {
+    if (conn && e.conn !== conn) continue;
+    if (convId && e.conversationId !== convId) continue;
+    e.ask[how]();
+  }
 }
-function supersedePendingAsks() { settlePendingAsks("supersede"); }
-function cancelPendingAsks() { settlePendingAsks("cancel"); }
-function closePendingAsks(conn, how = "disconnect") { settlePendingAsks(how, conn); }
+function supersedePendingAsks(convId) { settlePendingAsks("supersede", { convId }); }
+function cancelPendingAsks(convId) { settlePendingAsks("cancel", { convId }); }
+function closePendingAsks(conn, how = "disconnect", convId = null) { settlePendingAsks(how, { conn, convId }); }
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
 let lastMsgMs = 0;
@@ -3418,7 +4188,7 @@ function renderAgentText(el, text) {
 
 function jumpToMessage(id) {
   if (!id) return;
-  const row = messagesList.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
+  const row = chatList.querySelector(`[data-msg-id="${CSS.escape(id)}"]`);
   if (!row) return;                                      // trimmed out of the 200-message scrollback
   row.scrollIntoView({ block: "center", behavior: "smooth" });
   row.classList.add("flash");
@@ -3487,7 +4257,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   attachReplyButton(content, { id, senderName, timestamp, text: quoteText });
 
   msgDiv.appendChild(content);
-  messagesList.appendChild(msgDiv);
+  chatList.appendChild(msgDiv);
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
     replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
@@ -3500,15 +4270,38 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
 }
 
 // System notices carry handshake error strings (remote-reachable) — same XSS sink, same
-// fix: textContent, never innerHTML.
-function appendSystemMessage(text) {
+// fix: textContent, never innerHTML. `conv` (optional): the conversation the notice is about —
+// one whose list is not built yet (never shown) gets none; they are not recorded anyway.
+function appendSystemMessage(text, conv) {
+  const list = conv ? conv.listEl : chatList;
+  if (!list) return null;
   const msgDiv = document.createElement("div");
   msgDiv.className = "message system";
   const inner = document.createElement("div");
   inner.className = "system-text";
   inner.textContent = text;
   msgDiv.appendChild(inner);
-  messagesList.appendChild(msgDiv);
+  list.appendChild(msgDiv);
+  if (list === chatList) maybeScroll();
+  return inner;
+}
+
+// A system notice with buttons (open elsewhere → focus that window, the picker's cancel notice).
+function appendSystemActions(text, actions) {
+  const inner = appendSystemMessage(text);
+  if (!inner) return;
+  inner.classList.add("with-actions");
+  const row = document.createElement("div");
+  row.className = "system-actions";
+  for (const a of actions) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "system-action";
+    b.textContent = a.label;
+    b.addEventListener("click", a.onClick);
+    row.appendChild(b);
+  }
+  inner.appendChild(row);
   maybeScroll();
 }
 
@@ -3549,7 +4342,7 @@ function appendErrorMessage(senderName, text, onRetry) {
   }
   content.appendChild(bubble);
   msgDiv.appendChild(content);
-  messagesList.appendChild(msgDiv);
+  chatList.appendChild(msgDiv);
   recordMessage({ kind: "error", senderName, text, timestamp: Date.now() });
   maybeScroll();
 }
