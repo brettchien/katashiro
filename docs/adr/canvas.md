@@ -842,7 +842,7 @@ is silent, the conservative choice:
     *Where the selection is (Brett, 2026-10-12 17:43):* a selected common word ("the", 「決定」)
     told the agent nothing about where it is. The host line now carries **only two essentials**;
     the agent decides whether to `canvas_read` more (no surrounding paragraph, no offsets):
-    `[canvas "X" (<id>) v7, text selected by the user in 決定紀錄 › 2026-10-12, source lines 61–62
+    `[canvas "X" (<id>) v7, text selected by the user in 「決定紀錄」 › 「2026-10-12」, lines 61–62 of the canvas content
     — as rendered, not the markdown source; canvas_read before canvas_patch]` (a deck adds
     `on slide 3`). Each part is left out when it is not known; with neither, the line is as before.
     - **Heading path:** the chain of enclosing headings of the selection's start, in document

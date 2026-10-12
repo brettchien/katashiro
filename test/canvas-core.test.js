@@ -852,7 +852,10 @@ test("askWhere: every part checked on its own; a bad part is dropped alone", () 
 
 test("askWhereAtSend: the lines go only while the rendered text is still the captured version's stored text", () => {
   const where = { headings: ["H"], lines: { from: 3, to: 4 } };
-  assert.deepEqual(C.askWhereAtSend(where, { shown: "t", stored: "t", sameVersion: true }), where);
+  const four = "a\nb\nc\nd";
+  assert.deepEqual(C.askWhereAtSend(where, { shown: four, stored: four, sameVersion: true }), where);
+  // #129 review: a range past the stored text's last line is never sent
+  assert.deepEqual(C.askWhereAtSend(where, { shown: "a\nb\nc", stored: "a\nb\nc", sameVersion: true }), { headings: ["H"] });
   // §3.5 normalization rewrote the version in place / a newer version / the render is not known
   assert.deepEqual(C.askWhereAtSend(where, { shown: "t", stored: "t2", sameVersion: true }), { headings: ["H"] });
   assert.deepEqual(C.askWhereAtSend(where, { shown: "t", stored: "t", sameVersion: false }), { headings: ["H"] });
@@ -865,11 +868,11 @@ test("composeAskAgent: where goes into the host line; each part left out when un
   const base = { note: "n", title: "T", id: "cv_000000000001", version: 5, text: "x" };
   const head = (where) => C.composeAskAgent({ ...base, where }).split("\n\n")[1];
   assert.equal(head({ headings: ["決定紀錄", "2026-10-12"], lines: { from: 61, to: 62 } }),
-    "[canvas \"T\" (cv_000000000001) v5, text selected by the user in 決定紀錄 › 2026-10-12, source lines 61–62 — as rendered, not the markdown source; canvas_read before canvas_patch]");
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user in 「決定紀錄」 › 「2026-10-12」, lines 61–62 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
   assert.equal(head({ lines: { from: 9, to: 9 } }),
-    "[canvas \"T\" (cv_000000000001) v5, text selected by the user, source line 9 — as rendered, not the markdown source; canvas_read before canvas_patch]");
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user, line 9 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
   assert.equal(head({ slide: 3, headings: ["Intro"], lines: { from: 20, to: 22 } }),
-    "[canvas \"T\" (cv_000000000001) v5, text selected by the user on slide 3 in Intro, source lines 20–22 — as rendered, not the markdown source; canvas_read before canvas_patch]");
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user on slide 3 in 「Intro」, lines 20–22 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
   const plain = head(undefined);
   assert.equal(head(null), plain);
   assert.equal(head({ lines: { from: 3, to: 1 }, headings: [7] }), plain);       // all malformed: as before

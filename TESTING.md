@@ -104,7 +104,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   markdown canvas with `# 計畫`, `## 決定紀錄`, `### 2026-10-12` and a two-line paragraph under it,
   wait for it to settle (the editor's normalization re-renders it once), then select one common
   word in that paragraph and ask with any note. The pushed chat message's host line reads
-  `… text selected by the user in 計畫 › 決定紀錄 › 2026-10-12, source lines N–M — as rendered …`;
+  `… text selected by the user in 「計畫」 › 「決定紀錄」 › 「2026-10-12」, lines N–M of the canvas content — as rendered …`;
   ask the agent to `canvas_read` and quote lines N–M: they are exactly that paragraph. Then:
   - select a word above every heading: no `in …` part, lines still there;
   - select from one paragraph into the next: the range covers both;

@@ -641,8 +641,9 @@
     const w = askWhere(where) || {};
     let loc = "";
     if (w.slide) loc += ` on slide ${w.slide}`;
-    if (w.headings) loc += ` in ${w.headings.join(" › ")}`;
-    if (w.lines) loc += `, source ${w.lines.from === w.lines.to ? `line ${w.lines.from}` : `lines ${w.lines.from}–${w.lines.to}`}`;
+    if (w.headings) loc += ` in ${w.headings.map((h) => `「${h}」`).join(" › ")}`;   // quoted: agent-written text (#129 review)
+    // "of the canvas content": canvas_read prints a JSON line and a blank line first (#129 review).
+    if (w.lines) loc += `, ${w.lines.from === w.lines.to ? `line ${w.lines.from}` : `lines ${w.lines.from}–${w.lines.to}`} of the canvas content`;
     const header = `[canvas "${t}" (${id}) v${version}, text selected by the user${loc} — as rendered, not the markdown source; canvas_read before canvas_patch]`;
     const CUT = "(the selection was cut at 20 KB — canvas_read for the rest)";
     const body = composeCanvasPush({ note, header, data: text, truncatedNote: CUT });
@@ -754,7 +755,9 @@
    */
   function askWhereAtSend(where, { shown, stored, sameVersion } = {}) {
     const w = askWhere(where);
-    if (!w || !w.lines || (sameVersion === true && typeof shown === "string" && shown === stored)) return w;
+    // ...and the range must lie inside that text (#129 review: never point past its last line).
+    if (!w || !w.lines || (sameVersion === true && typeof shown === "string" && shown === stored &&
+      w.lines.to <= stored.split("\n").length)) return w;
     const { lines, ...rest } = w;
     return Object.keys(rest).length ? rest : null;
   }
