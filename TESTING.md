@@ -213,6 +213,44 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     gallery, a canvas of an open but not current conversation opens in that conversation's group
     without switching; Send to agent from it switches to its conversation first (refused while the
     current one replies); from an archived conversation's canvas tab: 「這段對話已封存，先從總覽重新打開」.
+- **Multi-conversation P1b (ADR multi-conversation §4).** The headless smoke above covers the
+  rules on a model of tabs and groups; in Chrome (155+ for Split View), with act mode on:
+  - **Group per conversation:** ask the agent to open a page with `new_tab` (background): it joins
+    the conversation's group, named after the conversation, next to its canvases. Open a tab
+    yourself and have the agent read it: it is not pulled into the group. Drag a group tab out:
+    archive later does not close it. A canvas shown beside a page (`beside: "current"`) still
+    follows the canvas Split View rules (both sides' group state stays consistent).
+  - **Q5:** with A's group tab active, ＋ or switch to B: a tab outside A's group becomes active
+    first (B's working tab, else B's last-used group tab, else your last-used ungrouped tab), then
+    A's group collapses and B's expands. Nothing flickers into a collapsed group.
+  - **Q6:** after the agent worked on a tab, click another tab, type and send: the working tab comes
+    to the front at that moment, never while the agent is replying. `switch_tab({tab: "working"})`
+    activates it too. Answering an ask card or pushing from a canvas does not switch tabs.
+  - **Q12:** while an ask card waits in A, switch to B: A's tab shows ❓ and an OS notification
+    「Katashiro：有問題等你回答」 appears; clicking it focuses the window and switches to A; once the
+    card is answered or closes, the ❓ goes.
+  - **Drafts:** type half a message and paste an image in A, switch to B (empty composer), back to
+    A: the text and the image are there. Paste a large image and switch while it encodes: it lands
+    in A's draft, not in B.
+  - **set_title:** after the first exchange the agent renames the tab and the group (titleSource
+    agent); double-click rename it yourself, ask the agent to rename again: refused, your name stays.
+  - **Archive closes, reopen restores:** in A, have an agent tab and a canvas tab in the group; edit
+    the canvas without saving; × on A: the agent tab closes, the dirty canvas tab stays (collapsed)
+    and the chat says so. Save and close it. 🗂️ → 對話 → 重新打開 A: the agent tab and the canvas
+    tab come back in the background, in one group. With the window's only tabs in the group, × opens
+    a New Tab page first (the window must not close).
+  - **Browser restart:** with A open and its group holding two tabs, quit Chrome (Cmd/Ctrl+Q) and
+    start it again (with "continue where you left off" and without): open the panel; A's tabs are
+    in A's group, the ones Chrome restored adopted rather than duplicated.
+  - **Canvas push refusals:** open A in window 1, close window 1's panel; from A's canvas tab in
+    window 2 (panel open), Send to agent: 「這段對話開在另一個視窗，那個視窗的側邊欄沒開…」 with a
+    「前往那個視窗」 button. Close window 2's panel too and push again: the canvas header says
+    「這個視窗的 Katashiro 側邊欄沒開」 with 打開側邊欄, which opens it; send again. With the
+    conversation open in another window's panel, the push goes there and the canvas says
+    （在另一個視窗）.
+  - **Q4 b order:** while the agent's turn runs, send a message, then let the agent ask a card in
+    the same turn: the card stays answerable (it came after your message); a card that was already
+    pending when you sent closes as 未回答（你送了別的訊息）.
   - **Browser restart:** quit Chrome with chats open in two windows, restart: each restored window
     opens on its conversations (as many as fit under 3), the rest are in 對話.
   - **Downgrade:** load the previous release over this one: it starts empty; chat a bit; load this
