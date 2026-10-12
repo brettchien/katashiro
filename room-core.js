@@ -242,6 +242,60 @@
     return { degrade: true, reconnect: false, missedProbes: mp };
   }
 
+  // --- Disconnect diagnostics (ADR browser-tunnel-liveness §9.3, E) --------------------------------
+  // The panel records every socket end; these keep the list (newest last, capped) and render one
+  // record as one line for katashiro.client_info. Pure, so storage.session and the panel's memory
+  // copy apply the very same operations.
+  const DISCONNECT_LOG_MAX = 20;
+  const DISCONNECT_REASON_MAX = 80;                       // a close reason is ≤ 123 bytes; keep lines short
+
+  // Apply one operation to a disconnect list → a new list, capped to `max` (oldest dropped).
+  //   { push: record }                       a new disconnect
+  //   { patch: { id, fields } }              fill in a record (its next open, …); unknown id → no-op
+  //   { bump: id }                           one more failed reconnect attempt after that record
+  function applyDisconnectOp(list, op, max = DISCONNECT_LOG_MAX) {
+    let next = Array.isArray(list) ? list.filter((r) => r && typeof r === "object") : [];
+    if (op && op.push && typeof op.push === "object") next.push({ ...op.push });
+    else if (op && op.patch && op.patch.id) next = next.map((r) => (r.id === op.patch.id ? { ...r, ...op.patch.fields } : r));
+    else if (op && op.bump) next = next.map((r) => (r.id === op.bump ? { ...r, failedRetries: (r.failedRetries || 0) + 1 } : r));
+    return next.length > max ? next.slice(next.length - max) : next;
+  }
+
+  // A duration for a diagnostics line: 850ms, 37s, 4m05s, 2h03m.
+  function shortDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "?";
+    if (ms < 1000) return `${Math.round(ms)}ms`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m${pad2(s % 60)}s`;
+    return `${Math.floor(s / 3600)}h${pad2(Math.floor((s % 3600) / 60))}m`;
+  }
+
+  // One record → one line the agent reads (English, like every tool result). Local ISO time with
+  // offset, like the chat's own timestamps, so it lines up with chat_history.
+  function formatDisconnect(rec, now) {
+    const r = rec || {};
+    const when = Number.isFinite(r.at) ? `${msgTime(r.at).replace(/\.\d{3}/, "")}${Number.isFinite(now) ? ` (${shortDuration(now - r.at)} ago)` : ""}` : "?";
+    const who = `${r.agent || "agent"}${r.windowId == null ? "" : ` [window ${r.windowId}]`}`;
+    const reason = typeof r.reason === "string" && r.reason ? ` "${r.reason.slice(0, DISCONNECT_REASON_MAX)}"` : "";
+    const close = r.code == null
+      ? "socket replaced (no close event)"
+      : `close ${r.code} ${r.wasClean ? "clean" : "unclean"}${r.error ? " after error" : ""}${reason}`;
+    const gap = (label, ms) => `${label} ${ms == null ? "none on this socket" : `${shortDuration(ms)} before`}`;
+    const parts = [
+      `${when} ${who}: ${close}`,
+      `${gap("last in", r.sinceRecvMs)}, ${gap("last out", r.sinceSendMs)}`,
+      r.turnActive ? "turn active" : "idle",
+      `up ${shortDuration(r.ageMs)}`,
+    ];
+    let tail = `→ ${r.path || "?"}`;
+    if (Number.isFinite(r.reopenAfterMs)) tail += `; reopened after ${shortDuration(r.reopenAfterMs)}, ${r.sameRun ? "same run (hint skipped if recently used)" : "new run (hint kept)"}`;
+    else if (r.path !== "none") tail += "; no reopen recorded";
+    if (r.failedRetries) tail += `; ${r.failedRetries} failed ${r.failedRetries === 1 ? "retry" : "retries"}`;
+    parts.push(tail);
+    return parts.join("; ");
+  }
+
   // Three-segment connection status for a roster chip (ADR browser-tunnel-liveness §8.2). Pure
   // mapping of a conn's runtime facts to LINK / TUNNEL / BROWSER segments, in dependency order.
   // A downstream segment is `dim: true` (rendered but greyed) when an upstream one is down, so a
@@ -560,6 +614,10 @@
     configSyncState,
     shouldProbe,
     onProbeTimeoutDecision,
+    DISCONNECT_LOG_MAX,
+    applyDisconnectOp,
+    shortDuration,
+    formatDisconnect,
     roomStatus,
     resolveActiveUrl,
     parseMentions,

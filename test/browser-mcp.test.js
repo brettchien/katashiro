@@ -2925,6 +2925,18 @@ test("katashiro.client_info reports build, install, browser, window, act mode, o
   assert.match(text, /optional permissions: sessions not granted/);
 });
 
+test("katashiro.client_info appends the recent disconnects, one line each (tunnel-liveness §9.3)", async () => {
+  const { deps: d } = deps();
+  d.clientInfo = async () => ({ version: "2.6.1", build: "dev", actMode: false, optionalPermissions: {}, recentDisconnects: ["L2 newest", "L1"] });
+  let text = (await callTool(d, "katashiro.client_info")).content[0].text;
+  assert.match(text, /optional permissions: none\nrecent disconnects \(newest first\):\n- L2 newest\n- L1$/);
+  d.clientInfo = async () => ({ version: "2.6.1", recentDisconnects: [] });
+  text = (await callTool(d, "katashiro.client_info")).content[0].text;
+  assert.match(text, /\nrecent disconnects: none recorded since the browser started$/);
+  d.clientInfo = async () => ({ version: "2.6.1" });                  // a host that does not record them
+  assert.doesNotMatch((await callTool(d, "katashiro.client_info")).content[0].text, /disconnects/);
+});
+
 test("katashiro.client_info: dev build without sha, and a host without the provider", async () => {
   const { deps: d } = deps();
   d.clientInfo = async () => ({ version: "2.6.1", build: "dev", sha: null, actMode: true, optionalPermissions: {} });

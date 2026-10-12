@@ -630,3 +630,65 @@ test("sidepanel.css: avatar colour comes from the tone class, never the row posi
   assert.doesNotMatch(css, /nth-child\([^)]*\)\s*\.avatar/);
   for (let i = 1; i < RoomCore.AVATAR_TONES; i++) assert.match(css, new RegExp(`\\.avatar\\.tone-${i}\\s*\\{[^}]*background:`));
 });
+
+// --- Disconnect diagnostics (ADR browser-tunnel-liveness §9.3, E) ---------------------------------
+
+test("applyDisconnectOp: push caps to the newest 20, patch and bump touch only their record", () => {
+  let list = [];
+  for (let i = 0; i < 25; i++) list = RoomCore.applyDisconnectOp(list, { push: { id: `d${i}`, at: i } });
+  assert.equal(RoomCore.DISCONNECT_LOG_MAX, 20);
+  assert.equal(list.length, 20);
+  assert.equal(list[0].id, "d5");                                     // oldest dropped
+  assert.equal(list[19].id, "d24");
+  list = RoomCore.applyDisconnectOp(list, { patch: { id: "d24", fields: { reopenAfterMs: 5000, sameRun: true } } });
+  assert.deepEqual([list[19].reopenAfterMs, list[19].sameRun, list[18].reopenAfterMs], [5000, true, undefined]);
+  list = RoomCore.applyDisconnectOp(list, { bump: "d23" });
+  list = RoomCore.applyDisconnectOp(list, { bump: "d23" });
+  assert.equal(list[18].failedRetries, 2);
+  assert.equal(list[19].failedRetries, undefined);
+  const same = RoomCore.applyDisconnectOp(list, { patch: { id: "nope", fields: { x: 1 } } });
+  assert.deepEqual(same, list);                                       // unknown id → no-op
+  // Junk from storage is tolerated, and the input is never mutated.
+  const junk = [null, 3, { id: "a" }];
+  assert.deepEqual(RoomCore.applyDisconnectOp(junk, { push: { id: "b" } }), [{ id: "a" }, { id: "b" }]);
+  assert.equal(junk.length, 3);
+  assert.deepEqual(RoomCore.applyDisconnectOp(undefined, null), []);
+  assert.equal(RoomCore.applyDisconnectOp([], { push: { id: "x" } }, 0).length, 0);
+});
+
+test("shortDuration: ms, s, m+s, h+m", () => {
+  assert.equal(RoomCore.shortDuration(850), "850ms");
+  assert.equal(RoomCore.shortDuration(37_200), "37s");
+  assert.equal(RoomCore.shortDuration(245_000), "4m05s");
+  assert.equal(RoomCore.shortDuration(2 * 3600_000 + 3 * 60_000 + 40_000), "2h03m");
+  assert.equal(RoomCore.shortDuration(-1), "?");
+  assert.equal(RoomCore.shortDuration(undefined), "?");
+});
+
+test("formatDisconnect: one line with close code, gaps, turn, age, path and the next open", () => {
+  const at = new Date(2026, 9, 12, 23, 41, 5, 123).getTime();         // local time, like the panel
+  const stamp = RoomCore.msgTime(at).replace(/\.\d{3}/, "");
+  const line = RoomCore.formatDisconnect({
+    id: "x", at, agent: "Orca", windowId: 7, code: 1006, reason: "", wasClean: false, error: true,
+    sinceRecvMs: 37_000, sinceSendMs: 2_000, turnActive: false, ageMs: 14 * 60_000,
+    path: "auto-reconnect", reopenAfterMs: 5_100, sameRun: true, failedRetries: 1,
+  }, at + 4 * 60_000);
+  assert.equal(line,
+    `${stamp} (4m00s ago) Orca [window 7]: close 1006 unclean after error; last in 37s before, last out 2s before; ` +
+    "idle; up 14m00s; → auto-reconnect; reopened after 5s, same run (hint skipped if recently used); 1 failed retry");
+  assert.doesNotMatch(line, /\n/);
+  assert.match(stamp, /^2026-10-12T23:41:05[+-]\d\d:\d\d$/);
+  // A clean close with a reason, a slow reopen, a turn in flight.
+  const slow = RoomCore.formatDisconnect({
+    at, agent: "Orca", code: 1001, reason: "going away", wasClean: true, sinceRecvMs: 1000, sinceSendMs: null,
+    turnActive: true, ageMs: 3_700_000, path: "auto-reconnect", reopenAfterMs: 190_000, sameRun: false, failedRetries: 30,
+  });
+  assert.match(slow, /^\S+ Orca: close 1001 clean "going away"; last in 1s before, last out none on this socket; turn active; up 1h01m; → auto-reconnect; reopened after 3m10s, new run \(hint kept\); 30 failed retries$/);
+  // A socket replaced by a heartbeat teardown (no close event), not reopened yet; a disabled conn.
+  assert.match(RoomCore.formatDisconnect({ at, agent: "A", code: null, path: "heartbeat-reconnect", sinceRecvMs: 125_000, ageMs: 1 }),
+    /: socket replaced \(no close event\); last in 2m05s before.*→ heartbeat-reconnect; no reopen recorded$/);
+  assert.match(RoomCore.formatDisconnect({ at, agent: "A", code: 1000, wasClean: true, path: "none" }), /→ none$/);
+  // A long reason is cut; nothing at all still renders.
+  assert.match(RoomCore.formatDisconnect({ at, code: 4000, reason: "r".repeat(200), path: "none" }), new RegExp(`"r{80}"`));
+  assert.match(RoomCore.formatDisconnect(null), /^\? agent: socket replaced/);
+});

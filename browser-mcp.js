@@ -2192,9 +2192,11 @@
       description:
         "Describe this Katashiro client: version and build (release tag / git sha, or \"dev\" for an " +
         "unstamped unpacked load), install type, extension id, Chrome version, the panel's window " +
-        "(id), act mode, and which optional permissions are granted. Use it when you " +
+        "(id), act mode, which optional permissions are granted, and the last few disconnects of " +
+        "the side panel's agent connection (close code, frame gaps, reconnect path). Use it when you " +
         "need to know which Katashiro build or capabilities you are talking to — e.g. before " +
-        "relying on a recently added tool, or when reporting a bug. Read-only; no page access.",
+        "relying on a recently added tool, when reporting a bug, or when diagnosing reconnects. " +
+        "Read-only; no page access.",
       // sessionScope: describes the panel/extension, not the active page — works on chrome:// too.
       sessionScope: true,
       inputSchema: { type: "object", properties: {} },
@@ -2214,6 +2216,12 @@
           `act mode: ${i.actMode ? "on (page writes allowed)" : "off (read-only)"}`,
           `optional permissions: ${optText}`
         ];
+        // Tunnel-liveness §9.3 (E): one line per disconnect, formatted by the panel. Absent → a
+        // host that does not record them; empty → none since the browser started.
+        if (Array.isArray(i.recentDisconnects)) {
+          if (i.recentDisconnects.length) lines.push("recent disconnects (newest first):", ...i.recentDisconnects.map((l) => `- ${l}`));
+          else lines.push("recent disconnects: none recorded since the browser started");
+        }
         return okText(lines.join("\n"));
       }
     },
