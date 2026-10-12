@@ -54,7 +54,8 @@ function parseArgs(argv, env) {
       case "--help": case "-h": o.help = true; break;
       case "--token":
         throw new UsageError("pass the token in the ACP_TOKEN environment variable, not on the command line");
-      default: throw new UsageError(`unknown argument: ${a}`);
+      // A positional value is not echoed: it may be a token pasted in the wrong place.
+      default: throw new UsageError(a.startsWith("-") ? `unknown argument: ${a}` : "unexpected positional argument (value not shown); pass the token in ACP_TOKEN");
     }
   }
   o.sessions = Math.floor(o.sessions);
@@ -84,6 +85,12 @@ function buildPrompt(label) {
     `   NONCE: <the nonce value from the whoami result>`,
     `   then five short numbered lines (1. to 5.), each one sentence about the sea.`,
   ].join("\n");
+}
+
+/** The capability names from the reply's `CAPS:` line, or null when the line is missing. */
+function capsLine(replyText) {
+  const m = /^\s*CAPS:\s*(.*)$/im.exec(replyText || "");
+  return m ? m[1].trim() : null;
 }
 
 /** The whoami result text. Kept parseable so a crossed-over nonce is easy to spot in a reply. */
@@ -137,7 +144,7 @@ function classifyError(x) {
 
 /**
  * The verdict. `sessions`: one record per label —
- *   { label, nonce, created, createError, tunnelUp, calls: [{ start, end }], sentAt, doneAt,
+ *   { label, nonce, created, createError, tunnelUp, calls: [{ start, end, name }], sentAt, doneAt,
  *     stopReason, error, replyText, activity: [t…] }
  * (`calls` only holds calls that arrived on THIS session's server; `activity` is every
  * session/update and tools/call timestamp of the session.) `extra`: { strayCalls, timedOut }.
@@ -152,7 +159,13 @@ function evaluate(sessions, extra = {}) {
 
   per("session/new", (s) => ok(s.created));
   per("tunnel up (mcp/connect + init)", (s) => ok(s.tunnelUp));
-  per("whoami called on own server", (s) => ok(s.created && s.calls.length > 0));
+  per("whoami called on own server", (s) => ok(s.created && s.calls.some((c) => c.name === "whoami")));
+  // Isolation: the facade must list only this session's server, so the CAPS line the agent copied
+  // from search_capabilities may not name another session's probe (and has to be there at all).
+  per("CAPS lists no other session's server", (s) => {
+    const caps = capsLine(s.replyText);
+    return ok(caps != null && !others(s).some((o) => caps.includes(serverName(o.label))));
+  });
   // A call on this session's server outside its turn would mean some other turn reached it.
   per("calls inside own turn", (s) => (s.calls.length === 0 ? "-" : ok(s.calls.every((c) =>
     s.sentAt != null && c.start >= s.sentAt && (s.doneAt == null || c.start <= s.doneAt)))));
@@ -172,7 +185,9 @@ function evaluate(sessions, extra = {}) {
       if (!(overlapMs(window(a), window(b)) > 0)) pairsOverlap = false;
       if (a.doneAt == null || b.doneAt == null) { laterActiveEarly = false; continue; }
       const [first, later] = a.doneAt <= b.doneAt ? [a, b] : [b, a];
-      if (!later.activity.some((t) => t < first.doneAt)) laterActiveEarly = false;
+      // Only activity after the prompt counts: an update the gateway sends on its own (e.g. a future
+      // available_commands_update right after session/new) says nothing about the turn running.
+      if (!later.activity.some((t) => later.sentAt != null && t >= later.sentAt && t < first.doneAt)) laterActiveEarly = false;
     }
   }
   const glob = (name, b) => rows.push([name, ok(b), ...sessions.slice(1).map(() => "")]);
@@ -216,5 +231,5 @@ function renderTable(header, rows) {
 
 module.exports = {
   DEFAULTS, MAX_SESSIONS, UsageError, parseArgs, labels, serverName, buildPrompt, whoamiText,
-  overlapMs, interleavings, maxInFlight, classifyError, evaluate, width, renderTable,
+  capsLine, overlapMs, interleavings, maxInFlight, classifyError, evaluate, width, renderTable,
 };

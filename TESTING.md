@@ -417,9 +417,17 @@ It opens one socket, creates sessions A and B (each declaring its own server, `p
 serving one tool `whoami` that answers with a random nonce), sends both prompts back to back and
 asks each agent to find `whoami` through `search_capabilities` / `execute_capability` and reply with
 the nonce. **PASS** = both turns end with `end_turn`, each agent's `tools/call` arrived on its own
-server's tunnel inside its own turn, each reply carries its own nonce and not the other's, the
-turns overlap and the later one was already active before the first ended, and nothing failed with
-`-32001 Session busy` or "pool exhausted". The exit code is 0 on PASS, 1 on FAIL.
+server's tunnel inside its own turn, each reply's `CAPS:` line names no other session's server,
+each reply carries its own nonce and not the other's, the turns overlap and the later one was
+already active before the first ended, and nothing failed with `-32001 Session busy` or
+"pool exhausted". The exit code is 0 on PASS, 1 on FAIL.
+
+Which rows actually decide it: isolation is the nonce rows and the `CAPS:` row; concurrency is
+"later turn active before first ended" (the gateway relays only text chunks, sent once at the end,
+so that row is in effect "the later turn's `tools/call` arrived before the first turn ended").
+"turns overlap in time" and "calls inside own turn" always pass when the prompts go out back to
+back and the turns overlap — they catch gross breakage (e.g. a call after its own turn ended), not
+serialisation or cross-talk.
 
 - It starts real agent sessions: each running turn takes a broker pool slot (3, shared with
   Discord and usercron). Run it when the pool has room; "pool exhausted" is reported as such.
