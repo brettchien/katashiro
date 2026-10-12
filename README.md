@@ -269,6 +269,7 @@ how to use Katashiro features that need more than a single tool call.
 |---|---|
 | [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show the user an image in the panel — a screenshot by `imageId`, or an image file via `scripts/show-image.sh`, which posts it to the OpenAB facade so the bytes never pass through the model. |
 | [`katashiro-point-at`](skills/katashiro-point-at/SKILL.md) | Point the user at what you are explaining: glow one element with `katashiro.highlight`, emphasise several with temporary `katashiro.inject_css` (and clear it after), or glow a canvas block with `katashiro.canvas_highlight`. |
+| [`katashiro-ask-user`](skills/katashiro-ask-user/SKILL.md) | Ask the user a multiple-choice question on a card with `katashiro.ask_user`, then **end the turn**: the answer arrives later as a new message (`↩ 回答 ask_<id>：…`), or not at all. When to use it (2–6 clear options, one question at a time), when not (open questions, never as a stand-in for the 🔒 system confirm), and how to treat 未回答. |
 
 Install for Claude Code by copying (or symlinking) the folder into the agent's skills directory:
 
