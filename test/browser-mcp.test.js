@@ -1114,6 +1114,66 @@ test("a server cannot be reached through another server's connection", async () 
   assert.match(res.result.content[0].text, /unknown tool/);
 });
 
+// Multi-conversation §3.9: one browser server per (conversation, agent). An mcp/connect whose
+// acpId names no declared server (a late connect for an archived conversation) is refused, never
+// routed to another conversation's server — however many are left. Only a missing acpId falls back.
+test("mcp/connect: an unknown acpId is refused when several servers are declared", async () => {
+  const bag = await twoServers();
+  const before = Object.keys(bag.state.connections).length;
+  await BrowserMcp.handleServerRequest({ id: 9, method: "mcp/connect", params: { acpId: "srv-gone" } }, bag.deps, bag.state);
+  const reply = bag.sent[bag.sent.length - 1];
+  assert.equal(reply.id, 9);
+  assert.match(reply.error.message, /unknown server: srv-gone/);
+  assert.equal(Object.keys(bag.state.connections).length, before);
+});
+
+test("mcp/connect: with a single declared server an unknown acpId is still refused", async () => {
+  const bag = deps({ uuid: ["conn-1"] });
+  const only = BrowserMcp.createServer({ id: "srv-1", name: "katashiro" });
+  const state = { servers: [only], connections: {} };
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: { acpId: "srv-other" } }, bag.deps, state);
+  assert.match(bag.sent[0].error.message, /unknown server: srv-other/);
+  assert.deepEqual(state.connections, {});
+});
+
+test("mcp/connect: archiving one of two conversations, a late connect for it is not routed to the survivor", async () => {
+  const bag = deps({ uuid: ["conn-1"] });
+  const a = BrowserMcp.createServer({ id: "srv-a", name: "katashiro" });
+  const b = BrowserMcp.createServer({ id: "srv-b", name: "katashiro" });
+  const state = { servers: [a, b], connections: {} };
+  state.servers = state.servers.filter((s) => s !== a);          // what Conn.dropState does
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: { acpId: "srv-a" } }, bag.deps, state);
+  assert.match(bag.sent[0].error.message, /unknown server: srv-a/);
+  assert.deepEqual(state.connections, {});
+});
+
+test("mcp/connect: with a single declared server a missing acpId falls back to it", async () => {
+  const bag = deps({ uuid: ["conn-1"] });
+  const only = BrowserMcp.createServer({ id: "srv-1", name: "katashiro" });
+  const state = { servers: [only], connections: {} };
+  await BrowserMcp.handleServerRequest({ id: 1, method: "mcp/connect", params: {} }, bag.deps, state);
+  assert.equal(bag.sent[0].result.connectionId, "conn-1");
+  assert.equal(state.connections["conn-1"], only);
+});
+
+test("depsFor: each server's calls run with its own deps; a refusing instance runs nothing and shows no pill", async () => {
+  const bag = await twoServers({ scriptResult: { ok: true, html: "<p>page</p>" } });
+  const events = [];
+  bag.deps.depsFor = (server) => (server === bag.notes
+    ? { ...bag.deps, refuse: "this conversation is not on screen in Katashiro", onToolCall: (e) => events.push(e) }
+    : { ...bag.deps, onToolCall: (e) => events.push(e) });
+  const n = await overTunnel(bag, 3, "conn-n", "tools/call", { name: "notes.list", arguments: {} });
+  assert.equal(n.result.isError, true);
+  assert.equal(n.result.content[0].text, "this conversation is not on screen in Katashiro");
+  assert.equal(events.length, 0);
+  const k = await overTunnel(bag, 4, "conn-k", "tools/call", { name: "katashiro.read_dom", arguments: {} });
+  assert.equal(k.result.content[0].text, "<p>page</p>");
+  assert.deepEqual(events.map((e) => e.phase), ["start", "done"]);
+  // tools/list and initialize still answer on a refusing instance (a late handshake must not hang).
+  const l = await overTunnel(bag, 5, "conn-n", "tools/list", {});
+  assert.deepEqual(l.result.tools.map((t) => t.name), ["notes.list"]);
+});
+
 test("onStatus fires once on the first tunnel, not per server", async () => {
   const { statuses } = await twoServers();
   assert.deepEqual(statuses, [true]);

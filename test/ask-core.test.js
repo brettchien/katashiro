@@ -152,6 +152,7 @@ test("outcomeText: every settled state reads in Traditional Chinese", () => {
   assert.equal(A.outcomeText("timeout"), "未回答（逾時）");
   assert.equal(A.outcomeText("superseded"), "未回答（你送了別的訊息）");
   assert.equal(A.outcomeText("cancelled"), "未回答（聊天已清除）");
+  assert.equal(A.outcomeText("archived"), "未回答（對話已封存）");
   assert.equal(A.outcomeText("disconnected"), "未回答（agent 已中斷連線）");
   assert.equal(A.outcomeText("restarted"), "未回答（agent 的 session 已重開）");
   assert.equal(A.outcomeText("pending"), "");
@@ -217,7 +218,7 @@ test("createAsk: hidden stretches do not count (Q1 = b)", () => {
 });
 
 test("createAsk: answer / supersede / cancel / disconnect / restart each settle once and stop the clock", () => {
-  for (const [method, state] of [["supersede", "superseded"], ["cancel", "cancelled"], ["disconnect", "disconnected"], ["restart", "restarted"]]) {
+  for (const [method, state] of [["supersede", "superseded"], ["cancel", "cancelled"], ["archive", "archived"], ["disconnect", "disconnected"], ["restart", "restarted"]]) {
     const c = fakeClock();
     const settled = [];
     const a = A.createAsk({ timeoutMs: 30000, visible: true, ...c, onSettle: (s) => settled.push(s) });

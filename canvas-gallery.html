@@ -3,22 +3,30 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>畫布總覽 — Katashiro</title>
+  <title>總覽 — Katashiro</title>
   <link rel="stylesheet" href="canvas.css">
   <link rel="stylesheet" href="canvas-gallery.css">
 </head>
 <body>
   <!-- Canvas gallery (ADR docs/adr/canvas.md §3.7): every canvas across conversations, from storage
-       metadata only. Titles are agent text: rendered with textContent, never as HTML. -->
+       metadata only, and above it the conversations not open in any window (ADR
+       multi-conversation.md §3.4). Titles are user/agent text: rendered with textContent, never as HTML. -->
   <header class="canvas-header">
     <span class="canvas-icon" aria-hidden="true">🗂️</span>
     <h1 class="canvas-title">畫布總覽</h1>
     <span id="gallery-count" class="canvas-version"></span>
     <input id="gallery-search" class="gallery-search" type="search" placeholder="搜尋標題或內容…" autocomplete="off" spellcheck="false" autofocus>
-    <span class="canvas-banner">點一列開啟畫布；🗑 刪除無法復原。</span>
+    <span class="canvas-banner">重新打開對話；點一列開啟畫布；🗑 刪除無法復原。</span>
   </header>
   <div id="canvas-notice-bar" class="canvas-notice" hidden><span id="canvas-notice"></span></div>
   <main class="gallery-main">
+    <section id="conv-section" class="conv-section" hidden>
+      <h2 class="gallery-section-title">對話</h2>
+      <p class="conv-section-hint">沒有開在任何視窗的對話（已封存，或留在關掉的視窗裡）。重新打開會開在這個視窗的側邊欄；同時最多開 3 段。</p>
+      <ul id="conv-list" class="conv-list"></ul>
+      <p id="conv-empty" class="gallery-empty" hidden></p>
+    </section>
+    <h2 class="gallery-section-title">畫布</h2>
     <div class="gallery-head" aria-hidden="true">
       <span></span><span>標題</span><span>版本</span><span>最後修改</span><span>更新時間</span><span>大小</span><span>對話</span><span></span>
     </div>
@@ -29,6 +37,8 @@
   <script src="canvas-core.js"></script>
   <script src="canvas-tabs.js"></script>
   <script src="canvas-gallery-core.js"></script>
+  <script src="confirm-core.js"></script>
+  <script src="conv-core.js"></script>
   <script src="canvas-gallery.js"></script>
 </body>
 </html>

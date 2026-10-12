@@ -64,3 +64,14 @@ test("release zip includes the vendor files canvas-frame.js loads on demand (Mil
     assert.ok(shipped(entries, r), `${r} is loaded by canvas-frame.js but missing from the release zip`);
   }
 });
+
+test("release zip includes every script the service worker importScripts (conv-core.js, …)", () => {
+  const entries = zipEntries();
+  const calls = [...read("background.js").matchAll(/importScripts\(([^)]*)\)/g)];
+  const files = calls.flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
+  assert.ok(files.includes("conv-core.js"), "background.js no longer loads conv-core.js?");
+  for (const f of files) {
+    assert.ok(fs.existsSync(path.join(root, f)), `${f} is imported by background.js but not in the repo`);
+    assert.ok(shipped(entries, f), `${f} is imported by background.js but missing from the release zip`);
+  }
+});

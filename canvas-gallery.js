@@ -8,6 +8,10 @@
 //  - Delete: the same store.remove as the canvas tab's 🗑, so open tabs close themselves (unless
 //    they hold unsaved edits) and the folder mirror keeps its file, as there.
 //  - Live: chrome.storage.onChanged on any canvas meta re-reads the metas (never the contents).
+//  - 對話 (ADR multi-conversation §3.4): the conversations not open in a live window (archived, or
+//    left in a closed window's record), newest first, title search with the same box. 重新打開 opens
+//    the side panel of this tab's window in the click (chrome.sidePanel.open needs the gesture),
+//    leaves the request in storage.session for a panel that is still loading, and asks the panel.
 (function () {
   "use strict";
 
@@ -23,12 +27,21 @@
   const noticeEl = document.getElementById("canvas-notice");
   const noticeBar = document.getElementById("canvas-notice-bar");
 
+  const convListEl = document.getElementById("conv-list");
+  const convSection = document.getElementById("conv-section");
+  const convEmptyEl = document.getElementById("conv-empty");
+  const ALL_WINDOW_TYPES = ["normal", "popup", "panel", "app", "devtools"];
+  const REOPEN_TIMEOUT_MS = 8000;
+
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
   });
 
   let rows = [];                                   // every canvas, newest first
+  let convIndex = {};                              // conv:index
+  let openLive = new Set();                        // conversation ids open in a live window
+  let myWindowId = null;                           // this tab's window (cached: the click must not await)
   const contents = new Map();                      // id → { rev, text } (normalized), for content search
   let contentSkipped = 0;                          // text canvases left out of the last content pass
 
@@ -44,7 +57,10 @@
     let metas;
     try { metas = await store.allMetas(); }
     catch (e) { notice(`讀取畫布失敗：${CanvasCore.clipError((e && e.message) || e)}`); return; }
-    rows = G.buildRows(metas, { now: Date.now(), footprint: CanvasStore.footprint });
+    await readConversations();
+    const titles = {};
+    for (const [id, e] of Object.entries(convIndex)) if (e && e.title) titles[id] = e.title;
+    rows = G.buildRows(metas, { now: Date.now(), footprint: CanvasStore.footprint, titles });
     const live = new Set(rows.map((r) => r.id));
     for (const id of contents.keys()) if (!live.has(id)) contents.delete(id);
     await search();
@@ -71,6 +87,82 @@
       if (seq !== searchSeq) return;                // a newer keystroke or reload took over
     }
     render(G.filterRows(rows, q, contents), q);
+    renderConversations(q);
+  }
+
+  // --- 對話 (multi-conversation §3.4) ----------------------------------------------------------------
+  async function readConversations() {
+    try {
+      const got = await CanvasStore.getMatching(chrome.storage.local, (k) => k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX));
+      const windows = {};
+      for (const [k, v] of Object.entries(got)) if (k.startsWith(ConvCore.WINDOW_PREFIX)) windows[k.slice(ConvCore.WINDOW_PREFIX.length)] = v;
+      let live = new Set();
+      try { live = new Set((await chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES })).map((w) => String(w.id))); } catch (_) { /* none known */ }
+      convIndex = got[ConvCore.INDEX_KEY] || {};
+      openLive = ConvCore.liveOpenIds(windows, live);
+    } catch (_) {
+      convIndex = {};
+      openLive = new Set();
+    }
+  }
+
+  function renderConversations(q) {
+    const counts = {};
+    for (const r of rows) counts[r.conversationId] = (counts[r.conversationId] || 0) + 1;
+    const all = ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: "", now: Date.now() });
+    const shown = G.queryTerms(q).length ? ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: q, now: Date.now() }) : all;
+    convSection.hidden = all.length === 0;
+    convListEl.replaceChildren(...shown.map((r) => {
+      const li = document.createElement("li");
+      li.className = "conv-row";
+      li.dataset.id = r.id;
+      const title = document.createElement("span");
+      title.className = "conv-title";
+      title.textContent = r.title;
+      title.title = `${r.title}\n對話 ${r.id}`;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "canvas-btn conv-reopen";
+      btn.textContent = "重新打開";
+      btn.title = "在這個視窗的側邊欄打開這段對話";
+      btn.addEventListener("click", () => reopenConversation(r, btn));
+      li.append(
+        title,
+        cell(r.time, r.at ? G.absoluteTime(r.at) : ""),
+        cell(`${r.canvases} 個畫布`),
+        cell(r.archived ? "已封存" : "在關掉的視窗", r.archived ? "從分頁列的 × 封存" : "留在關掉的視窗裡（沒有封存）"),
+        btn,
+      );
+      return li;
+    }));
+    convEmptyEl.hidden = !(all.length && !shown.length);
+    convEmptyEl.textContent = `沒有符合「${q.trim()}」的對話。`;
+  }
+
+  function refreshWindowId() {
+    try { chrome.tabs.getCurrent().then((t) => { if (t) myWindowId = t.windowId; }, () => {}); } catch (_) { /* not in a tab */ }
+  }
+
+  // 重新打開: no await before chrome.sidePanel.open — it needs this click's user gesture.
+  function reopenConversation(r, btn) {
+    const wid = myWindowId;
+    if (wid == null) { notice("找不到這個分頁所在的視窗，請重新整理總覽再試。", 6000); return; }
+    try { chrome.sidePanel.open({ windowId: wid }).catch(() => {}); } catch (_) { /* old Chrome: the panel may already be open */ }
+    btn.disabled = true;
+    (async () => {
+      const reqId = crypto.randomUUID();
+      try { await chrome.storage.session.set({ [`${ConvCore.REOPEN_KEY_PREFIX}${wid}`]: { id: r.id, reqId, at: Date.now() } }); } catch (_) { /* the message below still works */ }
+      let answer, timer;
+      try {
+        const timeout = new Promise((res) => { timer = setTimeout(() => res(undefined), REOPEN_TIMEOUT_MS); });
+        answer = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-conv-open", id: r.id, windowId: wid, reqId }), timeout]);
+      } catch (_) { answer = undefined; }
+      finally { clearTimeout(timer); }
+      if (answer && answer.ok) notice(`已在側邊欄打開「${r.title}」。`, 4000);
+      else if (answer && answer.error) notice(`沒有打開：${CanvasCore.clipError(answer.error)}`, 8000);
+      else notice("已打開側邊欄：對話會在側邊欄載入後打開。", 6000);
+      btn.disabled = false;
+    })();
   }
 
   function cell(text, title) {
@@ -188,7 +280,7 @@
   // Metas change on every write, delete and mirror bookkeeping; one re-read per burst.
   let reloadTimer = 0;
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k))) return;
+    if (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX))) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(reload, 150);
   });
@@ -215,6 +307,11 @@
   }
   window.addEventListener("hashchange", () => { if (takeHashQuery()) { clearTimeout(searchTimer); search(); } });
 
+  // A window closing makes its conversations reopenable here; the tab may also move to another window.
+  if (chrome.windows && chrome.windows.onRemoved) chrome.windows.onRemoved.addListener(() => { clearTimeout(reloadTimer); reloadTimer = setTimeout(reload, 150); });
+  window.addEventListener("focus", refreshWindowId);
+
+  refreshWindowId();
   takeHashQuery();
   reload();
 })();

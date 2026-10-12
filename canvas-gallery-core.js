@@ -28,11 +28,13 @@
     return terms.every((t) => normalizedText.includes(t));
   }
 
-  // Conversations have no names until multi-conversation lands: the short id is the label
-  // ("c_" + first 6 hex), the full id goes in the tooltip.
-  function conversationLabel(conversationId) {
+  // A conversation's label in a canvas row: its title (multi-conversation §3.3, from conv:index via
+  // `titles`), else the short id ("c_" + first 6 hex); the full id goes in the tooltip.
+  function conversationLabel(conversationId, titles) {
     const id = String(conversationId || "");
     if (!id) return "（未知對話）";
+    const t = titles && typeof titles[id] === "string" ? titles[id].trim() : "";
+    if (t) return t;
     return /^c_[0-9a-f]{12}$/.test(id) ? id.slice(0, 8) : id.slice(0, 16);
   }
 
@@ -67,8 +69,9 @@
    * until the onInstalled cleanup (background.js) removes them. `size` is what the canvas
    * takes against the budget: its whole version history (§3.5, §3.6) — `footprint` (CanvasStore.footprint
    * in the page); without it, latest + the agent copy, what a canvas took before history.
+   * `titles` ({ conversationId: title }): conversation names for the 對話 column.
    */
-  function buildRows(metas, { now, footprint }) {
+  function buildRows(metas, { now, footprint, titles }) {
     const rows = [];
     for (const m of metas || []) {
       if (!m || typeof m !== "object" || typeof m.id !== "string") continue;
@@ -80,7 +83,7 @@
       rows.push({
         id: m.id,
         conversationId: String(m.conversationId || ""),
-        conversation: conversationLabel(m.conversationId),
+        conversation: conversationLabel(m.conversationId, titles),
         title,
         titleKey: normalize(title),
         kind,

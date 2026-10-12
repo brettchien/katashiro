@@ -103,6 +103,7 @@ The card stays in the chat after it settles; its buttons go, so a late click can
 | timeout | **未回答（逾時）** | nothing |
 | superseded | **未回答（你送了別的訊息）** | nothing (the user's message goes out normally) |
 | cancelled | **未回答（聊天已清除）** | nothing |
+| archived | **未回答（對話已封存）** | nothing ([multi-conversation](./multi-conversation.md) §3.4) |
 | disconnected | **未回答（agent 已中斷連線）** | nothing |
 | restarted | **未回答（agent 的 session 已重開）** | nothing |
 

@@ -187,7 +187,8 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 - **Archive (×)** is Katashiro-side only (there is no `session/close`, §1.2): set `archivedAt`, remove
   the id from the window's `open`, release its Web Lock, drop its in-memory state and remove its
   MCP server instance and that instance's `connections` entries (§3.9); its pending ask cards close
-  as `cancelled`, like 🧹 (§3.8). Messages, sessions,
+  as `archived` (**未回答（對話已封存）**, ask-user §2.4; not `cancelled`, whose text says the chat was
+  cleared — Jellyfish, #127 review). Messages, sessions,
   canvases and their tabs stay as they are (closing or collapsing the group is P1b). The broker
   session ages out by TTL or pool eviction. The agent has no archive tool: it is the user's decision.
 - A conversation whose turn is running cannot be archived (same rule as switching, §3.5).
@@ -288,7 +289,7 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
     **`disconnected`** (the agent deliberately disconnected: another agent made active, URL or token
     edited, removed) closes that agent's cards **in every conversation**, since none of its sessions
     will be flushed. A transient socket drop closes nothing, as now;
-  - archive closes the conversation's cards as `cancelled` (§3.4);
+  - archive closes the conversation's cards as `archived` (§3.4);
   - the 3-pending-card cap is **per agent per conversation** (ask-user §2.5).
 - **🔒 Confirm cards** are bound to the turn they were asked in. Turns run only in the current
   conversation in the MVP, and a switch is refused while one runs, so a confirm card is always on
@@ -330,7 +331,38 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
   and the canvas tab is told why), then posts. For an archived conversation it is refused:
   `這段對話已封存，先從總覽重新打開`.
 
-### 3.11 Not in the MVP
+### 3.11 Implementation notes (MVP, 2026-10-12)
+
+Where the MVP had to read this section one way, it took the safer reading:
+
+- **Adoption with no free slot adopts nothing** (§3.7): the orphan record stays for a later window,
+  so a second window opened while 3 are open elsewhere does not archive a closed window's
+  conversations. That window still writes its own record, empty (`{open:[]}`), so it never adopts
+  later either: an orphan is only adopted by a window that has no record yet. Accepted — the
+  orphan's conversations stay reopenable from the gallery. With some room, what does not fit is
+  archived (never left in no record). The new record is written before the adopted one is
+  removed, so closing the panel in between leaves the conversations in two records, never in
+  none. "Most recently saved" orphan = the newer of the record's `savedAt` and its conversations'
+  `lastMessageAt`.
+- **Migration never disturbs an open set** (§3.2 step 4): conversations already in a window record
+  (an earlier run, or the newer version running before a downgrade) keep their slots; a
+  downgrade-period conversation with no slot left is archived, reopenable from the gallery.
+- **Queued prompts block a switch only on a live connection** (§3.5): a queue waiting for a
+  reconnect does not trap the user; it is flushed when that conversation is current again.
+- **"A conversation that has messages"** (U2, §3.5) = messages recorded before the queued prompt: a
+  new conversation's first message is recorded before its `session/new` finishes and gets no line.
+- **The picker can archive a conversation open in another window** (§3.3): that window's panel
+  archives it on request (refusing while it replies); with no panel showing it (its lock is free),
+  the records are changed directly.
+- **A push for a conversation open nowhere** (§3.10) is refused by the panel of the canvas tab's
+  window, and only when no panel holds the conversation's lock (else that panel answers).
+- **A typed name** is capped at 80 characters (the ADR sets no cap); `session/update` frames with no
+  `sessionId` are still shown (only a different id is dropped).
+- **One tunnel router per socket**: each conversation's state owns its MCP server instance, while the
+  `Conn` keeps the router (`servers` = every open conversation's instance, `connections`), since
+  tunnel frames carry no session id.
+
+### 3.12 Not in the MVP
 
 Background turns; agent-opened tabs in the conversation's group; collapsing groups on switch; the
 working tab; marks and notifications for other conversations; agent `set_title`; mirror folder names;

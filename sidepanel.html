@@ -26,7 +26,7 @@
         <span id="sync-badge" class="sync-badge" hidden></span>
         <!-- Canvas gallery (ADR docs/adr/canvas.md §3.7): every canvas across conversations, in one tab. -->
         <button id="canvas-gallery-btn" title="畫布總覽（所有畫布）">🗂️</button>
-        <button id="clear-chat-btn" title="清除聊天畫面">🧹</button>
+        <button id="clear-chat-btn" title="清除這段對話的聊天畫面">🧹</button>
         <button id="settings-btn" title="設定">⚙️</button>
       </div>
     </header>
@@ -52,15 +52,12 @@
       <!-- Chatroom View (active when connected) -->
       <section id="chat-view" class="view active">
         <div class="chat-container">
+          <!-- Tab strip (ADR docs/adr/multi-conversation.md §3.3): one tab per open conversation, then ＋. Rendered by sidepanel.js. -->
+          <div id="conv-tabs" class="conv-tabs" role="tablist" aria-label="對話"></div>
           <!-- Roster: one chip per agent (online + browser status) -->
           <div id="roster" class="roster"><!-- rendered by sidepanel.js --></div>
-          <!-- Messages list -->
-          <div id="messages-list" class="messages-list">
-            <!-- System Welcome -->
-            <div class="message system">
-              <div class="system-text">歡迎使用 Katashiro！已準備好接收 OpenAB 的 WebSocket 訊息流。</div>
-            </div>
-          </div>
+          <!-- Messages: the scroll container; one list per open conversation inside it (sidepanel.js, §3.5) -->
+          <div id="messages-list" class="messages-list"></div>
 
           <!-- Jump to latest: shown when the user has scrolled up while new content arrives -->
           <button id="jump-latest" class="jump-latest" hidden>↓ 最新訊息</button>
@@ -215,6 +212,7 @@
   <script src="composer.js"></script>
   <script src="confirm-core.js"></script>
   <script src="ask-core.js"></script>
+  <script src="conv-core.js"></script>
   <script src="sidepanel.js"></script>
 </body>
 </html>

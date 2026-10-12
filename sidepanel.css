@@ -1580,3 +1580,127 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 /* GFM task lists in chat bubbles (markdown.js). */
 .bubble li.task-list-item { list-style: none; }
 .bubble li.task-list-item .task-list-item-checkbox { margin: 0 0.4em 0 -1.3em; vertical-align: middle; }
+
+/* --- Multi-conversation (ADR docs/adr/multi-conversation.md §3.3, §3.5) --- */
+/* One list per open conversation inside .messages-list (the scroll container), laid out like the
+   container itself. [hidden] needs its own rule: `display: flex` here would otherwise win over the
+   UA's [hidden] { display: none } (the Studio#83 specificity trap). */
+.conv-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.conv-messages[hidden] { display: none; }
+
+/* Tab strip: one tab per open conversation (at most 3 across all windows), then ＋. */
+.conv-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--border-color);
+  background: rgba(18, 24, 36, 0.7);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.conv-tabs:empty { display: none; }
+.conv-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 180px;
+  min-width: 0;
+  padding: 5px 4px 5px 10px;
+  border: 1px solid var(--border-color);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.conv-tab:hover { color: var(--text-primary); }
+.conv-tab.current {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  border-color: var(--accent);
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+.conv-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.conv-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-tab-time { flex: none; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.conv-tab-close,
+.conv-tab-new {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 6px;
+  line-height: 1;
+}
+.conv-tab-close { padding: 2px 5px; font-size: 13px; }
+.conv-tab-close:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
+.conv-tab.busy .conv-tab-close { opacity: 0.35; }
+.conv-tab-new { padding: 4px 10px; font-size: 14px; align-self: center; }
+.conv-tab-new:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
+.conv-tab-rename {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+}
+
+/* System notices with buttons (open in another window → focus it). */
+.system-text.with-actions { display: flex; flex-direction: column; gap: 6px; align-items: center; }
+.system-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.system-action {
+  padding: 3px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+.system-action:hover { border-color: var(--text-secondary); }
+
+/* The archive picker (§3.4): the extension asking, not an agent — neutral, no agent accent. */
+.message.system:has(> .conv-picker) { align-self: stretch; }
+.conv-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--text-muted);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.conv-picker-head { font-weight: 600; }
+.conv-picker-hint { color: var(--text-secondary); font-size: 11px; }
+.conv-picker-list { display: flex; flex-direction: column; gap: 4px; }
+.conv-picker-option,
+.conv-picker-cancel {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.conv-picker-option:hover:not(:disabled) { border-color: var(--text-secondary); }
+.conv-picker-option:disabled { opacity: 0.5; cursor: default; }
+.conv-picker-cancel { align-self: flex-end; text-align: center; }
+.conv-picker-status { color: #fca5a5; font-size: 12px; }
