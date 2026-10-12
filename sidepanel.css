@@ -755,6 +755,72 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .attach-thumb .attach-remove:hover { background: rgba(0, 0, 0, 0.85); }
 
+/* A dropped text file: a chip with name + size (composer and sent bubble). ADR chat-attachments. */
+.attach-file {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  height: 28px;
+  padding: 0 24px 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  color: var(--text-primary);
+  box-sizing: border-box;
+}
+.attach-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attach-file-size { flex: none; opacity: 0.7; }
+.attach-file .attach-remove {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  text-align: center;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.6);
+  padding: 0;
+}
+.attach-file .attach-remove:hover { background: rgba(0, 0, 0, 0.85); }
+.bubble-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.bubble-files .attach-file { padding-right: 10px; }
+
+/* Files dragged over the chat area: the whole area is the drop zone. */
+.chat-container.drop-active::after {
+  content: "放開以附加檔案";
+  position: absolute;
+  inset: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: rgba(79, 70, 229, 0.12);
+  color: #fff;
+  font-size: 14px;
+  pointer-events: none;
+  z-index: 20;
+}
+
 /* An image the agent showed (katashiro.show_image), inside its turn above the reply. */
 .agent-figure {
   margin: 4px 0;

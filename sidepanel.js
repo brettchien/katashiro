@@ -33,6 +33,8 @@ let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 let jevToken = "";
 // Settings → 截圖: per-screenshot size cap + how many captures stay pasteable (browser-mcp clamps).
 let screenshotConfig = BrowserMcp.normalizeScreenshotConfig(null);
+// Settings → 附加檔案: file size limit at drop + text cap on send (ADR chat-attachments §2.3).
+let attachConfig = Composer.normalizeAttachConfig(null);
 
 // Act mode: may an agent CHANGE the page, or only read it? Off means read_dom/screenshot work
 // and click/type/navigate are refused. Kept separate from roomConfig — that one is about who
@@ -1080,7 +1082,7 @@ setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 // Session ids + scrollback stay in storage.local (per-window, never synced).
 // NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
 // ws://localhost) may need adjusting on another machine.
-const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken", "screenshotConfig"];
+const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken", "screenshotConfig", "attachConfig"];
 function pickConfig(o) {
   const out = {};
   for (const k of CONFIG_KEYS) if (k in o) out[k] = o[k];
@@ -1171,6 +1173,7 @@ function applyConfig(r) {
   actMode = r.actMode === true;
   jevToken = (r.jevToken || "").trim();
   screenshotConfig = BrowserMcp.normalizeScreenshotConfig(r.screenshotConfig);
+  attachConfig = Composer.normalizeAttachConfig(r.attachConfig);
 }
 
 // --- Startup -----------------------------------------------------------------
@@ -1226,6 +1229,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
       renderAgentList();
       if (jevTokenInput) jevTokenInput.value = jevToken;
       renderScreenshotConfig();
+      renderAttachConfig();
     }
     renderSyncBadge();
     appendSystemMessage("已從 Google 帳號同步還原設定。");
@@ -1235,7 +1239,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
 function persist() {
   userEdited = true;
   runningOnDefaults = false;           // whatever is in memory now is intentional, not a placeholder
-  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken, screenshotConfig };
+  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken, screenshotConfig, attachConfig };
   chrome.storage.sync.set(cfg, () => {
     if (chrome.runtime.lastError) {
       // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
@@ -1483,6 +1487,7 @@ settingsBtn.addEventListener("click", () => {
   renderAgentList();
   if (jevTokenInput) jevTokenInput.value = jevToken;
   renderScreenshotConfig();
+  renderAttachConfig();
   renderCanvasFolder();
   switchView("settings");
 });
@@ -1554,6 +1559,25 @@ function renderScreenshotConfig() {
     renderScreenshotConfig();
     // A lower storeMax trims what each agent already holds now, not at its next capture.
     room.forEach((c) => { if (c.mcpServer) c.mcpServer.setImageStoreMax(screenshotConfig.storeMax); });
+    persist();
+  });
+});
+
+// Settings → 附加檔案 (ADR chat-attachments §2.3). Clamped on save like 截圖.
+const attachMaxMbInput = document.getElementById("attach-max-mb");
+const attachTextCapInput = document.getElementById("attach-text-cap-kb");
+function renderAttachConfig() {
+  if (attachMaxMbInput) attachMaxMbInput.value = String(attachConfig.maxFileMB);
+  if (attachTextCapInput) attachTextCapInput.value = String(attachConfig.textCapKB);
+}
+[attachMaxMbInput, attachTextCapInput].forEach((input) => {
+  if (!input) return;
+  input.addEventListener("change", () => {
+    attachConfig = Composer.normalizeAttachConfig({
+      maxFileMB: attachMaxMbInput && attachMaxMbInput.value,
+      textCapKB: attachTextCapInput && attachTextCapInput.value,
+    });
+    renderAttachConfig();
     persist();
   });
 });
@@ -1861,11 +1885,13 @@ function deleteAgent(i) {
 const attachPreview = document.getElementById("attach-preview");
 const MAX_SOURCE_BYTES = 20 * 1024 * 1024;              // refuse to even decode beyond this
 let stagedImages = [];                                   // [{ mimeType, data(base64), dataUrl }]
+let stagedFiles = [];                                    // dropped text files: [{ name, size, text }]
 let stagingChain = Promise.resolve();                    // serialize pastes so the budget check holds
 let stagingPending = 0;                                  // pastes still encoding — send waits for them
 
 function updateSendEnabled() {
-  sendBtn.disabled = stagingPending > 0 || (messageInput.value.trim().length === 0 && stagedImages.length === 0);
+  sendBtn.disabled = stagingPending > 0
+    || (messageInput.value.trim().length === 0 && stagedImages.length === 0 && stagedFiles.length === 0);
 }
 
 function renderStagedPreviews() {
@@ -1886,7 +1912,35 @@ function renderStagedPreviews() {
     thumb.append(el, rm);
     attachPreview.appendChild(thumb);
   });
-  attachPreview.hidden = stagedImages.length === 0;
+  // Text files: a chip (name + size), expanded into the prompt only on send (ADR chat-attachments §2.4).
+  stagedFiles.forEach((f, i) => {
+    const chip = fileChipEl(f);
+    const rm = document.createElement("button");
+    rm.className = "attach-remove";
+    rm.type = "button";
+    rm.textContent = "×";
+    rm.title = "移除";
+    rm.addEventListener("click", () => { stagedFiles.splice(i, 1); renderStagedPreviews(); updateSendEnabled(); });
+    chip.appendChild(rm);
+    attachPreview.appendChild(chip);
+  });
+  attachPreview.hidden = stagedImages.length === 0 && stagedFiles.length === 0;
+}
+
+// A text attachment as a chip — in the composer and in the sent bubble. Text only (textContent).
+function fileChipEl(f) {
+  const chip = document.createElement("div");
+  chip.className = "attach-file";
+  const name = Composer.displayName(f.name);
+  chip.title = name;
+  const label = document.createElement("span");
+  label.className = "attach-file-name";
+  label.textContent = `📎 ${name}`;
+  const size = document.createElement("span");
+  size.className = "attach-file-size";
+  size.textContent = Composer.formatBytes(f.size);
+  chip.append(label, size);
+  return chip;
 }
 
 function blobToDataUrl(blob) {
@@ -1947,6 +2001,96 @@ async function stageImages(blobs) {
   }
 }
 
+// --- Dropped files (ADR docs/adr/chat-attachments.md) -------------------------
+// The whole chat area takes files; what a file is comes from its bytes (Composer). Images join the
+// paste pipeline above; text files become chips. Everything stays in memory.
+const chatDropZone = chatView && chatView.querySelector(".chat-container");
+
+async function stageDroppedFiles(files) {
+  const plan = Composer.planDrop(stagedImages.length + stagedFiles.length,
+    files.map((f) => ({ size: f.size })), attachConfig.maxFileMB * 1024 * 1024);
+  const names = (idx) => idx.map((i) => Composer.displayName(files[i].name)).join("、");
+  if (plan.tooBig.length) appendSystemMessage(`檔案超過大小上限 ${attachConfig.maxFileMB} MB（${names(plan.tooBig)}），未附加。可到設定 → 附加檔案調整。`);
+  if (plan.overCount.length) appendSystemMessage(`一則訊息最多附加 ${Composer.MAX_ATTACHMENTS} 個檔案（${names(plan.overCount)} 未附加）。`);
+  const images = [];
+  const binary = [];
+  for (const i of plan.accept) {
+    const file = files[i];
+    const name = Composer.displayName(file.name);
+    let kind;
+    try {
+      const head = new Uint8Array(await file.slice(0, Composer.SNIFF_BYTES).arrayBuffer());
+      kind = Composer.classifyFileBytes(head, file.size <= Composer.SNIFF_BYTES).kind;
+    } catch {
+      appendSystemMessage(`無法讀取 ${name}（是資料夾嗎？），未附加`);
+      continue;
+    }
+    if (kind === "image") { images.push(file); continue; }
+    if (kind === "binary") { binary.push(name); continue; }
+    // Never sendable at any cap setting — refuse before reading the whole file into memory.
+    const hardCapKB = Composer.ATTACH_LIMITS.textCapKB[1];
+    if (file.size > hardCapKB * 1024) {
+      appendSystemMessage(`文字檔 ${name}（${Composer.formatBytes(file.size)}）超過可傳送的最大上限 ${Composer.formatBytes(hardCapKB * 1024)}，未附加`);
+      continue;
+    }
+    let text = null;
+    try { text = Composer.decodeText(new Uint8Array(await file.arrayBuffer())); } catch { /* reported below */ }
+    if (text === null) {
+      appendSystemMessage(`${name} 不是有效的 UTF-8 文字檔，未附加`);
+      continue;
+    }
+    stagedFiles.push({ name: file.name, size: file.size, text });
+    renderStagedPreviews();
+    updateSendEnabled();
+  }
+  if (binary.length) appendSystemMessage(`不支援的檔案類型（看起來是二進位檔）：${binary.join("、")}，未附加`);
+  if (!images.length) return;
+  const active = room.find((c) => c.agent.url === activeAgentUrl);
+  if (active && active.acpReady && !active.canImage) {
+    appendSystemMessage(`${active.name} 不支援圖片，未附加`);
+    return;
+  }
+  await stageImages(images);
+}
+
+function dragHasFiles(e) {
+  return !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files"));
+}
+function inDropZone(node) {
+  return !!(chatDropZone && chatView.classList.contains("active") && node && chatDropZone.contains(node));
+}
+function setDropHighlight(on) {
+  if (chatDropZone) chatDropZone.classList.toggle("drop-active", on);
+}
+// Document-level so a file dropped anywhere else in the panel is ignored instead of replacing the
+// panel with the file (the browser default).
+document.addEventListener("dragover", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  const ok = inDropZone(e.target);
+  e.dataTransfer.dropEffect = ok ? "copy" : "none";
+  setDropHighlight(ok);
+});
+document.addEventListener("dragleave", (e) => {
+  if (!dragHasFiles(e)) return;
+  if (!inDropZone(e.relatedTarget)) setDropHighlight(false);     // left the chat area (or the panel)
+});
+document.addEventListener("drop", (e) => {
+  if (!dragHasFiles(e)) return;
+  e.preventDefault();
+  setDropHighlight(false);
+  if (!inDropZone(e.target)) return;
+  const files = Array.from(e.dataTransfer.files || []);
+  if (!files.length) return;
+  stagingPending++;
+  updateSendEnabled();
+  stagingChain = stagingChain
+    .then(() => stageDroppedFiles(files))
+    .catch(() => appendSystemMessage("檔案處理失敗，未附加"))     // keep the chain alive
+    .finally(() => { stagingPending--; updateSendEnabled(); });
+});
+document.addEventListener("dragend", () => setDropHighlight(false));
+
 // --- Message input -----------------------------------------------------------
 messageInput.addEventListener("input", () => {
   updateSendEnabled();
@@ -1971,7 +2115,12 @@ messageInput.addEventListener("paste", (e) => {
   stagingPending++;
   updateSendEnabled();
   stagingChain = stagingChain
-    .then(() => stageImages(blobs))
+    .then(() => {
+      // Counted when the chain gets here, after any drop still being staged.
+      const room = Math.max(0, Composer.MAX_ATTACHMENTS - stagedImages.length - stagedFiles.length);
+      if (blobs.length > room) appendSystemMessage(`一則訊息最多附加 ${Composer.MAX_ATTACHMENTS} 個檔案，${blobs.length - room} 張圖片未附加。`);
+      return stageImages(blobs.slice(0, room));
+    })
     .catch(() => appendSystemMessage("圖片處理失敗，未附加"))  // keep the chain alive for later pastes
     .finally(() => { stagingPending--; updateSendEnabled(); });
 });
@@ -2021,15 +2170,20 @@ messagesList.addEventListener("click", (e) => {
 function sendMessage() {
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
+  const files = stagedFiles.slice();
   if (stagingPending > 0) return;                        // Enter mid-encode: don't strand the image for the next message
-  if (!text && images.length === 0) return;
+  if (!text && images.length === 0 && files.length === 0) return;
+  // Text cap on send (ADR chat-attachments §2.3): refuse, never truncate; keep everything staged.
+  const capError = Composer.textCapError(files, attachConfig.textCapKB * 1024);
+  if (capError) { appendSystemMessage(capError); return; }
   const replyTo = replyTarget;                           // what this message answers (or null)
   setReplyTarget(null);
-  postUserText(text, images, replyTo);
+  postUserText(text, images, replyTo, undefined, files);
 
   messageInput.value = "";
   messageInput.style.height = "auto";
   stagedImages = [];
+  stagedFiles = [];
   renderStagedPreviews();
   sendBtn.disabled = true;
 }
@@ -2037,9 +2191,12 @@ function sendMessage() {
 // Post a message as the user: show it, frame it, route it to the room. Shared by the input box and
 // the canvas's Send to agent / Send error (which compose their text in the canvas tab, §3.7).
 // `mentions` (optional): route by these @names instead of parsing `text` — a canvas push carries
-// canvas data that must not pick the recipients. Returns the agents it was enqueued to.
-function postUserText(text, images, replyTo, mentions) {
+// canvas data that must not pick the recipients. `files` (optional): dropped text files, expanded
+// after the text in what the agent receives; routing still reads only `text`. Returns the agents it
+// was enqueued to.
+function postUserText(text, images, replyTo, mentions, files) {
   images = images || [];
+  files = files || [];
   // Q4 (ADR ask-user §2.3): a message instead of answering closes every open ask card; nothing is
   // sent for them, this message goes out as usual.
   supersedePendingAsks();
@@ -2048,6 +2205,7 @@ function postUserText(text, images, replyTo, mentions) {
   appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
+    files: files.map((f) => ({ name: f.name, size: f.size })), // chips only; content is never kept
     replyTo,
   });
   // What the agent receives: a [time sender (↩ quoted)] header + the text, so a batched backlog
@@ -2055,7 +2213,7 @@ function postUserText(text, images, replyTo, mentions) {
   const framed = RoomCore.framePrompt({
     timestamp: sentAt, senderName: "user",
     replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text },
-  }, text);
+  }, Composer.expandAttachments(text, files));
 
   loopGuard.onHuman();
   const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text, mentions });
@@ -3267,7 +3425,7 @@ function jumpToMessage(id) {
   setTimeout(() => row.classList.remove("flash"), 1500);
 }
 
-function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption }) {
+function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption, files }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -3311,6 +3469,12 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
       bubble.appendChild(im);
     }
   }
+  if (Array.isArray(files) && files.length) {           // dropped text files: name + size, no content
+    const list = document.createElement("div");
+    list.className = "bubble-files";
+    for (const f of files) list.appendChild(fileChipEl(f));
+    bubble.appendChild(list);
+  }
   content.appendChild(bubble);
 
   const ts = document.createElement("div");
@@ -3318,7 +3482,9 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   ts.textContent = formatTime(timestamp);
   content.appendChild(ts);
 
-  attachReplyButton(content, { id, senderName, timestamp, text });
+  // A files-only message is quoted by its markers, not as an empty quote.
+  const quoteText = text || (Array.isArray(files) ? files.map(Composer.attachmentMarker).join(" ") : text);
+  attachReplyButton(content, { id, senderName, timestamp, text: quoteText });
 
   msgDiv.appendChild(content);
   messagesList.appendChild(msgDiv);
@@ -3326,7 +3492,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
     replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
     // images are memory-only; a shown image's caption (rendered as a figcaption) is kept as text
-    text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0),
+    text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0, files),
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.
