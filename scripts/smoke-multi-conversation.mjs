@@ -28,6 +28,10 @@
 //     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
 //     已封存 vs "that window's panel is closed"; reopen and a browser restart bring the tabs back
 //     into one group, adopting open ones instead of duplicating them.
+//   - §7.1 delete from the gallery: the confirm says what goes; refused while another page holds the
+//     conversation's lock; then its record, index entry, closed-window record
+//     entry and canvases go, another conversation's stay; a stale reopen is refused; a delete cut
+//     short (deletingAt left) is finished when a gallery loads.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -696,6 +700,99 @@ try {
   model = await q7.evaluate(() => window.__tm());
   check(model.tabs.filter((t) => t.url === "https://agent.example/a").length === 1, "restart: no duplicate of a tab Chrome restored", model.tabs.map((t) => t.url));
   await q7.close();
+
+  // --- §7.1: deleting a conversation from the gallery ---------------------------------------------
+  {
+    const DX = ID(501), DK = ID(502), DH = ID(503);
+    const pb = await browser.newPage();
+    await pb.goto(`${origin}/manifest.json`);
+    await pb.evaluate((DX, DK, DH) => {
+      localStorage.clear();
+      localStorage.setItem("ls:__live", "[1]");
+      const set = (k, v) => localStorage.setItem("ls:" + k, JSON.stringify(v));
+      const m = (text, timestamp) => ({ kind: "sent", text, timestamp, senderName: "You", senderId: "me" });
+      set("conv:index", {
+        [DX]: { title: "Delete me", titleSource: "user", createdAt: 1, lastMessageAt: 3, archivedAt: 4 },
+        [DK]: { title: "Keep me", titleSource: "user", createdAt: 1, lastMessageAt: 2, archivedAt: 4 },
+        [DH]: { title: "Held elsewhere", titleSource: "user", createdAt: 1, lastMessageAt: 1, archivedAt: null },
+      });
+      set(`conv:${DX}`, { id: DX, sessions: { "ws://fake/acp": "sess_x" }, messages: [m("one", 1), m("two", 2), m("three", 3)], savedAt: 3 });
+      set(`conv:${DK}`, { id: DK, sessions: {}, messages: [m("keep", 2)], savedAt: 2 });
+      set("window:9", { open: [DX, DH], current: DH, savedAt: 5 });     // a closed window's record
+    }, DX, DK, DH);
+    await pb.close();
+    const gd = await browser.newPage();
+    gd.on("pageerror", (e) => fail(`page error (gallery, delete): ${e.message}`));
+    await gd.goto(`${origin}/canvas-gallery.html?win=1`, { waitUntil: "load" });
+    // Canvases: two in DX (one with 2 versions), one in DK.
+    const cv = await gd.evaluate(async (DX, DK) => {
+      const st = CanvasStore.createCanvasStore({ storage: chrome.storage.local, lock: (n, fn) => navigator.locks.request(n, fn) });
+      const a = await st.agentWrite({ conversationId: DX, title: "Plan X", content: "# one" });
+      await st.agentWrite({ conversationId: DX, id: a.id, baseVersion: 1, title: "Plan X", content: "# two" });
+      const b = await st.agentWrite({ conversationId: DX, title: "Notes X", content: "x" });
+      const k = await st.agentWrite({ conversationId: DK, title: "Plan K", content: "k" });
+      window.__confirms = [];
+      window.confirm = (t) => { window.__confirms.push(t); return window.__confirmAnswer !== false; };
+      return { a: a.id, b: b.id, k: k.id };
+    }, DX, DK);
+    await until(gd, (n) => document.querySelectorAll("#conv-list .conv-row").length === n && Array.from(document.querySelectorAll("#conv-list .conv-row")).some((r) => r.innerText.includes("2 個畫布")), "delete: the gallery lists the 3 conversations with canvas counts", 3);
+    const rowBtn = (title) => gd.evaluate((t) => { const r = Array.from(document.querySelectorAll("#conv-list .conv-row")).find((x) => x.querySelector(".conv-title").textContent === t); r.querySelector(".conv-delete").click(); }, title);
+
+    // Declined: nothing happens.
+    await gd.evaluate(() => { window.__confirmAnswer = false; });
+    await rowBtn("Delete me");
+    await until(gd, () => window.__confirms.length === 1, "delete: the confirm is shown");
+    const text = await gd.evaluate(() => window.__confirms[0]);
+    check(/刪除對話「Delete me」？/.test(text) && text.includes("・3 則訊息") && text.includes("・2 個畫布，連同存著的 3 個版本") && text.includes("無法復原"), "delete: the confirm names the conversation and says 3 messages, 2 canvases, 3 versions, cannot be undone", text);
+    await sleep(300);
+    let st = await storage(gd);
+    check(st[`conv:${DX}`] && st["conv:index"][DX], "delete: 取消 deletes nothing", null);
+
+    // Refused while another page (a panel) holds the conversation's Web Lock; names its window.
+    const holder = await browser.newPage();
+    await holder.goto(`${origin}/manifest.json`);
+    await holder.evaluate((id) => { navigator.locks.request(`conv:${id}`, () => new Promise((r) => { window.__release = r; })); }, DH);
+    await gd.evaluate(() => { window.__confirmAnswer = true; });
+    await rowBtn("Held elsewhere");
+    await until(gd, () => document.getElementById("canvas-notice").textContent.includes("先在那裡封存再刪除"), "delete: refused while another window holds the conversation");
+    // The holder here is a bare page, in no live window's record: no window to offer (a real panel
+    // lists it in its window's record, and the unit tests check that the window is named).
+    check(await gd.evaluate(() => document.getElementById("canvas-notice-action").hidden), "delete: …with no 前往 button when the holding window is unknown", null);
+    st = await storage(gd);
+    check(st[`conv:index`][DH] && !st["conv:index"][DH].deletingAt, "delete: the held conversation is untouched", st["conv:index"][DH]);
+    await holder.evaluate(() => window.__release());
+    await holder.close();
+
+    // Confirmed.
+    await rowBtn("Delete me");
+    await until(gd, () => document.getElementById("canvas-notice").textContent.includes("已刪除對話「Delete me」和 2 個畫布"), "delete: done, and says so");
+    st = await storage(gd);
+    check(!st[`conv:${DX}`] && !st["conv:index"][DX], "delete: its record and index entry are gone", Object.keys(st).filter((k) => k.includes(DX)));
+    check(!Object.keys(st).some((k) => k.startsWith(`canvas:${cv.a}:`) || k.startsWith(`canvas:${cv.b}:`) || k === `canvas:${DX}:index`), "delete: its canvases with every version are gone", Object.keys(st).filter((k) => k.startsWith("canvas:")));
+    check(st[`canvas:${cv.k}:meta`] && st[`conv:${DK}`] && st["conv:index"][DK], "delete: another conversation and its canvas stay", null);
+    check(JSON.stringify(st["window:9"].open) === JSON.stringify([DH]), "delete: it left the closed window's record", st["window:9"]);
+    await until(gd, (id) => !Array.from(document.querySelectorAll("#conv-list .conv-row")).some((r) => r.dataset.id === id), "delete: the row is gone", DX);
+
+    // A stale reopen (a gallery that still lists it) is refused, not recreated as an empty conversation.
+    const pd = await openPanel(1);
+    r = await pd.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, windowId: 1, reqId: "del1" }, "/canvas-gallery.html"), DX);
+    check(r && r.ok === false && r.error === "這段對話已經刪除了", "delete: a stale reopen is refused", r);
+    st = await storage(pd);
+    check(!st["conv:index"][DX] && !st[`conv:${DX}`], "delete: …and nothing is recreated", st["conv:index"][DX]);
+    await pd.close();
+
+    // A delete cut short (deletingAt left, records still there): the next gallery load finishes it.
+    await gd.evaluate((id) => {
+      const idx = JSON.parse(localStorage.getItem("ls:conv:index"));
+      idx[id] = { ...idx[id], deletingAt: Date.now() };
+      localStorage.setItem("ls:conv:index", JSON.stringify(idx));
+    }, DK);
+    await gd.reload({ waitUntil: "load" });
+    await until(gd, (id) => { const idx = JSON.parse(localStorage.getItem("ls:conv:index")); return !idx[id] && localStorage.getItem("ls:conv:" + id) === null; }, "delete: a gallery load finishes a delete cut short", DK);
+    st = await storage(gd);
+    check(!st[`canvas:${cv.k}:meta`], "delete: …its canvas too", null);
+    await gd.close();
+  }
 } finally {
   await browser.close();
   server.close();

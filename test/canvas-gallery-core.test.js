@@ -169,3 +169,19 @@ test("buildRows: the 對話 column shows the conversation's title when known (mu
   assert.equal(rows[1].conversation, "c_ba9876");
   assert.equal(G.conversationLabel("c_0123456789ab", { c_0123456789ab: "   " }), "c_012345");
 });
+
+test("conversationDeleteSummary: that conversation's canvases, stored versions, distinct images, bytes, mirrored", () => {
+  const CanvasStore = require("../canvas-store.js");
+  const metas = [
+    { id: "cv_000000000001", conversationId: "c_a", version: 3, bytes: 10, history: [{ v: 1, bytes: 5 }, { v: 2, bytes: 6 }, { v: 3, bytes: 10 }] },
+    { id: "cv_000000000002", conversationId: "c_a", kind: "image", version: 2, bytes: 120, file: { folder: "f" },
+      history: [{ v: 1, bytes: 120, image: "h1", imageBytes: 100 }, { v: 2, bytes: 120, image: "h1", imageBytes: 100 }] },
+    { id: "cv_000000000003", conversationId: "c_b", version: 1, bytes: 99, filesByFolder: { f: {} } },
+    { id: "cv_000000000004", conversationId: "c_a", version: 2, bytes: 4, agentVersion: 1, agentBytes: 3 },   // before history
+    null, { conversationId: "c_a" },
+  ];
+  const s = G.conversationDeleteSummary(metas, "c_a", { historyOf: CanvasStore.historyOf, footprint: CanvasStore.footprint });
+  assert.deepEqual(s, { canvases: 3, versions: 7, images: 1, bytes: 21 + 140 + 7, mirrored: true });
+  assert.deepEqual(G.conversationDeleteSummary(metas, "c_b"), { canvases: 1, versions: 1, images: 0, bytes: 99, mirrored: true });
+  assert.deepEqual(G.conversationDeleteSummary(metas, "c_none"), { canvases: 0, versions: 0, images: 0, bytes: 0, mirrored: false });
+});

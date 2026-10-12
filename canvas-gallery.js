@@ -12,6 +12,9 @@
 //    left in a closed window's record), newest first, title search with the same box. 重新打開 opens
 //    the side panel of this tab's window in the click (chrome.sidePanel.open needs the gesture),
 //    leaves the request in storage.session for a panel that is still loading, and asks the panel.
+//    🗑 刪除 (§7.1) deletes a conversation listed here — never an open one (× archives it first):
+//    a confirm dialog saying what goes, then ConvStore.deleteConversation under its Web Lock. On load
+//    the gallery also finishes a delete an earlier tab left half done (finishDeletions).
 (function () {
   "use strict";
 
@@ -26,6 +29,7 @@
   const searchEl = document.getElementById("gallery-search");
   const noticeEl = document.getElementById("canvas-notice");
   const noticeBar = document.getElementById("canvas-notice-bar");
+  const noticeAction = document.getElementById("canvas-notice-action");
 
   const convListEl = document.getElementById("conv-list");
   const convSection = document.getElementById("conv-section");
@@ -37,6 +41,15 @@
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
   });
+  const convStore = ConvCore.createConvStore({
+    storage: chrome.storage.local,
+    lock: (name, fn) => navigator.locks.request(name, fn),
+    liveWindowIds: async () => new Set((await chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES })).map((w) => String(w.id))),
+    randomUUID: () => crypto.randomUUID(),
+    lockIfAvailable: (name, fn) => navigator.locks.request(name, { ifAvailable: true }, fn),
+    canvases: ConvCore.canvasOps(store),
+    sessionStorage: chrome.storage.session,
+  });
 
   let rows = [];                                   // every canvas, newest first
   let convIndex = {};                              // conv:index
@@ -46,9 +59,16 @@
   let contentSkipped = 0;                          // text canvases left out of the last content pass
 
   let noticeTimer = 0;
-  function notice(text, ms) {
+  // action: an optional { label, onClick } button after the text (e.g. 前往那個視窗).
+  function notice(text, ms, action) {
     noticeEl.textContent = text;
     noticeBar.hidden = !text;
+    noticeAction.hidden = !(text && action);
+    noticeAction.onclick = null;
+    if (text && action) {
+      noticeAction.textContent = action.label;
+      noticeAction.onclick = () => { notice(""); action.onClick(); };
+    }
     clearTimeout(noticeTimer);
     if (text && ms) noticeTimer = setTimeout(() => { if (noticeEl.textContent === text) notice(""); }, ms);
   }
@@ -126,12 +146,19 @@
       btn.textContent = "重新打開";
       btn.title = "在這個視窗的側邊欄打開這段對話";
       btn.addEventListener("click", () => reopenConversation(r, btn));
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "canvas-btn conv-delete";
+      del.textContent = "🗑 刪除";
+      del.title = "刪除這段對話：訊息、它的畫布（含所有版本與圖片）。無法復原";
+      del.addEventListener("click", () => deleteConversation(r, del));
       li.append(
         title,
         cell(r.time, r.at ? G.absoluteTime(r.at) : ""),
         cell(`${r.canvases} 個畫布`),
         cell(r.archived ? "已封存" : "在關掉的視窗", r.archived ? "從分頁列的 × 封存" : "留在關掉的視窗裡（沒有封存）"),
         btn,
+        del,
       );
       return li;
     }));
@@ -163,6 +190,68 @@
       else notice("已打開側邊欄：對話會在側邊欄載入後打開。", 6000);
       btn.disabled = false;
     })();
+  }
+
+  // 🗑 刪除 (§7.1). The counts are read fresh at the click; window.confirm blocks this tab only (not
+  // the side panel, #80's concern). The delete itself refuses — nothing deleted — when a panel has
+  // the conversation open by then (reopened since this list was drawn), naming that window. The dialog
+  // can stay open for as long as the user likes: once the lock is held, what it showed is read again
+  // (ConvCore.deleteSnapshot) and a change — reopened, written to, archived again — refuses it.
+  async function readDeleteFacts(id) {
+    const [got, index, metas] = await Promise.all([
+      chrome.storage.local.get(ConvCore.convKey(id)),
+      convStore.readIndex(),
+      store.allMetas(),
+    ]);
+    const conv = (got || {})[ConvCore.convKey(id)];
+    const mine = metas.filter((m) => m && m.conversationId === id);
+    return {
+      conv,
+      metas,
+      snapshot: ConvCore.deleteSnapshot({ entry: index[id], conv, canvases: mine }),
+    };
+  }
+
+  async function deleteConversation(r, btn) {
+    btn.disabled = true;
+    try {
+      let messages = 0, summary, before;
+      try {
+        const facts = await readDeleteFacts(r.id);
+        if (facts.snapshot === null) { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
+        before = facts.snapshot;
+        messages = facts.conv && Array.isArray(facts.conv.messages) ? facts.conv.messages.length : 0;
+        summary = G.conversationDeleteSummary(facts.metas, r.id, { historyOf: CanvasStore.historyOf, footprint: CanvasStore.footprint });
+      } catch (e) {
+        notice(`讀取對話失敗：${CanvasCore.clipError((e && e.message) || e)}`, 8000);
+        return;
+      }
+      if (!window.confirm(ConvCore.deleteConfirmText({ title: r.title, messages, summary }))) return;
+      const recheck = async () => ConvCore.deleteRecheck(before, (await readDeleteFacts(r.id)).snapshot);
+      let res;
+      try { res = await convStore.deleteConversation(r.id, { recheck }); }
+      catch (e) {
+        // The mark is down, so the gallery hides it and the next start (or this tab's reload) finishes it.
+        notice(`刪除沒有做完：${CanvasCore.clipError((e && e.message) || e)}。下次開啟總覽或側邊欄時會接著刪完。`, 10000);
+        return;
+      }
+      if (res && res.ok && res.known === false) { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
+      if (res && res.ok) { notice(`已刪除對話「${r.title}」${res.canvases ? `和 ${res.canvases} 個畫布` : ""}。`, 5000); return; }
+      if (res && res.reason === "changed") { notice(`沒有刪除：${ConvCore.DELETE_CHANGED_TEXT}`, 10000); return; }
+      if (res && res.reason === "missing") { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
+      if (res && (res.reason === "open" || res.reason === "locked")) {
+        const w = res.windowId != null && /^\d+$/.test(String(res.windowId)) ? Number(res.windowId) : null;
+        notice(`沒有刪除：${ConvCore.DELETE_OPEN_TEXT}`, 10000, w == null ? null : {
+          label: "前往那個視窗",
+          onClick: () => { chrome.windows.update(w, { focused: true }).catch(() => {}); },
+        });
+        return;
+      }
+      notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000);
+    } finally {
+      btn.disabled = false;
+      reload();
+    }
   }
 
   function cell(text, title) {
@@ -313,5 +402,8 @@
 
   refreshWindowId();
   takeHashQuery();
+  // §7.1: finish a conversation delete an earlier gallery tab (or this one, before a reload) left
+  // half done; onChanged re-renders when it lands.
+  convStore.finishDeletions().catch(() => { /* retried by the next start */ });
   reload();
 })();
