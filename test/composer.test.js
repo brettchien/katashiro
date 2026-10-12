@@ -95,4 +95,132 @@ test("historyText leaves a marker for images that are not persisted", () => {
   assert.equal(Composer.historyText("hi", 0), "hi");
   assert.equal(Composer.historyText("", 1), "（1 張圖片未保存）");
   assert.equal(Composer.historyText("hi", 2), "hi\n\n（2 張圖片未保存）");
+  // Dropped files leave one marker each (content never stored), after the image note.
+  const files = [{ name: "notes.md", size: 3 * 1024, text: "secret" }, { name: "a.log", size: 10 }];
+  assert.equal(Composer.historyText("", 0, files), "[file: notes.md, 3 KB]\n[file: a.log, 10 B]");
+  assert.equal(Composer.historyText("hi", 1, files.slice(0, 1)), "hi\n\n（1 張圖片未保存）\n[file: notes.md, 3 KB]");
+  assert.ok(!Composer.historyText("hi", 0, files).includes("secret"));
+});
+
+// --- Dropped files (ADR docs/adr/chat-attachments.md) -------------------------------------------
+
+const bytes = (...xs) => Uint8Array.from(xs.flat());
+const utf8 = (s) => new TextEncoder().encode(s);
+
+test("sniffImage reads magic bytes only", () => {
+  assert.equal(Composer.sniffImage(bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)), "image/png");
+  assert.equal(Composer.sniffImage(bytes(0xff, 0xd8, 0xff, 0xe0)), "image/jpeg");
+  assert.equal(Composer.sniffImage(utf8("GIF89a")), "image/gif");
+  assert.equal(Composer.sniffImage(utf8("RIFF\x10\x00\x00\x00WEBPVP8 ")), "image/webp");
+  assert.equal(Composer.sniffImage(utf8("RIFF\x10\x00\x00\x00WAVEfmt ")), null);   // a WAV is RIFF too
+  assert.equal(Composer.sniffImage(utf8("RIFF")), null);                          // too short for WEBP
+  assert.equal(Composer.sniffImage(utf8("<svg xmlns=…>")), null);                 // SVG is not an image here
+  assert.equal(Composer.sniffImage(bytes(0xff, 0xd8)), null);
+  assert.equal(Composer.sniffImage(new Uint8Array(0)), null);
+  assert.equal(Composer.sniffImage(undefined), null);
+});
+
+test("looksLikeText: NUL, strict UTF-8 (BOM, cut character) and the control-character ratio", () => {
+  assert.equal(Composer.looksLikeText(utf8("hello\tworld\r\n\f"), true), true);
+  assert.equal(Composer.looksLikeText(utf8("中文 / 日本語 / emoji 🐋"), true), true);
+  assert.equal(Composer.looksLikeText(bytes(0xef, 0xbb, 0xbf, ...utf8("bom")), true), true);
+  assert.equal(Composer.looksLikeText(new Uint8Array(0), true), true);
+  assert.equal(Composer.looksLikeText(bytes(...utf8("abc"), 0, ...utf8("def")), true), false);   // NUL
+  assert.equal(Composer.looksLikeText(bytes(0x61, 0xff, 0x62), true), false);                    // not UTF-8
+  assert.equal(Composer.looksLikeText(bytes(0xc3, 0x28), true), false);                          // bad continuation
+  // A multi-byte character cut by the 8 KB read: fine on a prefix, an error on a whole file.
+  const cut = utf8("x".repeat(10) + "中").slice(0, 12);
+  assert.equal(Composer.looksLikeText(cut, false), true);
+  assert.equal(Composer.looksLikeText(cut, true), false);
+  // Other C0 controls: up to 1% is text (an ANSI-coloured log), more is binary.
+  const ok = utf8("\x1b" + "a".repeat(99));
+  assert.equal(Composer.looksLikeText(ok, true), true);
+  assert.equal(Composer.looksLikeText(utf8("\x1b\x01" + "a".repeat(98)), true), false);
+});
+
+test("classifyFileBytes: image by magic, else text, else binary — never by name", () => {
+  assert.deepEqual(Composer.classifyFileBytes(bytes(0x89, 0x50, 0x4e, 0x47), true), { kind: "image", mimeType: "image/png" });
+  assert.deepEqual(Composer.classifyFileBytes(utf8("# notes\n"), true), { kind: "text" });
+  assert.deepEqual(Composer.classifyFileBytes(bytes(0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00), true), { kind: "binary" }); // zip
+  assert.deepEqual(Composer.classifyFileBytes(bytes(...utf8("%PDF-1.7\n%"), 0xe2, 0xe3, 0xcf, 0xd3), false), { kind: "binary" }); // PDF binary marker
+  assert.deepEqual(Composer.classifyFileBytes(utf8("notes.png is just a name"), true), { kind: "text" });
+  assert.equal(Composer.SNIFF_BYTES, 8192);
+});
+
+test("decodeText decodes strict UTF-8, drops a BOM, and refuses invalid bytes", () => {
+  assert.equal(Composer.decodeText(bytes(0xef, 0xbb, 0xbf, ...utf8("hi 中"))), "hi 中");
+  assert.equal(Composer.decodeText(bytes(...utf8("ok"), 0xff)), null);
+  assert.equal(Composer.decodeText(new Uint8Array(0)), "");
+});
+
+test("normalizeAttachConfig: defaults 10 MB / 256 KB, clamped, junk falls back", () => {
+  assert.deepEqual(Composer.normalizeAttachConfig(null), { maxFileMB: 10, textCapKB: 256 });
+  assert.deepEqual(Composer.normalizeAttachConfig({ maxFileMB: "5", textCapKB: 512 }), { maxFileMB: 5, textCapKB: 512 });
+  assert.deepEqual(Composer.normalizeAttachConfig({ maxFileMB: 0, textCapKB: 1e9 }), { maxFileMB: 1, textCapKB: 4096 });
+  assert.deepEqual(Composer.normalizeAttachConfig({ maxFileMB: 999, textCapKB: -3 }), { maxFileMB: 20, textCapKB: 1 });
+  assert.deepEqual(Composer.normalizeAttachConfig({ maxFileMB: "abc", textCapKB: "" }), { maxFileMB: 10, textCapKB: 256 });
+});
+
+test("planDrop refuses files over the size limit and past 10 attachments, in drop order", () => {
+  const f = (size) => ({ size });
+  assert.deepEqual(Composer.planDrop(0, [f(1), f(11), f(10)], 10), { accept: [0, 2], tooBig: [1], overCount: [] });
+  assert.deepEqual(Composer.planDrop(8, [f(1), f(1), f(1), f(99)], 10), { accept: [0, 1], tooBig: [3], overCount: [2] });
+  assert.deepEqual(Composer.planDrop(10, [f(1)], 10), { accept: [], tooBig: [], overCount: [0] });
+  assert.deepEqual(Composer.planDrop(0, [], 10), { accept: [], tooBig: [], overCount: [] });
+  assert.equal(Composer.MAX_ATTACHMENTS, 10);
+});
+
+test("formatBytes and displayName", () => {
+  assert.equal(Composer.formatBytes(0), "0 B");
+  assert.equal(Composer.formatBytes(1023), "1023 B");
+  assert.equal(Composer.formatBytes(3 * 1024), "3 KB");
+  assert.equal(Composer.formatBytes(256 * 1024), "256 KB");
+  assert.equal(Composer.formatBytes(1024 * 1024), "1 MB");
+  assert.equal(Composer.formatBytes(1.25 * 1024 * 1024), "1.3 MB");
+  assert.equal(Composer.displayName("a\nb\r\n.md"), "a b .md");
+  assert.equal(Composer.displayName(""), "file");
+});
+
+test("fenceLanguage comes from the extension (or a bare Dockerfile/Makefile) only", () => {
+  assert.equal(Composer.fenceLanguage("notes.md"), "markdown");
+  assert.equal(Composer.fenceLanguage("APP.PY"), "python");
+  assert.equal(Composer.fenceLanguage("dir/x.config.json"), "json");
+  assert.equal(Composer.fenceLanguage("Dockerfile"), "dockerfile");
+  assert.equal(Composer.fenceLanguage("server.log"), "");
+  assert.equal(Composer.fenceLanguage(".env"), "");
+  assert.equal(Composer.fenceLanguage("README"), "");
+  assert.equal(Composer.fenceLanguage("c"), "");                     // a bare name is not an extension
+  assert.equal(Composer.fenceLanguage("x.constructor"), "");         // no prototype lookups
+  assert.equal(Composer.fenceLanguage(undefined), "");
+});
+
+test("fenceFor is longer than any backtick run in the content, at least three", () => {
+  assert.equal(Composer.fenceFor("plain"), "```");
+  assert.equal(Composer.fenceFor("a `b` c"), "```");
+  assert.equal(Composer.fenceFor("```js\nx\n```"), "````");
+  assert.equal(Composer.fenceFor("`````"), "``````");
+});
+
+test("expandAttachments: typed text, then each file as a 📎 header + fenced block", () => {
+  const notes = { name: "notes.md", size: 3 * 1024, text: "# Title\n\n```sh\nls\n```\n" };
+  const log = { name: "a.log", size: 12, text: "line1\r\nline2" };
+  assert.equal(Composer.attachmentBlock(notes), "📎 notes.md（3 KB）\n````markdown\n# Title\n\n```sh\nls\n```\n````");
+  assert.equal(Composer.expandAttachments("please read", [notes, log]),
+    "please read\n\n📎 notes.md（3 KB）\n````markdown\n# Title\n\n```sh\nls\n```\n````\n\n📎 a.log（12 B）\n```\nline1\r\nline2\n```");
+  assert.equal(Composer.expandAttachments("", [log]), "📎 a.log（12 B）\n```\nline1\r\nline2\n```");
+  assert.equal(Composer.expandAttachments("hi", []), "hi");
+  assert.equal(Composer.attachmentMarker(notes), "[file: notes.md, 3 KB]");
+});
+
+test("textCapError refuses on send — per file and over the message total — never truncates", () => {
+  const cap = 256 * 1024;
+  assert.equal(Composer.textCapError([], cap), null);
+  assert.equal(Composer.textCapError([{ name: "a.txt", size: cap }], cap), null);
+  const one = Composer.textCapError([{ name: "big.txt", size: cap + 1 }, { name: "a.txt", size: 1 }], cap);
+  assert.match(one, /big\.txt/);
+  assert.doesNotMatch(one, /a\.txt/);
+  assert.match(one, /256 KB/);
+  const total = Composer.textCapError([{ name: "a.txt", size: cap / 2 }, { name: "b.txt", size: cap / 2 + 1 }], cap);
+  assert.match(total, /合計/);
+  assert.match(total, /沒有送出/);
 });

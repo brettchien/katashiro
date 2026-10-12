@@ -102,6 +102,22 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   line. Ask for a 4th open question → the agent gets an error. Answer while the agent's turn is
   still running → the answer is queued and sent when the turn ends. Choosing "delete it" deletes
   nothing by itself; a real `canvas_delete` still shows its own 🔒 card.
+- **Drop files on the chat (#85, ADR chat-attachments):** drag a `.md` file over the side panel:
+  the whole chat area shows a dashed **放開以附加檔案** overlay (not over Settings; nothing happens when
+  you drop on the header or on a canvas tab). Drop it → a 📎 chip with name and size above the input;
+  × removes it. Send with some text → your bubble shows the text and the chip, and the agent (ask it
+  to echo what it got) receives the text, then `📎 name（size）` and the file in a fenced block with
+  `markdown` as the language; a file that itself contains ```` ``` ```` fences gets a longer
+  fence. Reload the panel → the message shows `[file: name, size]`, not the content. Drop a PNG renamed
+  to `.txt` → it is staged as an image thumbnail (bytes decide, not the name); drop a `.zip` or
+  `.pdf` → 不支援的檔案類型（看起來是二進位檔）. Drop 12 files at once → 10 are staged, the
+  rest named in a notice. Settings → 附加檔案: set 檔案大小上限 to 1 MB and drop a 2 MB file →
+  refused at drop. Set the text cap to 1 KB, drop a 3 KB text file, send → nothing is sent, a
+  notice explains, and text, chip and reply-to stay; remove the chip → it sends. Two 600 B files
+  with a 1 KB cap → refused as a total. With an ask card open, send a message with a chip → the card
+  closes 未回答（你送了別的訊息） as with any message. Reply (↩) to a message and attach a file →
+  the quote and the file go together. A UTF-8 file with a BOM, a Big5 file (refused as not UTF-8,
+  or as binary) and a coloured log with a few ESC codes (accepted) cover the text heuristic.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt (a 🔒 confirm card in the chat). Run `chrome.storage.local.remove("canvas:budgetBytes")`
