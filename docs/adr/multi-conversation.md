@@ -120,7 +120,7 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 |---|---|
 | `conv:index` | `{ [id]: { title, titleSource: "auto" \| "user" \| null, createdAt, lastMessageAt, archivedAt \| null } }` |
 | `conv:<id>` | `{ id, sessions: { <agentUrl>: <acpSessionId> }, messages (≤ 200, as today), savedAt }` |
-| `window:<windowId>` | `{ open: [<id>, …] (≤ 3, tab order), current: <id>, savedAt }`, replaces `history:<windowId>` |
+| `window:<windowId>` | `{ open: [<id>, …] (tab order), current: <id>, savedAt }`, replaces `history:<windowId>`; the `open` lists of all windows together hold at most 3 ids (§3.3) |
 | `conv:schema` | `1` once migrated |
 | `canvas:*` | unchanged (already keyed by `conversationId`) |
 
@@ -145,10 +145,10 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 
 ### 3.3 The tab strip
 
-- One row at the top of the chat view: one tab per open conversation (at most 3), then **＋**.
+- One row at the top of the chat view: one tab per open conversation, then **＋**. At most **3 conversations are open across all windows** (Q4: the limit mirrors the broker pool of 3, which is global), not 3 per window.
   The current tab is highlighted. Each tab shows the title (truncated, full title on hover) and the
   time of the conversation's last message of any kind (Q1): `HH:MM` today, else `M/D`.
-- **＋** opens a new, empty conversation and switches to it (§3.5). With 3 open, ＋ first asks which
+- **＋** opens a new, empty conversation and switches to it (§3.5). With 3 open (in any window), ＋ first asks which
   one to archive (§3.4).
 - **×** on a tab archives that conversation (§3.4). Closing the last open tab leaves a new empty one.
 - **Names.** A new conversation shows `未命名 <7-char short id>` until its first user message, whose
