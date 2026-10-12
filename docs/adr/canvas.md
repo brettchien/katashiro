@@ -227,7 +227,9 @@ below is built around that.
     `{top, bottom, left, right, x}` is where the selection is in the frame's viewport, `x` its end,
     absent while it is out of view — finite and bounded, and the host clamps it to the frame box:
     it only places the host's 💬, §3.7; `where{headings?, lines?, slide?}` says where it is, each
-    part checked and capped by the host and dropped alone when malformed, §3.7), and
+    part checked and capped by the host and dropped alone when malformed, §3.7),
+    `selectionRect{seq, rect?}` (#125: the same selection moved — scroll, resize, slide change —
+    so only its rect is re-sent, never the text or where; refused from a compare tab), and
     `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
     refused from a compare tab, and acted on only in edit mode).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save`,
@@ -875,13 +877,17 @@ is silent, the conservative choice:
     - **Drawn by the host, not the frame.** The 💬 and the popover are `canvas.html` elements
       positioned over the iframe, so canvas content (agent-authored) cannot draw, imitate or cover
       them. The frame only adds `rect` to `selection{}` (§3.2): the selection's bounding rect and
-      the x of its end in the frame's viewport, re-posted when the frame scrolls or resizes or a
-      slide changes, and left out while the selection is out of view (the 💬 then hides). The host
+      the x of its end in the frame's viewport, left out while the selection is out of view (the
+      💬 then hides). When the frame scrolls or resizes or a slide changes under the same
+      selection, only the rect is re-posted, as `selectionRect{}` (once per animation frame, #125).
+      An open popover follows its selection, and docks under the header button while the
+      selection is out of view (#125). The host
       checks the numbers (finite, bounded), adds the iframe's offset and clamps to the frame box.
       Placement and key handling are pure functions (`CanvasCore.askPlace`, `askKey`, the state in
       `askReduce`).
     - **Popover:** a one-line excerpt of the selection (text only; whitespace, control and bidi
-      characters flattened), a multi-line note, **送出** and **✕**; `role="dialog"`. **Enter**
+      characters flattened; Unicode Tag characters dropped, a ZWJ between emoji kept, the text in
+      a `<bdi dir="auto">` so RTL content cannot move the 「」, #125), a multi-line note, **送出** and **✕**; `role="dialog"`. **Enter**
       sends, **Shift+Enter** is a new line, **Esc** closes; a key that belongs to an IME composition
       never sends or closes (`CanvasCore.imeKey`). The selection, the canvas version and its title
       are captured when the popover **opens** (as the old button click did), and the push is the

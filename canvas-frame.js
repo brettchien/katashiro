@@ -9,7 +9,7 @@
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, seq, truncated?, rect?, where?} (Ask agent, §3.7; rect places the host's 💬,
+//       selection{text, seq, truncated?, rect?, where?}, selectionRect{seq, rect?} (Ask agent, §3.7; rect places the host's 💬,
 //                                                        where{headings?, lines?, slide?} says where it is)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
@@ -751,12 +751,16 @@
   // editor holds unsaved text the agent could not find in the stored canvas. It carries the seq of
   // the render it was made in (#107, #96), so the host can drop one that arrives after a newer render.
   // rect (Brett 2026-10-12, option a): where the selection is in this viewport, so the HOST can
-  // draw its 💬 beside it (never drawn in here, where canvas content could imitate it). Re-sent when
-  // the view moves under the selection (scroll, resize, a slide change), once per animation
-  // frame; left out while the selection is out of view, so the host hides the 💬.
+  // draw its 💬 beside it (never drawn in here, where canvas content could imitate it). Left out
+  // while the selection is out of view, so the host hides the 💬 (and docks an open popover).
+  // When the view moves under an unchanged selection (scroll, resize, a slide change), only the
+  // rect is re-sent, once per animation frame, as selectionRect{rect?, seq} (#125d): the text
+  // (up to SELECTION_MAX) and the where (a tree walk) cannot have changed, so they are neither
+  // re-read nor re-posted.
   const SELECTION_DEBOUNCE_MS = 250;
   let selectionTimer = 0;
-  let lastSelection = "";                 // what was last posted: text + rect
+  let lastSelection = "";                 // what was last posted: where + text ("" = no selection)
+  let lastRect = "";                      // the rect last posted with it
   let shownSeq = 0;                       // render{seq} of what the view shows
   function selectionRect(sel) {
     if (!sel || !sel.rangeCount) return undefined;
@@ -845,9 +849,13 @@
         try { where = selectionWhere(sel); } catch (_) { /* where is a nicety; the selection stands */ }
       }
     }
-    const key = text ? `${JSON.stringify(rect || null)}${JSON.stringify(where || null)}${text}` : "";
-    if (key === lastSelection) return;
+    selectionTimer = 0;
+    const key = text ? `${JSON.stringify(where || null)}${text}` : "";
+    const rectKey = JSON.stringify(rect || null);
+    if (key === lastSelection && (!key || rectKey === lastRect)) return;
+    if (key && key === lastSelection) { lastRect = rectKey; postSelectionRect(rect); return; }
     lastSelection = key;
+    lastRect = rectKey;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
     const msg = { type: "selection", text: truncated ? text.slice(0, CanvasCore.SELECTION_MAX) : text, seq: shownSeq };
     if (truncated) msg.truncated = true;
@@ -859,11 +867,26 @@
     clearTimeout(selectionTimer);
     selectionTimer = setTimeout(postSelection, SELECTION_DEBOUNCE_MS);
   });
-  // The view moved under an unchanged selection: re-measure (only while there is one to place).
+  function postSelectionRect(rect) {
+    const msg = { type: "selectionRect", seq: shownSeq };
+    if (rect) msg.rect = rect;
+    post(msg);
+  }
+  // The view moved under an unchanged selection: re-measure its rect only (only while there is one
+  // to place). A selection change still pending its debounce sends the full selection{} soon.
   let moveFrame = 0;
   function selectionMoved() {
     if (!lastSelection || moveFrame) return;
-    moveFrame = requestAnimationFrame(() => { moveFrame = 0; postSelection(); });
+    moveFrame = requestAnimationFrame(() => {
+      moveFrame = 0;
+      if (!lastSelection || selectionTimer || editing) return;
+      const sel = document.getSelection();
+      const rect = sel && !sel.isCollapsed ? selectionRect(sel) : undefined;
+      const rectKey = JSON.stringify(rect || null);
+      if (rectKey === lastRect) return;
+      lastRect = rectKey;
+      postSelectionRect(rect);
+    });
   }
   document.addEventListener("scroll", selectionMoved, { capture: true, passive: true });   // any scroller
   window.addEventListener("resize", selectionMoved);

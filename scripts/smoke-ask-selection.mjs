@@ -10,7 +10,8 @@
 // does) and places a 💬-sized box with CanvasCore.askPlace, as canvas.js does. Checks:
 //   - a selection posts selection{text, seq, rect}, rect = the range's box in the frame viewport;
 //   - the placed 💬 does not cover the selection (below it, or above it near the bottom);
-//   - scrolling re-posts the rect; scrolled out of view, the rect is left out (the 💬 hides);
+//   - scrolling re-posts only the rect, as selectionRect{seq, rect?} — no selection{} with the
+//     text again (#125d); scrolled out of view, the rect is left out (the 💬 hides);
 //   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect;
 //   - where (Brett 2026-10-12 17:43): the heading path and the STORED source lines of a selection —
 //     through the "<br />" lines the view drops, in a table row, a list item, across two blocks, in a
@@ -90,6 +91,18 @@ try {
       await sleep(50);
     }
   };
+  // The next selectionRect{} after `act` (#125d: what a scroll posts instead of selection{}).
+  const nextRect = async (act, pred, what) => {
+    const n = (await msgs()).length;
+    await act();
+    const end = Date.now() + 5000;
+    for (;;) {
+      const found = (await msgs()).slice(n).filter((m) => m.type === "selectionRect" && pred(m)).pop();
+      if (found) return found;
+      if (Date.now() > end) { fail(`${what}: no such selectionRect{} (last: ${JSON.stringify((await msgs()).filter((m) => m.type === "selectionRect").pop())})`); return null; }
+      await sleep(50);
+    }
+  };
   await waitFor((m) => m.type === "ready", "ready");
   let frame = page.frames().find((f) => f.url().endsWith("#nonce0"));
   const paras = Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1} has some words to select in it.`);
@@ -132,17 +145,29 @@ try {
     check(p && (p.placement === "above" ? p.top + 26 <= fb.top + s2.rect.top : p.top >= fb.top + s2.rect.bottom), `near the bottom the 💬 does not cover the selection (${p && p.placement})`, { p, rect: s2.rect });
   }
 
-  // Scrolling moves the rect; out of view the rect is left out.
+  // Scrolling moves the rect, and only the rect (#125d); out of view the rect is left out.
   const s3 = await nextSelection(() => select("Paragraph 3 "), (m) => m.rect && s1 && s1.rect && m.rect.top === s1.rect.top, "back to paragraph 3");
-  const s4 = await nextSelection(() => frame.evaluate(() => window.scrollBy(0, 40)), (m) => m.text === "some words", "after a small scroll");
-  check(s3 && s4 && s4.rect && Math.abs(s4.rect.top - (s3.rect.top - 40)) <= 1, "a scroll re-posts the rect, moved by the scroll", { s3, s4 });
-  const s5 = await nextSelection(() => frame.evaluate(() => window.scrollBy(0, 2000)), (m) => m.text === "some words", "scrolled away");
-  check(s5 && s5.rect === undefined, "scrolled out of view: same text, no rect", s5);
-  const s6 = await nextSelection(() => frame.evaluate(() => window.scrollTo(0, 0)), (m) => m.text === "some words", "scrolled back");
+  await sleep(400);                                       // past the selectionchange debounce
+  const scrollFrom = (await msgs()).length;
+  const s4 = await nextRect(() => frame.evaluate(() => window.scrollBy(0, 40)), (m) => !!m.rect, "after a small scroll");
+  check(s3 && s4 && s4.seq === 1 && s4.rect && Math.abs(s4.rect.top - (s3.rect.top - 40)) <= 1, "a scroll posts selectionRect{seq, rect}, moved by the scroll", { s3, s4 });
+  const s5 = await nextRect(() => frame.evaluate(() => window.scrollBy(0, 2000)), () => true, "scrolled away");
+  check(s5 && s5.rect === undefined, "scrolled out of view: selectionRect{} with no rect", s5);
+  // Many scroll steps: rect messages only, at most one per animation frame, never the text again.
+  const s6 = await nextRect(() => frame.evaluate(async () => {
+    for (let i = 0; i < 20; i++) { window.scrollTo(0, 2000 - i * 100); await new Promise((r) => requestAnimationFrame(r)); }
+    window.scrollTo(0, 0);
+  }), (m) => !!m.rect, "scrolled back");
   check(s6 && s6.rect, "scrolled back: the rect returns", s6);
+  await sleep(300);
+  const during = (await msgs()).slice(scrollFrom);
+  check(during.length > 2 && during.every((m) => m.type === "selectionRect" && !("text" in m) && !("where" in m)),
+    "while scrolling the frame posts only selectionRect{} (no text, no where)", during.map((m) => m.type));
   // Bad rects never leave the frame: the host's check would refuse the message.
-  const accepted = await page.evaluate(() => __msgs.filter((m) => m.type === "selection").every((m) => m.rect === undefined || CanvasCore.askRect(m.rect)));
+  const accepted = await page.evaluate(() => __msgs.filter((m) => m.type === "selection" || m.type === "selectionRect").every((m) => m.rect === undefined || CanvasCore.askRect(m.rect)));
   check(accepted, "every rect the frame posted passes CanvasCore.askRect", null);
+  const valid = await page.evaluate(() => __msgs.filter((m) => m.type === "selectionRect").every((m) => CanvasCore.acceptFrameMessage({ source: 1, data: m }, { frameWindow: 1, nonce: m.nonce })));
+  check(valid, "every selectionRect{} passes the host's frame-message check", null);
 
   // where: the heading path and the stored lines. The stored text has Milkdown "<br />" lines and a
   // run of blank lines that the view drops (cleanEditorMarkdown), so rendered lines != stored lines.
@@ -264,9 +289,16 @@ try {
   check(s8 && s8.rect, "slides: selection with a rect", s8);
   check(s8 && s8.where && s8.where.slide === 1 && JSON.stringify(s8.where.headings) === JSON.stringify(["One"]) && s8.where.lines && s8.where.lines.from === 3 && s8.where.lines.to === 3,
     "slides: where = slide 1, its heading, the deck text's line 3", s8 && s8.where);
-  const s9 = await nextSelection(() => page.evaluate(() => __send({ type: "goto", slide: 2 })), (m) => m.text === "" || (m.text === "some words" && m.rect === undefined), "slide 2");
+  // A slide change is a move under the same selection: selectionRect{} with no rect (#125d), or
+  // reveal clears the selection itself (selection{text: ""}).
+  const goFrom = (await msgs()).length;
+  await page.evaluate(() => __send({ type: "goto", slide: 2 }));
+  let s9 = null;
+  for (const end = Date.now() + 5000; !s9 && Date.now() < end; await sleep(50)) {
+    s9 = (await msgs()).slice(goFrom).find((m) => (m.type === "selection" && m.text === "") || (m.type === "selectionRect" && m.rect === undefined)) || null;
+  }
   // Chrome 155 + reveal: the slide change clears the selection itself (text ""); either way the 💬 hides.
-  check(!!s9, `slides: moving to slide 2 hides the 💬 (${s9 && s9.text === "" ? "selection cleared" : "rect dropped"})`, s9);
+  check(!!s9, `slides: moving to slide 2 hides the 💬 (${s9 && s9.type === "selection" ? "selection cleared" : "rect dropped"})`, s9);
   await sleep(800);                                       // the slide transition
   // On slide 2: lines offset by where the slide starts in the deck text.
   const s8b = await nextSelection(() => frame.evaluate(() => {

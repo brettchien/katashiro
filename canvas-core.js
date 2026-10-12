@@ -50,6 +50,8 @@
     // alone, so a malformed one never costs the user the selection.
     selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.seq) &&
       (m.truncated === undefined || typeof m.truncated === "boolean") && (m.rect === undefined || askRect(m.rect) !== null),
+    // The view moved under an unchanged selection (#125d): only its rect, absent = out of view.
+    selectionRect: (m) => Number.isInteger(m.seq) && (m.rect === undefined || askRect(m.rect) !== null),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
@@ -63,7 +65,7 @@
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed", "escape", "undoState"]);
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
@@ -881,6 +883,14 @@
         // Esc / ✕ / after a send: the selection stays, its 💬 does not come back. A click outside an
         // unsent popover: the 💬 comes back (the user may go on to select something else anyway).
         return { phase: ev.type === "blur" && s.phase === "open" ? "pill" : "dismissed", sel: s.sel, captured: null, from: null };
+      case "rect": {
+        // selectionRect{} (#125d): the same selection moved in the view. Only for the selection
+        // of that render; null = out of view (the 💬 hides, an open popover docks).
+        if (!s.sel || s.sel.seq !== ev.seq) return s;
+        const rect = askRect(ev.rect);
+        if (JSON.stringify(rect) === JSON.stringify(s.sel.rect)) return s;
+        return { ...s, sel: { ...s.sel, rect } };
+      }
       case "render":
         // The DOM the selection was in is replaced. An open popover stays, with what it captured.
         return askOpen(s.phase) ? { ...s, sel: null } : { ...ASK_IDLE };

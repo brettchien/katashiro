@@ -284,7 +284,9 @@
       askPopRect = null;
     }
     if (!was.popover && now.popover) showAskPop();
-    else if (now.popover && sameAsCaptured(ask.sel, ask.captured) && ask.sel.rect) { askPopRect = ask.sel.rect; placeAskPop(); }
+    // An open popover follows its selection; once that scrolls out of view (no rect, #125e) it
+    // docks under the header button (placeAskPop's fallback) instead of hanging over unrelated text.
+    else if (now.popover && sameAsCaptured(ask.sel, ask.captured)) { askPopRect = ask.sel.rect || null; placeAskPop(); }
     if (now.pill) placeAskPill(); else askPill.hidden = true;
     if (!!prev.sel !== !!ask.sel) updateButtons();          // the header 💬 Ask agent
   }
@@ -996,6 +998,9 @@
         break;
       case "selection":
         onSelection(m);
+        break;
+      case "selectionRect":
+        if (!CanvasCore.fromOlderRender(m, renderingSeq)) askDispatch({ type: "rect", seq: m.seq, rect: m.rect });
         break;
       case "error":
         // Render N failing after startRender(N+1) says nothing about N+1: it must not fail the goto /

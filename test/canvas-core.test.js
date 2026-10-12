@@ -936,3 +936,45 @@ test("renderErrorHeader: names the failed render's version, and says so when the
     '[canvas "Plan" (cv_1) v22 (markdown) has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence; this error is from v22, the canvas is now v23 — check it still applies]');
   assert.equal(C.renderErrorHeader({ ...base, diagram: false }), '[canvas "Plan" (cv_1) v22 (markdown) failed to render]');
 });
+
+test("selectionRect{}: rect only, from our frame; refused in a compare tab (#125d)", () => {
+  const msg = (data) => C.acceptFrameMessage({ source: frameWindow, data: { nonce: "n1", ...data } }, { frameWindow, nonce: "n1" });
+  const rect = { top: 10, bottom: 30, left: 0, right: 100, x: 90 };
+  assert.ok(msg({ type: "selectionRect", seq: 2, rect }));
+  assert.ok(msg({ type: "selectionRect", seq: 2 }));                            // out of view
+  assert.equal(msg({ type: "selectionRect", rect }), null);                     // no seq
+  assert.equal(msg({ type: "selectionRect", seq: 2, rect: { top: "x" } }), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selectionRect", seq: 2, rect, nonce: "n1" } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+});
+
+test("askReduce rect: moves the selection's rect, keeps its text/where; null = out of view (#125d/e)", () => {
+  const r1 = { top: 10, bottom: 30, left: 0, right: 100, x: 90 }, r2 = { top: -40, bottom: -20, left: 0, right: 100, x: 90 };
+  const where = { headings: ["Plan"], lines: { start: 3, end: 3 } };
+  let s = C.askReduce(undefined, { type: "selection", sel: { text: "hello", seq: 1, rect: r1, where } });
+  const before = s.sel;
+  s = C.askReduce(s, { type: "rect", seq: 1, rect: r2 });
+  assert.deepEqual(s.sel.rect, r2);
+  assert.equal(s.sel.text, "hello");
+  assert.deepEqual(s.sel.where, before.where);                               // #129's where survives a scroll
+  assert.equal(s.phase, "pill");
+  // The same rect again: no new state (nothing to redraw).
+  assert.equal(C.askReduce(s, { type: "rect", seq: 1, rect: r2 }), s);
+  // Out of view: the 💬 hides; the selection (header button) stays.
+  s = C.askReduce(s, { type: "rect", seq: 1 });
+  assert.equal(s.sel.rect, null);
+  assert.deepEqual(C.askView(s), { pill: false, popover: false });
+  // Back in view, then a bad rect: dropped like a bad selection{rect}.
+  s = C.askReduce(s, { type: "rect", seq: 1, rect: r1 });
+  assert.deepEqual(C.askView(s), { pill: true, popover: false });
+  assert.equal(C.askReduce(s, { type: "rect", seq: 1, rect: { top: "x" } }).sel.rect, null);
+  // Another render's rect, or no selection: ignored.
+  assert.equal(C.askReduce(s, { type: "rect", seq: 2, rect: r2 }), s);
+  assert.equal(C.askReduce(C.ASK_IDLE, { type: "rect", seq: 1, rect: r2 }), C.ASK_IDLE);
+  // While the popover is open the rect still follows (so it can follow or dock); captured is untouched.
+  s = C.askReduce(s, { type: "open", version: 4, title: "Plan", from: "pill" });
+  const cap = s.captured;
+  s = C.askReduce(s, { type: "rect", seq: 1 });
+  assert.equal(s.phase, "open");
+  assert.equal(s.sel.rect, null);
+  assert.equal(s.captured, cap);
+});
