@@ -41,6 +41,11 @@
     return Math.round(Math.min(TIMEOUT_MAX_SEC, Math.max(TIMEOUT_MIN_SEC, n)) * 1000);
   }
 
+  // Two labels the user cannot tell apart are a repeat: ZWNJ/ZWJ are invisible, NBSP looks like a space.
+  function sameLook(s) {
+    return s.replace(/[\u200C\u200D]/g, "").replace(/[\u00A0\s]+/g, " ");
+  }
+
   /**
    * The tool's arguments → { ok: true, spec } or { ok: false, error } (an error the agent can fix).
    * spec = { question, options: string[], multi, allowOther, timeoutMs }, every string plain text.
@@ -49,19 +54,23 @@
     const a = args && typeof args === "object" ? args : {};
     const question = clean(a.question);
     if (!question) return { ok: false, error: "`question` is required (plain text)" };
+    if (/^\s*🔒/u.test(question)) return { ok: false, error: "question must not start with 🔒 (that marks the panel's own confirm card)" };
     if (question.length > QUESTION_MAX) return { ok: false, error: `question is ${question.length} chars; ask_user is capped at ${QUESTION_MAX}` };
     if (!Array.isArray(a.options)) return { ok: false, error: `\`options\` must be an array of ${OPTIONS_MIN}–${OPTIONS_MAX} short labels` };
     if (a.options.length < OPTIONS_MIN || a.options.length > OPTIONS_MAX) {
       return { ok: false, error: `give ${OPTIONS_MIN}–${OPTIONS_MAX} options (got ${a.options.length}); for an open question just ask in your reply` };
     }
     const options = [];
+    const seen = [];                                     // labels as they look on screen
     for (let i = 0; i < a.options.length; i++) {
       const raw = a.options[i];
       if (typeof raw !== "string") return { ok: false, error: `option ${i + 1} is not a string` };
       const label = clean(raw);
       if (!label) return { ok: false, error: `option ${i + 1} is empty` };
       if (label.length > OPTION_MAX) return { ok: false, error: `option ${i + 1} is ${label.length} chars; labels are capped at ${OPTION_MAX} (put detail in the question)` };
-      if (options.includes(label)) return { ok: false, error: `option ${i + 1} repeats "${label}"` };
+      const look = sameLook(label);
+      if (seen.includes(look)) return { ok: false, error: `option ${i + 1} repeats "${label}"` };
+      seen.push(look);
       options.push(label);
     }
     return {
@@ -134,6 +143,7 @@
     superseded: () => "未回答（你送了別的訊息）",
     cancelled: () => "未回答（聊天已清除）",
     disconnected: () => "未回答（agent 已中斷連線）",
+    restarted: () => "未回答（agent 的 session 已重開）",
   };
   function outcomeText(state, answer) {
     const f = OUTCOMES[state];
@@ -149,7 +159,7 @@
 
   /**
    * One question's lifecycle. The first of answer() / timeout / supersede() / cancel() /
-   * disconnect() settles it; later ones are no-ops (a click racing the timer cannot flip it).
+   * disconnect() / restart() settles it; later ones are no-ops (a click racing the timer cannot flip it).
    * The timeout counts only VISIBLE time (Q1 = b): setVisible(true) starts the clock, (false)
    * banks what is left and stops it; a card created hidden waits with a full budget.
    * onSettle(state, answer) runs once, synchronously. Clock and timers are injected for the tests.
@@ -194,6 +204,7 @@
       supersede: () => settle("superseded"),
       cancel: () => settle("cancelled"),
       disconnect: () => settle("disconnected"),
+      restart: () => settle("restarted"),
     };
   }
 

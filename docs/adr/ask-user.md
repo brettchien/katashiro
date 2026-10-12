@@ -101,11 +101,14 @@ The card stays in the chat after it settles; its buttons go, so a late click can
 | superseded | **未回答（你送了別的訊息）** | nothing (the user's message goes out normally) |
 | cancelled | **未回答（聊天已清除）** | nothing |
 | disconnected | **未回答（agent 已中斷連線）** | nothing |
+| restarted | **未回答（agent 的 session 已重開）** | nothing |
 
-`disconnected` is the one state not in the brief: the asking agent was deliberately disconnected
+`disconnected` and `restarted` are the two states not in the brief. `disconnected`: the asking agent was deliberately disconnected
 (another agent made active, its URL or token edited, removed). An answer then would sit in a queue
 nobody flushes, or reach a fresh session that never asked. A transient socket drop does **not**
 close the card: the answer is queued and goes out after the reconnect resumes the session.
+`restarted`: the reconnect could not resume the session and fell back to `session/new` — that
+fresh session never asked, so the asking agent's open cards close then.
 
 Unlike the 🔒 confirm card, an ask card does **not** close when the asking turn ends — the agent is
 told to end its turn right away, and the answer is a new turn by design. A user who stops the turn
@@ -116,8 +119,9 @@ the answer is not recorded as a chat message (the card already shows it).
 
 ### 2.5 Limits and when a call is refused
 
-- `question`: plain text, 1–300 characters after sanitising; `options`: 2–8 distinct labels of
-  1–60 characters each; an `other` answer: up to 500 characters. Out-of-range input is an error the
+- `question`: plain text, 1–300 characters after sanitising, not starting with 🔒 (the confirm
+  card's mark); `options`: 2–8 labels of 1–60 characters each that look different on screen (ZWNJ/ZWJ
+  ignored, NBSP counts as a space); an `other` answer: up to 500 characters. Out-of-range input is an error the
   agent can fix, not silently truncated, so the label the agent later receives is the one it sent.
 - **At most 3 pending cards per agent.** A 4th call is an error ("answer or wait for one first"), so
   a looping agent cannot bury the chat in questions.

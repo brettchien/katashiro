@@ -423,6 +423,8 @@ class Conn {
         // A resume can fail if the session id is unknown → fall back to a fresh one.
         if (this.acpSessionId) {
           this.acpSessionId = null; // stale in-memory session → fall back to a fresh session/new
+          // The fresh session never asked: an answer to a card from the old one has no context.
+          closePendingAsks(this, "restart");
           if (this.ws && this.ws.readyState === WebSocket.OPEN) this.handshake();
         } else {
           appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
@@ -3017,13 +3019,14 @@ function askCard(spec, conn) {
 }
 
 // Close open ask cards unanswered: `how` is supersede (another message), cancel (chat
-// cleared) or disconnect (`conn`'s only). Nothing is sent to any agent.
+// cleared), disconnect or restart (`conn`'s only; restart = its session could not be resumed).
+// Nothing is sent to any agent.
 function settlePendingAsks(how, conn) {
   for (const e of [...pendingAsks.values()]) if (!conn || e.conn === conn) e.ask[how]();
 }
 function supersedePendingAsks() { settlePendingAsks("supersede"); }
 function cancelPendingAsks() { settlePendingAsks("cancel"); }
-function closePendingAsks(conn) { settlePendingAsks("disconnect", conn); }
+function closePendingAsks(conn, how = "disconnect") { settlePendingAsks(how, conn); }
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
 let lastMsgMs = 0;

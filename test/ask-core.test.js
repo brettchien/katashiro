@@ -52,6 +52,8 @@ test("normalizeSpec: 2 to 8 options, each a distinct non-empty string ≤ 60 cha
   bad(["a", "x".repeat(61)], /option 2 is 61 chars/);
   bad(["same", "same"], /option 2 repeats "same"/);
   bad(["a\nb", "a b"], /option 2 repeats "a b"/);      // equal once flattened
+  bad(["允許", "允\u200D許"], /option 2 repeats/);        // ZWJ is invisible on screen
+  bad(["a b", "a\u00A0b"], /option 2 repeats/);          // NBSP looks like a space
   assert.equal(A.normalizeSpec({ question: "Q", options: Array.from({ length: 8 }, (_, i) => `o${i}`) }).ok, true);
   assert.equal(A.normalizeSpec({ question: "Q", options: ["a", "x".repeat(60)] }).ok, true);
 });
@@ -61,6 +63,8 @@ test("normalizeSpec: a question is required and capped at 300 chars (refused, no
   assert.match(A.normalizeSpec({ question: ch(0x200b, 0x0a), options: ["a", "b"] }).error, /question/);
   assert.match(A.normalizeSpec({ question: "q".repeat(301), options: ["a", "b"] }).error, /301 chars/);
   assert.equal(A.normalizeSpec({ question: "q".repeat(300), options: ["a", "b"] }).ok, true);
+  assert.match(A.normalizeSpec({ question: " 🔒 確認：刪除？", options: ["允許", "拒絕"] }).error, /🔒/); // not the confirm card
+  assert.equal(A.normalizeSpec({ question: "要 🔒 鎖住嗎？", options: ["a", "b"] }).ok, true);
   assert.equal(A.normalizeSpec(null).ok, false);
 });
 
@@ -149,6 +153,7 @@ test("outcomeText: every settled state reads in Traditional Chinese", () => {
   assert.equal(A.outcomeText("superseded"), "未回答（你送了別的訊息）");
   assert.equal(A.outcomeText("cancelled"), "未回答（聊天已清除）");
   assert.equal(A.outcomeText("disconnected"), "未回答（agent 已中斷連線）");
+  assert.equal(A.outcomeText("restarted"), "未回答（agent 的 session 已重開）");
   assert.equal(A.outcomeText("pending"), "");
 });
 
@@ -211,8 +216,8 @@ test("createAsk: hidden stretches do not count (Q1 = b)", () => {
   assert.equal(a.state, "timeout");
 });
 
-test("createAsk: answer / supersede / cancel / disconnect each settle once and stop the clock", () => {
-  for (const [method, state] of [["supersede", "superseded"], ["cancel", "cancelled"], ["disconnect", "disconnected"]]) {
+test("createAsk: answer / supersede / cancel / disconnect / restart each settle once and stop the clock", () => {
+  for (const [method, state] of [["supersede", "superseded"], ["cancel", "cancelled"], ["disconnect", "disconnected"], ["restart", "restarted"]]) {
     const c = fakeClock();
     const settled = [];
     const a = A.createAsk({ timeoutMs: 30000, visible: true, ...c, onSettle: (s) => settled.push(s) });
