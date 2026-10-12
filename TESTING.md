@@ -242,6 +242,32 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     gallery, a canvas of an open but not current conversation opens in that conversation's group
     without switching; Send to agent from it switches to its conversation first (refused while the
     current one replies); from an archived conversation's canvas tab: 「這段對話已封存，先從總覽重新打開」.
+- **Reconnect hint (A′) and disconnect diagnostics (E) (ADR browser-tunnel-liveness §9).** The
+  headless smoke above covers a quick drop. In Chrome, with a real agent, keep the side panel's
+  DevTools console open (it logs `socket open — same run / new run`, `disconnect — …` and
+  `reconnect hint added / skipped (reason)`); "the line" below is the U2 host line
+  `[katashiro: this conversation was just reconnected…]`, which the agent sees but the chat does not
+  — ask the agent whether its last prompt started with it, or read the console.
+  - **Quick blip:** chat a turn; turn Wi-Fi off, wait ~40 s (the chip goes to reconnecting), turn
+    it on: within a few seconds it reconnects (`same run`); the next prompt has **no** line
+    (`skipped (session intact …)`).
+  - **Slow drop:** turn Wi-Fi off for **more than 2 min**, on again: `new run`; the next prompt
+    **has** the line (`last reply before this connection run`).
+  - **Panel reload:** reload the side panel (close and reopen it, or DevTools → reload): the next
+    prompt **has** the line (a new run — Katashiro cannot know what happened meanwhile).
+  - **Switch / reopen:** with two conversations both used in this run, switch between them and
+    send: **no** line in either. Archive one and 重新打開 it from 🗂️: **no** line. A conversation last
+    used before the panel was reloaded, or last answered more than 1 h ago: the line.
+  - **Pending survives a drop:** after a panel reload (line pending), do not send; blip Wi-Fi for
+    ~40 s; then send: the line is **still** there (`still pending from before`).
+  - **Diagnostics:** after the drops above, ask the agent to call `katashiro.client_info`: it ends
+    with `recent disconnects (newest first):`, one line per drop (close code, e.g. 1006 unclean,
+    the frame gaps, `→ auto-reconnect; reopened after …, same run / new run`, failed retries during
+    the slow drop). Reload the panel and ask again: the same lines are still there
+    (storage.session). DevTools: `chrome.storage.session.get("katashiro.diag.disconnects")` holds
+    ≤ 20 records.
+  - **Known gap:** restarting openab in under 2 min looks like a quick blip, so the line is skipped
+    even though the agent lost its session (fix: an openab boot id, proposal A).
 - **Multi-conversation P1b (ADR multi-conversation §4).** The headless smoke above covers the
   rules on a model of tabs and groups; in Chrome (155+ for Split View), with act mode on:
   - **Group per conversation:** ask the agent to open a page with `new_tab` (background): it joins
