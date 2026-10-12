@@ -78,10 +78,12 @@ function serverName(label) { return `probe${label}`; }
 function buildPrompt(label) {
   return [
     `This is an automated protocol test of the Katashiro client (session ${label}). Follow these steps exactly and use no other tools:`,
-    `1. Call search_capabilities with the query "whoami".`,
+    // The facade discovers a tunnelled server lazily: the FIRST search starts its tools/list in the
+    // background and answers from the still-empty cache, so an empty result must be retried.
+    `1. Call search_capabilities with the query "whoami". If it returns no capabilities, call it again with the same query — up to 3 calls in total; the first one is expected to be empty while the server is still being discovered.`,
     `2. Call execute_capability with the exact name of the whoami capability that search returned (there should be exactly one) and arguments {}.`,
     `3. Reply in plain text (no markdown formatting) with these lines, in this order:`,
-    `   CAPS: <the capability names the search returned, comma-separated>`,
+    `   CAPS: <the capability names the last search returned, comma-separated>`,
     `   NONCE: <the nonce value from the whoami result>`,
     `   then five short numbered lines (1. to 5.), each one sentence about the sea.`,
   ].join("\n");

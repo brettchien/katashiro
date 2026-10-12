@@ -28,6 +28,7 @@ test("labels, server names, and the prompt never carries a nonce", () => {
   assert.equal(C.serverName("B"), "probeB");
   const p = C.buildPrompt("A");
   assert.match(p, /search_capabilities/);
+  assert.match(p, /call it again/, "an empty first search (facade cold start) is retried");
   assert.match(p, /execute_capability/);
   assert.match(p, /NONCE:/);
   assert.equal(C.whoamiText("A", "abc123"), "session=A server=probeA nonce=abc123");
