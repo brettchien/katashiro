@@ -8,6 +8,15 @@ try {
   console.warn("Katashiro: canvas-store.js failed to load; the incognito canvas cleanup is off:", e);
 }
 
+// Multi-conversation (ADR docs/adr/multi-conversation.md §3.2): the one-time migration of
+// history:<windowId> into conv:<id> + window:<windowId>. Same rule as above: a failure to load
+// must not kill the worker; a panel runs the migration itself on load anyway.
+try {
+  importScripts("confirm-core.js", "conv-core.js");
+} catch (e) {
+  console.warn("Katashiro: conv-core.js failed to load; conversations migrate when a panel opens:", e);
+}
+
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
@@ -16,12 +25,35 @@ chrome.sidePanel
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Katashiro - OpenAB Companion has been installed.");
   removeIncognitoCanvases();
+  migrateConversations();
 });
 // Also on every browser start (#113 review): a cleanup cut short by the worker stopping is
 // finished without waiting for the next update.
 chrome.runtime.onStartup.addListener(() => {
   removeIncognitoCanvases();
+  migrateConversations();
 });
+
+// §3.2: runs whenever a history:* key exists (an update, or what an older version wrote during a
+// downgrade), under the conv:migrate lock shared with the panels, which await it before loading.
+// Every step is idempotent: a run cut short by the worker stopping is finished by the next one
+// (here or in a panel). Best effort here: never throws.
+async function migrateConversations() {
+  try {
+    if (typeof ConvCore === "undefined") return;
+    const store = ConvCore.createConvStore({
+      storage: chrome.storage.local,
+      lock: (name, fn) => navigator.locks.request(name, fn),
+      // Every window type: a panel in an app/devtools window must not count as closed (#56).
+      liveWindowIds: async () => new Set((await chrome.windows.getAll({ windowTypes: ["normal", "popup", "panel", "app", "devtools"] })).map((w) => String(w.id))),
+      randomUUID: () => crypto.randomUUID(),
+    });
+    const r = await store.migrate();
+    if (r.migrated) console.log(`Katashiro: migrated ${r.migrated} conversation(s) to the multi-conversation layout.`);
+  } catch (e) {
+    console.warn("Katashiro: conversation migration failed (a panel retries on load):", e);
+  }
+}
 
 // Katashiro does not run in incognito (manifest "incognito": "not_allowed", #109): what is sent to
 // the agent cannot be forgotten, so an incognito promise could not be kept. Before that, an incognito
