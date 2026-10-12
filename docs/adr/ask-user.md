@@ -111,7 +111,10 @@ The card stays in the chat after it settles; its buttons go, so a late click can
 nobody flushes, or reach a fresh session that never asked. A transient socket drop does **not**
 close the card: the answer is queued and goes out after the reconnect resumes the session.
 `restarted`: the reconnect could not resume the session and fell back to `session/new` — that
-fresh session never asked, so the asking agent's open cards close then.
+fresh session never asked, so the asking agent's open cards close then. With several conversations
+the scopes differ: `restarted` closes only the cards of the conversation whose session was
+replaced, `disconnected` closes the agent's cards in every conversation
+([multi-conversation](./multi-conversation.md) §3.8).
 
 Unlike the 🔒 confirm card, an ask card does **not** close when the asking turn ends — the agent is
 told to end its turn right away, and the answer is a new turn by design. A user who stops the turn
@@ -126,8 +129,9 @@ the answer is not recorded as a chat message (the card already shows it).
   card's mark); `options`: 2–8 labels of 1–60 characters each that look different on screen (ZWNJ/ZWJ
   ignored, NBSP counts as a space); an `other` answer: up to 500 characters. Out-of-range input is an error the
   agent can fix, not silently truncated, so the label the agent later receives is the one it sent.
-- **At most 3 pending cards per agent.** A 4th call is an error ("answer or wait for one first"), so
-  a looping agent cannot bury the chat in questions.
+- **At most 3 pending cards per agent per conversation.** A 4th call is an error ("answer or wait for
+  one first"), so a looping agent cannot bury the chat in questions
+  ([multi-conversation](./multi-conversation.md) §3.8).
 - **Only inside the asking agent's turn.** Same rule as the confirm card (`ConfirmCore.shouldAsk`):
   the agent's tool calls run one after another, so a call can arrive after the user stopped the turn
   that wanted it. A question for a turn the user cancelled would put words in front of the user that

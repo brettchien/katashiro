@@ -120,32 +120,54 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 |---|---|
 | `conv:index` | `{ [id]: { title, titleSource: "auto" \| "user" \| null, createdAt, lastMessageAt, archivedAt \| null } }` |
 | `conv:<id>` | `{ id, sessions: { <agentUrl>: <acpSessionId> }, messages (≤ 200, as today), savedAt }` |
-| `window:<windowId>` | `{ open: [<id>, …] (tab order), current: <id>, savedAt }`, replaces `history:<windowId>`; the `open` lists of all windows together hold at most 3 ids (§3.3) |
-| `conv:schema` | `1` once migrated |
+| `window:<windowId>` | `{ open: [<id>, …] (tab order), current: <id>, savedAt }`, replaces `history:<windowId>`; the `open` lists of all **live** windows together hold at most 3 ids (§3.3) |
+| `conv:schema` | `1` once migrated (informational; the migration trigger is the presence of `history:*` keys) |
 | `canvas:*` | unchanged (already keyed by `conversationId`) |
 
 - A message write updates `conv:<id>` as `saveHistory` does now. `conv:index` is read-modify-written
   under the Web Lock **`conv:index`** (several panels write it); `lastMessageAt` is written at most
   every 5 s per conversation and always on switch, archive and panel hide.
-- **Migration** (`conv:schema` absent), under the lock **`conv:migrate`**, run by whichever comes first:
-  the service worker's `onInstalled` / `onStartup`, or a panel's load. For each `history:<windowId>`:
-  1. keep its `conversationId` (mint one if a pre-#61 entry has none), so canvases and message ids
-     need nothing;
-  2. write `conv:<id>` (sessions, messages) and its index entry: auto title from the first user
+- **Migration** runs **whenever any `history:*` key exists** (not only while `conv:schema` is absent),
+  under the lock **`conv:migrate`**, by whichever comes first: the service worker's `onInstalled` /
+  `onStartup`, or a panel's load. A panel **awaits** the lock (not `ifAvailable`), then re-reads the
+  `history:*` keys before building anything, so a panel never loads a half-migrated state. Run:
+  1. **Fix every id first.** A pre-#61 entry with no `conversationId` gets one minted and **written
+     back into its `history:<windowId>`** before anything else, so a run cut short after this step
+     reuses that id instead of minting a second conversation for the same chat.
+  2. **Deduplicate.** `adoptOrPruneOrphanHistory` (#56) sets the new key before removing the old, so
+     an interrupted adoption can leave two `history:` keys with one `conversationId`. The one with the
+     newer `savedAt` wins: its messages and sessions are used, and only its window gets the id
+     (step 4); the other key is just removed in step 5.
+  3. Write `conv:<id>` (sessions, messages) and its index entry: auto title from the first user
      message (§3.3), `createdAt` = the first message's time (else `savedAt`), `lastMessageAt` = the last
-     message's time, `archivedAt: null`;
-  3. write `window:<windowId>` = `{ open: [id], current: id }`, also for orphaned window ids, so the
-     #56 adoption below still finds them;
-  4. remove `history:<windowId>`; finally set `conv:schema = 1`.
-  Each step is idempotent (an existing `conv:<id>` is not overwritten), so a run cut short by the
-  worker stopping is completed by the next one. There is no downgrade: an older Katashiro finds no
-  `history:` key and starts empty.
+     message's time. If `conv:<id>` already exists (an earlier, cut-short run, or a downgrade and
+     upgrade, below), the newer `savedAt` wins as a whole; the older copy is not merged.
+  4. **Open at most 3.** Rank the conversations: those of live windows (`chrome.windows.getAll`)
+     first, then newest `lastMessageAt`. The first 3 get `archivedAt: null` and their
+     `window:<windowId>` = `{ open: [id], current: id }`; every other one gets `archivedAt` set and no
+     window record, and is reopened from the gallery (§3.4). Orphaned window ids among the first 3 keep
+     their record, so the #56 adoption (§3.7) still finds them.
+  5. Remove each `history:<windowId>` once its conversation is written; finally set `conv:schema = 1`.
+  Every step is idempotent, so a run cut short by the worker stopping is completed by the next one.
+  **Downgrade:** an older Katashiro finds no `history:` key and starts empty in a new conversation;
+  what it writes to `history:` is migrated when the newer version comes back (it is a separate
+  conversation, since the older version minted its own id). Nothing is lost silently.
 - **Empty conversations are not kept.** Archiving a conversation with no messages and no canvases
   deletes its keys instead; ＋ does not litter the gallery.
 
 ### 3.3 The tab strip
 
 - One row at the top of the chat view: one tab per open conversation, then **＋**. At most **3 conversations are open across all windows** (Q4: the limit mirrors the broker pool of 3, which is global), not 3 per window.
+  "Open" counts the ids in the `window:` records of **live** windows (`chrome.windows.getAll`). The
+  count and the change it guards (＋, reopen, adoption, a panel's first load) happen in **one
+  `conv:windows` lock** (§3.6), so two windows pressing ＋ at once cannot make 4.
+- **A closed window** (not a browser restart) leaves its record behind as an orphan. Its
+  conversations do not count toward the 3 and are not lost: the gallery's 對話 section (§3.4) lists
+  them with the archived ones, and reopening one moves it out of the orphan record. A new window that
+  adopts the record (§3.7) takes back only as many as fit under the 3.
+- A window whose panel loads with nothing to open while 3 are open elsewhere shows the archive
+  picker (§3.4) instead of a new conversation; 取消 leaves the panel on a notice listing the 3 with
+  buttons that focus their windows.
   The current tab is highlighted. Each tab shows the title (truncated, full title on hover) and the
   time of the conversation's last message of any kind (Q1): `HH:MM` today, else `M/D`.
 - **＋** opens a new, empty conversation and switches to it (§3.5). With 3 open (in any window), ＋ first asks which
@@ -163,12 +185,15 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 ### 3.4 Archive and reopen
 
 - **Archive (×)** is Katashiro-side only (there is no `session/close`, §1.2): set `archivedAt`, remove
-  the id from the window's `open`, release its Web Lock, drop its in-memory state. Messages, sessions,
+  the id from the window's `open`, release its Web Lock, drop its in-memory state and remove its
+  MCP server instance and that instance's `connections` entries (§3.9); its pending ask cards close
+  as `cancelled`, like 🧹 (§3.8). Messages, sessions,
   canvases and their tabs stay as they are (closing or collapsing the group is P1b). The broker
   session ages out by TTL or pool eviction. The agent has no archive tool: it is the user's decision.
 - A conversation whose turn is running cannot be archived (same rule as switching, §3.5).
 - **Reopen.** The 🗂️ gallery (`canvas-gallery.html`) gets a **對話** section above the canvases:
-  every archived conversation, newest `lastMessageAt` first, with title, last message time and
+  every conversation not open in a live window (archived, or left in a closed window's record, §3.3),
+  newest `lastMessageAt` first, with title, last message time and
   canvas count, filtered by the same search box (title only). **重新打開** sends
   `katashiro-conv-open { id }` (accepted only from `canvas-gallery.html`, like `katashiro-canvas-open`)
   to the panel of the gallery's window. That panel takes the conversation's lock (§3.6), clears
@@ -191,6 +216,11 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   last prompt (retry), `turnActive`, the stream, the browser MCP server instance and its `mcpState`.
   The `Conn` keeps the socket, heartbeat and liveness, and a `current` pointer. In the MVP only the
   current state may run a turn; P2 lifts that.
+- **`session/update` is routed by `sessionId` already in the MVP.** Today the handler
+  (`sidepanel.js` `onMessage`, the `session/update` branch) ignores `sessionId`. With several
+  sessions on one socket, a turn the user stopped in A whose agent keeps going (§1.2) would append
+  its late chunks and tool calls to B after a switch. The MVP drops (and logs) every update whose
+  `sessionId` is not the current state's; P2 routes it to its own state instead (§5).
 - **One DOM list per open conversation.** Each open conversation has its own message list element,
   built from `conv:<id>` the first time it is shown and then kept, hidden while not current. Cards
   (memory-only, §3.8), reply buttons and scroll position therefore survive a switch, and P2 can stream
@@ -203,10 +233,15 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 - **U2 fallback.** Katashiro cannot tell a resumed session from one the broker silently recreated
   (§1.2), so it does not try to guess (the session id does not change either). Instead, the **first
   prompt after any `session/resume` or `session/new` of a conversation that has messages** carries one
-  host line after the user's message: `[katashiro: this conversation was just reconnected. If you do
+  host line **before** the batch: `[katashiro: this conversation was just reconnected. If you do
   not have its earlier messages, read them with katashiro.chat_history before answering.]`. An agent
   that remembers ignores it; one that lost its memory recovers from Katashiro's record (≤ 200
-  messages). This also covers today's reconnect after a task restart. When `session/resume` itself
+  messages). This also covers today's reconnect after a task restart.
+  Like `REPLY_HINT`, the line is added **at flush time only**: it is not stored in `conv:<id>`, not
+  in the retry copy of the prompt, and `chat_history` never returns it. It goes first because
+  `batchWithReplyHint` strips the reply hint by `endsWith`; a line after it would break that on a
+  retry. The "needs the line" flag clears only when `session/prompt` is accepted, so a retried
+  first prompt carries it again. When `session/resume` itself
   fails, the fallback to `session/new` stays as now and closes that conversation's ask cards as
   `restarted` (ask-user §2.4).
 - **What cannot be detected:** a session the broker recreated keeps its ACP id, so the chips still read
@@ -224,14 +259,16 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 - Opening a conversation (load, reopen, adoption) uses `ifAvailable: true`. If another window holds
   it, the panel says `這段對話開在另一個視窗` with a button that focuses that window (found by scanning
   `window:*` for the id) and does not open it.
-- Moving a conversation between window records (reopen in another window, adoption) happens under the
-  lock **`conv:windows`**, which replaces `history:adopt`. On load a panel drops from its own `open`
+- Moving a conversation between window records (reopen in another window, adoption) and every change
+  to the open count (§3.3) happen under the lock **`conv:windows`**, which replaces `history:adopt`. On load a panel drops from its own `open`
   every id whose lock it cannot get (another window took it while this panel was closed).
 
 ### 3.7 Browser restart (Q3)
 
 The #56 adoption carries over to `window:` keys: a window with no `window:<id>` adopts the most
-recently saved orphan record (its `open` and `current`) and takes their locks; orphan records older
+recently saved orphan record (its `open` and `current`) and takes their locks, as many as fit under
+the 3 of §3.3 (`current` first, then newest `lastMessageAt`; the rest stay reopenable from the
+gallery); orphan records older
 than 7 days are pruned and their conversations archived (`archivedAt` set). The panel opens on
 `current`. A window with nothing to adopt starts with one new conversation.
 
@@ -246,8 +283,13 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
   - the answer goes to the **asking conversation's session**. In the MVP the card can only be clicked
     while its conversation is on screen, so that is the current state's queue; the entry keeps a
     reference to the session state, not the `Conn`, so this stays true in P2;
-  - `restart` / `disconnect` close the cards of the session they concern; the 3-pending-card cap is per
-    agent per conversation.
+  - the two close reasons differ in scope: **`restarted`** (one conversation's `session/resume` fell
+    back to `session/new`) closes only that conversation's cards for that agent;
+    **`disconnected`** (the agent deliberately disconnected: another agent made active, URL or token
+    edited, removed) closes that agent's cards **in every conversation**, since none of its sessions
+    will be flushed. A transient socket drop closes nothing, as now;
+  - archive closes the conversation's cards as `cancelled` (§3.4);
+  - the 3-pending-card cap is **per agent per conversation** (ask-user §2.5).
 - **🔒 Confirm cards** are bound to the turn they were asked in. Turns run only in the current
   conversation in the MVP, and a switch is refused while one runs, so a confirm card is always on
   screen. 🧹 cancels only the current conversation's cards.
@@ -260,6 +302,13 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
   `session/new` / `session/resume`. The tunnel a call arrives on (§1.2) therefore names its
   conversation, and every per-conversation dependency (`canvas.conversationId`, `chatHistory`, where
   a card or `show_image` goes) is bound to that conversation, not to "the panel's".
+- **No fallback between servers.** `BrowserMcp.serverForAcpId` today falls back to `declared[0]`
+  for an `acpId` it does not know (`browser-mcp.js`). With one server per conversation that fallback
+  is exactly the cross-conversation misuse this section prevents: a late `mcp/connect` for an archived
+  conversation's server would be routed to another conversation's. Rule: **when more than one server
+  is declared, an unknown `acpId` is refused**; the fallback stays only for a single declared server.
+  Archive removes the conversation's server and its `connections` entries (§3.4), so later frames
+  on those connections are refused as unknown (already the rule for `connectionId`).
 - **Tool calls from a non-current conversation are refused** in the MVP with an error (`this
   conversation is not on screen in Katashiro`). They happen only late: a turn the user stopped whose
   agent kept going (§1.2), or a facade call outside a turn. P2 replaces this rule with Q8's.
@@ -319,7 +368,9 @@ deleting a conversation; search over conversation content.
   tab of its own group. While the user is on one of that conversation's tabs, its writes are refused
   the same way.
 - **Cards**: confirm cards in a background conversation keep their 2-minute wall-clock timeout; the
-  Q12 mark and notification are what give the user the chance to answer. Revisit after live use.
+  Q12 mark and notification are what give the user the chance to answer. The 2 minutes cannot simply
+  be raised: a 🔒 card holds the agent's tool call open, and one tool call is capped at 170 s by the
+  tunnel. Revisit after live use.
 - **Stop** in the tab strip sends `session/cancel`; a conversation counts as running until its
   `session/prompt` settles, not from the click (§1.2).
 - Limits that still apply: one tool call ≤ 170 s (tunnel), 180 s agent idle ceiling, turn idle 10 min,
