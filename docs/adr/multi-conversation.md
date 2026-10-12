@@ -249,10 +249,12 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   **Revised 2026-10-12 ([tunnel-liveness §9.2](./browser-tunnel-liveness.md)):** the line is skipped
   when the session is almost certainly intact — it was resumed (not created), this agent replied in
   the conversation during the current **run** of quick reconnects (each socket opened < 2 min after
-  the previous one's last inbound frame), and that reply is < 1 h old (the pool TTL). That removes the
+  the previous one's last inbound frame, which dropped without a close frame — a clean close always
+  starts a new run), and that reply is < 1 h old (the pool TTL). That removes the
   line from network-blip reconnects and from switching to a conversation already used on this socket;
   a panel reload, a slow reconnect, an idle conversation or a `session/new` still get it. The flag is
-  sticky: a later open never clears it. Known gap: an openab restart under 2 min is missed until
+  sticky: a later open never clears it. Known gap: an openab restart under 2 min whose socket drops
+  without a close frame is missed until
   openab reports a boot id (proposal A). When `session/resume` itself
   fails, the fallback to `session/new` stays as now and closes that conversation's ask cards as
   `restarted` (ask-user §2.4).

@@ -243,7 +243,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     without switching; Send to agent from it switches to its conversation first (refused while the
     current one replies); from an archived conversation's canvas tab: 「這段對話已封存，先從總覽重新打開」.
 - **Reconnect hint (A′) and disconnect diagnostics (E) (ADR browser-tunnel-liveness §9).** The
-  headless smoke above covers a quick drop. In Chrome, with a real agent, keep the side panel's
+  headless smoke above covers a quick unclean drop and a quick reconnect after a clean close. In Chrome, with a real agent, keep the side panel's
   DevTools console open (it logs `socket open — same run / new run`, `disconnect — …` and
   `reconnect hint added / skipped (reason)`); "the line" below is the U2 host line
   `[katashiro: this conversation was just reconnected…]`, which the agent sees but the chat does not
@@ -266,8 +266,15 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     the slow drop). Reload the panel and ask again: the same lines are still there
     (storage.session). DevTools: `chrome.storage.session.get("katashiro.diag.disconnects")` holds
     ≤ 20 records.
-  - **Known gap:** restarting openab in under 2 min looks like a quick blip, so the line is skipped
-    even though the agent lost its session (fix: an openab boot id, proposal A).
+  - **Restart / deploy:** restart openab (or redeploy its ECS service) while the panel is connected:
+    the drop is a clean close (e.g. 1001 / 1012, `clean` in the record) → `new run (previous end:
+    clean)` even though it reconnects within seconds; the next prompt **has** the line. If the record
+    says `unclean` and `same run` instead, that is the known gap below — note the code in the PR.
+  - **Turn off:** turn the agent's conn off (or make another agent active): `client_info` (from
+    another agent) lists `closed by Katashiro (conn turned off) … → none`.
+  - **Known gap:** an openab restart in under 2 min whose socket drops **without** a close frame
+    looks like a quick blip, so the line is skipped even though the agent lost its session (fix: an
+    openab boot id, proposal A).
 - **Multi-conversation P1b (ADR multi-conversation §4).** The headless smoke above covers the
   rules on a model of tabs and groups; in Chrome (155+ for Split View), with act mode on:
   - **Group per conversation:** ask the agent to open a page with `new_tab` (background): it joins

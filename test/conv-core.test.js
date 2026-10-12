@@ -122,18 +122,28 @@ test("U2: the host line goes first, only when the conversation had messages befo
 
 // --- A′: when the host line is skipped (tunnel-liveness §9.2) -------------------------------------
 
-test("A′ continuesRun: a socket opening < 2 min after the previous socket's last inbound frame continues the run", () => {
+test("A′ continuesRun: an unclean drop reopened < 2 min after the previous socket's last inbound frame continues the run", () => {
   const T = 1_000_000_000;
+  const u = { prevEnd: "unclean" };
   assert.equal(C.QUICK_RECONNECT_MS, 120000);
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 35_000 }), true);     // edge blip: browser gives up after ~35 s
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 119_999 }), true);
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 120_000 }), false);   // ≥ 2 min: maybe a restart
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 125_000 }), false);   // heartbeat teardown (~125 s of silence)
-  assert.equal(C.continuesRun({ prevLastRecvAt: 0, openedAt: T }), false);             // no earlier socket: panel reload / new conn
-  assert.equal(C.continuesRun({ prevLastRecvAt: T + 5, openedAt: T }), false);         // clock went backwards: don't vouch
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: NaN }), false);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 35_000 }), true);     // edge blip: browser gives up after ~35 s
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 119_999 }), true);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 120_000 }), false);   // ≥ 2 min: maybe a restart
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 125_000 }), false);   // heartbeat teardown (~125 s of silence)
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: 0, openedAt: T }), false);             // no earlier socket: panel reload / new conn
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T + 5, openedAt: T }), false);         // clock went backwards: don't vouch
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: NaN }), false);
   assert.equal(C.continuesRun(), false);
-  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 50, quickMs: 10 }), false);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 50, quickMs: 10 }), false);
+});
+
+test("A′ continuesRun: a clean close starts a new run however fast the next socket opens (rolling deploy, restart)", () => {
+  const T = 1_000_000_000;
+  // Rolling deploy: the old task closes its socket, the reconnect 5 s later lands on the new task.
+  assert.equal(C.continuesRun({ prevEnd: "clean", prevLastRecvAt: T, openedAt: T + 5_000 }), false);
+  assert.equal(C.continuesRun({ prevEnd: null, prevLastRecvAt: T, openedAt: T + 5_000 }), false);   // unknown end: don't vouch
+  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 5_000 }), false);                  // prevEnd defaults to unknown
+  assert.equal(C.continuesRun({ prevEnd: "unclean", prevLastRecvAt: T, openedAt: T + 5_000 }), true);
 });
 
 test("A′ lastReplyAt: the newest reply of that agent only (not the user's, another agent's, or an error)", () => {

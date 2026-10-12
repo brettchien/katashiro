@@ -201,6 +201,9 @@ class Conn {
     // the first socket since the panel loaded, or since a reconnect that took ≥ 2 min. Replies the
     // agent sent before it may be from an openab process that has since restarted.
     this.runStartAt = 0;
+    // How the previous opened socket ended: "unclean" (no close frame, or a heartbeat teardown) can
+    // continue the run, "clean" (the server closed on purpose, or we did) cannot; null = none yet.
+    this.lastSocketEnd = null;
     // Disconnect diagnostics (§9.3): the current socket's open time (0 until onopen), the last
     // outbound frame, whether onerror fired, and the last record (its next open is filled in).
     this.socketOpenedAt = 0;
@@ -438,7 +441,11 @@ class Conn {
   connect(reason = "manual") {
     this.enabled = true;
     this.stopHeartbeat();                                // don't probe across a teardown/reconnect
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) this.recordDisconnect(null, `${reason}-reconnect`);
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) {
+      this.recordDisconnect(null, `${reason}-reconnect`);
+      // A heartbeat teardown replaces a silent socket (the unclean case); a manual retry starts afresh.
+      this.lastSocketEnd = reason === "heartbeat" ? "unclean" : "clean";
+    }
     if (this.ws) {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
@@ -461,7 +468,7 @@ class Conn {
         // A′ (§9.2): read lastRecvAt BEFORE any frame on this socket stamps it — it is still the
         // previous socket's last inbound frame (0 if this conn never had one).
         const openedAt = Date.now();
-        const sameRun = ConvCore.continuesRun({ prevLastRecvAt: this.lastRecvAt, openedAt });
+        const sameRun = ConvCore.continuesRun({ prevLastRecvAt: this.lastRecvAt, prevEnd: this.lastSocketEnd, openedAt });
         if (!sameRun) this.runStartAt = openedAt;
         this.socketOpenedAt = openedAt;
         // §9.3: the latest drop gets its outcome — how long until this open, and the run verdict.
@@ -469,7 +476,7 @@ class Conn {
           logDisconnectOp({ patch: { id: this.lastDiag.id, fields: { reopenAfterMs: openedAt - this.lastDiag.at, sameRun } } });
           this.lastDiag = null;
         }
-        console.info(`ACP[${this.name}]: socket open — ${sameRun ? `same run (last frame ${Math.round((openedAt - this.lastRecvAt) / 1000)} s before)` : "new run"}`);
+        console.info(`ACP[${this.name}]: socket open — ${sameRun ? `same run (last frame ${Math.round((openedAt - this.lastRecvAt) / 1000)} s before)` : `new run (previous end: ${this.lastSocketEnd || "none"})`}`);
         this.online = true;
         this.openedThisAttempt = true;                   // upgrade succeeded ⇒ token accepted
         this.lastFailure = null;
@@ -487,7 +494,10 @@ class Conn {
       this.ws.onclose = (ev) => {
         // §9.3 (E): an opened socket's end is one record; an attempt that never opened is counted
         // on the record before it (an outage retries every 5 s and must not flush the history).
-        if (this.openedThisAttempt) this.recordDisconnect(ev, this.enabled ? "auto-reconnect" : "none");
+        if (this.openedThisAttempt) {
+          this.recordDisconnect(ev, this.enabled ? "auto-reconnect" : "none");
+          this.lastSocketEnd = ev && ev.wasClean && ev.code !== 1006 ? "clean" : "unclean";
+        }
         else if (this.lastDiag && this.enabled) logDisconnectOp({ bump: this.lastDiag.id });
         this.online = false;
         this.initialized = false;
@@ -528,6 +538,9 @@ class Conn {
       this.cancelTurn();                               // stop an in-flight turn server-side before dropping the
                                                        // socket, so the gateway cancels the agent-core turn instead
                                                        // of leaving it running (no-op if no turn / socket not open)
+      // §9.3: onclose is detached below, so the user's stop is recorded here (path "none").
+      if (this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) this.recordDisconnect(null, "none");
+      this.lastSocketEnd = "clean";
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;

@@ -279,7 +279,7 @@
     const who = `${r.agent || "agent"}${r.windowId == null ? "" : ` [window ${r.windowId}]`}`;
     const reason = typeof r.reason === "string" && r.reason ? ` "${r.reason.slice(0, DISCONNECT_REASON_MAX)}"` : "";
     const close = r.code == null
-      ? "socket replaced (no close event)"
+      ? (r.path === "none" ? "closed by Katashiro (conn turned off)" : "socket replaced (no close event)")
       : `close ${r.code} ${r.wasClean ? "clean" : "unclean"}${r.error ? " after error" : ""}${reason}`;
     const gap = (label, ms) => `${label} ${ms == null ? "none on this socket" : `${shortDuration(ms)} before`}`;
     const parts = [

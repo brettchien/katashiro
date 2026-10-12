@@ -457,11 +457,17 @@ or the pool lost the session — which Katashiro cannot detect today.
 ### 9.2 Decision A′ — Katashiro-only heuristic (interim)
 
 A conn keeps a **run**: the time its current chain of sockets started (`runStartAt`). When a socket
-opens, it **continues** the run if the previous socket of this conn (in this panel's lifetime)
-received its last inbound frame **less than 2 minutes** before the new socket opened — a quick
-reconnect means the same openab process is almost certainly still running. Otherwise (the first
-socket since the panel loaded, a retargeted agent, or a gap ≥ 2 min) the run starts afresh at the
-open time.
+opens, it **continues** the run only if the previous socket of this conn (in this panel's lifetime)
+**dropped uncleanly** — no close frame reached the browser (`wasClean` false / 1006), or the
+heartbeat tore it down (§8.6) — **and** received its last inbound frame **less than 2 minutes**
+before the new socket opened: a network blip cannot send a close frame, and a quick reconnect after
+one means the same openab process is almost certainly still running. Otherwise the run starts afresh
+at the open time: the first socket since the panel loaded, a retargeted agent, a gap ≥ 2 min, a
+manual reconnect, a conn turned off and on — and **any clean close** (1000, 1001 going away, 1012
+service restart, …), however fast the reconnect. A clean close means the server side closed on
+purpose; in an ECS rolling deploy the new task is already up when the old one gets SIGTERM, so the
+reconnect 5 s later reaches a new process (cloudflared hands both connectors the same tunnel), and an
+in-place restart (crash, OOM, `run.sh restart`) is back within seconds too (review of #136).
 
 The first prompt after a `session/resume` / `session/new` carries the line unless **all** hold:
 
@@ -483,9 +489,16 @@ still gets it, whatever the next reconnect looks like.
 The decision is the pure `ConvCore.reconnectHintDecision` (unit-tested case by case); the run rule is
 `ConvCore.continuesRun`. Each decision is logged to the console with its reason.
 
-**Known gap (accepted):** an openab restart that completes in **under 2 minutes** (counting from the
-last frame the old process sent) looks like a quick reconnect, so the line is skipped and an agent
-that lost its memory is not told to read `chat_history`. ECS task replacement normally takes longer.
+**Known gaps (accepted):**
+
+- an openab restart that completes in **under 2 minutes** (counting from the last frame the old
+  process sent) **and** whose socket drops without a close frame reaching the browser (the process
+  killed hard, the path to it cut) looks like a quick reconnect, so the line is skipped and an agent
+  that lost its memory is not told to read `chat_history`. The §9.3 records (`code` / `wasClean` /
+  `sameRun` per drop) are what checks this rule against real restarts.
+- the pool suspends a session not only after the TTL: when `max_sessions` is reached it suspends the
+  least recently used one (openab `pool.rs`), so on a busy shared pool a session can be suspended in
+  well under 1 h. Whether it comes back intact then depends on `session/load`.
 **Future work (proposal A):** openab sends a boot id (process start id) in the `initialize` response's
 `_meta`; Katashiro compares it with the previous socket's and replaces the heuristic with a fact —
 and, if openab also reports a failed `session/load`, with a visible notice (multi-conversation §3.5).
@@ -498,7 +511,8 @@ Every socket end is recorded as one compact record:
 - the close event: `code`, `reason`, `wasClean` (and whether `onerror` fired first);
 - **ms since the last inbound frame** and **since the last outbound frame**, whether a turn was
   active, and the **connection age** (since `onopen`; none if it never opened);
-- **the path taken**: `auto-reconnect` (onclose, retried in 5 s), `none` (the conn is disabled),
+- **the path taken**: `auto-reconnect` (onclose, retried in 5 s), `none` (the conn is turned off —
+  `disconnect()` detaches `onclose` first, so it records the end itself, with no close event),
   `heartbeat-reconnect` (two missed idle probes, §8.6) or `manual-reconnect` (a retry / reconnect
   that replaced an open socket);
 - filled in when the next socket opens: how long after the drop, and whether it **continued the run**

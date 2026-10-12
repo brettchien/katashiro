@@ -688,6 +688,9 @@ test("formatDisconnect: one line with close code, gaps, turn, age, path and the 
   assert.match(RoomCore.formatDisconnect({ at, agent: "A", code: null, path: "heartbeat-reconnect", sinceRecvMs: 125_000, ageMs: 1 }),
     /: socket replaced \(no close event\); last in 2m05s before.*→ heartbeat-reconnect; no reopen recorded$/);
   assert.match(RoomCore.formatDisconnect({ at, agent: "A", code: 1000, wasClean: true, path: "none" }), /→ none$/);
+  // The user turned the conn off (disconnect() detaches onclose, so it records the end itself).
+  assert.match(RoomCore.formatDisconnect({ at, agent: "A", code: null, path: "none", sinceRecvMs: 3000, ageMs: 60_000 }),
+    /: closed by Katashiro \(conn turned off\); last in 3s before.*→ none$/);
   // A long reason is cut; nothing at all still renders.
   assert.match(RoomCore.formatDisconnect({ at, code: 4000, reason: "r".repeat(200), path: "none" }), new RegExp(`"r{80}"`));
   assert.match(RoomCore.formatDisconnect(null), /^\? agent: socket replaced/);

@@ -191,8 +191,13 @@
    * §9.2: does a socket opening at `openedAt` continue the current run of the agent's sockets?
    * `prevLastRecvAt` = the last inbound frame of any earlier socket of this conn in this panel's
    * lifetime (0 = none: a panel reload or a new conn → a new run; we cannot know what happened).
+   * `prevEnd` = how that socket ended: only an `"unclean"` drop (no close frame — a network blip
+   * cannot send one) or a heartbeat teardown can continue the run. A clean close means the server
+   * side closed on purpose (openab or cloudflared shutting down: a rolling deploy, a restart), so
+   * the next socket may reach a new process however fast it opens; `"clean"` / null → a new run.
    */
-  function continuesRun({ prevLastRecvAt = 0, openedAt, quickMs = QUICK_RECONNECT_MS } = {}) {
+  function continuesRun({ prevLastRecvAt = 0, prevEnd = null, openedAt, quickMs = QUICK_RECONNECT_MS } = {}) {
+    if (prevEnd !== "unclean") return false;
     if (!(prevLastRecvAt > 0) || !Number.isFinite(openedAt)) return false;
     const gap = openedAt - prevLastRecvAt;
     return gap >= 0 && gap < quickMs;
@@ -213,7 +218,8 @@
    * agent replied in this conversation during the current run of quick reconnects (so the same
    * openab process holds it — this also covers a switch / gallery reopen on a live socket), and that
    * reply is younger than the pool TTL. Everything we cannot vouch for keeps the line.
-   * Known gap: an openab restart under QUICK_RECONNECT_MS looks like a quick reconnect.
+   * Known gap: an openab restart under QUICK_RECONNECT_MS whose socket drops uncleanly (no close
+   * frame reached the browser) looks like a quick reconnect.
    * → { hint, reason } (the reason is for the console log).
    */
   function reconnectHintDecision({

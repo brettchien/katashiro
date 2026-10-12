@@ -564,6 +564,20 @@ try {
   log = await acpLog(p1);
   check(log.filter((m) => m.method === "session/resume")[3].params.sessionId === "sess_1", "…the same ACP session", log.filter((m) => m.method === "session/resume")[3]);
 
+  // A′: a clean close (the server shut its side on purpose — a rolling deploy or a restart) starts a
+  // new run however fast the reconnect, so the next prompt carries the host line again.
+  const resumesBefore = await p1.evaluate(() => window.__acp.log.filter((m) => m.method === "session/resume").length);
+  await p1.evaluate(() => { const ws = window.__acp.ws; ws.readyState = 3; ws.onclose({ code: 1012, reason: "service restart", wasClean: true }); });
+  await until(p1, (n) => window.__acp.log.filter((m) => m.method === "session/resume").length > n, "the reconnect after a clean close resumes", resumesBefore, 15000);
+  await send(p1, "after the restart");
+  await until(p1, () => window.__acp.log.some((m) => m.method === "session/prompt" && m.params.prompt[0].text.includes("after the restart")), "the prompt after the clean close");
+  const restarted = (await acpLog(p1)).filter((m) => m.method === "session/prompt").pop().params.prompt[0].text;
+  check(restarted.startsWith("[katashiro: this conversation was just reconnected."), "A′: the host line after a quick reconnect that followed a clean close", restarted.slice(0, 80));
+  const diag2 = await p1.evaluate(async () => (await chrome.storage.session.get("katashiro.diag.disconnects"))["katashiro.diag.disconnects"]);
+  const d1 = Array.isArray(diag2) ? diag2[diag2.length - 1] : null;
+  check(d1 && d1.code === 1012 && d1.wasClean === true && d1.sameRun === false, "E: the clean close is recorded with a new-run reopen", d1);
+  await until(p1, () => document.getElementById("stop-btn").hidden, "idle after the clean close");
+
   // 重新打開 into a window with no panel while 3 are open elsewhere: the panel loads full (picker →
   // "new conversation"), then picks up the pending reopen. After the pick the REOPEN must win.
   st = await storage(p1);
