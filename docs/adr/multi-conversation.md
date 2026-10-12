@@ -181,7 +181,8 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   automatically. Agent text never names a conversation in the MVP; P1b adds `set_title` (§4.6,
   moved up from P4 by Brett 2026-10-12 18:30).
 - The title also names the conversation's canvas tab group (replacing "Canvas", canvas §3.1) and its
-  label in the gallery's canvas rows. The mirror folder keeps its `c_<id>` slug until P4.
+  label in the gallery's canvas rows. The mirror folder keeps its `c_<id>` slug until P4, which
+  names it after the title too (§7, done 2026-10-12).
 - 🧹 clears the current conversation's messages only (sessions kept, as now).
 
 ### 3.4 Archive and reopen
@@ -538,9 +539,22 @@ has been used; that ADR stays Proposed until then.
 
 ## 7. P4 — extras
 
-- Mirror folder `<7-char short id>-<title slug>` (Brett 2026-10-11); a rename moves files one by one
-  with `FileSystemFileHandle.move()` (#101; a directory cannot be renamed, and `move()` overwrites an
-  existing target, so a same-name target is handled as a conflict).
+- **Mirror folder `<7-char short id>-<title slug>`** (Brett 2026-10-11; moved up by Brett
+  2026-10-12 21:39, implemented with #101). Details in [canvas](./canvas.md) §3.6:
+  - The folder follows the conversation's title, whoever set it (auto, user, `set_title`); untitled
+    → the short id alone. The mirror reads the title from `conv:index` and never writes it.
+  - A rename moves each canvas's files one by one with `FileSystemFileHandle.move()` into the new
+    folder (a directory cannot be renamed), and the old folder is removed once empty; files
+    Katashiro does not know stay, and so does the old folder then. `move()` overwrites an existing
+    target, so a same-name target is a conflict: that file is not moved. No `move()`, or it fails →
+    the pre-#101 write-new + delete-if-ours. A move cut short is recorded in `meta.file.move` and
+    finished by the next sync.
+  - Existing `c_<id>` folders are migrated the same way, canvas by canvas, at the next sync (the
+    panel's catch-up on start).
+  - **Titles settle first:** a title change moves nothing by itself; the panel syncs a
+    conversation's canvases once its title has not changed for 10 s, so auto title → `set_title` →
+    a user rename in quick succession is one move. A canvas saved meanwhile moves at once with its
+    save (its siblings follow when the title settles).
 - Upstream openab `session/close`, so archiving frees a pool slot at once.
 - Deleting a conversation: its messages, canvases with their history and images (canvas §3.6).
 - Several agents in one conversation (lifts single-active for a conversation).

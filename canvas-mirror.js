@@ -13,6 +13,9 @@
 // every read / write / remove is checked against exactly those patterns first. Before writing, the
 // file on disk is hashed and compared with the hash Katashiro last wrote there: same (or no file)
 // → overwrite; different → leave it and write `<canvas-slug>.katashiro-<UTC time>.md` beside it.
+// The conversation slug is `<7-char short id>-<title slug>` (multi-conversation §7). A rename (of
+// the canvas or of its conversation) moves the canvas's files with FileSystemFileHandle.move(), one
+// by one and never over an existing file (#101), recorded in meta.file.move until done.
 //
 // The decisions are pure functions (slugify, planWrite, isAllowedPath, …); the File System Access
 // calls are a few thin helpers over a directory handle, so tests run them on a fake handle. Files are
@@ -82,6 +85,59 @@
     }
   }
 
+  // --- Conversation folders (§3.6, multi-conversation §7) ---------------------------------------
+  // `<7-char short id>-<title slug>`: the short id keeps two conversations with the same title apart
+  // and the folder recognisable across renames. The title is the conversation index's (conv-core.js
+  // writes `conv:index`; the mirror only reads it, so it needs no ConvCore here).
+  const CONV_INDEX_KEY = "conv:index";
+  const CONV_ID_RE = /^c_[0-9a-f]{12}$/;
+  // A title change moves nothing by itself; the panel syncs a conversation's canvases once its title
+  // has stayed the same this long, so auto title → set_title → a user rename is one folder move.
+  const TITLE_SETTLE_MS = 10000;
+
+  /**
+   * The folder name for a conversation and its title (null / "" = untitled → the short id alone).
+   * An id not of the `c_<12 hex>` shape (canvases stored before multi-conversation minted ids, and
+   * tests) keeps the slugged id, as before.
+   */
+  function convFolderSlug(conversationId, title) {
+    const id = String(conversationId == null ? "" : conversationId);
+    if (!CONV_ID_RE.test(id)) return slugify(id, "conversation");
+    const short = id.slice(2, 9);
+    const t = typeof title === "string" ? slugify(title, "") : "";
+    if (!t) return short;
+    return clip(`${short}-${t}`, SLUG_MAX, SLUG_MAX_BYTES).replace(/-+$/, "");
+  }
+
+  /** The conversation ids whose title differs between two `conv:index` values (storage.onChanged). */
+  function convTitlesChanged(oldIndex, newIndex) {
+    const a = oldIndex && typeof oldIndex === "object" ? oldIndex : {};
+    const b = newIndex && typeof newIndex === "object" ? newIndex : {};
+    const out = [];
+    for (const [id, e] of Object.entries(b)) {
+      const before = a[id] && a[id].title;
+      const after = e && e.title;
+      if ((before || null) !== (after || null) && CONV_ID_RE.test(id)) out.push(id);
+    }
+    return out;
+  }
+
+  /**
+   * Debounce per conversation: changed(ids) restarts each id's quiet period; settled(id) runs once
+   * the title has not changed for quietMs. In memory only: a panel closed meanwhile leaves the move to
+   * the next save of a canvas or the panel's catch-up on start.
+   */
+  function createTitleSettle({ settled, quietMs = TITLE_SETTLE_MS, setTimer = setTimeout, clearTimer = clearTimeout }) {
+    const timers = new Map();
+    function changed(ids) {
+      for (const id of ids || []) {
+        if (timers.has(id)) clearTimer(timers.get(id));
+        timers.set(id, setTimer(() => { timers.delete(id); settled(id); }, quietMs));
+      }
+    }
+    return { changed, pending: () => [...timers.keys()] };
+  }
+
   // --- Paths (§3.6: computed from meta, checked before every touch) -----------------------------
   function stamp(ms) {
     const d = new Date(ms);
@@ -122,6 +178,15 @@
     }
     return false;
   }
+
+  /** The only directories a canvas may remove (when empty, after a move): its conversation folder and its .assets. */
+  function isAllowedDir(segs, ctx) {
+    if (!Array.isArray(segs) || !ctx || !ID_RE.test(String(ctx.id)) || !isValidSlug(ctx.convSlug) || !isValidSlug(ctx.slug)) return false;
+    if (segs.length === 1) return segs[0] === ctx.convSlug;
+    return segs.length === 2 && segs[0] === ctx.convSlug && segs[1] === `${ctx.slug}.assets`;
+  }
+
+  const ASSET_NAME_RE = new RegExp(`^([0-9a-f]{64})\\.(${ASSET_EXTS.join("|")})$`);
 
   // --- Decisions ---------------------------------------------------------------------------------
   const NOT_A_FILE = "not-a-file";      // something other than a file sits at the path
@@ -261,6 +326,82 @@
     await dir.removeEntry(segs[segs.length - 1]);
   }
 
+  // Is anything (a file or a directory) at segs? Absent only on NotFoundError: any other answer
+  // (a file in place of a directory on the way, …) counts as taken, so a move never lands there.
+  async function entryExists(root, segs) {
+    let dir;
+    try { dir = await walk(root, segs.slice(0, -1), false); } catch (e) {
+      if (errName(e) === "NotFoundError") return false;
+      if (errName(e) === "TypeMismatchError") return true;
+      throw e;
+    }
+    const name = segs[segs.length - 1];
+    try { await dir.getFileHandle(name); return true; } catch (e) {
+      if (errName(e) === "TypeMismatchError") return true;
+      if (errName(e) !== "NotFoundError") throw e;
+    }
+    try { await dir.getDirectoryHandle(name); return true; } catch (e) {
+      if (errName(e) === "NotFoundError") return false;
+      if (errName(e) === "TypeMismatchError") return true;
+      throw e;
+    }
+  }
+
+  /** The names in a directory (null if there is none). Read only to find our content-addressed assets. */
+  async function listNames(root, segs) {
+    let dir;
+    try { dir = await walk(root, segs, false); } catch (e) {
+      if (errName(e) === "NotFoundError" || errName(e) === "TypeMismatchError") return null;
+      throw e;
+    }
+    const out = [];
+    for await (const name of dir.keys()) out.push(name);
+    return out;
+  }
+
+  const isPermissionError = (e) => errName(e) === "NotAllowedError" || errName(e) === "SecurityError";
+
+  /**
+   * Move one file with FileSystemFileHandle.move(dir, name) (#101), never over an existing target:
+   * move() replaces one silently (real Chrome, 2026-10-11), so the target is checked first.
+   * → "moved" | "gone" (no file at `from`) | "exists" (something at `to`; nothing moved) |
+   *   "unsupported" (no move()) | "failed" (move() threw; the file stays). Permission errors throw.
+   */
+  async function moveFile(root, from, to) {
+    let fh;
+    try {
+      const dir = await walk(root, from.slice(0, -1), false);
+      fh = await dir.getFileHandle(from[from.length - 1]);
+    } catch (e) {
+      if (errName(e) === "NotFoundError" || errName(e) === "TypeMismatchError") return "gone";
+      throw e;
+    }
+    if (await entryExists(root, to)) return "exists";
+    if (typeof fh.move !== "function") return "unsupported";
+    try {
+      const dest = await walk(root, to.slice(0, -1), true);
+      await fh.move(dest, to[to.length - 1]);
+      return "moved";
+    } catch (e) {
+      if (isPermissionError(e)) throw e;
+      return "failed";
+    }
+  }
+
+  /** Remove a directory only if it is empty (non-recursive). True when removed. */
+  async function removeDirIfEmpty(root, segs) {
+    try {
+      const parent = await walk(root, segs.slice(0, -1), false);
+      const dir = await parent.getDirectoryHandle(segs[segs.length - 1]);
+      if (!(await dir.keys().next()).done) return false;      // something is left in it
+      await parent.removeEntry(segs[segs.length - 1]);
+      return true;
+    } catch (e) {
+      if (isPermissionError(e)) throw e;
+      return false;
+    }
+  }
+
   async function defaultSha256(bytes) {
     const d = await globalThis.crypto.subtle.digest("SHA-256", bytes);
     return Array.from(new Uint8Array(d), (x) => x.toString(16).padStart(2, "0")).join("");
@@ -398,25 +539,49 @@
     // canvas:<id>), so two canvases cannot take the same one. A conversation keeps one slug. A new
     // slug never lands on an existing .md (a deleted canvas's file, the user's own): that one is left
     // alone and the next free -2, -3 … is taken, rather than a conflict on every save.
-    async function assignSlugs(id, dir, folderId, prev) {
+    // The folder name the conversation's title gives now; null = keep the folder the canvas has (a
+    // conversation with no index entry: deleted, or not written yet).
+    async function convBaseFor(meta) {
+      const cid = meta.conversationId;
+      if (!CONV_ID_RE.test(String(cid))) return convFolderSlug(cid, null);
+      const index = await getOne(CONV_INDEX_KEY);
+      const entry = index && typeof index === "object" ? index[cid] : null;
+      if (!entry || typeof entry !== "object") return null;
+      return convFolderSlug(cid, entry.title);
+    }
+
+    async function assignSlugs(id, dir, folderId, prev, convBaseNow) {
       return lock("canvas:index", async () => {
         const cur = await getOne(metaKey(id));
         const all = Object.values(await CanvasStore.getMatching(storage, (k) => /^canvas:cv_[0-9a-f]{12}:meta$/.test(k)));
         const others = all.filter((m) => m && m.id !== id)
           .map((m) => ({ conversationId: m.conversationId, file: fileFor(m, folderId) }))
           .filter((m) => m.file && isValidSlug(m.file.convSlug));
-        let convSlug = prev && isValidSlug(prev.convSlug) ? prev.convSlug : null;
-        if (!convSlug) {
-          const sibling = others.find((m) => m.conversationId === cur.conversationId);
-          if (sibling) convSlug = sibling.file.convSlug;
+        const siblings = others.filter((m) => m.conversationId === cur.conversationId);
+        const takenConv = new Set(others.filter((m) => m.conversationId !== cur.conversationId).map((m) => m.file.convSlug));
+        const prevConv = prev && isValidSlug(prev.convSlug) ? prev.convSlug : null;
+        // A slug from before convBase was recorded counts as that base when it is exactly it.
+        const baseOf = (f) => f.convBase || f.convSlug;
+        let convBase = convBaseNow;
+        let convSlug = null;
+        if (convBase == null) {
+          // No title to go by: keep the folder (this canvas's, else a sibling's), else the short id.
+          convSlug = prevConv || (siblings[0] && siblings[0].file.convSlug) || null;
+          convBase = convSlug ? (prevConv ? baseOf(prev) : baseOf(siblings[0].file)) : convFolderSlug(cur.conversationId, null);
+        } else if (prevConv && baseOf(prev) === convBase) {
+          convSlug = prevConv;
+        } else {
+          // Renamed (or first write): join a sibling already under this name (it may carry a -2),
+          // else take the name, -2 … if another conversation has it.
+          const sib = siblings.find((m) => baseOf(m.file) === convBase);
+          if (sib) convSlug = sib.file.convSlug;
         }
-        if (!convSlug) {
-          const takenConv = new Set(others.filter((m) => m.conversationId !== cur.conversationId).map((m) => m.file.convSlug));
-          convSlug = uniqueSlug(slugify(cur.conversationId, "conversation"), takenConv);
-        }
+        if (!convSlug) convSlug = uniqueSlug(convBase, takenConv);
         const slugBase = slugify(cur.title);
         const taken = new Set(others.filter((m) => m.file.convSlug === convSlug).map((m) => m.file.slug));
-        let slug = uniqueSlug(slugBase, taken);
+        // Moving to another folder with the same title: keep the slug if it is free there, so two
+        // canvases with -2 slugs do not swap names depending on which moves first.
+        let slug = prev && prev.slugBase === slugBase && isValidSlug(prev.slug) && !taken.has(prev.slug) ? prev.slug : uniqueSlug(slugBase, taken);
         let same = prev && prev.slug === slug && prev.convSlug === convSlug;
         for (let n = 0; !same && n < SLUG_TRIES; n++) {
           const ctx = { id, convSlug, slug };
@@ -426,14 +591,104 @@
           same = prev && prev.slug === slug && prev.convSlug === convSlug;
         }
         const file = {
-          folder: folderId, convSlug, slug, slugBase,
-          hash: same ? prev.hash : null,               // a new path: Katashiro never wrote there
+          folder: folderId, convSlug, convBase, slug, slugBase,
+          hash: same ? prev.hash : null,               // a new path: Katashiro never wrote there (a move sets it)
           syncedHash: null, jsonHash: prev ? prev.jsonHash || null : null,
           conflictName: null, conflictHash: null, state: prev ? prev.state : undefined,
         };
+        // #101: the files at the old path are moved, not rewritten. Recorded here, in the same write
+        // as the new slugs and before anything moves, so a move cut short is finished by the next sync.
+        if (!same && prev && isValidSlug(prev.slug) && isValidSlug(prev.convSlug)) {
+          file.move = {
+            convSlug: prev.convSlug, slug: prev.slug, hash: prev.hash || null,
+            conflictName: prev.conflictName || null, conflictHash: prev.conflictHash || null,
+          };
+        }
         await storage.set({ [metaKey(id)]: withFile(cur, file) });
         return file;
       });
+    }
+
+    async function moveAt(dir, from, fromCtx, to, toCtx) {
+      guard(from, fromCtx);
+      guard(to, toCtx);
+      return moveFile(dir, from, to);
+    }
+
+    /**
+     * #101: carry out (or finish, after an interruption) the move recorded in file.move: from the old
+     * slugs there to file's slugs. Idempotent: source there and target free → moved; source gone and
+     * target there → moved before; both there → not ours to overwrite. Only files Katashiro knows
+     * move: the .md it wrote, the conflict file named in meta, and the content-addressed assets.
+     * → { file (hash / conflict file updated; move still recorded until the sync's final write),
+     *     from (old ctx, for removing emptied folders), oldMd (fallback: delete-if-ours after the write) }
+     */
+    async function finishMove(id, dir, file) {
+      const mv = file.move;
+      const next = { ...file };
+      const from = { id, convSlug: mv.convSlug, slug: mv.slug };
+      const to = { id, convSlug: file.convSlug, slug: file.slug };
+      if (!isValidSlug(from.convSlug) || !isValidSlug(from.slug)) return { file: next, from: null, oldMd: null };
+      let oldMd = null;
+      // The .md, if Katashiro ever wrote it: whatever is in it now (an outside edit moves with it).
+      if (mv.hash) {
+        const r = await moveAt(dir, mdPath(from), from, mdPath(to), to);
+        if (r === "moved") next.hash = mv.hash;
+        else if (r === "gone") {
+          // Moved by a sync cut short before it recorded that (still our bytes at the target), or
+          // deleted outside: with nothing at the target either, the last-written hash is kept, so
+          // the write below sees a file of ours gone and marks the canvas deleted (1B) instead of
+          // bringing the file back under the new name. Something else at the target: not ours.
+          const there = await hashAt(dir, mdPath(to), to);
+          if (there === mv.hash || there === null) next.hash = mv.hash;
+          // Deleted outside: nothing else moves either — a deleted canvas writes no asset and makes
+          // no folder (1B), so its conflict file and assets stay where they are.
+          if (there === null) return { file: next, from: null, oldMd: null };
+        } else {
+          // exists / unsupported / failed: the pre-#101 way — written fresh at the new path, the old
+          // one removed after that only if it is still ours. A target holding exactly our bytes is ours.
+          if (r === "exists" && (await hashAt(dir, mdPath(to), to)) === mv.hash) next.hash = mv.hash;
+          oldMd = { ...from, hash: mv.hash };
+        }
+      }
+      // The current conflict file, renamed to the new slug (same time tail). Older ones stay.
+      const head = `${from.slug}.katashiro-`;
+      if (mv.conflictName && mv.conflictName.startsWith(head)) {
+        const name = `${to.slug}.katashiro-${mv.conflictName.slice(head.length)}`;
+        const src = [from.convSlug, mv.conflictName];
+        const dst = [to.convSlug, name];
+        if (isAllowedPath(src, from) && isAllowedPath(dst, to)) {
+          const r = await moveAt(dir, src, from, dst, to);
+          if (r === "moved" || (r === "gone" && (await hashAt(dir, dst, to)) === mv.conflictHash)) {
+            next.conflictName = name;
+            next.conflictHash = mv.conflictHash;
+          }
+        }
+      }
+      // Assets: names come from the folder here, so each must be a valid asset name whose bytes hash
+      // to it (content-addressed: ours, or identical to ours). Anything else in .assets/ stays.
+      const fromAssets = [from.convSlug, `${from.slug}.assets`];
+      for (const name of (await listNames(dir, fromAssets)) || []) {
+        const m = ASSET_NAME_RE.exec(name);
+        if (!m) continue;
+        const src = [...fromAssets, name];
+        const dst = [to.convSlug, `${to.slug}.assets`, name];
+        if (!isAllowedPath(src, from) || !isAllowedPath(dst, to)) continue;
+        if ((await hashAt(dir, src, from)) !== m[1]) continue;
+        const r = await moveAt(dir, src, from, dst, to);
+        // The same bytes already there (a sync cut short after a fallback write, two renames back and
+        // forth): the source is a duplicate, removing it loses nothing. A different file is left.
+        if (r === "exists" && (await hashAt(dir, dst, to)) === m[1]) await removeAt(dir, src, from);
+      }
+      return { file: next, from, oldMd };
+    }
+
+    // After a move: the old .assets/ and conversation folder go if nothing is left in them.
+    async function removeEmptied(dir, from, to) {
+      if (!from || (from.convSlug === to.convSlug && from.slug === to.slug)) return;
+      const assets = [from.convSlug, `${from.slug}.assets`];
+      if (isAllowedDir(assets, from)) await removeDirIfEmpty(dir, assets);
+      if (from.convSlug !== to.convSlug && isAllowedDir([from.convSlug], from)) await removeDirIfEmpty(dir, [from.convSlug]);
     }
 
     // What goes to disk for this canvas: the .md text, and for an image canvas its asset.
@@ -511,14 +766,26 @@
               return { action: "none", state: "deleted" };
             }
           }
-          if (!prev || !isValidSlug(prev.slug) || !isValidSlug(prev.convSlug) || prev.slugBase !== slugify(meta.title)) {
-            file = await assignSlugs(id, root.dir, root.folderId, prev);
+          // #101: a move cut short (Chrome closed, an error) is finished before anything else.
+          const moves = [];
+          const runMove = async () => {
+            const done = await finishMove(id, root.dir, file);
+            file = done.file;
+            // Emptied folders go now; with an .md left behind (fallback) only after its delete-if-ours below.
+            if (done.oldMd) moves.push(done);
+            else await removeEmptied(root.dir, done.from, { convSlug: file.convSlug, slug: file.slug });
+          };
+          if (file && file.move) await runMove();
+          const convBase = await convBaseFor(meta);
+          if (!file || !isValidSlug(file.slug) || !isValidSlug(file.convSlug) || file.slugBase !== slugify(meta.title) ||
+            (convBase != null && (file.convBase || file.convSlug) !== convBase)) {
+            file = await assignSlugs(id, root.dir, root.folderId, file, convBase);
+            if (file.move) await runMove();
           }
           const ctx = { id, convSlug: file.convSlug, slug: file.slug };
           const out = await renderFile(meta, content, file.slug);
           const textBytes = utf8(out.text);
           const newHash = await sha256(textBytes);
-          const renamed = !!(prev && (prev.slug !== file.slug || prev.convSlug !== file.convSlug));
 
           if (file === prev && !returning && prev.syncedHash === newHash) {
             // Same content under a newer version (an agent rewrite with the same text): the file
@@ -543,13 +810,13 @@
             }
           }
 
-          const next = { ...file, error: undefined };
+          const next = { ...file, error: undefined, move: undefined };     // the final write clears a pending move
           const md = mdPath(ctx);
           const plan = planWrite({ diskHash: await hashAt(root.dir, md, ctx), lastHash: file.hash, newHash });
           if (plan.action === "write" && plan.missing && !rewrite) {
             // Ours, and gone: deleted outside on purpose (1B). Mark it; write nothing (before the
             // asset below, which would otherwise land, or recreate a removed folder).
-            await saveFile(id, { ...file, state: "deleted", error: undefined }, meta.fileSyncedVersion);
+            await saveFile(id, { ...file, state: "deleted", error: undefined, move: undefined }, meta.fileSyncedVersion);
             return { action: "none", state: "deleted" };
           }
           // Assets first, then the .md that links them (§3.6 write order). Content-addressed: an
@@ -585,13 +852,14 @@
             next.conflictName = null;
             next.conflictHash = null;
           }
-          // A rename moves the file only if the old one is still exactly what we wrote (§3.6);
-          // otherwise it stays. Old assets stay too.
-          if (renamed && prev.hash && plan.action !== "conflict" && isValidSlug(prev.slug) && isValidSlug(prev.convSlug)) {
-            const oldCtx = { id, convSlug: prev.convSlug, slug: prev.slug };
-            const old = mdPath(oldCtx);
-            if ((await hashAt(root.dir, old, oldCtx)) === prev.hash) await removeAt(root.dir, old, oldCtx);
+          // A rename whose .md could not be moved (no move(), it failed, or the target was taken):
+          // the old file goes only if it is still exactly what we wrote (§3.6); otherwise it stays.
+          for (const { oldMd } of moves) {
+            if (plan.action === "conflict") continue;
+            const old = mdPath(oldMd);
+            if ((await hashAt(root.dir, old, oldMd)) === oldMd.hash) await removeAt(root.dir, old, oldMd);
           }
+          for (const { from } of moves) await removeEmptied(root.dir, from, ctx);
           // .katashiro/<id>.json: for humans and tools, never read. Same rule: only over our own.
           const json = utf8(`${JSON.stringify({
             id, kind: meta.kind, title: meta.title, conversation: file.convSlug, slug: file.slug,
@@ -632,7 +900,23 @@
       return counts;
     }
 
-    return { sync, syncAll };
+    /**
+     * Every canvas of one conversation, one at a time (each under its own lock): the panel calls this
+     * once a conversation's title has settled (createTitleSettle), so its folder moves as a whole.
+     */
+    async function syncConversation(conversationId) {
+      const list = await getOne(CanvasStore.indexKey(conversationId));
+      const counts = {};
+      for (const e of Array.isArray(list) ? list : []) {
+        if (!e || !ID_RE.test(String(e.id))) continue;
+        const r = await sync(e.id);
+        counts[r.action] = (counts[r.action] || 0) + 1;
+        if (r.action === "disconnected") break;
+      }
+      return counts;
+    }
+
+    return { sync, syncAll, syncConversation };
   }
 
   // --- The folder handle: IndexedDB on the extension origin (shared by panel and canvas tabs) ----
@@ -716,7 +1000,8 @@
   }
 
   return {
-    createCanvasMirror, createNormalizeHold, awaitsNormalization, NORMALIZE_WAIT_MS, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
+    createCanvasMirror, createNormalizeHold, createTitleSettle, convFolderSlug, convTitlesChanged, isAllowedDir, moveFile,
+    CONV_INDEX_KEY, TITLE_SETTLE_MS, awaitsNormalization, NORMALIZE_WAIT_MS, slugify, isValidSlug, uniqueSlug, conflictFileName, isAllowedPath, planWrite, fileState,
     onlyMirrorFieldsChanged, withFile, sniffImageExt, imageMarkdown, mermaidMarkdown, stateOf, describeState, mdPath, assetPath, jsonPath,
     folderStatus, grantedRoot, requestAccess, pickFolder, stopMirror, NOT_A_FILE, SLUG_MAX, SLUG_MAX_BYTES,
   };

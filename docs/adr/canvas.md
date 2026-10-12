@@ -664,9 +664,10 @@ every canvas there as plain files, which the user can put under git, Dropbox or 
     `<canvas-slug>.katashiro-<timestamp>.md` beside it, and the canvas header shows *"The file was
     changed outside Katashiro"*;
   - a file Katashiro never wrote already sits at the path → treated as "different".
-  A rename moves the file only if the old file's hash still matches; otherwise the old file stays
-  and the new one is written fresh. Writing only files whose hash matches also covers symlinks
-  planted in the folder (whether File System Access follows them is to be tested).
+  A rename **moves** the file (`FileSystemFileHandle.move()`, #101, below), so an outside edit
+  stays with it; where `move()` is not available or fails, the old file is removed only if its
+  hash still matches, and the new one is written fresh. Writing only files whose hash matches also
+  covers symlinks planted in the folder (whether File System Access follows them is to be tested).
 - **Read-back (phase 2) detects; the user decides.** When a canvas tab opens or regains focus, and
   before `canvas_read`, the file's hash is compared with the one last written. A change is
   **never imported automatically**: anyone who can write the folder (a git remote, a Dropbox
@@ -713,7 +714,8 @@ normalization), each canvas tab syncs its own saves and has *Reconnect folder*; 
 happen only while Chrome already grants access; nobody prompts without a click. Where this ADR
 is silent, the conservative choice:
 - The mirror state is `meta.file` (`{folder, convSlug, slug, slugBase, hash, syncedHash,
-  jsonHash, conflictName, conflictHash, state}`) plus `meta.fileSyncedVersion`; `folder` is an id
+  jsonHash, conflictName, conflictHash, state}`, plus `convBase` — the folder name the title gives —
+  and, while a rename is under way, `move`) plus `meta.fileSyncedVersion`; `folder` is an id
   minted per picked folder, so another folder starts over (no hashes, new slugs). The state for the
   last 3 other folders is kept in `meta.filesByFolder`, so going back to a folder (A → B → A) still
   knows which files Katashiro wrote there; a folder older than that starts over. Canvases an
@@ -735,9 +737,62 @@ is silent, the conservative choice:
   after the write; the tab's start check holds while there is no file yet). With no canvas tab open,
   or a tab with unsaved edits (it renders nothing), it is written at once. A user save is never
   held, nor 📁 重新寫入, nor the start check of an existing file (it looks for outside changes).
-- Until multi-conversation gives conversations a title, the conversation slug is the slugged
-  `conversationId` (`c_…`). Slugs are also capped at 160 UTF-8 bytes, so a conflict file name stays
-  under the common 255-byte limit.
+- **The conversation folder is `<7-char short id>-<title slug>`** (Brett 2026-10-11; multi-
+  conversation §7), e.g. `9f2a41d-市場調查`: the short id keeps two conversations with the same
+  title apart and the folder recognisable after a rename. The title is read from the conversation
+  index (`conv:index`, written by the panel; the mirror only reads it); an untitled conversation's
+  folder is the short id alone; a conversation with no index entry (deleted) keeps the folder it
+  has, and an id not of the `c_<12 hex>` shape keeps the slugged id. Before multi-conversation it was the slugged
+  `conversationId` (`c_…`); those folders are moved to the new name like any rename (below), on the
+  next sync of each canvas (the panel's catch-up on start syncs all). Slugs are also capped at 160
+  UTF-8 bytes, so a conflict file name stays under the common 255-byte limit.
+- **Renames move files (#101).** A canvas rename (new canvas slug) and a conversation rename (new
+  folder) move that canvas's files with `FileSystemFileHandle.move(dir, name)`, one file at a time:
+  Chrome cannot rename or move a directory (Chromium 40198034), so a new directory is created, the
+  files moved into it, and the old directory removed once empty (non-recursive: anything left in
+  it keeps it).
+  - **What moves:** the `.md` (if Katashiro ever wrote it: `meta.file.hash` set, whatever is in it
+    now — an outside edit moves with it, and the usual rules then apply at the new path: ours →
+    written over, changed → conflict file; already gone → a deletion outside, so the canvas is marked
+    deleted as in 1B below rather than written again under the new name, and nothing else of that
+    canvas moves either: its conflict file and assets stay where they are, no new folder is made); the current conflict file named in `meta.file`
+    (renamed to the new slug, same time tail); and the files in `<slug>.assets/` whose name is a
+    valid asset name **and** whose bytes hash to it (content-addressed, so they are ours or
+    identical to ours). Older conflict files, anything else in `.assets/` or in the conversation
+    folder (the user's notes) are unknown and never moved. The `.katashiro/<id>.json` does not move.
+    Known gap: an image canvas's `.md` edited outside moves as it is, so it still links
+    `<old-slug>.assets/` while the assets moved; it becomes a conflict at the new path (changed →
+    conflict file) and its image link is broken until the user fixes or drops their edit. Rare,
+    accepted. Likewise a fallback write cut short before the final write, with the canvas changed
+    meanwhile, sees its own new file as a conflict on resume (unchanged → adopted).
+  - **Never overwrite.** `move()` silently replaces an existing target (verified in real Chrome
+    2026-10-11), so the target is checked first: anything there (file or directory) means that file
+    is not moved. For the `.md` it then falls back as below, and the file at the new path gets the
+    usual "never wrote it → conflict file" treatment. An asset whose target already holds the same
+    bytes is a duplicate and the source is removed (content-addressed, nothing is lost); a
+    different one is left. (A check-then-move window of a few ms remains, as for writes: File System
+    Access has no compare-and-swap.)
+  - **Paths only from meta:** source and target are computed from the old and new slugs in
+    `meta.file` and each is checked with `isAllowedPath` for its canvas; directories removed are only
+    `<conv-slug>/` and `<conv-slug>/<slug>.assets/` of that canvas's old location.
+  - **Fallback:** no `move()`, or it throws (e.g. a file held open by an editor on Windows) → that
+    file is handled as before #101: the `.md` is written fresh at the new path and the old one
+    removed only if its hash still matches; an asset stays where it is (an image canvas's current
+    asset is written to the new `.assets/`). A permission error still reads as disconnected.
+  - **Interruption-safe and idempotent.** Before the first file moves, the pending move (old slugs,
+    the `.md` hash, the conflict file's name and hash) is recorded in `meta.file.move` under the
+    `canvas:<id>` lock (with the new slugs, in the same storage write). The move record is cleared
+    by the sync's final write; a sync cut short (Chrome closed, an error) leaves it, and the next
+    sync of that canvas finishes the move first: source there and target free → moved; source gone
+    and target there → already moved; both there → the target is not ours to overwrite (fallback).
+  - **When folders move (titles change often).** A title change by itself moves nothing: moves
+    happen only in a sync. The panel watches `conv:index` and, once a conversation's title has
+    stayed the same for 10 s (`TITLE_SETTLE_MS`), syncs that conversation's canvases
+    (`syncConversation`), so a rename followed by another (auto title, then `set_title`, then the
+    user's) moves the folder once. A canvas saved in between is synced at once as always and so moves
+    on its own; its siblings follow when the title settles, on their next save, or at the panel's
+    catch-up. With the panel closed nothing renames a conversation anyway (titles change in the
+    panel).
 - **One conflict file per episode:** while the main file stays changed, later saves rewrite the same
   `.katashiro-<time>.md` as long as it is still exactly what Katashiro wrote there; once the user
   edits it too, a new one is made. If the disk already holds exactly the new content, it is adopted
@@ -757,11 +812,13 @@ is silent, the conservative choice:
   but changed outside is not overwritten — the latest goes to the usual conflict file. The header
   says which happened (real-Chrome finding 2026-10-11: with unchanged content the click did
   nothing). A rename to a new path is not a
-  deletion (Katashiro never wrote there). Outside changes are only detected on
+  deletion (Katashiro never wrote there), but a file of ours found gone when a rename goes to move
+  it is (#101). Outside changes are only detected on
   open in phase 1 (no focus check, diff or import; read-back stays phase 2).
-- Deleting or evicting a canvas leaves its files. A rename removes the old `.md` only when its hash
-  matches; old `.assets` files always stay, as do assets of a replaced image. An existing asset
-  file is never overwritten (content-addressed: it is either ours or left alone).
+- Deleting or evicting a canvas leaves its files. A rename moves them (above; before #101 it
+  removed the old `.md` only when its hash matched and left the old `.assets` files). Assets of a
+  replaced image stay in `.assets/` (and move with it). An existing asset file is never overwritten
+  (content-addressed: it is either ours or left alone).
 - Image canvases are written as `![caption](<slug>.assets/<sha256>.<ext>)`; an SVG or
   unrecognised image is not written, and the `.md` says it is kept in Katashiro only.
 - The Revert-to-agent's dialog (kept as is, Brett 2026-10-11) drops "cannot be undone" only while the folder holds this exact
@@ -774,6 +831,9 @@ is silent, the conservative choice:
   planted in the folder; Chrome's refusal of some names or folders (e.g. the home folder);
   Windows' 260-character path limit (an asset path is up to ~80 + `.assets\` + ~70 characters
   under the conversation folder and the folder the user picked).
+  For `move()` (#101): it works on handles from `showDirectoryPicker` in the extension origin, into
+  a sibling directory, with an editor (VS Code; a Windows lock) holding the file open, and the
+  overwrite of an existing target (seen 2026-10-11; the target check above is what prevents it).
 
 ### 3.7 Chat integration
 
