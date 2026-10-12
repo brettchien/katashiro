@@ -154,7 +154,7 @@
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
     // Ask agent (§3.7): while text is selected in the view.
-    askBtn.hidden = !(textKind && mode === "view" && !!frame && !!selection);
+    askBtn.hidden = !(textKind && mode === "view" && !!frame && !!ask.sel);
     downloadBtn.hidden = !textKind;
     const ext = current && current.meta.kind === "mermaid" ? "mmd" : "md";
     downloadBtn.textContent = `⬇ .${ext}`;
@@ -212,31 +212,175 @@
   // (selection{}, canvas-frame.html only — a compare tab refuses it, CanvasCore); the user types a
   // request, which goes first, then the selection as data under a fixed host line. Rendered text,
   // not markdown: the agent canvas_reads before a canvas_patch (the header tells it so).
-  let selection = null;               // { text, truncated } while the user has text selected in the view
+  // Brett 2026-10-12 (option a): the request is typed in a popover by the selection, not a
+  // window.prompt. A 💬 shows beside the selection (selection{rect}); it and the header button open
+  // the popover. Both are elements of this page over the frame, so canvas content cannot imitate
+  // them. The state is CanvasCore.askReduce's; this draws it.
+  const askPill = document.getElementById("ask-pill");
+  const askPop = document.getElementById("ask-pop");
+  const askExcerptEl = document.getElementById("ask-excerpt");
+  const askNote = document.getElementById("ask-note");
+  const askStatus = document.getElementById("ask-status");
+  const askSendBtn = document.getElementById("ask-send");
+  let ask = CanvasCore.ASK_IDLE;      // ask.sel = the selection in the view ({ text, truncated, seq, rect }), if any
+  let askPopRect = null;              // where the popover's selection was last seen (frame coordinates)
+  let askDraft = null;                // { seq, text, note }: a note closed unsent, back on the same selection
+  let askTimer = 0;
+  const sameAsCaptured = (sel, cap) => !!sel && !!cap && sel.text === cap.text && sel.seq === cap.seq;
+
+  function askDispatch(ev) {
+    const prev = ask;
+    ask = CanvasCore.askReduce(ask, ev);
+    if (ask === prev) return;
+    const was = CanvasCore.askView(prev), now = CanvasCore.askView(ask);
+    if (was.popover && !now.popover) {
+      clearTimeout(askTimer);
+      // Closed unsent: keep the note for this selection (a stray click must not lose it).
+      if (prev.phase === "open" && askNote.value.trim()) askDraft = { seq: prev.captured.seq, text: prev.captured.text, note: askNote.value };
+      askPop.hidden = true;
+      askPopRect = null;
+    }
+    if (!was.popover && now.popover) showAskPop();
+    else if (now.popover && sameAsCaptured(ask.sel, ask.captured) && ask.sel.rect) { askPopRect = ask.sel.rect; placeAskPop(); }
+    if (now.pill) placeAskPill(); else askPill.hidden = true;
+    if (!!prev.sel !== !!ask.sel) updateButtons();          // the header 💬 Ask agent
+  }
+
+  // Place `el` by a frame-coordinate rect (CanvasCore.askPlace: below the selection's end, above
+  // it when there is no room, clamped to the frame). false when the rect is not usable / in view.
+  function placeOverFrame(el, rect) {
+    if (!frame || !rect) return false;
+    const fb = frame.getBoundingClientRect();
+    el.style.visibility = "hidden";                         // measured where it is about to go
+    el.hidden = false;
+    const p = CanvasCore.askPlace({ rect, box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height }, size: { w: el.offsetWidth, h: el.offsetHeight } });
+    el.style.visibility = "";
+    if (!p) return false;
+    el.style.left = `${p.left}px`;
+    el.style.top = `${p.top}px`;
+    return true;
+  }
+  function placeAskPill() {
+    if (!placeOverFrame(askPill, ask.sel && ask.sel.rect)) askPill.hidden = true;
+  }
+  // The popover by its selection; with none in view (scrolled away, or the header button was used
+  // for a selection off screen), under the header button, else at the top of the frame.
+  function placeAskPop() {
+    if (placeOverFrame(askPop, askPopRect)) return;
+    askPop.hidden = false;
+    const w = askPop.offsetWidth, h = askPop.offsetHeight;
+    const vp = { left: 0, top: 0, width: document.documentElement.clientWidth, height: document.documentElement.clientHeight };
+    let p = null;
+    if (!askBtn.hidden) {
+      const b = askBtn.getBoundingClientRect();
+      p = CanvasCore.askPlace({ rect: { top: b.top, bottom: b.bottom, left: b.left, right: b.right, x: (b.left + b.right) / 2 }, box: vp, size: { w, h } });
+    }
+    if (!p) {
+      const fb = frame ? frame.getBoundingClientRect() : { left: 0, top: 0, width: vp.width };
+      p = { left: Math.max(4, Math.round(fb.left + (fb.width - w) / 2)), top: Math.round(fb.top + 8) };
+    }
+    askPop.style.left = `${p.left}px`;
+    askPop.style.top = `${p.top}px`;
+  }
+  function askSay(text, tone) {
+    askStatus.textContent = text;                           // textContent: may carry an error string
+    askStatus.className = `ask-status${tone ? ` ${tone}` : ""}`;
+  }
+  function showAskPop() {
+    const cap = ask.captured;
+    // The excerpt is canvas text (agent-authored): textContent, one line, bidi controls dropped.
+    askExcerptEl.textContent = `「${CanvasCore.askExcerpt(cap.text)}」`;
+    askExcerptEl.title = CanvasCore.askExcerpt(cap.text, 300);
+    const draft = askDraft && askDraft.seq === cap.seq && askDraft.text === cap.text ? askDraft.note : "";
+    askDraft = null;
+    askNote.value = draft;
+    askNote.readOnly = false;
+    askSendBtn.disabled = false;
+    askSay("");
+    askPopRect = ask.sel && ask.sel.rect;
+    placeAskPop();
+    askNote.focus({ preventScroll: true });
+  }
+
   function onSelection(m) {
     // #107: made in an older render (debounced in the frame, it can arrive after startRender
     // cleared the selection), whose DOM is gone. By seq, not version (#115 review): a re-render of
     // the same version (§3.5 normalization, two refreshes) replaces the DOM too.
     if (CanvasCore.fromOlderRender(m, renderingSeq)) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
-    selection = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true } : null;
-    updateButtons();
+    const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect } : null;
+    askDispatch({ type: "selection", sel });
   }
-  askBtn.addEventListener("click", async () => {
-    if (!current || !selection || askBtn.disabled) return;
-    const c = current, sel = selection;          // what was selected when clicked, not what arrives meanwhile
-    const note = window.prompt("要 agent 對選取的文字做什麼？", "");
-    if (note === null) return;
-    if (!note.trim()) { flash("請寫下要 agent 做什麼（例如：改短一點、翻成英文）。"); return; }
-    askBtn.disabled = true;                      // one push per click; the panel also dedupes by reqId
-    try {
-      const text = CanvasCore.composeAskAgent({ note, title: c.meta.title, id: canvasId, version: c.meta.version, text: sel.text, truncated: sel.truncated });
-      const r = await pushToAgent(text, note);
-      if (!r.ok) { notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
-      flash(`💬 已問 ${r.agent || "agent"}（v${c.meta.version} 的選取文字）`);
-    } finally {
-      askBtn.disabled = false;
+  // Opened by the 💬 or the header button: captures the selection, version and title now.
+  function openAsk(from) {
+    if (!current || compareView || mode !== "view") return;
+    if (CanvasCore.askView(ask).popover) { askNote.focus(); return; }
+    askDispatch({ type: "open", version: current.meta.version, title: current.meta.title, from });
+  }
+  // Esc / ✕ / after a send. Focus goes back where the user came from: the header button, or the canvas.
+  function closeAsk() {
+    const from = ask.from;
+    const was = CanvasCore.askView(ask);
+    askDispatch({ type: "close" });
+    if (!was.popover || CanvasCore.askView(ask).popover) return;
+    if (from === "header" && !askBtn.hidden) askBtn.focus();
+    else if (frame) frame.focus({ preventScroll: true });
+  }
+  async function sendAsk() {
+    if (ask.phase !== "open") return;
+    const note = askNote.value;
+    if (!note.trim()) { askSay("請寫下要 agent 做什麼（例如：改短一點、翻成英文）。", "warn"); askNote.focus(); return; }
+    if (!current) { askSay("這個畫布已經不在了。", "warn"); return; }
+    const cap = ask.captured;
+    askDispatch({ type: "send" });
+    askNote.readOnly = true;
+    askSendBtn.disabled = true;                   // one push per send; the panel also dedupes by reqId
+    askSay("送出中…");
+    const text = CanvasCore.composeAskAgent({ note, title: cap.title, id: canvasId, version: cap.version, text: cap.text, truncated: cap.truncated });
+    const r = await pushToAgent(text, note);
+    const ok = r.ok ? `💬 已問 ${r.agent || "agent"}（v${cap.version} 的選取文字）` : `送出失敗：${CanvasCore.clipError(r.error)}`;
+    if (ask.phase !== "sending") {                // closed meanwhile (edit mode, frame reloaded): say it here
+      if (r.ok) flash(ok); else notice(ok);
+      return;
     }
+    if (!r.ok) {
+      askDispatch({ type: "failed" });            // stays open with the note, to retry
+      askNote.readOnly = false;
+      askSendBtn.disabled = false;
+      askSay(ok, "warn");
+      askNote.focus();
+      return;
+    }
+    askDraft = null;
+    askDispatch({ type: "sent" });
+    askSay(ok, "ok");
+    askTimer = setTimeout(() => { if (ask.phase === "sent") closeAsk(); }, 1500);
+  }
+
+  askBtn.addEventListener("click", () => { if (ask.sel) openAsk("header"); });
+  askPill.addEventListener("click", () => openAsk("pill"));
+  askPill.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeAsk(); } });
+  askSendBtn.addEventListener("click", () => sendAsk());
+  document.getElementById("ask-close").addEventListener("click", () => closeAsk());
+  askPop.addEventListener("keydown", (e) => {
+    const k = CanvasCore.askKey(e);
+    if (k === "close") { e.preventDefault(); e.stopPropagation(); closeAsk(); }
+    else if (k === "send" && e.target === askNote) { e.preventDefault(); sendAsk(); }
+  });
+  // A click outside closes the popover: on this page (not on it, the 💬 or the header button),
+  // or into the canvas, which takes the focus out of this window into the frame.
+  document.addEventListener("mousedown", (e) => {
+    if (!CanvasCore.askView(ask).popover) return;
+    const t = e.target;
+    if (askPop.contains(t) || askPill.contains(t) || askBtn.contains(t)) return;
+    askDispatch({ type: "blur" });
+  }, true);
+  window.addEventListener("blur", () => {
+    setTimeout(() => { if (frame && document.activeElement === frame) askDispatch({ type: "blur" }); }, 0);
+  });
+  window.addEventListener("resize", () => {
+    if (CanvasCore.askView(ask).pill) placeAskPill();
+    if (CanvasCore.askView(ask).popover) placeAskPop();
   });
 
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
@@ -313,6 +457,7 @@
     if (frame) frame.remove();
     frameReady = false;
     renderFailed = "";                        // #96: a goto / highlight before the new frame's ready must not get the old failure
+    askDispatch({ type: "reset" });           // the selection and its popover were about the old frame
     nonce = CanvasCore.newNonce();
     frame = document.createElement("iframe");
     // allow-scripts + allow-modals (print, §3.8): no same-origin, popups, forms or top navigation (§3.2).
@@ -335,6 +480,7 @@
     frameReady = false;
     rendered = false;
     nonce = "";
+    askDispatch({ type: "reset" });
     notice(why);
     finishGoto({ ok: false, error: "the canvas is no longer shown" });
     finishHighlight({ ok: false, error: "the canvas is no longer shown" });
@@ -483,7 +629,7 @@
   let renderingSeq = 0;
   let renderFailed = "";
   function startRender(msg) {
-    if (selection) { selection = null; updateButtons(); }      // the DOM it was in is replaced
+    askDispatch({ type: "render" });                        // the DOM the selection was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
@@ -585,7 +731,7 @@
     mode = "edit";
     dirty = false;
     editUndo = { canUndo: false, canRedo: false };    // a new editor: nothing to undo yet
-    selection = null;
+    askDispatch({ type: "edit" });                     // the popover closes; the editor has no selection{}
     notice("");
     toFrame({ type: "edit", content: current.content, version: current.meta.version });
     updateButtons();

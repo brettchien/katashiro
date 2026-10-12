@@ -45,8 +45,9 @@
     // Ask agent (§3.7): the text the user selected in the view, as rendered; "" = nothing selected.
     // Capped at the push data cap (the frame cuts it and says so with truncated). version: the
     // render it was made in (its seq, #107) — the host drops a selection from an older one.
+    // rect (the popover, §3.7): where the selection is in the frame's viewport; absent = out of view.
     selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.seq) &&
-      (m.truncated === undefined || typeof m.truncated === "boolean"),
+      (m.truncated === undefined || typeof m.truncated === "boolean") && (m.rect === undefined || askRect(m.rect) !== null),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
@@ -625,6 +626,139 @@
     return truncated === true && !body.endsWith(CUT) ? `${body}\n\n${CUT}` : body;
   }
 
+  // --- Ask agent popover (§3.7, Brett 2026-10-12 option a) -------------------------------------
+  // The host draws a 💬 beside the selection and a popover for the request, over the iframe (never
+  // inside it: canvas content must not be able to imitate them). The frame only says where the
+  // selection is; these decide where to draw, what a key does, and when to show or close.
+  const RECT_ABS_MAX = 1e6;                   // px; anything beyond is not a real layout
+
+  /**
+   * selection{rect} from the frame → { top, bottom, left, right, x } (frame viewport px) or null.
+   * Finite numbers only, bounded, ordered; x (the selection's end) within [left, right].
+   */
+  function askRect(r) {
+    if (!r || typeof r !== "object" || Array.isArray(r)) return null;
+    const out = {};
+    for (const k of ["top", "bottom", "left", "right", "x"]) {
+      const v = r[k];
+      if (typeof v !== "number" || !Number.isFinite(v) || Math.abs(v) > RECT_ABS_MAX) return null;
+      out[k] = v;
+    }
+    if (out.bottom < out.top || out.right < out.left || out.x < out.left || out.x > out.right) return null;
+    return out;
+  }
+
+  const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
+
+  /**
+   * Where to put a box of `size` {w, h} next to `rect` (askRect, in `box`'s own coordinates), with
+   * `box` {left, top, width, height} in page coordinates (the iframe's client rect).
+   * → { left, top, placement: "below" | "above" | "over" } in page coordinates, or null when the
+   * rect is not usable or not in view. Below the selection's end, centred on it; above the
+   * selection when there is no room below; neither fits (a selection taller than the view): kept
+   * inside the box, where it may cover part of the selection. Horizontally always inside the box.
+   */
+  function askPlace({ rect, box, size, gap = 6, margin = 4 }) {
+    const r = askRect(rect);
+    if (!r || !box || !size) return null;
+    const W = box.width, H = box.height, w = size.w, h = size.h;
+    if (![W, H, w, h, box.left, box.top].every(Number.isFinite) || W <= 0 || H <= 0) return null;
+    if (r.bottom <= 0 || r.top >= H || r.right <= 0 || r.left >= W) return null;     // out of view
+    const left = clamp(clamp(r.x, 0, W) - w / 2, margin, W - w - margin);
+    let top, placement;
+    if (r.bottom + gap + h <= H - margin) { top = Math.max(r.bottom, 0) + gap; placement = "below"; }
+    else if (r.top - gap - h >= margin) { top = Math.min(r.top, H) - gap - h; placement = "above"; }
+    else { top = clamp(r.bottom + gap, margin, H - h - margin); placement = "over"; }
+    return { left: Math.round(box.left + left), top: Math.round(box.top + top), placement };
+  }
+
+  /**
+   * A key in the popover's note → "send" | "close" | null (the textarea's own behaviour). Enter
+   * sends, Shift+Enter is a new line, Esc closes; a key that belongs to an IME composition does
+   * neither (Enter there picks a candidate, Esc cancels the composition).
+   */
+  function askKey(e) {
+    if (!e || imeKey(e)) return null;
+    if (e.key === "Escape") return "close";
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey) return "send";
+    return null;
+  }
+
+  // The popover's one-line excerpt of the selection: whitespace collapsed, control and bidi
+  // characters dropped (agent-authored text must not reorder the line), cut at `max` characters.
+  const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  function askExcerpt(text, max = 60) {
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(EXCERPT_STRIP, "").replace(/ {2,}/g, " ").trim();
+    const cps = Array.from(s);
+    return cps.length > max ? `${cps.slice(0, max).join("").trimEnd()}…` : s;
+  }
+
+  /**
+   * The popover's state → the next state. Phases: "idle" (no selection), "pill" (a selection; the
+   * 💬 shows when it has a rect), "dismissed" (a selection the user closed the popover on: no 💬
+   * until it changes; the header button still opens), "open", "sending", "sent" (the result shows,
+   * then it closes). sel = the latest selection {text, truncated, seq, rect}; captured = what the
+   * popover is about, fixed when it opened {text, truncated, seq, version, title}; from = what
+   * opened it ("pill" | "header", for focus on close).
+   * Events: selection{sel} | open{version, title, from} | send | sent | failed | close | blur |
+   * render | edit | reset.
+   */
+  const ASK_IDLE = Object.freeze({ phase: "idle", sel: null, captured: null, from: null });
+  const askOpen = (p) => p === "open" || p === "sending" || p === "sent";
+  const sameSel = (a, b) => !!a && !!b && a.text === b.text && a.seq === b.seq;
+  function askReduce(state, ev) {
+    const s = state || ASK_IDLE;
+    if (!ev || typeof ev.type !== "string") return s;
+    switch (ev.type) {
+      case "selection": {
+        const sel = ev.sel && ev.sel.text ? { text: ev.sel.text, truncated: ev.sel.truncated === true, seq: ev.sel.seq, rect: askRect(ev.sel.rect) } : null;
+        // While open, the popover keeps what it captured (focus moving into the note can clear
+        // the frame's selection); the header button still follows the latest.
+        if (askOpen(s.phase)) return { ...s, sel };
+        if (!sel) return { ...ASK_IDLE };
+        // A closed popover's selection stays dismissed until the text (or its render) changes.
+        if (s.phase === "dismissed" && sameSel(s.sel, sel)) return { ...s, sel };
+        return { ...ASK_IDLE, phase: "pill", sel };
+      }
+      case "open":
+        if (askOpen(s.phase)) return s;
+        if (!s.sel) return s;
+        return {
+          ...s, phase: "open", from: ev.from === "header" ? "header" : "pill",
+          captured: { text: s.sel.text, truncated: s.sel.truncated, seq: s.sel.seq, version: ev.version, title: ev.title },
+        };
+      case "send":
+        return s.phase === "open" ? { ...s, phase: "sending" } : s;
+      case "sent":
+        return s.phase === "sending" ? { ...s, phase: "sent" } : s;
+      case "failed":
+        return s.phase === "sending" ? { ...s, phase: "open" } : s;
+      case "close":
+      case "blur":
+        // While a send is in flight only edit / delete close it, so its result is not lost.
+        if (s.phase === "sending") return s;
+        // A click outside only closes a popover; the 💬 is not about focus.
+        if (ev.type === "blur" ? !askOpen(s.phase) : !(askOpen(s.phase) || s.phase === "pill")) return s;
+        if (!s.sel) return { ...ASK_IDLE };
+        // Esc / ✕ / after a send: the selection stays, its 💬 does not come back. A click outside an
+        // unsent popover: the 💬 comes back (the user may go on to select something else anyway).
+        return { phase: ev.type === "blur" && s.phase === "open" ? "pill" : "dismissed", sel: s.sel, captured: null, from: null };
+      case "render":
+        // The DOM the selection was in is replaced. An open popover stays, with what it captured.
+        return askOpen(s.phase) ? { ...s, sel: null } : { ...ASK_IDLE };
+      case "edit":
+      case "reset":
+        return { ...ASK_IDLE };
+      default:
+        return s;
+    }
+  }
+  /** What to draw for a state → { pill, popover }. */
+  function askView(s) {
+    const st = s || ASK_IDLE;
+    return { pill: st.phase === "pill" && !!st.sel && !!st.sel.rect, popover: askOpen(st.phase) };
+  }
+
   // Download as markdown (§3.7): a file name from the agent's title — no path separators, control
   // characters, reserved names or leading dots; ≤ 100 chars; "canvas" if nothing is left.
   const RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
@@ -637,5 +771,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

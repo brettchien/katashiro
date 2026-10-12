@@ -413,6 +413,165 @@ test("composeAskAgent: the user's request first, a fixed host line with id and v
   assert.ok(!C.composeAskAgent({ note: "n", title: "T", id: "cv_000000000001", version: 1, text: "abc" }).includes("cut at"));
 });
 
+// --- Ask agent popover (§3.7, Brett 2026-10-12 option a) -------------------------------------------
+const R = (top, bottom, left, right, x) => ({ top, bottom, left, right, x });
+
+test("selection{rect}: optional, finite, bounded and ordered — else the whole message is refused", () => {
+  const sel = (rect) => ok({ type: "selection", nonce: "n1", text: "x", seq: 3, rect });
+  assert.ok(sel(R(10, 30, 5, 200, 200)));
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 3 }));                       // out of view: no rect
+  assert.ok(sel(R(-50, -10, 0, 10, 5)));                                                   // above the view: the host decides
+  for (const bad of [null, "10,20", [10, 30, 5, 200, 200], { top: 10, bottom: 30, left: 5, right: 200 },
+    R(10, 30, 5, 200, NaN), R(10, 30, 5, Infinity, 6), R(10, "30", 5, 200, 6), R(30, 10, 5, 200, 6), R(10, 30, 200, 5, 6),
+    R(10, 30, 5, 200, 201), R(10, 30, 5, 200, 4), R(10, 2e6, 5, 200, 6)]) {
+    assert.equal(sel(bad), null, JSON.stringify(bad));
+  }
+  assert.deepEqual(C.askRect({ ...R(1, 2, 3, 4, 4), extra: "<b>" }), R(1, 2, 3, 4, 4));      // only the five numbers
+});
+
+test("askPlace: below the selection's end, above when no room, inside the frame box, null out of view", () => {
+  const box = { left: 100, top: 50, width: 800, height: 600 };
+  const size = { w: 30, h: 26 };
+  // Below the end: centred on x, gap 6, page coordinates (frame offset added).
+  assert.deepEqual(C.askPlace({ rect: R(100, 120, 40, 400, 300), box, size }), { left: 100 + 300 - 15, top: 50 + 126, placement: "below" });
+  // Never over the selection: below starts under its bottom, above ends over its top.
+  const below = C.askPlace({ rect: R(100, 120, 40, 400, 300), box, size });
+  assert.ok(below.top - box.top >= 120);
+  const above = C.askPlace({ rect: R(500, 590, 40, 400, 300), box, size });
+  assert.equal(above.placement, "above");
+  assert.equal(above.top, 50 + 500 - 6 - 26);
+  assert.ok(above.top - box.top + size.h <= 500);
+  // Neither fits (a selection as tall as the view): kept in the box.
+  const over = C.askPlace({ rect: R(10, 590, 40, 400, 300), box, size });
+  assert.equal(over.placement, "over");
+  assert.ok(over.top >= box.top + 4 && over.top + size.h <= box.top + box.height - 4);
+  // Horizontally clamped to the box: an end at the edge, or past it.
+  assert.equal(C.askPlace({ rect: R(100, 120, 0, 800, 800), box, size }).left, 100 + 800 - 30 - 4);
+  assert.equal(C.askPlace({ rect: R(100, 120, 0, 10, 2), box, size }).left, 100 + 4);
+  // A selection running off the bottom of the view: above its top when that is in view.
+  assert.equal(C.askPlace({ rect: R(300, 2000, 40, 400, 300), box, size }).placement, "above");
+  // A popover wider than the box: pinned to its left margin.
+  assert.equal(C.askPlace({ rect: R(100, 120, 0, 50, 20), box: { ...box, width: 200 }, size: { w: 360, h: 120 } }).left, 100 + 4);
+  // Out of view or unusable: nothing to place.
+  assert.equal(C.askPlace({ rect: R(-60, -10, 40, 400, 300), box, size }), null);
+  assert.equal(C.askPlace({ rect: R(610, 640, 40, 400, 300), box, size }), null);
+  assert.equal(C.askPlace({ rect: R(100, 120, 900, 950, 920), box, size }), null);
+  assert.equal(C.askPlace({ rect: null, box, size }), null);
+  assert.equal(C.askPlace({ rect: R(100, 120, 40, 400, NaN), box, size }), null);
+  assert.equal(C.askPlace({ rect: R(100, 120, 40, 400, 300), box: { ...box, width: 0 }, size }), null);
+  assert.equal(C.askPlace({ rect: R(100, 120, 40, 400, 300), box, size: { w: NaN, h: 2 } }), null);
+});
+
+test("askKey: Enter sends, Shift+Enter is a new line, Esc closes, IME keys do neither", () => {
+  assert.equal(C.askKey({ key: "Enter" }), "send");
+  assert.equal(C.askKey({ key: "Enter", ctrlKey: true }), "send");
+  assert.equal(C.askKey({ key: "Enter", metaKey: true }), "send");
+  assert.equal(C.askKey({ key: "Enter", shiftKey: true }), null);
+  assert.equal(C.askKey({ key: "Enter", altKey: true }), null);
+  assert.equal(C.askKey({ key: "Escape" }), "close");
+  assert.equal(C.askKey({ key: "a" }), null);
+  // An IME composition: Enter picks the candidate, Esc cancels it.
+  assert.equal(C.askKey({ key: "Enter", isComposing: true }), null);
+  assert.equal(C.askKey({ key: "Enter", keyCode: 229 }), null);
+  assert.equal(C.askKey({ key: "Escape", isComposing: true }), null);
+  assert.equal(C.askKey(null), null);
+});
+
+test("askExcerpt: one line, no control or bidi characters, cut with an ellipsis", () => {
+  assert.equal(C.askExcerpt("  first line\n\n second\tline  "), "first line second line");
+  const bidi = `abc${String.fromCharCode(0x202e)}def${String.fromCharCode(0x2066)} g${String.fromCharCode(0x200b)}h${String.fromCharCode(0)}`;
+  assert.equal(C.askExcerpt(bidi), "abcdef gh");
+  assert.equal(C.askExcerpt("x".repeat(61)), `${"x".repeat(60)}…`);
+  assert.equal(C.askExcerpt("x".repeat(60)), "x".repeat(60));
+  assert.equal(C.askExcerpt("字".repeat(10), 4), "字字字字…");
+  assert.equal(C.askExcerpt("😀".repeat(5), 2), "😀😀…");                  // by code point, never half a pair
+  assert.equal(C.askExcerpt(null), "");
+});
+
+test("askReduce: the 💬 follows the selection; the open popover keeps what it captured", () => {
+  const sel = (text, seq = 1, rect = R(10, 30, 0, 100, 90)) => ({ type: "selection", sel: { text, seq, rect } });
+  let s = C.askReduce(undefined, sel("hello"));
+  assert.equal(s.phase, "pill");
+  assert.deepEqual(C.askView(s), { pill: true, popover: false });
+  // Scrolled out of view: the selection stays (the header button), the 💬 hides.
+  s = C.askReduce(s, { type: "selection", sel: { text: "hello", seq: 1 } });
+  assert.deepEqual(C.askView(s), { pill: false, popover: false });
+  assert.equal(s.sel.text, "hello");
+  s = C.askReduce(s, sel("hello"));
+  // A bad rect from the frame is dropped, not used.
+  assert.equal(C.askReduce(s, { type: "selection", sel: { text: "hello", seq: 1, rect: { top: "x" } } }).sel.rect, null);
+  // Opening captures the selection, version and title.
+  s = C.askReduce(s, { type: "open", version: 7, title: "Plan", from: "pill" });
+  assert.equal(s.phase, "open");
+  assert.deepEqual(s.captured, { text: "hello", truncated: false, seq: 1, version: 7, title: "Plan" });
+  assert.deepEqual(C.askView(s), { pill: false, popover: true });
+  // Focus into the note clears the frame's selection; another arrives: the capture stands.
+  s = C.askReduce(s, { type: "selection", sel: null });
+  assert.equal(s.phase, "open");
+  assert.equal(s.captured.text, "hello");
+  assert.equal(s.sel, null);
+  // A re-render / new version: stays open, with the version it captured.
+  s = C.askReduce(s, sel("hello"));
+  s = C.askReduce(s, { type: "render" });
+  assert.equal(s.phase, "open");
+  assert.equal(s.captured.version, 7);
+  // A second open while open changes nothing.
+  assert.equal(C.askReduce(s, { type: "open", version: 9, title: "X" }), s);
+});
+
+test("askReduce: close, outside click, send / fail / sent, edit and reset", () => {
+  const sel = (text, seq = 1) => ({ type: "selection", sel: { text, seq, rect: R(10, 30, 0, 100, 90) } });
+  const open = (s) => C.askReduce(s, { type: "open", version: 3, title: "T", from: "header" });
+  let s = open(C.askReduce(C.ASK_IDLE, sel("a")));
+  assert.equal(s.from, "header");
+  // Esc / ✕: the 💬 does not come back for this selection…
+  let c = C.askReduce(s, { type: "close" });
+  assert.equal(c.phase, "dismissed");
+  assert.deepEqual(C.askView(c), { pill: false, popover: false });
+  assert.equal(C.askReduce(c, sel("a")).phase, "dismissed");             // same selection (a scroll re-post)
+  assert.equal(C.askReduce(c, sel("b")).phase, "pill");                  // another one brings it back
+  assert.equal(C.askReduce(c, sel("a", 2)).phase, "pill");               // the same words in a new render too
+  assert.equal(C.askReduce(c, { type: "selection", sel: null }).phase, "idle");
+  // …but the header button still opens the popover on it.
+  assert.equal(open(c).phase, "open");
+  // Esc on the 💬 itself dismisses it.
+  assert.equal(C.askReduce(C.askReduce(C.ASK_IDLE, sel("a")), { type: "close" }).phase, "dismissed");
+  // A click outside an open popover: closed, the 💬 back. On a 💬 alone it does nothing.
+  assert.equal(C.askReduce(s, { type: "blur" }).phase, "pill");
+  const pill = C.askReduce(C.ASK_IDLE, sel("a"));
+  assert.equal(C.askReduce(pill, { type: "blur" }), pill);
+  // Closing after the selection went away: nothing left.
+  assert.equal(C.askReduce(C.askReduce(s, { type: "selection", sel: null }), { type: "close" }).phase, "idle");
+  // Send: nothing but edit / reset closes it while in flight (its result must be shown).
+  let f = C.askReduce(s, { type: "send" });
+  assert.equal(f.phase, "sending");
+  assert.equal(C.askReduce(f, { type: "close" }), f);
+  assert.equal(C.askReduce(f, { type: "blur" }), f);
+  assert.equal(C.askReduce(f, { type: "send" }), f);                      // no second push
+  assert.equal(C.askReduce(f, { type: "edit" }).phase, "idle");
+  // Failed: open again, captured unchanged (the note is the DOM's, kept).
+  const back = C.askReduce(f, { type: "failed" });
+  assert.equal(back.phase, "open");
+  assert.deepEqual(back.captured, s.captured);
+  // Sent: shows the result, then closes as dismissed (also on an outside click).
+  const sent = C.askReduce(f, { type: "sent" });
+  assert.deepEqual(C.askView(sent), { pill: false, popover: true });
+  assert.equal(C.askReduce(sent, { type: "close" }).phase, "dismissed");
+  assert.equal(C.askReduce(sent, { type: "blur" }).phase, "dismissed");
+  // sent / failed / send out of turn change nothing.
+  assert.equal(C.askReduce(s, { type: "sent" }), s);
+  assert.equal(C.askReduce(s, { type: "failed" }), s);
+  assert.equal(C.askReduce(pill, { type: "send" }), pill);
+  // Edit mode and a frame reload close everything; a render closes the 💬.
+  assert.deepEqual(C.askReduce(s, { type: "edit" }), C.ASK_IDLE);
+  assert.deepEqual(C.askReduce(s, { type: "reset" }), C.ASK_IDLE);
+  assert.deepEqual(C.askReduce(pill, { type: "render" }), C.ASK_IDLE);
+  // Nothing selected: open does nothing; unknown events are ignored.
+  assert.equal(open(C.ASK_IDLE), C.ASK_IDLE);
+  assert.equal(C.askReduce(pill, { type: "nope" }), pill);
+  assert.equal(C.askReduce(pill, null), pill);
+});
+
 // --- Mermaid (§3.3) ------------------------------------------------------------------------------
 test("mermaid: diagramError{} is its own allow-listed frame message, also from a compare tab", () => {
   assert.ok(ok({ type: "diagramError", nonce: "n1", msg: "mermaid diagram 1: Parse error", seq: 3 }));
