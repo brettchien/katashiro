@@ -16,6 +16,9 @@
 //   - Enter sends composeAskAgent's text with the version captured at open, shows 已問, then closes;
 //   - a failed push keeps the popover and the note; Esc closes it; the note comes back on reopen;
 //   - the header 💬 Ask agent opens the same popover; a click in the header or the canvas closes it;
+//   - an open popover follows its selection on scroll, docks under the header button once the
+//     selection scrolls out of view (#125e), and goes back beside it when it scrolls back;
+//   - the excerpt's text is in a <bdi dir="auto"> between the 「」 (#125c);
 //   - entering edit mode closes it.
 import http from "node:http";
 import fs from "node:fs";
@@ -29,7 +32,7 @@ const PPTR = process.env.PUPPETEER_CORE || "/usr/local/share/mise/installs/npm-m
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
 const ID = "cv_0123456789ab";
-const CONTENT = `# Plan\n\n${Array.from({ length: 12 }, (_, i) => `Paragraph ${i + 1} has some words to select in it.`).join("\n\n")}\n`;
+const CONTENT = `# Plan\n\n${Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1} has some words to select in it.`).join("\n\n")}\n`;
 // The chrome.* surface canvas.js touches, in memory. window.__pushes records katashiro-canvas-push;
 // window.__answer is what the "side panel" replies.
 const STUB = `
@@ -202,6 +205,38 @@ try {
   await page.mouse.click(fb.left + 600, fb.top + 15);
   await until(() => document.getElementById("ask-pop").hidden, "the popover to close on a click into the canvas", 3000);
   ok("a click into the canvas closes the popover");
+
+  // 7b. #125e: the open popover follows its selection, docks when it scrolls out of view, comes back.
+  await frame.evaluate(() => window.scrollTo(0, 0));
+  const sb2 = await select("Paragraph 3 ");
+  await sleep(500);                       // past the frame's debounce: the 💬 is for THIS selection
+  await until(() => !document.getElementById("ask-pill").hidden, "the 💬 (scroll)");
+  await page.click("#ask-pill");
+  await until(() => !document.getElementById("ask-pop").hidden, "the popover (scroll)");
+  const popBox = () => page.evaluate(() => { const b = document.getElementById("ask-pop").getBoundingClientRect(); const h = document.getElementById("canvas-ask").getBoundingClientRect(); return { top: Math.round(b.top), btnBottom: Math.round(h.bottom), hidden: document.getElementById("ask-pop").hidden }; });
+  const bdi = await page.evaluate(() => { const b = document.querySelector("#ask-excerpt > bdi"); return b && { dir: b.dir, text: b.textContent, iso: getComputedStyle(document.getElementById("ask-excerpt")).unicodeBidi }; });
+  check(bdi && bdi.dir === "auto" && bdi.text === "some words" && bdi.iso === "isolate", "the excerpt is a <bdi dir=auto> inside an isolated .ask-excerpt", bdi);
+  const p0 = await popBox();
+  const fTop = (await state()).frameBox.top;
+  check(p0.top >= fTop + sb2.bottom, "open: the popover is below its selection", { p0, sel: sb2 });
+  await frame.evaluate(() => window.scrollBy(0, 30));
+  await sleep(300);
+  const p1 = await popBox();
+  check(Math.abs((p0.top - p1.top) - 30) <= 2, "a small scroll: the popover follows its selection", { p0, p1 });
+  await frame.evaluate(() => window.scrollBy(0, 3000));
+  await sleep(400);
+  const p2 = await popBox();
+  check(!p2.hidden && p2.top >= p2.btnBottom && p2.top - p2.btnBottom < 20, "scrolled out of view: the popover docks under the header button", p2);
+  await frame.evaluate(() => window.scrollTo(0, 0));
+  await sleep(400);
+  const p3 = await popBox();
+  check(Math.abs(p3.top - p0.top) <= 2, "scrolled back: the popover is beside its selection again", { p0, p3 });
+  s = await state();
+  check(s.pop && s.pushes === 2, "scrolling neither closed the popover nor sent anything", s);
+  await page.keyboard.press("Escape");
+  // Esc dismisses this selection's 💬; clear it so the same words selected again count as new.
+  await frame.evaluate(() => getSelection().removeAllRanges());
+  await sleep(400);
 
   // 8. A new selection brings the 💬 back; open it, then enter edit mode: it closes.
   await select("Paragraph 5 ");

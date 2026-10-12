@@ -88,8 +88,11 @@
   const gate = CanvasCore.createLoadGate();
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
+  // tag: the render a render-error notice belongs to ({seq, version}); any other notice drops it.
   let noticeActionFn = null;
-  function notice(text, action) {
+  let noticeTag = null;
+  function notice(text, action, tag) {
+    noticeTag = text && tag ? tag : null;
     noticeEl.textContent = text;      // textContent: may carry frame-supplied text
     noticeBar.hidden = !text;
     noticeActionFn = action && text ? action.fn : null;
@@ -281,7 +284,9 @@
       askPopRect = null;
     }
     if (!was.popover && now.popover) showAskPop();
-    else if (now.popover && sameAsCaptured(ask.sel, ask.captured) && ask.sel.rect) { askPopRect = ask.sel.rect; placeAskPop(); }
+    // An open popover follows its selection; once that scrolls out of view (no rect, #125e) it
+    // docks under the header button (placeAskPop's fallback) instead of hanging over unrelated text.
+    else if (now.popover && sameAsCaptured(ask.sel, ask.captured)) { askPopRect = ask.sel.rect || null; placeAskPop(); }
     if (now.pill) placeAskPill(); else askPill.hidden = true;
     if (!!prev.sel !== !!ask.sel) updateButtons();          // the header 💬 Ask agent
   }
@@ -329,7 +334,12 @@
   function showAskPop() {
     const cap = ask.captured;
     // The excerpt is canvas text (agent-authored): textContent, one line, bidi controls dropped.
-    askExcerptEl.textContent = `「${CanvasCore.askExcerpt(cap.text)}」`;
+    // In its own <bdi dir="auto"> (#125c): RTL text takes its own direction inside the quotes
+    // without carrying 「」 to the other side.
+    const bdi = document.createElement("bdi");
+    bdi.dir = "auto";
+    bdi.textContent = CanvasCore.askExcerpt(cap.text);
+    askExcerptEl.replaceChildren("「", bdi, "」");
     askExcerptEl.title = CanvasCore.askExcerpt(cap.text, 300);
     const draft = askDraft && askDraft.seq === cap.seq && askDraft.text === cap.text ? askDraft.note : "";
     askDraft = null;
@@ -428,21 +438,26 @@
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
   // diagram: only a mermaid diagram failed (§3.3) and the rest rendered, so the agent is pointed at
   // that fence rather than told the whole canvas is broken.
-  function offerSendError(msg, diagram = false) {
+  // tag ({seq, version}): the render the error came from. A newer render's rendered{} clears the
+  // notice, and the push names that version, not whatever the canvas holds at click time.
+  function offerSendError(msg, diagram = false, tag = null) {
     const c = current;
-    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
-    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}：${CanvasCore.clipError(msg)}`, {
+    const version = tag && Number.isInteger(tag.version) ? tag.version : c && c.meta.version;
+    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
         const text = CanvasCore.composeCanvasPush({
-          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) ${what}]`,
+          header: CanvasCore.renderErrorHeader({
+            title: String(c.meta.title).slice(0, TITLE_MAX), id: canvasId, version, kind: c.meta.kind, diagram,
+            nowVersion: current ? current.meta.version : undefined,
+          }),
           data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
         if (r.ok) notice(`📤 已把錯誤送給 ${r.agent || "agent"}`); else if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`);
       },
-    });
+    }, tag);
   }
 
   // --- Export (§3.8) --------------------------------------------------------------------------
@@ -574,7 +589,7 @@
       if (ranges) msg.glowRanges = ranges;
     }
     lastRenderedVersion = c.meta.version;
-    startRender(msg);
+    startRender(msg, c.meta.version);
   }
 
   // While this canvas's compare tab is open, the differing blocks stay marked here too (Brett,
@@ -670,11 +685,15 @@
   let renderSeq = 0;
   let renderingSeq = 0;
   let renderFailed = "";
-  function startRender(msg) {
+  let renderingVersion = 0;               // the version render{renderingSeq} shows (its errors name it)
+  // shows: the version whose content this render displays (a normalize render names the agent copy
+  // in msg.version, but shows the latest when the user saved since).
+  function startRender(msg, shows = msg.version) {
     askDispatch({ type: "render" });                        // the DOM the selection was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
+    renderingVersion = shows;
     renderedText = { seq: renderingSeq, content: typeof msg.content === "string" ? msg.content : null };
     toFrame({ ...msg, seq: renderingSeq });
   }
@@ -948,6 +967,7 @@
         if (m.seq !== renderingSeq) break;                   // an older render; a newer one is on its way
         rendered = true;
         renderFailed = "";
+        if (CanvasCore.renderNoticeStale(noticeTag, m.seq)) notice("");    // an older render's error
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (comparing && !compareView) holdCompareGlow();     // re-mark on the new DOM
@@ -981,14 +1001,17 @@
       case "selection":
         onSelection(m);
         break;
+      case "selectionRect":
+        if (!CanvasCore.fromOlderRender(m, renderingSeq)) askDispatch({ type: "rect", seq: m.seq, rect: m.rect });
+        break;
       case "error":
         // Render N failing after startRender(N+1) says nothing about N+1: it must not fail the goto /
         // highlight waiting for it, nor mark it failed (#115 review). No seq: a CSP report or a goto.
         if (CanvasCore.fromOlderRender(m, renderingSeq)) break;
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
         if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
-        if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
-        else offerSendError(m.msg);
+        if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
+        else offerSendError(m.msg, false, { seq: renderingSeq, version: renderingVersion });
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         finishHighlight({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
@@ -996,8 +1019,8 @@
         // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
         // nothing is marked failed and pending goto / highlight carry on.
         if (m.seq !== renderingSeq) break;                   // an older render's
-        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
-        else offerSendError(m.msg, true);
+        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
+        else offerSendError(m.msg, true, { seq: renderingSeq, version: renderingVersion });
         break;
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });

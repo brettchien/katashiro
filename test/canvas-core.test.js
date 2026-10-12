@@ -488,6 +488,32 @@ test("askExcerpt: one line, no control or bidi characters, cut with an ellipsis"
   assert.equal(C.askExcerpt(null), "");
 });
 
+test("askExcerpt: Unicode Tag characters are dropped (#125a)", () => {
+  assert.equal(C.askExcerpt("x\u{E0041}y"), "xy");
+  assert.equal(C.askExcerpt("a\u{E0000}\u{E0001}\u{E0020}\u{E007E}\u{E007F}b"), "ab");
+  assert.equal(C.askExcerpt("\u{E0068}\u{E0069}"), "");                  // nothing visible left
+});
+
+test("askExcerpt: a ZWJ between emoji stays, so composed emoji are not split (#125b)", () => {
+  const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";          // 👨‍👩‍👧
+  assert.equal(C.askExcerpt(family), family);
+  assert.equal(C.askExcerpt(`看 ${family} 這裡`), `看 ${family} 這裡`);
+  assert.equal(C.askExcerpt("\u2764\uFE0F\u200D\u{1F525}"), "\u2764\uFE0F\u200D\u{1F525}");   // ❤️‍🔥: VS16 before the ZWJ
+  assert.equal(C.askExcerpt("\u{1F44B}\u{1F3FD}\u200D\u{1F468}"), "\u{1F44B}\u{1F3FD}\u200D\u{1F468}"); // skin tone before the ZWJ
+  // Anywhere else it is an invisible character like the rest: dropped.
+  assert.equal(C.askExcerpt("a\u200Db"), "ab");
+  assert.equal(C.askExcerpt("\u{1F468}\u200Da"), "\u{1F468}a");
+  assert.equal(C.askExcerpt("a\u200D\u{1F468}"), "a\u{1F468}");
+  assert.equal(C.askExcerpt("\u200D\u200D"), "");
+  // A stripped character between emoji and ZWJ does not make the ZWJ join them: the canvas shows two.
+  assert.equal(C.askExcerpt("\u{1F468}\u200B\u200D\u{1F4BB}"), "\u{1F468}\u{1F4BB}");
+  assert.equal(C.askExcerpt("\u{1F468}\u200D\u202E\u{1F4BB}"), "\u{1F468}\u{1F4BB}");
+  // ZWNJ still goes (it is no emoji joiner).
+  assert.equal(C.askExcerpt("\u{1F468}\u200C\u{1F469}"), "\u{1F468}\u{1F469}");
+  // A cut inside the sequence leaves no dangling ZWJ before the ellipsis.
+  assert.equal(C.askExcerpt(family, 2), "\u{1F468}…");
+});
+
 test("askReduce: the 💬 follows the selection; the open popover keeps what it captured", () => {
   const sel = (text, seq = 1, rect = R(10, 30, 0, 100, 90)) => ({ type: "selection", sel: { text, seq, rect } });
   let s = C.askReduce(undefined, sel("hello"));
@@ -892,4 +918,69 @@ test("askReduce: the selection's where is checked and captured with it", () => {
 test("frame selection{where}: never refuses the selection — askWhere drops a bad part", () => {
   assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: { lines: { from: 1, to: 2 } } }));
   assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: "junk" }));
+});
+
+test("renderNoticeStale: a render-error notice clears once a newer render reports rendered{}", () => {
+  // v22's diagram error (seq 3); v23 renders fine (seq 4): the notice goes.
+  assert.equal(C.renderNoticeStale({ seq: 3, version: 22 }, 4), true);
+  // The frame posts diagramError{seq} before rendered{seq}: the same render's notice stays.
+  assert.equal(C.renderNoticeStale({ seq: 4, version: 23 }, 4), false);
+  // Untagged notices (saved, sent, folder…) are never cleared by a render.
+  assert.equal(C.renderNoticeStale(null, 4), false);
+  assert.equal(C.renderNoticeStale({}, 4), false);
+  assert.equal(C.renderNoticeStale({ seq: 3 }, undefined), false);
+});
+
+test("renderErrorHeader: names the failed render's version, and says so when the canvas has moved on", () => {
+  const base = { title: "Plan", id: "cv_1", version: 22, kind: "markdown", diagram: true };
+  assert.equal(C.renderErrorHeader({ ...base, nowVersion: 22 }),
+    '[canvas "Plan" (cv_1) v22 (markdown) has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence]');
+  assert.equal(C.renderErrorHeader({ ...base, nowVersion: 23 }),
+    '[canvas "Plan" (cv_1) v22 (markdown) has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence; this error is from v22, the canvas is now v23 — check it still applies]');
+  assert.equal(C.renderErrorHeader({ ...base, diagram: false }), '[canvas "Plan" (cv_1) v22 (markdown) failed to render]');
+});
+
+test("selectionRect{}: rect only, from our frame; refused in a compare tab (#125d)", () => {
+  const msg = (data) => C.acceptFrameMessage({ source: frameWindow, data: { nonce: "n1", ...data } }, { frameWindow, nonce: "n1" });
+  const rect = { top: 10, bottom: 30, left: 0, right: 100, x: 90 };
+  assert.ok(msg({ type: "selectionRect", seq: 2, rect }));
+  assert.ok(msg({ type: "selectionRect", seq: 2 }));                            // out of view
+  assert.equal(msg({ type: "selectionRect", rect }), null);                     // no seq
+  assert.equal(msg({ type: "selectionRect", seq: 2, rect: { top: "x" } }), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "selectionRect", seq: 2, rect, nonce: "n1" } }, { frameWindow, nonce: "n1", readOnly: true }), null);
+});
+
+test("askReduce rect: moves the selection's rect, keeps its text/where; null = out of view (#125d/e)", () => {
+  const r1 = { top: 10, bottom: 30, left: 0, right: 100, x: 90 }, r2 = { top: -40, bottom: -20, left: 0, right: 100, x: 90 };
+  const where = { headings: ["Plan"], lines: { start: 3, end: 3 } };
+  let s = C.askReduce(undefined, { type: "selection", sel: { text: "hello", seq: 1, rect: r1, where } });
+  const before = s.sel;
+  s = C.askReduce(s, { type: "rect", seq: 1, rect: r2 });
+  assert.deepEqual(s.sel.rect, r2);
+  assert.equal(s.sel.text, "hello");
+  assert.deepEqual(s.sel.where, before.where);                               // #129's where survives a scroll
+  assert.equal(s.phase, "pill");
+  // The same rect again: no new state (nothing to redraw).
+  assert.equal(C.askReduce(s, { type: "rect", seq: 1, rect: r2 }), s);
+  // Out of view: the 💬 hides; the selection (header button) stays.
+  s = C.askReduce(s, { type: "rect", seq: 1 });
+  assert.equal(s.sel.rect, null);
+  assert.deepEqual(C.askView(s), { pill: false, popover: false });
+  // Back in view, then a bad rect: dropped like a bad selection{rect}.
+  s = C.askReduce(s, { type: "rect", seq: 1, rect: r1 });
+  assert.deepEqual(C.askView(s), { pill: true, popover: false });
+  assert.equal(C.askReduce(s, { type: "rect", seq: 1, rect: { top: "x" } }).sel.rect, null);
+  // Another render's rect, or no selection: ignored.
+  assert.equal(C.askReduce(s, { type: "rect", seq: 2, rect: r2 }), s);
+  assert.equal(C.askReduce(C.ASK_IDLE, { type: "rect", seq: 1, rect: r2 }), C.ASK_IDLE);
+  // A sel without a rect field (selection{} stores null, but the reducer does not rely on it), and no rect: no new state.
+  const noRect = { ...C.ASK_IDLE, phase: "pill", sel: { text: "hi", seq: 1 } };
+  assert.equal(C.askReduce(noRect, { type: "rect", seq: 1 }), noRect);
+  // While the popover is open the rect still follows (so it can follow or dock); captured is untouched.
+  s = C.askReduce(s, { type: "open", version: 4, title: "Plan", from: "pill" });
+  const cap = s.captured;
+  s = C.askReduce(s, { type: "rect", seq: 1 });
+  assert.equal(s.phase, "open");
+  assert.equal(s.sel.rect, null);
+  assert.equal(s.captured, cap);
 });

@@ -50,6 +50,8 @@
     // alone, so a malformed one never costs the user the selection.
     selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.seq) &&
       (m.truncated === undefined || typeof m.truncated === "boolean") && (m.rect === undefined || askRect(m.rect) !== null),
+    // The view moved under an unchanged selection (#125d): only its rect, absent = out of view.
+    selectionRect: (m) => Number.isInteger(m.seq) && (m.rect === undefined || askRect(m.rect) !== null),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
     // transient activation too). Text only, bounded; the reply goes back as copied{reqId, ok}.
     copy: (m) => typeof m.text === "string" && m.text.length <= COPY_MAX && Number.isInteger(m.reqId),
@@ -63,7 +65,7 @@
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "editFailed", "escape", "undoState"]);
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
@@ -126,6 +128,22 @@
   // A report that names an older render than the one in flight (its seq, #96): what it says about
   // that render no longer holds. A report without a seq is about no render in particular.
   const fromOlderRender = (m, renderingSeq) => !!m && Number.isInteger(m.seq) && m.seq !== renderingSeq;
+
+  // A render-error notice ("圖表有錯誤" / "顯示時發生錯誤") is tied to the render it came from
+  // ({seq, version}). Once a newer render reports rendered{} it says nothing about what is shown —
+  // a diagram fixed in v23 must not keep v22's error in the header (real Chrome 2026-10-12). The
+  // frame posts a render's diagramError{} before its rendered{}, so the same seq's notice stays.
+  const renderNoticeStale = (tag, renderedSeq) => !!tag && Number.isInteger(tag.seq) && Number.isInteger(renderedSeq) && tag.seq !== renderedSeq;
+
+  // The header of 送給 agent 修 (§3.7): the version is the one whose render failed, not whatever
+  // the canvas holds at click time; when a newer version is already in, the agent is told so, so
+  // it never "fixes" an error that the latest version may no longer have.
+  function renderErrorHeader({ title, id, version, kind, diagram, nowVersion }) {
+    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
+    const older = Number.isInteger(nowVersion) && Number.isInteger(version) && nowVersion !== version
+      ? `; this error is from v${version}, the canvas is now v${nowVersion} — check it still applies` : "";
+    return `[canvas "${title}" (${id}) v${version} (${kind}) ${what}${older}]`;
+  }
 
   // The host's edit mode after a frame message: only editFailed ends it. Always (#93): the editor
   // never opened, so there are no unsaved edits, and the frame has already gone back to the view
@@ -711,11 +729,17 @@
 
   // The popover's one-line excerpt of the selection: whitespace collapsed, control and bidi
   // characters dropped (agent-authored text must not reorder the line), cut at `max` characters.
-  const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  // Tag characters U+E0000–E007F go too (#125a): invisible, they can carry ASCII the user never
+  // sees (a subdivision flag such as England's then shows as a plain 🏴 — a fair price). ZWJ
+  // (U+200D) is left out of the strip set and dropped below unless it joins two emoji (#125b):
+  // stripping it split 👨‍👩‍👧 into three faces, and between emoji it cannot reorder anything.
+  const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{E0000}-\u{E007F}]/gu;
+  const LONE_ZWJ = /(?<!\p{Extended_Pictographic}[\u{FE0F}\u{1F3FB}-\u{1F3FF}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/gu;
   function askExcerpt(text, max = 60) {
-    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(EXCERPT_STRIP, "").replace(/ {2,}/g, " ").trim();
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(LONE_ZWJ, "").replace(EXCERPT_STRIP, "").replace(/ {2,}/g, " ").trim();
     const cps = Array.from(s);
-    return cps.length > max ? `${cps.slice(0, max).join("").trimEnd()}…` : s;
+    // A cut inside an emoji sequence leaves its ZWJ dangling at the end: drop it with the cut.
+    return cps.length > max ? `${cps.slice(0, max).join("").replace(/\u200d+$/u, "").trimEnd()}…` : s;
   }
 
   // --- Where the selection is (§3.7, Brett 2026-10-12 17:43) ------------------------------------
@@ -859,6 +883,14 @@
         // Esc / ✕ / after a send: the selection stays, its 💬 does not come back. A click outside an
         // unsent popover: the 💬 comes back (the user may go on to select something else anyway).
         return { phase: ev.type === "blur" && s.phase === "open" ? "pill" : "dismissed", sel: s.sel, captured: null, from: null };
+      case "rect": {
+        // selectionRect{} (#125d): the same selection moved in the view. Only for the selection
+        // of that render; null = out of view (the 💬 hides, an open popover docks).
+        if (!s.sel || s.sel.seq !== ev.seq) return s;
+        const rect = askRect(ev.rect);
+        if (JSON.stringify(rect) === JSON.stringify(s.sel.rect || null)) return s;
+        return { ...s, sel: { ...s.sel, rect } };
+      }
       case "render":
         // The DOM the selection was in is replaced. An open popover stays, with what it captured.
         return askOpen(s.phase) ? { ...s, sel: null } : { ...ASK_IDLE };
@@ -887,5 +919,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
