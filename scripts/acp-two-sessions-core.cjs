@@ -80,7 +80,7 @@ function buildPrompt(label) {
     `This is an automated protocol test of the Katashiro client (session ${label}). Follow these steps exactly and use no other tools:`,
     `1. Call search_capabilities with the query "whoami".`,
     `2. Call execute_capability with the exact name of the whoami capability that search returned (there should be exactly one) and arguments {}.`,
-    `3. Reply with these lines, in this order:`,
+    `3. Reply in plain text (no markdown formatting) with these lines, in this order:`,
     `   CAPS: <the capability names the search returned, comma-separated>`,
     `   NONCE: <the nonce value from the whoami result>`,
     `   then five short numbered lines (1. to 5.), each one sentence about the sea.`,
@@ -89,8 +89,9 @@ function buildPrompt(label) {
 
 /** The capability names from the reply's `CAPS:` line, or null when the line is missing. */
 function capsLine(replyText) {
-  const m = /^\s*CAPS:\s*(.*)$/im.exec(replyText || "");
-  return m ? m[1].trim() : null;
+  // Tolerates markdown around the label (`**CAPS:**`, `- CAPS:`, `` `CAPS: …` ``): agents like to bold it.
+  const m = /^[\s*_`>-]*CAPS[*_`]*:[*_`]*\s*(.*)$/im.exec(replyText || "");
+  return m ? m[1].replace(/[*_`\s]+$/, "") : null;
 }
 
 /** The whoami result text. Kept parseable so a crossed-over nonce is easy to spot in a reply. */

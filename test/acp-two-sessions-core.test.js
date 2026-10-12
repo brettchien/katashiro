@@ -107,6 +107,8 @@ test("evaluate: isolation (CAPS), wrong tool name, pre-prompt activity", () => {
   assert.equal(cell(leak, "CAPS lists no other session's server", 2), "PASS");
   assert.equal(cell(C.evaluate([sess("A", { replyText: "NONCE: nA" }), sess("B")]), "CAPS lists no other session's server"), "FAIL");
   assert.equal(C.capsLine("x\n  caps: a, b \nNONCE: 1"), "a, b");
+  for (const r of ["**CAPS:** a", "- CAPS: a", "`CAPS: a", "> CAPS: a", "**CAPS**: a"]) assert.match(C.capsLine(r), /^a/, r);
+  assert.equal(C.capsLine("NOCAPS: a"), null);
   const wrong = C.evaluate([sess("A", { calls: [{ start: 2, end: 12, name: "other" }] }), sess("B")]);
   assert.equal(cell(wrong, "whoami called on own server"), "FAIL");
   // B's only "early" activity came before its prompt was sent: that is not the turn running.
