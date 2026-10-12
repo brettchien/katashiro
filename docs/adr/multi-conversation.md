@@ -1,7 +1,8 @@
 # ADR: Multi-conversation — several conversations in one side panel
 
 - **Status:** Accepted 2026-10-12 (Brett; Q1–Q9, Q11, Q12 at 16:30–16:34 TPE, archive + gallery
-  reopen and "write the ADR + build the MVP" at 16:39 TPE). **Q10 (P3) open** (§7).
+  reopen and "write the ADR + build the MVP" at 16:39 TPE; P1b additions at 18:28–18:31 TPE, §4).
+  **Q10 (P3) open** (§7).
 - **Date:** 2026-10-12
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [single-active agent](./single-active-agent.md) (unchanged through P3);
@@ -69,10 +70,10 @@ Katashiro becomes a **multi-conversation** client in phases. Each phase ships on
 | Phase | Scope | Not yet |
 |---|---|---|
 | **MVP (P1a)** | storage migration (`history:<windowId>` → `conv:<id>` + `window:<windowId>`); a **tab strip** at the top of the panel, **at most 3 open conversations**; ＋ new, × **archive** (never delete), rename (auto + manual); archived conversations listed in a new **對話** section of the 🗂️ gallery to reopen; switching resumes the session, U2 (`chat_history`) as fallback; **no switching while a turn is running**; one window per conversation (Web Lock); browser restart → last conversation; `ask_user` / 🔒 cards bound to their conversation (§3) | background turns, agent tabs in the group, working tab |
-| **P1b** | one Chrome tab group per conversation: its canvases **and the tabs the agent opened**; collapse the other groups on switch; working tab, and switching to it when the user sends (Q6); a card waiting in another conversation → tab-strip mark + notification (Q12) (§4) | background turns |
+| **P1b** | one Chrome tab group per conversation: its canvases **and the tabs the agent opened**; collapse the other groups on switch; working tab, and switching to it when the user sends (Q6); a card waiting in another conversation → tab-strip mark + notification (Q12); a conversation that comes back reopens its group's tabs; archive closes them; agent `set_title`; a composer draft per conversation; the P1a leftovers (§4) | background turns |
 | **P2** | background turns: one session state per conversation on the same connection; ⏳ / ● / ❓ on the tab strip; completion notification (Q9); background writes only on the conversation's own tabs (Q8); pool exhausted handled (§5) | panel closed |
 | **P3** | the connection leaves the side panel (offscreen document); **Q10 open**, decided after P2 is tried (§6) | — |
-| **P4** | agent `set_title`; mirror folder rename by per-file `move()` (#101); upstream `session/close`; deleting a conversation; several agents per conversation (§7) | — |
+| **P4** | mirror folder rename by per-file `move()` (#101); upstream `session/close`; deleting a conversation; several agents per conversation (§7) | — |
 
 Brett's answers (2026-10-12, on `ask_user` cards; the design canvas `cv_beec3be8efac` holds the
 discussion):
@@ -118,8 +119,8 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
 
 | Key | Value |
 |---|---|
-| `conv:index` | `{ [id]: { title, titleSource: "auto" \| "user" \| null, createdAt, lastMessageAt, archivedAt \| null } }` |
-| `conv:<id>` | `{ id, sessions: { <agentUrl>: <acpSessionId> }, messages (≤ 200, as today), savedAt }` |
+| `conv:index` | `{ [id]: { title, titleSource: "auto" \| "agent" \| "user" \| null, createdAt, lastMessageAt, archivedAt \| null } }` (`"agent"` from P1b `set_title`, §4.6) |
+| `conv:<id>` | `{ id, sessions: { <agentUrl>: <acpSessionId> }, messages (≤ 200, as today), savedAt }`; P1b adds `workingTab` and `groupTabs` (§4.3, §4.4) |
 | `window:<windowId>` | `{ open: [<id>, …] (tab order), current: <id>, savedAt }`, replaces `history:<windowId>`; the `open` lists of all **live** windows together hold at most 3 ids (§3.3) |
 | `conv:schema` | `1` once migrated (informational; the migration trigger is the presence of `history:*` keys) |
 | `canvas:*` | unchanged (already keyed by `conversationId`) |
@@ -177,7 +178,8 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   text becomes the title (`titleSource: "auto"`): sanitised like confirm-card text
   (`ConfirmCore.plainText`), whitespace collapsed, first 40 characters. Double-click a tab to rename
   it (`titleSource: "user"`); an empty name returns to the auto title. A user name is never replaced
-  automatically. Agent text never names a conversation in the MVP (`set_title` is P4).
+  automatically. Agent text never names a conversation in the MVP; P1b adds `set_title` (§4.6,
+  moved up from P4 by Brett 2026-10-12 18:30).
 - The title also names the conversation's canvas tab group (replacing "Canvas", canvas §3.1) and its
   label in the gallery's canvas rows. The mirror folder keeps its `c_<id>` slug until P4.
 - 🧹 clears the current conversation's messages only (sessions kept, as now).
@@ -189,7 +191,7 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   MCP server instance and that instance's `connections` entries (§3.9); its pending ask cards close
   as `archived` (**未回答（對話已封存）**, ask-user §2.4; not `cancelled`, whose text says the chat was
   cleared — Jellyfish, #127 review). Messages, sessions,
-  canvases and their tabs stay as they are (closing or collapsing the group is P1b). The broker
+  canvases and their tabs stay as they are (P1b closes the group's tabs, §4.5). The broker
   session ages out by TTL or pool eviction. The agent has no archive tool: it is the user's decision.
 - A conversation whose turn is running cannot be archived (same rule as switching, §3.5).
 - **Reopen.** The 🗂️ gallery (`canvas-gallery.html`) gets a **對話** section above the canvases:
@@ -280,7 +282,13 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
     conversation; a switch calls `refreshAskVisibility()`, so a card in a hidden conversation does not
     count down;
   - supersede (ask-user Q4): sending a message closes only the pending cards **of the same
-    conversation**; cards elsewhere stay;
+    conversation**; cards elsewhere stay. It closes the cards pending **when the user sends**: a
+    card the agent asks later in the same turn, before that message (queued behind the turn)
+    reaches it, stays open — the user has not seen it yet, so the message cannot be "instead of
+    answering" it. (This was the suspected P1a bug of 2026-10-12 18:31: the message was sent at
+    18:31:06.675 while the agent's turn ran, the two cards were asked at 18:31:07, and the queued
+    message reached the agent at 18:31:12. The conversation ids matched; P1b adds a regression
+    test for both orders, §4.8.);
   - the answer goes to the **asking conversation's session**. In the MVP the card can only be clicked
     while its conversation is on screen, so that is the current state's queue; the entry keeps a
     reference to the session state, not the `Conn`, so this stays true in P2;
@@ -329,7 +337,8 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
 - `katashiro-canvas-push` (Send to agent / 💬 Ask agent / Send error) for an open but not current
   conversation **switches to it first**, under §3.5's rule (refused while the current one is replying,
   and the canvas tab is told why), then posts. For an archived conversation it is refused:
-  `這段對話已封存，先從總覽重新打開`.
+  `這段對話已封存，先從總覽重新打開`. P1b makes the other refusals say what is really the case
+  (§4.8).
 
 ### 3.11 Implementation notes (MVP, 2026-10-12)
 
@@ -338,8 +347,9 @@ Where the MVP had to read this section one way, it took the safer reading:
 - **Adoption with no free slot adopts nothing** (§3.7): the orphan record stays for a later window,
   so a second window opened while 3 are open elsewhere does not archive a closed window's
   conversations. That window still writes its own record, empty (`{open:[]}`), so it never adopts
-  later either: an orphan is only adopted by a window that has no record yet. Accepted — the
-  orphan's conversations stay reopenable from the gallery. With some room, what does not fit is
+  later either: an orphan is only adopted by a window that has no record yet. Accepted
+  (Jellyfish, #128 review; recorded for P1b, 2026-10-12) — the orphan's conversations stay
+  reopenable from the gallery. With some room, what does not fit is
   archived (never left in no record). The new record is written before the adopted one is
   removed, so closing the panel in between leaves the conversations in two records, never in
   none. "Most recently saved" orphan = the newer of the record's `savedAt` and its conversations'
@@ -365,26 +375,127 @@ Where the MVP had to read this section one way, it took the safer reading:
 ### 3.12 Not in the MVP
 
 Background turns; agent-opened tabs in the conversation's group; collapsing groups on switch; the
-working tab; marks and notifications for other conversations; agent `set_title`; mirror folder names;
-deleting a conversation; search over conversation content.
+working tab; marks and notifications for other conversations; agent `set_title`; per-conversation
+drafts; reopening and closing a group's tabs (all P1b, §4); mirror folder names; deleting a
+conversation; search over conversation content.
 
 ---
 
 ## 4. P1b — a tab group per conversation, working tab
 
+Scope as accepted on 2026-10-12 (16:30–16:34 TPE), plus Brett's additions of 18:28–18:31 TPE after
+the MVP's live test (the design canvas `cv_beec3be8efac`, "P1a（MVP）留下、併入 P1b 的項目"). Turns
+still run only in the current conversation (§3.5); P2 lifts that.
+
+### 4.1 One tab group per conversation
+
 - **One Chrome tab group per conversation** (Brett 2026-10-12 16:30, "a"): title = conversation title,
-  holding its canvases **and the tabs the agent opens with `new_tab`**. Tabs the user opened are never
-  pulled in; an agent acting on one only records it as the working tab. Dragging a tab out of the
-  group gives it back to the user. A tab is in at most one group, and Split View keeps both sides'
-  group state consistent (the canvas §3.1 rules, which #90 learned the hard way).
-- **Collapse on switch (Q5)**: activate a tab outside the old group first, then collapse it and expand
-  the new one (canvas §3.1). Archive collapses the conversation's group.
-- **Working tab**: each conversation records the last tab its agent acted on (`conv:<id>.workingTab`,
-  tab id + URL, re-validated before use). **Q6:** when the user presses send and the active tab is not
-  that conversation's working tab, Katashiro switches to the working tab at that moment, never during
-  the turn. `switch_tab` gains `tab: "working"`.
-- **Q12:** an `ask_user` or 🔒 card waiting in a conversation not on screen marks its tab (❓) and
-  raises a Chrome notification (the `notify` path); clicking it switches to that conversation.
+  holding its canvases **and the tabs the agent opens with `new_tab`**. It is the canvas group of
+  §3.10 (`katashiro.canvasGroup.<id>` in `storage.session`), now also taking agent tabs. Tabs the
+  user opened are never pulled in; an agent acting on one only records it as the working tab
+  (§4.3). A tab Chrome itself puts in the group (a link opened from a grouped tab) is in the group
+  and is treated like the rest.
+- **The group is the membership.** What is in the group belongs to the conversation; dragging a tab
+  out of the group gives it back to the user: it is no longer tracked (§4.4) or closed on archive
+  (§4.5). A tab is in at most one group, and Split View keeps both sides' group state consistent
+  (the canvas §3.1 rules, which #90 learned the hard way): a tab in a split is never grouped or
+  ungrouped on its own.
+
+### 4.2 Collapse on switch (Q5)
+
+- On a switch, in the panel's window: if the active tab is in a group of another open conversation,
+  first activate a tab outside it — the new conversation's working tab (§4.3) if it is in this
+  window, else its group's most recently used tab, else the most recently used tab in no
+  conversation's group (canvas §3.1); then collapse the other open conversations' groups and expand
+  the new one's. If every tab of the window is in those groups, nothing is collapsed (Chrome would
+  have nowhere to put the focus). Best effort: a Chrome refusal ("tabs cannot be edited right now"
+  while the user drags) leaves the groups as they are.
+- The rule is a pure plan (`CanvasTabs.planGroupSwitch`); the panel only makes the calls.
+
+### 4.3 Working tab (Q6)
+
+- Each conversation records the **last tab its agent acted on**: every page tool (it resolves the
+  active tab), `new_tab` (the tab it opened) and `switch_tab` (the tab it switched to).
+  `conv:<id>.workingTab = { id, url, at }`, the URL as it is after the call.
+- **Re-validated before use** (`CanvasTabs.pickWorkingTab`): the tab with that id, if it still
+  exists and shows the same origin (the user or agent may have navigated it); else, after a browser
+  restart (tab ids are reused), an open tab with exactly that URL; else none.
+- **Q6:** when the user presses send (the composer; not an ask-card answer or a canvas push, where
+  the user is looking at the card or the canvas on purpose) and the active tab of the panel's window
+  is not that conversation's working tab, Katashiro activates the working tab at that moment, never
+  during the turn. A working tab in another window is not pulled forward (that would move the
+  user to another window on every send); the agent can still `switch_tab` to it.
+- `switch_tab` gains `tab: "working"` (an error when there is none).
+
+### 4.4 A conversation's tabs come back with it (Brett 2026-10-12 18:28)
+
+- **Tracked:** `conv:<id>.groupTabs` = the URLs of the group's tabs, in tab order: canvas tabs
+  (`canvas.html?id=…`, not compare tabs) and http(s)/file pages; a blank or `chrome://` tab is not
+  kept. Rewritten (debounced) when a tab is created, updated (URL, group), moved between windows or
+  removed, and when it leaves the group. A tab removed because its window is closing
+  (`isWindowClosing`, also the browser quitting) does not change the list, so the list survives
+  the shutdown it is for.
+- **Coming back** = a browser-restart adoption (§3.7) or 重新打開 from the gallery (§3.4). Then every
+  URL of `groupTabs` is opened in the panel's window, in the conversation's group, **in the
+  background** — except that a tab already showing that exact URL (Chrome restored it, or the user
+  has it open) is adopted into the group instead of opened twice: not pinned, not in a split, not in
+  another open conversation's group. If all adopted tabs sit in one group (Chrome's restored copy of
+  this group), that group is reused. A conversation whose group still exists (a panel reload, a plain
+  switch) is not "coming back" and opens nothing. Then §4.2 collapses the groups that are not
+  current.
+- A group whose tabs the user closed one by one ends with an empty list, so nothing comes back.
+
+### 4.5 Archive closes the group's tabs (Brett 2026-10-12 18:31)
+
+- **×** (§3.4) closes the tabs in the conversation's group after saving `groupTabs`; they come back
+  by §4.4 when it is reopened. Canvas content is not touched (closing a tab is not deleting).
+- **Never a tab with unsaved canvas edits.** Each canvas tab of the group is asked whether its editor
+  is dirty (`katashiro-canvas-dirty`, answered only by that tab); a tab that says dirty, or does not
+  answer in time, stays open (in its group, collapsed) and the chat says how many were kept and why.
+- The window never loses its last tab: if every tab of the window would close, a New Tab page is
+  opened first (closing a window's last tab closes the window and its panel).
+
+### 4.6 `set_title` (moved up from P4, Brett 2026-10-12 18:30)
+
+- `katashiro.set_title({ title })` names **the calling conversation** (the tunnel names it, §3.9).
+  Sanitised like a typed name (`ConfirmCore.plainText`, whitespace collapsed, ≤ 80 code points);
+  empty after that is an error. Sets `titleSource: "agent"`.
+- **A user title always wins:** with `titleSource: "user"` the call changes nothing and tells the
+  agent so. An auto title (and an earlier agent title) may be replaced. An agent title is not
+  replaced by the auto title of a later user message; renaming to an empty name returns to the auto
+  title, as before.
+- The tool description (and README) say when: after the first exchange, once the topic is clear;
+  not on every turn. Not a page action, so act mode does
+  not gate it.
+
+### 4.7 Q12 — a card waiting where the user is not
+
+- An `ask_user` card (or a 🔒 confirm card) pending in a conversation that is not on screen marks
+  its tab-strip tab **❓**, and leaving a conversation that has one raises a Chrome notification
+  (the `notify` path; id prefix of the panel's window, so only this panel claims the click).
+  Clicking the notification focuses the window and switches to that conversation. In P1b this
+  happens only when the user switches away while a card waits (turns run only on screen), and a 🔒
+  card cannot (no switch while a turn runs); P2 makes it common.
+
+### 4.8 The P1a leftovers (2026-10-12 18:3x: #128 review + live test)
+
+1. **A composer draft per conversation** (Brett 18:31): the typed text and the staged images and
+   files are kept per open conversation, saved on a switch and restored when it is current again
+   (memory only, like the staged attachments themselves). A paste still encoding during a switch
+   lands in the conversation it was pasted in.
+2. **Canvas push, accurate refusals.** A push whose conversation no panel holds is answered by the
+   panel of the canvas tab's window from the records, not always "已封存": open in another live
+   window whose panel is closed → `這段對話開在另一個視窗，那個視窗的側邊欄沒開：到那個視窗打開側邊欄再送`
+   (with the window); archived or only in a closed window's record → the §3.10 text.
+3. **Canvas push with no panel in the canvas tab's window** used to get no visible answer. Now the
+   canvas tab says `這個視窗的 Katashiro 側邊欄沒開` with **打開側邊欄** (`chrome.sidePanel.open` in
+   that click, a fresh user gesture), keeping the note so the user sends again. A push answered by a
+   panel in another window says so (`（在另一個視窗）`).
+4. **No free slot → empty record** (§3.11 implementation note): a window that loaded with no slot
+   writes `{open: []}` and never adopts an orphan later. Accepted (Jellyfish, #128 review).
+5. **Q4 b supersede** was reported broken (two cards stayed answerable after a typed message). It was
+   not: the message was sent before the cards existed (§3.8). The rule stays; regression tests pin
+   both orders.
 
 ## 5. P2 — background turns
 
@@ -418,7 +529,6 @@ has been used; that ADR stays Proposed until then.
 
 ## 7. P4 — extras
 
-- `katashiro.set_title`: the agent may propose a title; a user title still wins.
 - Mirror folder `<7-char short id>-<title slug>` (Brett 2026-10-11); a rename moves files one by one
   with `FileSystemFileHandle.move()` (#101; a directory cannot be renamed, and `move()` overwrites an
   existing target, so a same-name target is handled as a conflict).
