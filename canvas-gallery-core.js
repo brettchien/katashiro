@@ -159,7 +159,7 @@
    * The search query an agent asked for (canvas_gallery({query}), ADR §3.11): the `q` parameter of
    * the URL fragment (`#q=<encoded>`), or null when there is none. It goes into the search box as
    * its value only, but it is still agent text: control and bidi-control characters become spaces,
-   * whitespace is collapsed and it is cut to QUERY_MAX characters (code points).
+   * zero-width characters are dropped, whitespace is collapsed and it is cut to QUERY_MAX characters (code points).
    */
   const QUERY_MAX = 200;
   function queryFromHash(hash) {
@@ -168,7 +168,7 @@
     let q;
     try { q = new URLSearchParams(h).get("q"); } catch (_) { return null; }
     if (q == null) return null;
-    const clean = q.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/\s+/g, " ").trim();
+    const clean = q.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ").replace(/[\u200b-\u200d\u2060\ufeff]/g, "").replace(/\s+/g, " ").trim();
     return Array.from(clean).slice(0, QUERY_MAX).join("").trim();
   }
 

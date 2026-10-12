@@ -2393,8 +2393,9 @@ async function gotoCanvasSlide(id, slide) {
 
 // Ask the canvas tab (runtime messaging; only canvas tabs of that id answer, never compare tabs),
 // retrying for a few seconds while a fresh tab starts listening.
-async function askCanvasTab(msg) {
-  const deadline = Date.now() + 6000;
+const CANVAS_TAB_TIMEOUT = "the canvas tab did not answer in time";
+async function askCanvasTab(msg, ms = 6000) {
+  const deadline = Date.now() + ms;
   while (Date.now() < deadline) {
     // Each send is bounded by what is left of the deadline: a listener that returned true but never
     // answers must not hold the tool call (Jellyfish #79).
@@ -2407,7 +2408,7 @@ async function askCanvasTab(msg) {
     if (r) return r;
     await new Promise((res) => setTimeout(res, 300));
   }
-  return { ok: false, error: "the canvas tab did not answer in time" };
+  return { ok: false, error: CANVAS_TAB_TIMEOUT };
 }
 
 // canvas_highlight (§3.10): an open tab is asked first and brought to the front only once it has
@@ -2438,9 +2439,13 @@ async function setCanvasShowChanges(on) {
 }
 
 // ⇆ Compare with agent's: pre-checked from storage (a canvas that cannot compare is not opened for
-// nothing), then the canvas tab (opened or brought to the front) runs the button's own path, which
+// nothing), then the canvas tab (the open one, or a new one in front) runs the button's own path, which
 // asks this panel back (katashiro-canvas-compare) — so this must not run under canvasTabQueue.
-// Only the picked tab answers (two tabs of one canvas must not both open a compare).
+// Only the picked tab answers (two tabs of one canvas must not both open a compare). An open tab is
+// brought to the front only once the compare started: while the user edits it refuses, and must not
+// take focus (Jellyfish #123). Its answer waits on the tab queue, so the deadline is longer than other
+// asks; past it, a compare tab that did open meanwhile still counts (Jellyfish #123).
+const COMPARE_ASK_MS = 20000;
 async function startCanvasCompare(id) {
   let c, agentCopy;
   try {
@@ -2451,8 +2456,23 @@ async function startCanvasCompare(id) {
   }
   const blocked = CanvasCore.compareBlocker({ kind: c.kind, author: c.author, agentCopy, content: c.content, editing: false, framed: true });
   if (blocked) return { ok: false, error: blocked };
-  const tab = await openCanvasTab(id, { active: true });
-  return askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id });
+  const base = chrome.runtime.getURL("canvas.html");
+  const existing = await findCanvasTab(id);
+  const tab = existing || (await openCanvasTab(id, { active: true }));
+  const r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
+  if (existing && r.ok) {
+    // Started: now show it — the compare tab when it opened as a plain tab, else the canvas tab
+    // (Split View brings its pair along).
+    try {
+      const cmp = CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id)[0];
+      const front = cmp && cmp.active ? cmp : ((await findCanvasTab(id)) || existing);
+      await chrome.tabs.update(front.id, { active: true });
+      await chrome.windows.update(front.windowId, { focused: true });
+    } catch (_) { /* compared either way */ }
+  }
+  if (r.ok || r.error !== CANVAS_TAB_TIMEOUT) return r;
+  if (CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) return { ok: true };
+  return { ok: false, error: `${CANVAS_TAB_TIMEOUT}; the compare may still open — check the tabs before asking again` };
 }
 
 // ✕ 結束比較: close that canvas's compare tab(s), as the button does; the canvas tab sees the close

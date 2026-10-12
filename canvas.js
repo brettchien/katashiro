@@ -676,7 +676,8 @@
   async function onCompareRequest(sendResponse) {
     let agentCopy = null;
     try { agentCopy = await store.readAgentCopy(canvasId); } catch (_) { /* none */ }
-    const c = current;
+    const c = current;                        // re-read after the await: deleted meanwhile → null
+    if (!c) { sendResponse({ ok: false, error: "the canvas was deleted" }); return; }
     const blocked = CanvasCore.compareBlocker({
       kind: c.meta.kind, author: c.meta.author, agentCopy, content: c.content,
       editing: mode !== "view", framed: !!frame, deleted,

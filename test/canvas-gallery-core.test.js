@@ -153,6 +153,7 @@ test("queryFromHash (canvas_gallery, ADR §3.11): #q= decoded, control/bidi char
   assert.equal(G.queryFromHash(`#q=${encodeURIComponent("設計 ADR")}`), "設計 ADR");
   assert.equal(G.queryFromHash(`#q=${encodeURIComponent("a+b&c")}`), "a+b&c");
   assert.equal(G.queryFromHash(`#q=${encodeURIComponent("  a\n\tb‮c\u0000d  ")}`), "a b c d");
+  assert.equal(G.queryFromHash(`#q=${encodeURIComponent("de\u200bsign\u200c\u200d\u2060\ufeff")}`), "design");   // zero-width: dropped, not spaced
   assert.equal(G.queryFromHash(`#q=${encodeURIComponent("<img src=x onerror=1>")}`), "<img src=x onerror=1>");   // a value, never markup
   assert.equal(typeof G.queryFromHash("#q=%E0%A4%A"), "string");                                                   // malformed escape: lenient, no throw
   const long = G.queryFromHash(`#q=${encodeURIComponent("😀".repeat(300))}`);
