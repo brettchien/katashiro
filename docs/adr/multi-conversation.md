@@ -1,8 +1,8 @@
 # ADR: Multi-conversation — several conversations in one side panel
 
 - **Status:** Accepted 2026-10-12 (Brett; Q1–Q9, Q11, Q12 at 16:30–16:34 TPE, archive + gallery
-  reopen and "write the ADR + build the MVP" at 16:39 TPE; P1b additions at 18:28–18:31 TPE, §4).
-  **Q10 (P3) open** (§7).
+  reopen and "write the ADR + build the MVP" at 16:39 TPE; P1b additions at 18:28–18:31 TPE, §4;
+  deleting a conversation brought forward from P4 at 21:39 TPE, §7.1). **Q10 (P3) open** (§6).
 - **Date:** 2026-10-12
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [single-active agent](./single-active-agent.md) (unchanged through P3);
@@ -73,7 +73,7 @@ Katashiro becomes a **multi-conversation** client in phases. Each phase ships on
 | **P1b** | one Chrome tab group per conversation: its canvases **and the tabs the agent opened**; collapse the other groups on switch; working tab, and switching to it when the user sends (Q6); a card waiting in another conversation → tab-strip mark + notification (Q12); a conversation that comes back reopens its group's tabs; archive closes them; agent `set_title`; a composer draft per conversation; the P1a leftovers (§4) | background turns |
 | **P2** | background turns: one session state per conversation on the same connection; ⏳ / ● / ❓ on the tab strip; completion notification (Q9); background writes only on the conversation's own tabs (Q8); pool exhausted handled (§5) | panel closed |
 | **P3** | the connection leaves the side panel (offscreen document); **Q10 open**, decided after P2 is tried (§6) | — |
-| **P4** | mirror folder rename by per-file `move()` (#101); upstream `session/close`; deleting a conversation; several agents per conversation (§7) | — |
+| **P4** | mirror folder rename by per-file `move()` (#101); upstream `session/close`; ~~deleting a conversation~~ (built ahead, §7.1); several agents per conversation (§7) | — |
 
 Brett's answers (2026-10-12, on `ask_user` cards; the design canvas `cv_beec3be8efac` holds the
 discussion):
@@ -377,7 +377,7 @@ Where the MVP had to read this section one way, it took the safer reading:
 Background turns; agent-opened tabs in the conversation's group; collapsing groups on switch; the
 working tab; marks and notifications for other conversations; agent `set_title`; per-conversation
 drafts; reopening and closing a group's tabs (all P1b, §4); mirror folder names; deleting a
-conversation; search over conversation content.
+conversation (§7.1); search over conversation content.
 
 ---
 
@@ -543,8 +543,66 @@ has been used; that ADR stays Proposed until then.
   existing target, so a same-name target is handled as a conflict).
 - Upstream openab `session/close`, so archiving frees a pool slot at once.
 - Deleting a conversation: its messages, canvases with their history and images (canvas §3.6).
+  **Brought forward and built (Brett 2026-10-12 21:39 TPE): §7.1.**
 - Several agents in one conversation (lifts single-active for a conversation).
 - Searching conversation content, if the 3-tab model turns out to need it.
+
+### 7.1 Deleting a conversation (Brett 2026-10-12 21:39 TPE)
+
+Archive (§3.4) never deletes; this is the only way a conversation with content leaves storage.
+
+- **Where: 🗑 刪除 on a row of the gallery's 對話 section**, i.e. a conversation **not open in any
+  live window** (archived, or left in a closed window's record, §3.3). **An open conversation is
+  archived first** (× on its tab), then deleted from the gallery. Why not delete an open one
+  directly: × already does every panel-side teardown — refused while it replies, its ask cards
+  close as `archived`, its MCP server and tunnels go, its Web Lock is released, its group's tabs
+  close but never a canvas tab with unsaved edits (§3.4, §4.5) — so delete never tears down live
+  state and keeps no second copy of those rules to drift; the two steps also make a delete hard to
+  do by accident. No tab-strip entry, for the same reason.
+- **The user's decision only.** No agent tool, as for archive. The gallery is an extension page the
+  page tools cannot click (canvas §3.11: screenshot only), so an agent that opened it cannot press 🗑.
+- **Confirm: a system dialog in the gallery tab** (`window.confirm`, as the gallery's canvas 🗑). It
+  blocks only that tab, not the side panel, so #80's reason for the confirm card does not apply. The
+  text (`ConvCore.deleteConfirmText`; every agent-written string flattened to one line) names the
+  conversation and says what goes: **N 則訊息**; **M 個畫布 with their V stored versions and their
+  images** (an image another canvas still uses is kept); its agent sessions — Katashiro's record
+  only: there is no `session/close` (§1.2), so nothing is sent and the broker session ages out;
+  that **files in the canvas folder stay** (when any of its canvases was mirrored; canvas §3.6
+  "deleting or evicting a canvas leaves its files"); and **無法復原**. The counts come from a fresh
+  read when 🗑 is clicked (`CanvasGalleryCore.conversationDeleteSummary` over the canvas metas).
+- **Lock.** After 確定 the gallery takes the conversation's Web Lock `conv:<id>` with `ifAvailable`
+  and holds it for the whole delete, so no panel can open it meanwhile (panels open with
+  `ifAvailable` too, §3.6). Lock not available, or the id in a live window's record by then
+  (reopened between the render and the click) → **refused**, nothing deleted:
+  `這段對話開在另一個視窗：先在那裡封存再刪除`, with **前往那個視窗**, which focuses the window
+  `ConvCore.windowHolding` names.
+- **Steps** (`ConvStore.deleteConversation`), under `conv:<id>`:
+  1. Under `conv:windows` → `conv:index`, in **one `set()`**: remove the id from every window record
+     that still lists it (closed windows', `withClosed`) and mark its index entry **`deletingAt`**.
+     From here the gallery no longer lists it, and a reopen (`katashiro-conv-open` from a stale
+     gallery tab) is refused with `這段對話已經刪除了` — as is a reopen of an id with no index entry,
+     which used to be recreated as an empty conversation.
+  2. **Canvases**: every canvas whose meta names the conversation, plus any still in
+     `canvas:<id>:index`, through `CanvasStore.remove` (meta, latest, every `v:<n>`, the legacy
+     `agent` copy, the index entry — the canvas 🗑's path), then **one** image sweep (canvas §3.6:
+     images no remaining version references go; one written in the last 10 minutes waits for a later
+     sweep). Their open canvas tabs close themselves, except one holding unsaved edits, which stays
+     to be copied out (the canvas delete rule).
+  3. `conv:<id>` (messages, sessions, working tab, group tab list) and `canvas:<id>:index`; the group
+     record `katashiro.canvasGroup.<id>` in `storage.session` (best effort).
+  4. **Last**, the index entry, only if it still carries `deletingAt`.
+- **Interruption-safe and idempotent.** `deletingAt` is the "being deleted" record and goes last.
+  Every start — the service worker's `onInstalled` / `onStartup`, a panel's load (after the
+  migration) and the gallery's load — runs `finishDeletions()`: each entry with `deletingAt` whose
+  `conv:<id>` lock is free (held = a delete is running elsewhere) goes through steps 1–4 again. A
+  step that is already done finds nothing to do. A failure in step 2 or 3 leaves the mark, so the
+  next start retries; the gallery says the delete did not finish.
+- **Tabs left behind.** × closed the group's tabs already, except canvas tabs with unsaved edits
+  (above) and, after a picker archive with no panel (§4.5), the group's web pages: those stay open
+  (Katashiro cannot ask them about unsaved input), and Chrome's group stays until the user closes
+  it; Katashiro forgets it.
+- **Mirror folder.** Nothing is deleted on disk: the conversation's folder and files stay (the
+  user's copy, maybe under git).
 
 ---
 
@@ -559,6 +617,9 @@ has been used; that ADR stays Proposed until then.
 - **Guessing a lost session from a changed session id.** Does not work: the gateway resumes any id
   and the broker recreates the agent session under the same id (§1.2).
 - **Deleting on ×.** Rejected for archive (Q11): closing a tab must not lose a conversation.
+- **Deleting an open conversation from the tab strip** (or the panel's chat). Would need its own
+  copy of archive's teardown (turn guard, cards, MCP server, lock, tabs with unsaved edits) in a
+  destructive path. Rejected for "archive, then 🗑 in the gallery" (§7.1).
 - **One MCP server instance per agent, as today.** A late tool call from a conversation the user
   left would act on the current one's canvases and cards. Rejected for one per conversation (§3.9).
 - **Re-render the chat from storage on every switch.** Loses memory-only cards and the stream that P2
@@ -571,7 +632,7 @@ has been used; that ADR stays Proposed until then.
 - The storage layout changes once, with no way back for older versions; canvases and message ids are
   untouched.
 - Archived conversations accumulate in storage (≤ 200 messages each, plus canvases under the existing
-  200 MB budget) until deletion lands in P4.
+  200 MB budget) until the user deletes them from the gallery (§7.1).
 - The host line after a reconnect costs one line in some prompts, in exchange for not depending on an
   openab signal that does not exist yet.
 - Testability: migration, adoption of `window:` records, the open-set rules (≤ 3, which can be
