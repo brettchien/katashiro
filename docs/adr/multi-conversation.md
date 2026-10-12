@@ -245,7 +245,15 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   in the retry copy of the prompt, and `chat_history` never returns it. It goes first because
   `batchWithReplyHint` strips the reply hint by `endsWith`; a line after it would break that on a
   retry. The "needs the line" flag clears only when `session/prompt` is accepted, so a retried
-  first prompt carries it again. When `session/resume` itself
+  first prompt carries it again.
+  **Revised 2026-10-12 ([tunnel-liveness §9.2](./browser-tunnel-liveness.md)):** the line is skipped
+  when the session is almost certainly intact — it was resumed (not created), this agent replied in
+  the conversation during the current **run** of quick reconnects (each socket opened < 2 min after
+  the previous one's last inbound frame), and that reply is < 1 h old (the pool TTL). That removes the
+  line from network-blip reconnects and from switching to a conversation already used on this socket;
+  a panel reload, a slow reconnect, an idle conversation or a `session/new` still get it. The flag is
+  sticky: a later open never clears it. Known gap: an openab restart under 2 min is missed until
+  openab reports a boot id (proposal A). When `session/resume` itself
   fails, the fallback to `session/new` stays as now and closes that conversation's ask cards as
   `restarted` (ask-user §2.4).
 - **What cannot be detected:** a session the broker recreated keeps its ACP id, so the chips still read
@@ -362,6 +370,8 @@ Where the MVP had to read this section one way, it took the safer reading:
   reconnect does not trap the user; it is flushed when that conversation is current again.
 - **"A conversation that has messages"** (U2, §3.5) = messages recorded before the queued prompt: a
   new conversation's first message is recorded before its `session/new` finishes and gets no line.
+  Since 2026-10-12 the line is also skipped for a resume within the current run of quick reconnects
+  (tunnel-liveness §9.2).
 - **The picker can archive a conversation open in another window** (§3.3): that window's panel
   archives it on request (refusing while it replies); with no panel showing it (its lock is free),
   the records are changed directly.
