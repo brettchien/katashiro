@@ -1,0 +1,173 @@
+#!/usr/bin/env node
+// smoke-ask-selection.mjs — Ask agent's selection{rect} (ADR docs/adr/canvas.md §3.7, Brett
+// 2026-10-12 option a) in the real canvas frame, under the real sandbox CSP. Needs a Chrome, so it
+// is not part of `node --test`:
+//
+//   CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppeteer-core \
+//     node scripts/smoke-ask-selection.mjs
+//
+// Same harness as smoke-editor-undo.mjs. The host page offsets the iframe (as canvas.html's header
+// does) and places a 💬-sized box with CanvasCore.askPlace, as canvas.js does. Checks:
+//   - a selection posts selection{text, seq, rect}, rect = the range's box in the frame viewport;
+//   - the placed 💬 does not cover the selection (below it, or above it near the bottom);
+//   - scrolling re-posts the rect; scrolled out of view, the rect is left out (the 💬 hides);
+//   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect.
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const CHROME = process.env.CHROME || "/tmp/pptr/chrome-headless-shell/linux-154.0.8037.57/chrome-headless-shell-linux64/chrome-headless-shell";
+const PPTR = process.env.PUPPETEER_CORE || "/usr/local/share/mise/installs/npm-mermaid-js-mermaid-cli/12.0.0/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer-core";
+
+const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
+const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
+const HOST = `<!doctype html><meta charset="utf-8"><body style="margin:0">
+<div style="height:40px">header</div>
+<iframe id="f" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0" style="display:block;margin-left:30px;width:900px;height:500px;border:0"></iframe>
+<script src="/canvas-core.js"></script>
+<script>
+  window.__msgs = [];
+  addEventListener("message", (e) => { if (e.data && e.data.nonce === "nonce0") __msgs.push(e.data); });
+  window.__send = (msg) => document.getElementById("f").contentWindow.postMessage({ ...msg, nonce: "nonce0" }, "*");
+  // As canvas.js: the frame's rect, the iframe's box → where the 💬 (30 × 26) goes, in page coordinates.
+  window.__place = (rect) => {
+    const fb = document.getElementById("f").getBoundingClientRect();
+    return { box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height },
+      p: CanvasCore.askPlace({ rect, box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height }, size: { w: 30, h: 26 } }) };
+  };
+</script>`;
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, "http://x");
+  if (url.pathname === "/__host.html") { res.writeHead(200, { "content-type": "text/html" }); res.end(HOST); return; }
+  const file = path.join(ROOT, path.normalize(decodeURIComponent(url.pathname)));
+  if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end(); return; }
+  const headers = { "content-type": TYPES[path.extname(file)] || "application/octet-stream" };
+  if (url.pathname === "/canvas-frame.html") headers["content-security-policy"] = sandboxCsp;
+  res.writeHead(200, headers);
+  fs.createReadStream(file).pipe(res);
+});
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const origin = `http://127.0.0.1:${server.address().port}`;
+
+const pkg = JSON.parse(fs.readFileSync(path.join(PPTR, "package.json"), "utf8"));
+const puppeteer = (await import(pathToFileURL(path.join(PPTR, pkg.exports["."].import)).href)).default;
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox"] });
+const failures = [];
+const fail = (msg) => { failures.push(msg); console.log(`FAIL ${msg}`); };
+const ok = (msg) => console.log(`ok   ${msg}`);
+const check = (cond, msg, got) => (cond ? ok(msg) : fail(`${msg}: ${JSON.stringify(got)}`));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+try {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1000, height: 600 });
+  page.on("pageerror", (e) => fail(`page error: ${e.message}`));
+  await page.goto(`${origin}/__host.html`, { waitUntil: "load" });
+  const msgs = () => page.evaluate(() => window.__msgs);
+  const waitFor = async (pred, what, ms = 20000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const found = (await msgs()).filter(pred).pop();
+      if (found) return found;
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+      await sleep(50);
+    }
+  };
+  // The next selection{} after `act` (run once the messages so far are counted).
+  const nextSelection = async (act, pred, what) => {
+    const n = (await msgs()).length;
+    await act();
+    const end = Date.now() + 5000;
+    for (;;) {
+      const found = (await msgs()).slice(n).filter((m) => m.type === "selection" && pred(m)).pop();
+      if (found) return found;
+      if (Date.now() > end) { fail(`${what}: no such selection{} (last: ${JSON.stringify((await msgs()).filter((m) => m.type === "selection").pop())})`); return null; }
+      await sleep(50);
+    }
+  };
+  await waitFor((m) => m.type === "ready", "ready");
+  let frame = page.frames().find((f) => f.url().endsWith("#nonce0"));
+  const paras = Array.from({ length: 40 }, (_, i) => `Paragraph ${i + 1} has some words to select in it.`);
+  await page.evaluate((c) => __send({ type: "render", kind: "markdown", version: 1, seq: 1, content: c }), `# Doc\n\n${paras.join("\n\n")}\n`);
+  await waitFor((m) => m.type === "rendered" && m.seq === 1, "render");
+
+  // Select "some words" in a paragraph; returns the range's box in the frame viewport.
+  const select = (needle) => frame.evaluate((needle) => {
+    const p = Array.from(document.querySelectorAll("#doc p")).find((e) => e.textContent.startsWith(needle));
+    const t = p.firstChild, at = t.data.indexOf("some words");
+    const r = document.createRange();
+    r.setStart(t, at);
+    r.setEnd(t, at + "some words".length);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+    const b = r.getBoundingClientRect();
+    return { top: b.top, bottom: b.bottom, left: b.left, right: b.right };
+  }, needle);
+
+  let box;
+  const s1 = await nextSelection(async () => { box = await select("Paragraph 3 "); }, (m) => m.text === "some words", "a selection");
+  check(s1 && s1.seq === 1 && s1.rect, "selection{text, seq, rect} posted", s1);
+  if (s1 && s1.rect) {
+    const near = (a, b) => Math.abs(a - b) <= 1;
+    check(near(s1.rect.top, box.top) && near(s1.rect.bottom, box.bottom) && near(s1.rect.left, box.left) && near(s1.rect.right, box.right), "rect is the range's box in the frame viewport", { rect: s1.rect, box });
+    check(near(s1.rect.x, box.right), "rect.x is the selection's end", s1.rect);
+    const { box: fb, p } = await page.evaluate((r) => __place(r), s1.rect);
+    check(p && p.placement === "below" && p.top >= fb.top + s1.rect.bottom, "the 💬 goes below the selection (page coordinates, frame offset added)", { p, fb, rect: s1.rect });
+    check(p && p.left >= fb.left && p.left + 30 <= fb.left + fb.width, "the 💬 is inside the frame box", { p, fb });
+  }
+
+  // Near the bottom of the view: above it, still not over it.
+  const lastVisible = await frame.evaluate(() => {
+    const ps = Array.from(document.querySelectorAll("#doc p"));
+    return ps.filter((p) => p.getBoundingClientRect().bottom < innerHeight - 2).pop().textContent.split(" has")[0] + " ";
+  });
+  const s2 = await nextSelection(() => select(lastVisible), (m) => m.text === "some words" && m.rect && m.rect.top !== (s1 && s1.rect && s1.rect.top), "a selection near the bottom");
+  if (s2) {
+    const { box: fb, p } = await page.evaluate((r) => __place(r), s2.rect);
+    check(p && (p.placement === "above" ? p.top + 26 <= fb.top + s2.rect.top : p.top >= fb.top + s2.rect.bottom), `near the bottom the 💬 does not cover the selection (${p && p.placement})`, { p, rect: s2.rect });
+  }
+
+  // Scrolling moves the rect; out of view the rect is left out.
+  const s3 = await nextSelection(() => select("Paragraph 3 "), (m) => m.rect && s1 && s1.rect && m.rect.top === s1.rect.top, "back to paragraph 3");
+  const s4 = await nextSelection(() => frame.evaluate(() => window.scrollBy(0, 40)), (m) => m.text === "some words", "after a small scroll");
+  check(s3 && s4 && s4.rect && Math.abs(s4.rect.top - (s3.rect.top - 40)) <= 1, "a scroll re-posts the rect, moved by the scroll", { s3, s4 });
+  const s5 = await nextSelection(() => frame.evaluate(() => window.scrollBy(0, 2000)), (m) => m.text === "some words", "scrolled away");
+  check(s5 && s5.rect === undefined, "scrolled out of view: same text, no rect", s5);
+  const s6 = await nextSelection(() => frame.evaluate(() => window.scrollTo(0, 0)), (m) => m.text === "some words", "scrolled back");
+  check(s6 && s6.rect, "scrolled back: the rect returns", s6);
+  // Bad rects never leave the frame: the host's check would refuse the message.
+  const accepted = await page.evaluate(() => __msgs.filter((m) => m.type === "selection").every((m) => m.rect === undefined || CanvasCore.askRect(m.rect)));
+  check(accepted, "every rect the frame posted passes CanvasCore.askRect", null);
+
+  // Slides: the rect goes when the deck moves away from the selection's slide. A fresh frame, as
+  // in canvas.html (a canvas keeps its kind; a frame never switches from a document to a deck).
+  await page.goto(`${origin}/__host.html`, { waitUntil: "load" });
+  await waitFor((m) => m.type === "ready", "ready (slides)");
+  frame = page.frames().find((f) => f.url().endsWith("#nonce0"));
+  await page.evaluate(() => __send({ type: "render", kind: "slides", version: 2, seq: 2, content: "# One\n\nFirst slide has some words here.\n\n---\n\n# Two\n\nSecond slide.\n" }));
+  await waitFor((m) => m.type === "rendered" && m.seq === 2, "slides render");
+  await sleep(500);
+  const s8 = await nextSelection(() => frame.evaluate(() => {
+    const p = Array.from(document.querySelectorAll("#deck p")).find((e) => e.textContent.startsWith("First slide"));
+    const t = p.firstChild, at = t.data.indexOf("some words");
+    const r = document.createRange();
+    r.setStart(t, at);
+    r.setEnd(t, at + "some words".length);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  }), (m) => m.text === "some words" && m.seq === 2, "a selection on slide 1");
+  check(s8 && s8.rect, "slides: selection with a rect", s8);
+  const s9 = await nextSelection(() => page.evaluate(() => __send({ type: "goto", slide: 2 })), (m) => m.text === "" || (m.text === "some words" && m.rect === undefined), "slide 2");
+  // Chrome 155 + reveal: the slide change clears the selection itself (text ""); either way the 💬 hides.
+  check(!!s9, `slides: moving to slide 2 hides the 💬 (${s9 && s9.text === "" ? "selection cleared" : "rect dropped"})`, s9);
+  await page.close();
+} catch (e) {
+  fail(e && e.stack || String(e));
+} finally {
+  await browser.close();
+  server.close();
+}
+console.log(failures.length ? `\n${failures.length} failure(s)` : "\nask-selection smoke test passed");
+process.exit(failures.length ? 1 : 0);

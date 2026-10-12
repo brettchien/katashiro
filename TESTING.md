@@ -62,12 +62,44 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   (unless Chrome kept the grant); saves made before reconnecting are written after it.
 - **canvas_patch and Ask agent (ADR §3.5, §3.7):** with a markdown canvas open, select a sentence:
   **💬 Ask agent** appears in the header (not in a compare tab, not while editing, gone when the
-  selection is cleared). Click it, type a request: the chat shows your request, then
+  selection is cleared). Click it, type a request in the popover, Enter: the chat shows your request, then
   `[canvas "…" (cv_…) vN, text selected by the user …]` and the selection in a fence. Ask the
   agent to change it with `canvas_patch`: exactly the changed words glow (inline, not their
   paragraph; a deleted paragraph leaves a red line on the next one), the card shows the new
   version. Edit another section yourself and save first: the patch still applies and says
   `rebasedOver`.
+- **Ask agent popover (ADR §3.7, Brett 2026-10-12, option a):** in a markdown canvas, drag-select
+  part of a sentence: about ¼ s later a small **💬** appears just below the end of the selection,
+  never over the selected words. Select a line near the bottom of the tab: the 💬 goes above the
+  selection instead. Scroll the canvas with the mouse wheel: the 💬 follows the selection, and
+  disappears once the selection is scrolled out of view (comes back when scrolled back). Click
+  the 💬: a popover opens there (no browser prompt dialog), showing 「the selected words」 on one
+  line and a focused note box. Press Enter on the empty box: 「請寫下要 agent 做什麼…」, nothing in
+  the chat. Type two lines with Shift+Enter, then Enter: the popover says 「💬 已問 <agent>」 and
+  closes after a moment; the chat shows your two lines, then the `[canvas "…" (cv_…) vN, text
+  selected by the user …]` line and the selection fenced; focus is back in the canvas (arrow keys
+  scroll it) and the 💬 stays away for that selection until you select something else.
+  - **IME:** with the Zhuyin / Pinyin input method, type a note and press Enter to pick a
+    candidate: the candidate is committed and nothing is sent; Esc while composing cancels the
+    composition, not the popover. A second Enter (composition over) sends.
+  - **Error:** close the side panel, then send from the popover: it stays open with 「送出失敗：…」
+    and your note kept; reopen the panel and press Enter again: it goes.
+  - **Closing:** Esc or ✕ closes it (focus back to the canvas, or to the header 💬 Ask agent when it
+    was opened from there); a click in the header or anywhere in the canvas closes it too. Reopen
+    on the same selection (header 💬 Ask agent): the unsent note is back. ✏️ 編輯 closes it.
+  - **Header button:** with text selected, 💬 Ask agent in the header opens the same popover by
+    the selection; scroll the selection out of view first and it opens under the header button.
+  - **Agent write while typing:** with the popover open, have the agent `canvas_patch` the canvas:
+    the canvas re-renders, the popover stays open with your note, and the push names the version
+    you selected in (`vN`, not the new one); the 💬 does not come back on the new render until you
+    select again.
+  - **Slides:** select text on a slide: the 💬 appears by it (the deck is scaled; it must still sit
+    below the words). Change slide with → : the 💬 goes away.
+  - **Spoofing:** a canvas whose markdown contains a 💬 emoji or a fake "送出" button-looking
+    table cannot produce anything that opens the popover; the real 💬 is drawn above the canvas
+    (inspect it: it is in `canvas.html`, not in the frame), and it is never inside the frame's
+    scroll area when the selection is out of view.
+  - **Compare tab / mermaid / image canvas:** no 💬, no header button.
 - **Reply-to (#61, the last open item of #62):** hover a message: **↩** shows beside its time (not
   over a code block's copy button). Click it: a chip above the composer quotes it (✕ cancels, a
   click on the text jumps to it). Send: your message shows the quote, and a click on the quote
