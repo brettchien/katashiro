@@ -170,6 +170,10 @@ class Conn {
     this.lastRecvAt = 0;                                 // ts of the last inbound frame (passive liveness §8.6)
     this.lastTunnelMsgAt = 0;                            // ts of the last inbound mcp/message (tunnel freshness §8.3)
     this.missedProbes = 0;                               // consecutive idle-probe timeouts (debounce §8.6)
+    // A′ (tunnel-liveness §9.2): when the current run of quick reconnects began — the open time of
+    // the first socket since the panel loaded, or since a reconnect that took ≥ 2 min. Replies the
+    // agent sent before it may be from an openab process that has since restarted.
+    this.runStartAt = 0;
   }
 
   get name() { return this.agent.name || "Agent"; }
@@ -399,6 +403,12 @@ class Conn {
       this.ws = new WebSocket(this.agent.url, acpProtocols(this.agent.token));
 
       this.ws.onopen = () => {
+        // A′ (§9.2): read lastRecvAt BEFORE any frame on this socket stamps it — it is still the
+        // previous socket's last inbound frame (0 if this conn never had one).
+        const openedAt = Date.now();
+        const sameRun = ConvCore.continuesRun({ prevLastRecvAt: this.lastRecvAt, openedAt });
+        if (!sameRun) this.runStartAt = openedAt;
+        console.info(`ACP[${this.name}]: socket open — ${sameRun ? `same run (last frame ${Math.round((openedAt - this.lastRecvAt) / 1000)} s before)` : "new run"}`);
         this.online = true;
         this.openedThisAttempt = true;                   // upgrade succeeded ⇒ token accepted
         this.lastFailure = null;
@@ -524,10 +534,17 @@ class Conn {
       if (!resuming) st.acpSessionId = res && res.sessionId;
       st.readyGen = gen;
       const conv = convs.get(st.convId);
-      // U2 (§3.5): Katashiro cannot tell a resumed session from one the broker silently recreated,
-      // so the first prompt after ANY resume/new of a conversation with earlier messages carries
-      // the host line. Cleared only once session/prompt is accepted.
-      st.hintPending = ConvCore.needsReconnectHint({ messageCount: conv ? conv.messages.length : 0, queuedCount: st.promptQueue.length });
+      // U2 (§3.5) narrowed by A′ (tunnel-liveness §9.2): Katashiro cannot tell a resumed session
+      // from one the broker silently recreated, so the host line goes with the first prompt unless
+      // the session is almost certainly intact — resumed, and this agent replied here during the
+      // current run of quick reconnects, < 1 h ago. Sticky: a later open never clears a pending
+      // line (the socket may drop again before the user sends); only an accepted session/prompt does.
+      const hint = ConvCore.reconnectHintDecision({
+        messageCount: conv ? conv.messages.length : 0, queuedCount: st.promptQueue.length, resumed: resuming,
+        runStartAt: this.runStartAt, lastReplyAt: ConvCore.lastReplyAt(conv && conv.messages, this.id), now: Date.now(),
+      });
+      st.hintPending = st.hintPending || hint.hint;
+      console.info(`ACP[${this.name}]: ${st.convId} ${resuming ? "resumed" : "new session"} — reconnect hint ${hint.hint ? "added" : "skipped"} (${hint.reason})${st.hintPending && !hint.hint ? ", still pending from before" : ""}`);
       updateRoster();
       saveConv(conv);                                    // persist the (confirmed) resumable session id
       const short = (st.acpSessionId || "").slice(0, 13) || "?";
