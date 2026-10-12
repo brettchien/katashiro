@@ -86,6 +86,19 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   had ended and the delete was not carried out, and both canvases are still there. A card shown on
   its own row (the eviction prompt between turns, if you can trigger it) sits left-aligned and full
   width, not on the right like your messages.
+- **Ask card (`katashiro.ask_user`, ADR ask-user):** ask an agent to "ask me with ask_user which
+  of A / B / C". A card titled **<agent> 問你** with a 💬 and an indigo border (no 🔒, not the amber
+  double border) shows in its turn, and the agent ends its turn without waiting. Click B → the card
+  reads 已回答：B and the agent gets a new turn starting `↩ 回答 ask_…：B`. With `multi: true`, 送出
+  stays disabled until a box is ticked; with `allowOther: true`, the 其他… box answers with
+  （其他）<text>. Ask with `timeoutSec: 30`, close or hide the side panel for a minute, then show it
+  again: the card is still open, and closes as 未回答（逾時）about 30 s of *visible* time later, with
+  nothing sent to the agent; opening Settings also pauses it. Send a normal message while a card is
+  open → 未回答（你送了別的訊息）, and only your message reaches the agent. 🧹 清除聊天 → 未回答（聊天已清除）.
+  Switch the active agent → 未回答（agent 已中斷連線）. A question or label with a line break shows as one
+  line. Ask for a 4th open question → the agent gets an error. Answer while the agent's turn is
+  still running → the answer is queued and sent when the turn ends. Choosing "delete it" deletes
+  nothing by itself; a real `canvas_delete` still shows its own 🔒 card.
 - **Canvas eviction without filling 200 MB:** in the side panel's DevTools console, run
   `chrome.storage.local.set({ "canvas:budgetBytes": 2 * 1024 * 1024 })`. The budget is now 2 MB, so a
   few image canvases trigger the eviction prompt (a 🔒 confirm card in the chat). Run `chrome.storage.local.remove("canvas:budgetBytes")`

@@ -1437,6 +1437,67 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .confirm-card.declined .confirm-card-result { color: var(--text-secondary); }
 .confirm-card:not(.pending) { border-color: rgba(245, 158, 11, 0.45); }
 
+/* Ask card (katashiro.ask_user, ADR docs/adr/ask-user.md): the AGENT asking, so it must not look
+   like the 🔒 system confirm card above — a single solid indigo border with a left accent bar
+   instead of the amber double border, a 💬 instead of the 🔒. Built by sidepanel.js outside any
+   .bubble, so agent markdown cannot produce it. */
+.ask-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 100%;
+  margin: 4px 0;
+  padding: 10px 12px;
+  background: rgba(79, 70, 229, 0.10);
+  border: 1px solid rgba(129, 140, 248, 0.55);
+  border-left: 4px solid #818cf8;
+  border-radius: 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.ask-card-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c7d2fe; }
+.ask-card-icon { flex: none; }
+.ask-card-question { font-weight: 600; white-space: normal; }
+.ask-card-controls { display: flex; flex-direction: column; gap: 6px; }
+.ask-card-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.ask-card-options.multi { flex-direction: column; gap: 4px; }
+.ask-card-option,
+.ask-card-submit,
+.ask-card-other button {
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 140, 248, 0.6);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ask-card-option:hover,
+.ask-card-submit:hover:not(:disabled),
+.ask-card-other button:hover { background: rgba(79, 70, 229, 0.35); }
+.ask-card-submit { align-self: flex-end; }
+.ask-card-submit:disabled { opacity: 0.45; cursor: default; }
+.ask-card-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.ask-card-check input { flex: none; accent-color: #818cf8; }
+.ask-card-other { display: flex; gap: 6px; }
+.ask-card-other input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.ask-card-hint { color: var(--text-secondary); font-size: 11px; }
+.ask-card-result { font-weight: 600; }
+.ask-card.answered .ask-card-result { color: #a5b4fc; }
+.ask-card.unanswered .ask-card-result { color: var(--text-secondary); }
+.ask-card:not(.pending) { border-color: rgba(129, 140, 248, 0.3); border-left-color: rgba(129, 140, 248, 0.5); }
+
 /* GFM task lists in chat bubbles (markdown.js). */
 .bubble li.task-list-item { list-style: none; }
 .bubble li.task-list-item .task-list-item-checkbox { margin: 0 0.4em 0 -1.3em; vertical-align: middle; }
