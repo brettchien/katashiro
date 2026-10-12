@@ -454,6 +454,9 @@ still run only in the current conversation (§3.5); P2 lifts that.
   answer in time, stays open (in its group, collapsed) and the chat says how many were kept and why.
 - The window never loses its last tab: if every tab of the window would close, a New Tab page is
   opened first (closing a window's last tab closes the window and its panel).
+- Only a panel that has the conversation open closes its tabs. The picker archiving a conversation
+  that no panel holds (its window's panel is closed, §3.11) changes the records only; its group's
+  tabs stay until the user closes them (accepted for P1b: no panel is there to ask the canvas tabs).
 
 ### 4.6 `set_title` (moved up from P4, Brett 2026-10-12 18:30)
 
