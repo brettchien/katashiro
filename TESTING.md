@@ -100,6 +100,19 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     (inspect it: it is in `canvas.html`, not in the frame), and it is never inside the frame's
     scroll area when the selection is out of view.
   - **Compare tab / mermaid / image canvas:** no 💬, no header button.
+- **Ask agent: where the selection is (ADR §3.7, Brett 2026-10-12 17:43):** have the agent write a
+  markdown canvas with `# 計畫`, `## 決定紀錄`, `### 2026-10-12` and a two-line paragraph under it,
+  wait for it to settle (the editor's normalization re-renders it once), then select one common
+  word in that paragraph and ask with any note. The pushed chat message's host line reads
+  `… text selected by the user in 計畫 › 決定紀錄 › 2026-10-12, source lines N–M — as rendered …`;
+  ask the agent to `canvas_read` and quote lines N–M: they are exactly that paragraph. Then:
+  - select a word above every heading: no `in …` part, lines still there;
+  - select from one paragraph into the next: the range covers both;
+  - a slides canvas: `on slide K in <that slide's heading>`, and lines N–M are that text in the
+    whole deck as `canvas_read` returns it;
+  - open the popover, then (before sending) let the agent write a new version: the line names the
+    captured `vN` with the heading path but **no** `source lines` (they would point into another
+    text); same right after an agent write while its normalization lands.
 - **Reply-to (#61, the last open item of #62):** hover a message: **↩** shows beside its time (not
   over a code block's copy button). Click it: a chip above the composer quotes it (✕ cancels, a
   click on the text jumps to it). Send: your message shows the quote, and a click on the quote

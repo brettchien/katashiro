@@ -98,3 +98,62 @@ test("```mermaid fences keep their text as code, tagged language-mermaid for the
   // The source is escaped like any code: a label never becomes markup.
   assert.match(md.render('```mermaid\nA["<img src=x onerror=alert(1)>"]\n```'), /A\[&quot;&lt;img src=x onerror=alert\(1\)&gt;&quot;\]/);
 });
+
+// --- Source lines (ADR canvas §3.7, Ask agent) ---------------------------------------------------
+const C = require("../canvas-core.js");
+const lineTags = (html) => Array.from(html.matchAll(/<(\w+) data-line-start="(\d+)" data-line-end="(\d+)"/g)).map((m) => [m[1], +m[2], +m[3]]);
+
+test("source lines: only with env.sourceLines — the chat renders without them", () => {
+  const src = "# H\n\npara\n\n- a\n- b\n";
+  assert.doesNotMatch(md.render(src), /data-line/);
+  assert.doesNotMatch(md.render(src, {}), /data-line/);
+  assert.deepEqual(lineTags(md.render(src, { sourceLines: true })), [["h1", 0, 1], ["p", 2, 3], ["ul", 4, 6], ["li", 4, 5], ["li", 5, 6]]);
+});
+
+test("source lines: tables rows, blockquotes, rules, fences (highlighted or not), indented code", () => {
+  const src = "| a | b |\n|---|---|\n| 1 | 2 |\n\n> q\n\n---\n\n```js\nx\n```\n\n```mermaid\ngraph TD\n```\n\n    code\n";
+  const tags = lineTags(md.render(src, { sourceLines: true }));
+  assert.deepEqual(tags.filter(([t]) => t === "tr"), [["tr", 0, 1], ["tr", 2, 3]]);
+  assert.deepEqual(tags.find(([t]) => t === "blockquote"), ["blockquote", 4, 5]);
+  assert.deepEqual(tags.find(([t]) => t === "hr"), ["hr", 6, 7]);
+  assert.deepEqual(tags.filter(([t]) => t === "pre"), [["pre", 8, 11], ["pre", 12, 15], ["pre", 16, 17]]);
+  // the highlighted <pre> keeps its class and the mermaid tag the canvas looks for
+  assert.match(md.render("```mermaid\ngraph TD\n```", { sourceLines: true }), /<pre data-line-start="0" data-line-end="3" class="hljs"><code class="language-mermaid">/);
+});
+
+test("source lines: numbers only — the text never reaches the attributes", () => {
+  const h = md.render('# "><img src=x onerror=alert(1)> data-line-start="99"\n', { sourceLines: true });
+  assert.deepEqual(lineTags(h), [["h1", 0, 1]]);
+  assert.doesNotMatch(h, /<img/);
+});
+
+test("DP_CONFIG keeps data-* attributes (DOMPurify's default) — the source lines survive sanitizing", () => {
+  assert.notEqual(DP_CONFIG.ALLOW_DATA_ATTR, false);
+  assert.equal(DP_CONFIG.FORBID_ATTR, undefined);
+});
+
+test("source lines map back to the stored text through cleanEditorMarkdown (the canvas document view)", () => {
+  // Milkdown "<br />" lines and runs of blank lines are dropped before rendering: the rendered lines
+  // shift, the map takes them back to the stored ones.
+  const stored = "# Top\n\n<br />\n\n<br />\n\n## 決定紀錄\n\n\n\nfirst line\nsecond line\n\n- item\n";
+  const clean = C.cleanEditorMarkdownMap(stored);
+  const tags = lineTags(md.render(clean.text, { sourceLines: true }));
+  const p = tags.find(([t]) => t === "p");
+  const lines = C.askSourceLines([{ start: p[1], end: p[2], offset: 0 }], { map: clean.lines, stored });
+  const sl = stored.split("\n");
+  assert.deepEqual(sl.slice(lines.from - 1, lines.to), ["first line", "second line"]);
+  const h2 = tags.find(([t]) => t === "h2");
+  const hl = C.askSourceLines([{ start: h2[1], end: h2[2], offset: 0 }], { map: clean.lines, stored });
+  assert.equal(sl[hl.from - 1], "## 決定紀錄");
+  assert.equal(hl.from, hl.to);
+});
+
+test("source lines of a slide are offset by where it starts in the deck text", () => {
+  const stored = "# One\n\nfirst\n\n---\n\n# Two\n\n```\n---\n```\n\nsecond **here**\n";
+  const slides = C.splitSlidesAt(stored);
+  assert.equal(slides.length, 2);
+  const tags = lineTags(md.render(slides[1].text, { sourceLines: true }));
+  const p = tags.find(([t]) => t === "p");
+  const lines = C.askSourceLines([{ start: p[1], end: p[2], offset: slides[1].line }], { stored });
+  assert.equal(stored.split("\n")[lines.from - 1], "second **here**");
+});

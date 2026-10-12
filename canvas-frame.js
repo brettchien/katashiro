@@ -9,7 +9,8 @@
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, seq, truncated?, rect?}        (Ask agent, §3.7; rect places the host's 💬)
+//       selection{text, seq, truncated?, rect?, where?} (Ask agent, §3.7; rect places the host's 💬,
+//                                                        where{headings?, lines?, slide?} says where it is)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
@@ -346,7 +347,12 @@
       let svg, err;
       try { svg = await renderDiagram(M, source, theme); } catch (e) { err = e; }
       if (gen !== renderGen) return;
-      if (svg !== undefined) { pre.replaceWith(diagramFigure(source, svg)); continue; }
+      if (svg !== undefined) {
+        const fig = diagramFigure(source, svg);
+        for (const a of ["data-line-start", "data-line-end"]) if (pre.hasAttribute(a)) fig.setAttribute(a, pre.getAttribute(a));
+        pre.replaceWith(fig);
+        continue;
+      }
       const msg = CanvasCore.diagramErrorText(err, i + 1);
       diagramNote(pre, msg);
       errors.push(msg);
@@ -364,11 +370,18 @@
     }
   }
 
+  // What the view shows, as stored, for Ask agent's source lines (§3.7): the render's text, the
+  // document view's line map (rendered line → stored line) and each slide's first line.
+  let shownSource = null;                 // { stored, map?, slideLines? }
+
   // markdown: the document view. A canvas never changes kind, so each frame shows one view.
   function renderMarkdown(content, gen, seq) {
     doc.hidden = false;
-    // Older saves may still hold "<br />" lines; never show them as literal text.
-    renderMarkdownInto(doc, CanvasCore.cleanEditorMarkdown(content), { copyText: copyViaHost });
+    // Older saves may still hold "<br />" lines; never show them as literal text. The cleaning only
+    // drops or trims lines, so its map takes a block's rendered lines back to the stored ones.
+    const clean = CanvasCore.cleanEditorMarkdownMap(content);
+    shownSource = { stored: content, map: clean.lines };
+    renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true });
     return renderDiagrams(doc, "markdown", gen, seq, SCREEN_THEME);
   }
 
@@ -395,9 +408,11 @@
     deck.hidden = false;
     document.body.classList.add("mode-slides");
     const container = deck.querySelector(".slides");
-    const sections = CanvasCore.splitSlides(content).map((text) => {
+    const slides = CanvasCore.splitSlidesAt(content);
+    shownSource = { stored: content, slideLines: slides.map((s) => s.line) };
+    const sections = slides.map(({ text }) => {
       const sec = document.createElement("section");
-      renderMarkdownInto(sec, text, { copyText: copyViaHost });
+      renderMarkdownInto(sec, text, { copyText: copyViaHost, sourceLines: true });
       return sec;
     });
     container.replaceChildren(...sections);
@@ -758,20 +773,86 @@
     const r = (n) => Math.round(n);
     return { top: r(b.top), bottom: r(b.bottom), left: r(b.left), right: r(b.right), x: r(Math.min(Math.max(last.right, b.left), b.right)) };
   }
+  // where (Brett 2026-10-12 17:43): the heading path of the selection's start, the stored lines of
+  // the blocks it starts and ends in (markdown.js tags blocks with data-line-start / -end), and in
+  // a deck its slide. Parts that cannot be told are left out; the host checks the rest
+  // (CanvasCore.askWhere) and drops the lines if the stored text changed since this render.
+  const LINE_SEL = "[data-line-start]";
+  const NOT_CONTENT = ".copy-btn, .ks-note, .ks-mermaid-error, style";
+  // The first and last text nodes with selected non-blank text.
+  function selectedTextEnds(range) {
+    const top = range.commonAncestorContainer;
+    const own = (n) => {
+      const p = n.parentElement;
+      if (!p || p.closest(NOT_CONTENT)) return false;
+      const from = n === range.startContainer ? range.startOffset : 0;
+      const to = n === range.endContainer ? range.endOffset : n.data.length;
+      return n.data.slice(from, to).trim() !== "";
+    };
+    if (top.nodeType === Node.TEXT_NODE) return own(top) ? [top, top] : null;
+    let first = null, last = null;
+    const walk = document.createTreeWalker(top, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+      if (!range.intersectsNode(n) || !own(n)) continue;
+      if (!first) first = n;
+      last = n;
+    }
+    return first ? [first, last] : null;
+  }
+  function selectionWhere(sel) {
+    if (!sel || !sel.rangeCount || !shownSource) return undefined;
+    const a = selectedTextEnds(sel.getRangeAt(0));
+    const b = sel.rangeCount > 1 ? selectedTextEnds(sel.getRangeAt(sel.rangeCount - 1)) : a;
+    if (!a || !b) return undefined;
+    const first = a[0], last = b[1];
+    const where = {};
+    const sections = shownKind === "slides" ? slideSections() : null;
+    const sectionOf = (n) => (sections ? sections.indexOf(n.parentElement.closest(".slides > section")) : -1);
+    let root = doc;
+    if (sections) {
+      const i = sectionOf(first);
+      if (i < 0) return undefined;
+      root = sections[i];
+      where.slide = i + 1;
+    }
+    // Headings before the start or holding it, in document order (a deck: its own slide only).
+    const heads = Array.from(root.querySelectorAll("h1,h2,h3,h4,h5,h6"))
+      .filter((h) => h.contains(first) || (first.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_PRECEDING))
+      .map((h) => ({ level: Number(h.tagName[1]), text: CanvasCore.askExcerpt(h.textContent, 79) }));
+    const path = CanvasCore.askHeadingPath(heads).filter(Boolean);
+    if (path.length) where.headings = path;
+    const end = (n) => {
+      const el = n.parentElement.closest(LINE_SEL);
+      const box = sections ? sections[sectionOf(n)] : doc;
+      if (!el || !box || !box.contains(el)) return null;
+      const offset = sections ? shownSource.slideLines[sectionOf(n)] : 0;
+      return { start: Number(el.getAttribute("data-line-start")), end: Number(el.getAttribute("data-line-end")), offset };
+    };
+    const ends = [end(first), end(last)];
+    if (ends.every(Boolean)) {
+      const lines = CanvasCore.askSourceLines(ends, { map: shownSource.map, stored: shownSource.stored });
+      if (lines) where.lines = lines;
+    }
+    return Object.keys(where).length ? where : undefined;
+  }
   function postSelection() {
-    let text = "", rect;
+    let text = "", rect, where;
     if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
       const sel = document.getSelection();
       text = sel && !sel.isCollapsed ? sel.toString().trim() : "";
-      if (text) rect = selectionRect(sel);
+      if (text) {
+        rect = selectionRect(sel);
+        try { where = selectionWhere(sel); } catch (_) { /* where is a nicety; the selection stands */ }
+      }
     }
-    const key = text ? `${JSON.stringify(rect || null)}${text}` : "";
+    const key = text ? `${JSON.stringify(rect || null)}${JSON.stringify(where || null)}${text}` : "";
     if (key === lastSelection) return;
     lastSelection = key;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
     const msg = { type: "selection", text: truncated ? text.slice(0, CanvasCore.SELECTION_MAX) : text, seq: shownSeq };
     if (truncated) msg.truncated = true;
     if (rect) msg.rect = rect;
+    if (where) msg.where = where;
     post(msg);
   }
   document.addEventListener("selectionchange", () => {
@@ -861,6 +942,7 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
+    shownSource = null;
     lastSelection = "";
     const gen = ++renderGen;
     const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)

@@ -11,7 +11,10 @@
 //   - a selection posts selection{text, seq, rect}, rect = the range's box in the frame viewport;
 //   - the placed 💬 does not cover the selection (below it, or above it near the bottom);
 //   - scrolling re-posts the rect; scrolled out of view, the rect is left out (the 💬 hides);
-//   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect.
+//   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect;
+//   - where (Brett 2026-10-12 17:43): the heading path and the STORED source lines of a selection —
+//     through the "<br />" lines the view drops, in a table row, a list item, across two blocks, in a
+//     rendered mermaid diagram, and on a slide (with its number); none above → no path.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -141,6 +144,106 @@ try {
   const accepted = await page.evaluate(() => __msgs.filter((m) => m.type === "selection").every((m) => m.rect === undefined || CanvasCore.askRect(m.rect)));
   check(accepted, "every rect the frame posted passes CanvasCore.askRect", null);
 
+  // where: the heading path and the stored lines. The stored text has Milkdown "<br />" lines and a
+  // run of blank lines that the view drops (cleanEditorMarkdown), so rendered lines != stored lines.
+  const stored = [
+    "intro words here",                  // 1  (no heading above)
+    "",
+    "# 計畫",                             // 3
+    "",
+    "<br />",
+    "",
+    "<br />",
+    "",
+    "## 背景",                            // 9
+    "",
+    "background words",                  // 11
+    "",
+    "## 決定紀錄",                         // 13
+    "",
+    "",
+    "",
+    "### 2026-10-12",                    // 17
+    "",
+    "first line of the target",          // 19
+    "second line of the target",         // 20
+    "",
+    "- item one",                        // 22
+    "- item two",                        // 23
+    "",
+    "| a | b |",                         // 25
+    "|---|---|",
+    "| cell words | 2 |",                // 27
+    "",
+    "```mermaid",                        // 29
+    "flowchart LR",
+    "  Alpha --> Beta",
+    "```",                               // 32
+    "",
+  ].join("\n");
+  await page.evaluate((c) => __send({ type: "render", kind: "markdown", version: 3, seq: 3, content: c }), stored);
+  await waitFor((m) => m.type === "rendered" && m.seq === 3, "structured render");
+  await frame.evaluate(() => window.scrollTo(0, 0));
+  // Select from `a` (in the first element whose text includes it) to `b` (likewise; default: a's end).
+  const selectSpan = (a, b) => frame.evaluate((a, b) => {
+    const textNode = (needle) => {
+      const w = document.createTreeWalker(document.getElementById("doc"), NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(); n; n = w.nextNode()) if (n.data.includes(needle)) return n;
+      throw new Error(`no text "${needle}"`);
+    };
+    const ta = textNode(a), tb = b ? textNode(b) : ta;
+    const r = document.createRange();
+    r.setStart(ta, ta.data.indexOf(a));
+    r.setEnd(tb, tb.data.indexOf(b || a) + (b || a).length);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  }, a, b || null);
+  const whereOf = async (a, b, what) => {
+    const m = await nextSelection(() => selectSpan(a, b), (x) => x.seq === 3 && x.text.endsWith(b || a), what);
+    return m && m.where;
+  };
+  const storedLines = stored.split("\n");
+  const linesAre = (w, from, to, what) => {
+    check(w && w.lines && w.lines.from === from && w.lines.to === to, `${what}: source lines ${from}–${to}`, w);
+    if (w && w.lines) console.log(`       ${JSON.stringify(storedLines.slice(w.lines.from - 1, w.lines.to))}`);
+  };
+  let w = await whereOf("target", null, "a word in a paragraph");
+  check(w && JSON.stringify(w.headings) === JSON.stringify(["計畫", "決定紀錄", "2026-10-12"]), "heading path 計畫 › 決定紀錄 › 2026-10-12", w);
+  linesAre(w, 19, 20, "paragraph (after dropped <br /> and blank lines)");
+  check(w && w.slide === undefined, "a document has no slide", w);
+  w = await whereOf("background", null, "under 背景");
+  check(w && JSON.stringify(w.headings) === JSON.stringify(["計畫", "背景"]), "a sibling h2 replaces the other", w);
+  linesAre(w, 11, 11, "one-line paragraph");
+  w = await whereOf("intro", null, "above every heading");
+  check(w && w.headings === undefined, "no heading above → no path", w);
+  linesAre(w, 1, 1, "first line");
+  w = await whereOf("two", null, "list item");
+  linesAre(w, 23, 23, "tight list item");
+  w = await whereOf("cell words", null, "table cell");
+  linesAre(w, 27, 27, "table row");
+  w = await whereOf("second line", "item one", "across blocks");
+  linesAre(w, 19, 22, "a selection across two blocks");
+  w = await whereOf("決定紀錄", null, "a heading itself");
+  check(w && JSON.stringify(w.headings) === JSON.stringify(["計畫", "決定紀錄"]), "a selected heading ends the path", w);
+  linesAre(w, 13, 13, "heading line");
+  // The mermaid diagram replaces its <pre>: the figure keeps the fence's lines.
+  const hasFig = await frame.waitForSelector("#doc figure.ks-mermaid svg", { timeout: 20000 }).then(() => true, () => false);
+  check(hasFig, "the mermaid fence rendered as a diagram", null);
+  if (hasFig) {
+    const wm = await nextSelection(() => frame.evaluate(() => {
+      const fig = document.querySelector("#doc figure.ks-mermaid");
+      const t = Array.from(fig.querySelectorAll("svg text, svg tspan, svg p, svg span")).find((e) => /Alpha/.test(e.textContent));
+      const r = document.createRange();
+      r.selectNodeContents(t);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+    }), (x) => x.seq === 3 && /Alpha/.test(x.text), "a label in the diagram");
+    linesAre(wm && wm.where, 29, 32, "mermaid diagram (its fence)");
+  }
+  const allOk = await page.evaluate(() => __msgs.filter((m) => m.type === "selection" && m.where).every((m) => JSON.stringify(CanvasCore.askWhere(m.where)) === JSON.stringify(m.where)));
+  check(allOk, "every where the frame posted passes CanvasCore.askWhere unchanged", null);
+  await page.evaluate(() => __send({ type: "render", kind: "markdown", version: 1, seq: 4, content: "x" }));
+
   // Slides: the rect goes when the deck moves away from the selection's slide. A fresh frame, as
   // in canvas.html (a canvas keeps its kind; a frame never switches from a document to a deck).
   await page.goto(`${origin}/__host.html`, { waitUntil: "load" });
@@ -159,9 +262,22 @@ try {
     getSelection().addRange(r);
   }), (m) => m.text === "some words" && m.seq === 2, "a selection on slide 1");
   check(s8 && s8.rect, "slides: selection with a rect", s8);
+  check(s8 && s8.where && s8.where.slide === 1 && JSON.stringify(s8.where.headings) === JSON.stringify(["One"]) && s8.where.lines && s8.where.lines.from === 3 && s8.where.lines.to === 3,
+    "slides: where = slide 1, its heading, the deck text's line 3", s8 && s8.where);
   const s9 = await nextSelection(() => page.evaluate(() => __send({ type: "goto", slide: 2 })), (m) => m.text === "" || (m.text === "some words" && m.rect === undefined), "slide 2");
   // Chrome 155 + reveal: the slide change clears the selection itself (text ""); either way the 💬 hides.
   check(!!s9, `slides: moving to slide 2 hides the 💬 (${s9 && s9.text === "" ? "selection cleared" : "rect dropped"})`, s9);
+  await sleep(800);                                       // the slide transition
+  // On slide 2: lines offset by where the slide starts in the deck text.
+  const s8b = await nextSelection(() => frame.evaluate(() => {
+    const p = Array.from(document.querySelectorAll("#deck p")).find((e) => e.textContent.startsWith("Second slide"));
+    const r = document.createRange();
+    r.selectNodeContents(p);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+  }), (m) => m.text === "Second slide." && m.seq === 2, "a selection on slide 2");
+  check(s8b && s8b.where && s8b.where.slide === 2 && JSON.stringify(s8b.where.headings) === JSON.stringify(["Two"]) && s8b.where.lines && s8b.where.lines.from === 9 && s8b.where.lines.to === 9,
+    "slides: slide 2 — its own heading only, the deck text's line 9", s8b && s8b.where);
   await page.close();
 } catch (e) {
   fail(e && e.stack || String(e));

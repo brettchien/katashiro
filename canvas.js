@@ -226,6 +226,10 @@
   let askPopRect = null;              // where the popover's selection was last seen (frame coordinates)
   let askDraft = null;                // { seq, text, note }: a note closed unsent, back on the same selection
   let askTimer = 0;
+  // The text of the latest render ({ seq, content }) and of the one the popover's selection was
+  // made in: Ask agent's source lines hold only while that is still what is stored (§3.7).
+  let renderedText = { seq: 0, content: null };
+  let askShownText = null;
   const sameAsCaptured = (sel, cap) => !!sel && !!cap && sel.text === cap.text && sel.seq === cap.seq;
 
   function askDispatch(ev) {
@@ -308,7 +312,7 @@
     // the same version (§3.5 normalization, two refreshes) replaces the DOM too.
     if (CanvasCore.fromOlderRender(m, renderingSeq)) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
-    const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect } : null;
+    const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect, where: m.where } : null;
     askDispatch({ type: "selection", sel });
   }
   // Opened by the 💬 or the header button: captures the selection, version and title now.
@@ -316,6 +320,7 @@
     if (!current || compareView || mode !== "view") return;
     if (CanvasCore.askView(ask).popover) { askNote.focus(); return; }
     askDispatch({ type: "open", version: current.meta.version, title: current.meta.title, from });
+    if (ask.captured) askShownText = renderedText.seq === ask.captured.seq ? renderedText.content : null;
   }
   // Esc / ✕ / after a send. Focus goes back where the user came from: the header button, or the canvas.
   function closeAsk() {
@@ -336,7 +341,8 @@
     askNote.readOnly = true;
     askSendBtn.disabled = true;                   // one push per send; the panel also dedupes by reqId
     askSay("送出中…");
-    const text = CanvasCore.composeAskAgent({ note, title: cap.title, id: canvasId, version: cap.version, text: cap.text, truncated: cap.truncated });
+    const where = CanvasCore.askWhereAtSend(cap.where, { shown: askShownText, stored: current.content, sameVersion: current.meta.version === cap.version });
+    const text = CanvasCore.composeAskAgent({ note, title: cap.title, id: canvasId, version: cap.version, text: cap.text, truncated: cap.truncated, where });
     const r = await pushToAgent(text, note);
     const ok = r.ok ? `💬 已問 ${r.agent || "agent"}（v${cap.version} 的選取文字）` : `送出失敗：${CanvasCore.clipError(r.error)}`;
     if (ask.phase !== "sending") {                // closed meanwhile (edit mode, frame reloaded): say it here
@@ -633,6 +639,7 @@
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
+    renderedText = { seq: renderingSeq, content: typeof msg.content === "string" ? msg.content : null };
     toFrame({ ...msg, seq: renderingSeq });
   }
 
