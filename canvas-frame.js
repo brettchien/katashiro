@@ -9,7 +9,7 @@
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
-//       selection{text, seq, truncated?}                                    (Ask agent, §3.7)
+//       selection{text, seq, truncated?, rect?}        (Ask agent, §3.7; rect places the host's 💬)
 //       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
@@ -735,26 +735,59 @@
   // pixel of a drag), sent only when it changed, cut at the push cap. Not while editing: the
   // editor holds unsaved text the agent could not find in the stored canvas. It carries the seq of
   // the render it was made in (#107, #96), so the host can drop one that arrives after a newer render.
+  // rect (Brett 2026-10-12, option a): where the selection is in this viewport, so the HOST can
+  // draw its 💬 beside it (never drawn in here, where canvas content could imitate it). Re-sent when
+  // the view moves under the selection (scroll, resize, a slide change), once per animation
+  // frame; left out while the selection is out of view, so the host hides the 💬.
   const SELECTION_DEBOUNCE_MS = 250;
   let selectionTimer = 0;
-  let lastSelection = "";
+  let lastSelection = "";                 // what was last posted: text + rect
   let shownSeq = 0;                       // render{seq} of what the view shows
+  function selectionRect(sel) {
+    if (!sel || !sel.rangeCount) return undefined;
+    const range = sel.getRangeAt(sel.rangeCount - 1);
+    const b = range.getBoundingClientRect();
+    if (!b || (b.width === 0 && b.height === 0)) return undefined;      // in a hidden slide, or nothing laid out
+    const vw = document.documentElement.clientWidth || window.innerWidth;
+    const vh = document.documentElement.clientHeight || window.innerHeight;
+    if (b.bottom <= 0 || b.top >= vh || b.right <= 0 || b.left >= vw) return undefined;   // scrolled out of view
+    // The end of the range: the right edge of its last line box (an empty last box, e.g. a selection
+    // ending at a line start, falls back to the one before it).
+    const rects = Array.from(range.getClientRects()).filter((r) => r.width > 0 || r.height > 0);
+    const last = rects.length ? rects[rects.length - 1] : b;
+    const r = (n) => Math.round(n);
+    return { top: r(b.top), bottom: r(b.bottom), left: r(b.left), right: r(b.right), x: r(Math.min(Math.max(last.right, b.left), b.right)) };
+  }
   function postSelection() {
-    let text = "";
+    let text = "", rect;
     if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
       const sel = document.getSelection();
       text = sel && !sel.isCollapsed ? sel.toString().trim() : "";
+      if (text) rect = selectionRect(sel);
     }
-    if (text === lastSelection) return;
-    lastSelection = text;
+    const key = text ? `${JSON.stringify(rect || null)}${text}` : "";
+    if (key === lastSelection) return;
+    lastSelection = key;
     const truncated = text.length > CanvasCore.SELECTION_MAX;
-    const seq = shownSeq;
-    post(truncated ? { type: "selection", text: text.slice(0, CanvasCore.SELECTION_MAX), seq, truncated } : { type: "selection", text, seq });
+    const msg = { type: "selection", text: truncated ? text.slice(0, CanvasCore.SELECTION_MAX) : text, seq: shownSeq };
+    if (truncated) msg.truncated = true;
+    if (rect) msg.rect = rect;
+    post(msg);
   }
   document.addEventListener("selectionchange", () => {
     clearTimeout(selectionTimer);
     selectionTimer = setTimeout(postSelection, SELECTION_DEBOUNCE_MS);
   });
+  // The view moved under an unchanged selection: re-measure (only while there is one to place).
+  let moveFrame = 0;
+  function selectionMoved() {
+    if (!lastSelection || moveFrame) return;
+    moveFrame = requestAnimationFrame(() => { moveFrame = 0; postSelection(); });
+  }
+  document.addEventListener("scroll", selectionMoved, { capture: true, passive: true });   // any scroller
+  window.addEventListener("resize", selectionMoved);
+  deck.addEventListener("slidechanged", selectionMoved);           // reveal's events, on its .reveal element
+  deck.addEventListener("slidetransitionend", selectionMoved);
 
   // A library that hits a blocked eval / fetch fails visibly, not silently (§3.2).
   document.addEventListener("securitypolicyviolation", (e) => {

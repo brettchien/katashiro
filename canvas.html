@@ -55,6 +55,23 @@
       </div>
     </div>
   </div>
+  <!-- Ask agent (§3.7, Brett 2026-10-12): the 💬 beside the selection and the request popover.
+       Host elements positioned over the frame, never frame content, so a canvas cannot imitate them.
+       The excerpt is set with textContent. -->
+  <button id="ask-pill" class="ask-pill" type="button" title="針對選取的文字問 agent" aria-label="針對選取的文字問 agent" hidden>💬</button>
+  <div id="ask-pop" class="ask-pop" role="dialog" aria-label="針對選取的文字問 agent" hidden>
+    <div class="ask-pop-head">
+      <span class="ask-pop-icon" aria-hidden="true">💬</span>
+      <span id="ask-excerpt" class="ask-excerpt"></span>
+      <button id="ask-close" class="ask-close" type="button" title="關閉（Esc）" aria-label="關閉">✕</button>
+    </div>
+    <textarea id="ask-note" class="ask-note" rows="3" aria-label="要 agent 對選取的文字做什麼" placeholder="要 agent 做什麼？例如：改短一點、翻成英文"></textarea>
+    <div class="ask-pop-foot">
+      <span id="ask-status" class="ask-status" role="status" aria-live="polite"></span>
+      <span class="ask-keys">Enter 送出 · Shift+Enter 換行</span>
+      <button id="ask-send" class="canvas-btn primary" type="button">送出</button>
+    </div>
+  </div>
   <script src="canvas-store.js"></script>
   <script src="canvas-mirror.js"></script>
   <script src="canvas-core.js"></script>

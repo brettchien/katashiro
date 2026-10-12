@@ -141,3 +141,42 @@ body {
   border: 1px solid var(--border); border-radius: 6px; padding: 8px; font: 12px/1.5 Menlo, Consolas, monospace;
 }
 .conflict-actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+/* Ask agent (§3.7, Brett 2026-10-12): host elements over the frame, placed by canvas.js
+   (CanvasCore.askPlace) in viewport coordinates. Below the conflict view (z-index 10). */
+.ask-pill {
+  position: fixed; z-index: 6; width: 30px; height: 26px; padding: 0;
+  font-size: 14px; line-height: 24px; text-align: center; cursor: pointer;
+  color: var(--text); background: #1e293b; border: 1px solid #60a5fa; border-radius: 13px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+}
+.ask-pill:hover, .ask-pill:focus-visible { background: #334155; outline: none; box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5); }
+.ask-pill[hidden], .ask-pop[hidden] { display: none; }
+.ask-pop {
+  position: fixed; z-index: 7; width: min(360px, calc(100vw - 16px)); box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 6px; padding: 8px 10px;
+  background: var(--bg-header); color: var(--text); font-size: 13px;
+  border: 1px solid #60a5fa; border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+}
+.ask-pop-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ask-excerpt {
+  flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ask-close {
+  flex: 0 0 auto; padding: 0 6px; font-size: 12px; color: var(--muted); cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: 4px;
+}
+.ask-close:hover { color: var(--text); border-color: var(--border); }
+.ask-note {
+  resize: vertical; min-height: 54px; max-height: 40vh; box-sizing: border-box; width: 100%;
+  padding: 6px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+}
+.ask-note:focus { outline: none; border-color: #60a5fa; }
+.ask-pop-foot { display: flex; align-items: center; gap: 8px; }
+.ask-status { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--muted); }
+.ask-status.ok { color: #34d399; }
+.ask-status.warn { color: var(--warn); }
+.ask-keys { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.ask-status:not(:empty) + .ask-keys { display: none; }
