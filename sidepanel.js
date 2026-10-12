@@ -3727,8 +3727,7 @@ async function restoreGroupTabs(convId) {
   if ((await liveGroupId(convId)) != null) return;
   await canvasTabQueue(async () => {
     const all = await chrome.tabs.query({});
-    const others = new Set();
-    for (const id of convs.keys()) if (id !== convId && canvasGroupIds.has(id)) others.add(canvasGroupIds.get(id));
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedCanvasGroupId);
     const plan = CanvasTabs.planGroupRestore({ urls: conv.groupTabs, tabs: all, windowId: panelWindowId, otherGroupIds: others });
     const ids = [...plan.adopt];
     for (const url of plan.open) {
@@ -3756,12 +3755,7 @@ function applyGroupSwitch() {
     if (!cur || !canGroupTabs() || typeof panelWindowId !== "number") return;
     const tabs = await chrome.tabs.query({ windowId: panelWindowId });
     const groupId = await storedCanvasGroupId(cur);
-    const others = [];
-    for (const id of convs.keys()) {
-      if (id === cur) continue;
-      const g = await storedCanvasGroupId(id);
-      if (g != null) others.push(g);
-    }
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
     const conv = convs.get(cur);
     const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
     const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });

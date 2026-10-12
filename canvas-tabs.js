@@ -238,6 +238,22 @@
   }
 
   /**
+   * The group ids of every conversation but `except`, each looked up through `lookup` (the panel
+   * passes its storage-backed lookup: after a panel reload the in-memory map is empty until a tab
+   * event warms it, and missing another conversation's group lets a restore adopt — or reuse — it).
+   * → [groupId]
+   */
+  async function otherGroupIds(convIds, except, lookup) {
+    const out = [];
+    for (const id of convIds || []) {
+      if (id === except) continue;
+      const g = await lookup(id);
+      if (g != null && !out.includes(g)) out.push(g);
+    }
+    return out;
+  }
+
+  /**
    * A conversation comes back (browser-restart adoption, or 重新打開 from the gallery, §4.4): which of
    * its saved URLs are already open in the panel's window (adopt those tabs into the group instead of
    * opening them twice) and which to open. A tab is adoptable when it shows exactly that URL, is in
@@ -334,5 +350,5 @@
     return { close, keep, needNewTab };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
+  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
 });

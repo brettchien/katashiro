@@ -276,6 +276,18 @@ test("planGroupRestore: adopt what is open (no duplicates), open the rest, reuse
   assert.deepEqual(T.planGroupRestore({ urls: null, tabs, windowId: 7 }), { adopt: [], open: [], reuseGroupId: null });
 });
 
+test("otherGroupIds: every other conversation's group through the lookup (storage-backed after a panel reload)", async () => {
+  const stored = new Map([["a", 10], ["b", 20], ["c", 20], ["d", null]]);
+  const lookup = async (id) => (stored.has(id) ? stored.get(id) : null);
+  assert.deepEqual(await T.otherGroupIds(["a", "b", "c", "d", "e"], "a", lookup), [20]);
+  assert.deepEqual(await T.otherGroupIds(["a", "b"], "x", lookup), [10, 20]);
+  assert.deepEqual(await T.otherGroupIds(null, "a", lookup), []);
+  // the restore then neither adopts B's same-URL tab nor reuses B's group
+  const others = await T.otherGroupIds(["a", "b"], "a", lookup);
+  const p = T.planGroupRestore({ urls: ["https://s.example/"], tabs: [web(1, "https://s.example/", { groupId: 20 })], windowId: 7, otherGroupIds: others });
+  assert.deepEqual(p, { adopt: [], open: ["https://s.example/"], reuseGroupId: null });
+});
+
 test("pickWorkingTab: same id + same origin, else the exact URL (ids are reused after a restart), else none", () => {
   const tabs = [web(1, "https://a.example/page2"), web(2, "https://b.example/x"), web(3, "https://c.example/")];
   assert.equal(T.pickWorkingTab({ saved: { id: 1, url: "https://a.example/page1" }, tabs }).id, 1);
