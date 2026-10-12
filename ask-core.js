@@ -142,6 +142,9 @@
     timeout: () => "未回答（逾時）",
     superseded: () => "未回答（你送了別的訊息）",
     cancelled: () => "未回答（聊天已清除）",
+    // Multi-conversation §3.4: the conversation was archived (×). Its own state, not "cancelled", whose
+    // text says the chat was cleared (Jellyfish, #127 review).
+    archived: () => "未回答（對話已封存）",
     disconnected: () => "未回答（agent 已中斷連線）",
     restarted: () => "未回答（agent 的 session 已重開）",
   };
@@ -158,7 +161,7 @@
   }
 
   /**
-   * One question's lifecycle. The first of answer() / timeout / supersede() / cancel() /
+   * One question's lifecycle. The first of answer() / timeout / supersede() / cancel() / archive() /
    * disconnect() / restart() settles it; later ones are no-ops (a click racing the timer cannot flip it).
    * The timeout counts only VISIBLE time (Q1 = b): setVisible(true) starts the clock, (false)
    * banks what is left and stops it; a card created hidden waits with a full budget.
@@ -203,6 +206,7 @@
       answer: (a) => settle("answered", a),
       supersede: () => settle("superseded"),
       cancel: () => settle("cancelled"),
+      archive: () => settle("archived"),
       disconnect: () => settle("disconnected"),
       restart: () => settle("restarted"),
     };

@@ -3563,6 +3563,10 @@
             // capability exists. Refusing at call time is the honest place to enforce it.
             return { tools: listing };
           case "tools/call": {
+            // The host may refuse every call on this instance (multi-conversation §3.9: a
+            // conversation that is not on screen). Refused before anything runs or is shown: no
+            // activity pill, since the turn on screen belongs to another conversation.
+            if (deps.refuse) return { content: [{ type: "text", text: String(deps.refuse) }], isError: true };
             // Tool-execution failures (no active tab, restricted page like chrome://, missing
             // host permission, injected-script error) become MCP isError results — not protocol
             // errors — so the agent sees the failure and can adapt.
@@ -3623,12 +3627,18 @@
   // connect step is where the mapping is established.
   //
   // `acpId` may fall back: a side panel declaring only the browser server needs no
-  // `state.servers` wiring at all. `connectionId` may NOT — a handle we never minted names no
+  // `state.servers` wiring at all, and with ONE declared server an unknown `acpId` still means
+  // it. With several declared (one per conversation, ADR multi-conversation §3.9) an unknown
+  // `acpId` is refused (null): a late `mcp/connect` for an archived conversation's server must
+  // not be routed to another conversation's. `connectionId` may NOT — a handle we never minted names no
   // server, and quietly serving it the browser tools would hand browser control to a caller
   // that was never granted a tunnel. Unknown connections are refused, not guessed at.
   function serverForAcpId(state, acpId) {
     const declared = state.servers || [];
-    return declared.find((s) => s.id === acpId) || declared[0] || defaultServer;
+    const known = declared.find((s) => s.id === acpId);
+    if (known) return known;
+    if (declared.length > 1) return null;
+    return declared[0] || defaultServer;
   }
 
   function serverForConnection(state, connectionId) {
@@ -3639,6 +3649,9 @@
   // `deps` = { chrome, crypto, send, onStatus? }; `send(obj)` writes a JSON-RPC frame to the
   // socket; optional `onStatus(attached: bool)` fires on the first tunnel opening and the last
   // one closing, so the UI can surface whether the agent can currently reach this browser.
+  // Optional `deps.depsFor(server)` returns the deps one instance's MCP traffic runs with (the side
+  // panel binds each conversation's instance to that conversation); without it every instance
+  // shares `deps`.
   // `state` is owned by the caller (e.g. to reset on reconnect) and carries:
   //   `servers`        — optional declared instances; absent means "just the browser server"
   //   `connections`    — connectionId → instance, built here
@@ -3653,6 +3666,10 @@
         // The gateway opens one tunnel per declared server, naming it by the `acpId` we
         // declared; we mint the connection handle it will address us by from here on.
         const server = serverForAcpId(state, msg.params && msg.params.acpId);
+        if (!server) {
+          send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown server: ${msg.params && msg.params.acpId}` } });
+          return;
+        }
         const connectionId = deps.crypto.randomUUID();
         const wasIdle = openCount() === 0;
         state.connections[connectionId] = server;
@@ -3677,7 +3694,8 @@
           return;
         }
         try {
-          const result = await server.handleMcpMessage(inner.method, inner.params || {}, deps);
+          const d = typeof deps.depsFor === "function" ? deps.depsFor(server) : deps;
+          const result = await server.handleMcpMessage(inner.method, inner.params || {}, d);
           // A notification (undefined result) gets no response frame.
           if (result !== undefined) send({ jsonrpc: "2.0", id: msg.id, result });
         } catch (e) {
