@@ -3622,7 +3622,9 @@ async function startCanvasCompare(id) {
   const base = chrome.runtime.getURL("canvas.html");
   const existing = await findCanvasTab(id);
   const tab = existing || (await openCanvasTab(id, { active: true }));
-  let shown = existing ? null : tab;                    // the working tab (multi-conversation §4.3)
+  // The working tab (multi-conversation §4.3) is the canvas tab even when a plain compare tab is in
+  // front: ✕ closes the compare tab, and a closed working tab would leave Q6 with nothing (Jellyfish #141).
+  let shown = existing ? null : tab;
   let r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
   if (!r.ok && r.error === CANVAS_TAB_TIMEOUT) {
     if (!CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) {
@@ -3635,10 +3637,11 @@ async function startCanvasCompare(id) {
     // (Split View brings its pair along).
     try {
       const cmp = CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id)[0];
-      const front = cmp && cmp.active ? cmp : ((await findCanvasTab(id)) || existing);
+      const canvasTab = (await findCanvasTab(id)) || existing;
+      const front = cmp && cmp.active ? cmp : canvasTab;
       await chrome.tabs.update(front.id, { active: true });
       await chrome.windows.update(front.windowId, { focused: true });
-      shown = front;
+      shown = canvasTab;
     } catch (_) { /* compared either way */ }
   }
   return shown ? { ...r, tabId: shown.id } : r;

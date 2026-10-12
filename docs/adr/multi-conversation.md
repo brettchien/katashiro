@@ -427,14 +427,16 @@ still run only in the current conversation (§3.5); P2 lifts that.
 
 ### 4.3 Working tab (Q6)
 
-- Each conversation records the **last tab its agent acted on**: every page tool (it resolves the
+- Each conversation records the **last tab its agent acted on** (or, for a canvas push below, the
+  canvas tab the user pushed from): every page tool (it resolves the
   active tab), `new_tab` (the tab it opened) and `switch_tab` (the tab it switched to).
   `conv:<id>.workingTab = { id, url, at }`, the URL as it is after the call.
 - **Canvas tabs count when a canvas tool puts one in front of the user** (fix 2026-10-13: the
   working tab stayed on a canvas the agent had screenshotted, so every send jumped back to it from
   the canvas the agent was showing): `canvas_goto`, `canvas_highlight` (not when it is deferred
-  because the user is editing), `canvas_view` `compare: true` (the tab it brought forward: the
-  canvas tab, or the compare tab when that opened as a plain tab), and `canvas_open` with
+  because the user is editing), `canvas_view` `compare: true` (the canvas tab, even when the
+  compare tab opened in front as a plain tab: ✕ closes that one, and a closed working tab leaves Q6
+  nothing), and `canvas_open` with
   `beside: "current"` (the canvas tab, in Split View or in front). A plain `canvas_open` (a new
   canvas opens in a background tab; an update re-renders an open tab where it is) and
   `canvas_gallery` (not a conversation's tab) do not. The host reports the tab id with the tool's
