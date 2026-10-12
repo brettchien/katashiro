@@ -74,6 +74,32 @@ const BUILD_INFO = (async () => {
   return { version, detail, sha, builtAt };
 })();
 
+// Disconnect diagnostics (ADR browser-tunnel-liveness §9.3, E). Every socket end is one record,
+// kept in memory and in storage.session (so a panel reload — the moment you'd want to look — does
+// not lose them; a browser restart does). storage.session is shared by every window's panel, so
+// writes are read-modify-write through one chain per panel and carry the window id.
+const DISCONNECT_LOG_KEY = "katashiro.diag.disconnects";
+let disconnectLog = [];                                  // this panel's own records (fallback)
+let disconnectWrites = Promise.resolve();
+function logDisconnectOp(op) {
+  disconnectLog = RoomCore.applyDisconnectOp(disconnectLog, op);
+  disconnectWrites = disconnectWrites.then(async () => {
+    const got = await chrome.storage.session.get(DISCONNECT_LOG_KEY);
+    await chrome.storage.session.set({ [DISCONNECT_LOG_KEY]: RoomCore.applyDisconnectOp(got && got[DISCONNECT_LOG_KEY], op) });
+  }).catch(() => {});                                    // diagnostics never break the connection
+}
+// The newest `n` records, newest first, one line each (for katashiro.client_info).
+async function recentDisconnects(n = 5) {
+  await disconnectWrites;
+  let list = disconnectLog;
+  try {
+    const got = await chrome.storage.session.get(DISCONNECT_LOG_KEY);
+    if (got && Array.isArray(got[DISCONNECT_LOG_KEY])) list = got[DISCONNECT_LOG_KEY];
+  } catch (_) { /* this panel's own records */ }
+  const now = Date.now();
+  return list.slice(-n).reverse().map((r) => RoomCore.formatDisconnect(r, now));
+}
+
 // katashiro.client_info: what this client is, read fresh per call (act mode / optional permissions
 // can change while the panel is open). No URLs, tokens or agent config — build + capability state.
 const OPTIONAL_PERMISSIONS = ["sessions"];
@@ -93,6 +119,7 @@ async function clientInfoSnapshot() {
     browser: m ? `Chrome ${m[1]}` : null,
     windowId: panelWindowId,
     actMode, optionalPermissions,
+    recentDisconnects: await recentDisconnects(5),
   };
 }
 const ACP_CWD = "/home/agent";
@@ -102,7 +129,6 @@ const ACP_CWD = "/home/agent";
 const ACP_REQUEST_TIMEOUT_MS = 60000;
 // session/prompt times out on silence, not length (RoomCore.turnDeadline): TURN_IDLE_TIMEOUT_MS
 // after the last activity of the turn, or TURN_MAX_TIMEOUT_MS after its start.
-const RECONNECT_INTERVAL_MS = 5000;
 const TUNNEL_FRESH_MS = 60000;        // an inbound mcp/message keeps the tunnel "活躍" this long (§8.3)
 const HEARTBEAT_DEAD_THRESHOLD = 2;   // consecutive missed idle probes before a destructive reconnect (§8.6)
 const ROSTER_REFRESH_MS = 15000;      // periodic re-render so time-based states (活躍→閒置) stay current
@@ -163,6 +189,7 @@ class Conn {
     // connectionId → instance. The tunnel a frame arrives on names its conversation (§3.9).
     this.mcpState = { servers: [], connections: {}, mcpConnectionId: null };
     this.reconnectTimer = null;
+    this.reconnectFailures = 0;                          // attempts since the last socket that stayed up (§9.5)
     this.lastFailure = null;                             // null | "auth" | "unreachable"
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
     this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
@@ -170,6 +197,19 @@ class Conn {
     this.lastRecvAt = 0;                                 // ts of the last inbound frame (passive liveness §8.6)
     this.lastTunnelMsgAt = 0;                            // ts of the last inbound mcp/message (tunnel freshness §8.3)
     this.missedProbes = 0;                               // consecutive idle-probe timeouts (debounce §8.6)
+    // A′ (tunnel-liveness §9.2): when the current run of quick reconnects began — the open time of
+    // the first socket since the panel loaded, or since a reconnect that took ≥ 2 min. Replies the
+    // agent sent before it may be from an openab process that has since restarted.
+    this.runStartAt = 0;
+    // How the previous opened socket ended: "unclean" (no close frame, or a heartbeat teardown) can
+    // continue the run, "clean" (the server closed on purpose, or we did) cannot; null = none yet.
+    this.lastSocketEnd = null;
+    // Disconnect diagnostics (§9.3): the current socket's open time (0 until onopen), the last
+    // outbound frame, whether onerror fired, and the last record (its next open is filled in).
+    this.socketOpenedAt = 0;
+    this.lastSentAt = 0;
+    this.sawError = false;
+    this.lastDiag = null;                                // { id, at } of the latest disconnect record
   }
 
   get name() { return this.agent.name || "Agent"; }
@@ -243,7 +283,25 @@ class Conn {
   }
 
   socketSend(obj) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) { this.ws.send(JSON.stringify(obj)); this.lastSentAt = Date.now(); }
+  }
+
+  // §9.3 (E): record one socket end. `ev` is the CloseEvent (null when connect() replaced an open
+  // socket — its onclose is detached, so no event comes); `path` is what happens next. The frame
+  // gaps count this socket only (null = none since it opened).
+  recordDisconnect(ev, path, retryInMs) {
+    const now = Date.now();
+    const since = (t) => (this.socketOpenedAt > 0 && t >= this.socketOpenedAt ? now - t : null);
+    const rec = {
+      id: crypto.randomUUID().slice(0, 8), at: now, agent: this.name, windowId: panelWindowId,
+      code: ev ? ev.code : null, reason: ev ? String(ev.reason || "") : "", wasClean: ev ? !!ev.wasClean : null,
+      error: this.sawError, sinceRecvMs: since(this.lastRecvAt), sinceSendMs: since(this.lastSentAt),
+      turnActive: this.turnActive, ageMs: this.socketOpenedAt > 0 ? now - this.socketOpenedAt : null, path,
+    };
+    if (Number.isFinite(retryInMs)) rec.retryInMs = retryInMs;
+    this.lastDiag = { id: rec.id, at: now };
+    (ev && ev.code === 1000 ? console.info : console.warn)(`ACP[${this.name}]: disconnect — ${RoomCore.formatDisconnect(rec)}`);
+    logDisconnectOp({ push: rec });
   }
 
   // What the tunnel router (BrowserMcp.handleServerRequest) runs with: the socket, and per server the
@@ -370,6 +428,7 @@ class Conn {
       arm();                                       // after set(): a deadline already past rejects here
       if (!this.pendingReqs.has(id)) return;
       this.ws.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      this.lastSentAt = Date.now();
     });
   }
 
@@ -378,10 +437,17 @@ class Conn {
     this.pendingReqs.clear();
   }
 
-  // Open (or reopen) this conn's socket and run the handshake.
-  connect() {
+  // Open (or reopen) this conn's socket and run the handshake. `reason` names the reconnect path
+  // in the diagnostics when this replaces an open socket ("heartbeat" from onProbeTimeout).
+  connect(reason = "manual") {
     this.enabled = true;
     this.stopHeartbeat();                                // don't probe across a teardown/reconnect
+    if (reason !== "auto") this.reconnectFailures = 0;   // a manual / heartbeat reconnect starts the backoff over (§9.5)
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) {
+      this.recordDisconnect(null, `${reason}-reconnect`);
+      // A heartbeat teardown replaces a silent socket (the unclean case); a manual retry starts afresh.
+      this.lastSocketEnd = reason === "heartbeat" ? "unclean" : "clean";
+    }
     if (this.ws) {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
@@ -393,12 +459,26 @@ class Conn {
     this.alive = false;
     this.missedProbes = 0;                               // fresh socket ⇒ fresh debounce count
     this.openedThisAttempt = false;
+    this.socketOpenedAt = 0;
+    this.sawError = false;
     updateRoster();
 
     try {
       this.ws = new WebSocket(this.agent.url, acpProtocols(this.agent.token));
 
       this.ws.onopen = () => {
+        // A′ (§9.2): read lastRecvAt BEFORE any frame on this socket stamps it — it is still the
+        // previous socket's last inbound frame (0 if this conn never had one).
+        const openedAt = Date.now();
+        const sameRun = ConvCore.continuesRun({ prevLastRecvAt: this.lastRecvAt, prevEnd: this.lastSocketEnd, openedAt });
+        if (!sameRun) this.runStartAt = openedAt;
+        this.socketOpenedAt = openedAt;
+        // §9.3: the latest drop gets its outcome — how long until this open, and the run verdict.
+        if (this.lastDiag) {
+          logDisconnectOp({ patch: { id: this.lastDiag.id, fields: { reopenAfterMs: openedAt - this.lastDiag.at, sameRun } } });
+          this.lastDiag = null;
+        }
+        console.info(`ACP[${this.name}]: socket open — ${sameRun ? `same run (last frame ${Math.round((openedAt - this.lastRecvAt) / 1000)} s before)` : `new run (previous end: ${this.lastSocketEnd || "none"})`}`);
         this.online = true;
         this.openedThisAttempt = true;                   // upgrade succeeded ⇒ token accepted
         this.lastFailure = null;
@@ -413,7 +493,22 @@ class Conn {
         this.handleAcpMessage(msg);
       };
 
-      this.ws.onclose = () => {
+      this.ws.onclose = (ev) => {
+        // §9.5 (C): retry at once after an unclean drop (1 s after a clean close), then back off
+        // (1, 2, 4, 8, 16, 30 s…, ±20 %) while attempts fail or the new socket dies within 30 s.
+        this.reconnectFailures = RoomCore.reconnectFailuresAfter({
+          failures: this.reconnectFailures, opened: this.openedThisAttempt,
+          upMs: this.socketOpenedAt > 0 ? Date.now() - this.socketOpenedAt : 0,
+          clean: !!(ev && ev.wasClean && ev.code !== 1006),
+        });
+        const retryInMs = RoomCore.reconnectDelay(this.reconnectFailures);
+        // §9.3 (E): an opened socket's end is one record; an attempt that never opened is counted
+        // on the record before it (an outage keeps retrying and must not flush the history).
+        if (this.openedThisAttempt) {
+          this.recordDisconnect(ev, this.enabled ? "auto-reconnect" : "none", this.enabled ? retryInMs : undefined);
+          this.lastSocketEnd = ev && ev.wasClean && ev.code !== 1006 ? "clean" : "unclean";
+        }
+        else if (this.lastDiag && this.enabled) logDisconnectOp({ bump: this.lastDiag.id });
         this.online = false;
         this.initialized = false;
         this.alive = false;
@@ -428,11 +523,14 @@ class Conn {
         updateRoster();
         // Auto reconnect (only if the user still wants this conn up) — the next handshake
         // resumes the current conversation's session if it has one.
-        if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_INTERVAL_MS);
+        if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect("auto"), retryInMs);
       };
 
-      this.ws.onerror = (error) => {
-        console.error(`WebSocket[${this.name}] error:`, error);
+      this.ws.onerror = () => {
+        // The Event carries nothing useful (the browser hides the cause); the CloseEvent that
+        // follows has the code. Note it for that record.
+        this.sawError = true;
+        console.warn(`WebSocket[${this.name}] error (readyState ${this.ws ? this.ws.readyState : "?"})`);
         this.online = false;
         updateRoster();
       };
@@ -450,6 +548,9 @@ class Conn {
       this.cancelTurn();                               // stop an in-flight turn server-side before dropping the
                                                        // socket, so the gateway cancels the agent-core turn instead
                                                        // of leaving it running (no-op if no turn / socket not open)
+      // §9.3: onclose is detached below, so the user's stop is recorded here (path "none").
+      if (this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) this.recordDisconnect(null, "none");
+      this.lastSocketEnd = "clean";
       this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
@@ -524,10 +625,17 @@ class Conn {
       if (!resuming) st.acpSessionId = res && res.sessionId;
       st.readyGen = gen;
       const conv = convs.get(st.convId);
-      // U2 (§3.5): Katashiro cannot tell a resumed session from one the broker silently recreated,
-      // so the first prompt after ANY resume/new of a conversation with earlier messages carries
-      // the host line. Cleared only once session/prompt is accepted.
-      st.hintPending = ConvCore.needsReconnectHint({ messageCount: conv ? conv.messages.length : 0, queuedCount: st.promptQueue.length });
+      // U2 (§3.5) narrowed by A′ (tunnel-liveness §9.2): Katashiro cannot tell a resumed session
+      // from one the broker silently recreated, so the host line goes with the first prompt unless
+      // the session is almost certainly intact — resumed, and this agent replied here during the
+      // current run of quick reconnects, < 1 h ago. Sticky: a later open never clears a pending
+      // line (the socket may drop again before the user sends); only an accepted session/prompt does.
+      const hint = ConvCore.reconnectHintDecision({
+        messageCount: conv ? conv.messages.length : 0, queuedCount: st.promptQueue.length, resumed: resuming,
+        runStartAt: this.runStartAt, lastReplyAt: ConvCore.lastReplyAt(conv && conv.messages, this.id), now: Date.now(),
+      });
+      st.hintPending = st.hintPending || hint.hint;
+      console.info(`ACP[${this.name}]: ${st.convId} ${resuming ? "resumed" : "new session"} — reconnect hint ${hint.hint ? "added" : "skipped"} (${hint.reason})${st.hintPending && !hint.hint ? ", still pending from before" : ""}`);
       updateRoster();
       saveConv(conv);                                    // persist the (confirmed) resumable session id
       const short = (st.acpSessionId || "").slice(0, 13) || "?";
@@ -802,7 +910,7 @@ class Conn {
     if (d.reconnect) {
       this.stopHeartbeat();
       this.rejectAllPending("connection closed");        // fail-fast the now-confirmed-dead socket
-      this.connect();                                    // teardown + re-handshake (resume re-declares tunnel)
+      this.connect("heartbeat");                         // teardown + re-handshake (resume re-declares tunnel)
     }
   }
 

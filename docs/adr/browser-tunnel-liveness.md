@@ -3,6 +3,8 @@
 - **Status:** Accepted (all decisions settled 2026-08-06). **Revised 2026-08-06 (§8):** gap (B)
   confirmed real; status model two-badge → **three segments** (link / tunnel / browser); **heartbeat
   reworked** to passive/idle-only/non-destructive after #17 proved actively destabilising (§8.6).
+  **Revised 2026-10-12 (§9):** the reconnect hint fires only when the session may really be lost
+  (A′ heuristic), and every disconnect is recorded for diagnosis (E).
 - **Date:** 2026-08-06
 - **Author:** Brett Chien (drafted by Orca; §8 revision 2026-08-06)
 - **Related:** [ACP connection ownership ADR](./acp-connection-ownership.md) (sibling — connection lifecycle); openab `docs/mcp-over-acp-tunnel-contract.md` (the tunnel protocol this depends on)
@@ -428,3 +430,126 @@ removed, entirely client-side. This supersedes §4.1 D1's idle premise and the d
 
 Accepted 2026-08-06. Supersedes the status-model decision (§4.3 S / §5.3) and the heartbeat idle-premise
 (§4.1 D1) / destructive-recovery detail (§5.2 R3); all other decisions in this ADR stand.
+
+---
+
+## 9. Revision (2026-10-12) — when the reconnect hint fires (A′) and disconnect diagnostics (E)
+
+### 9.1 Problem
+
+Multi-conversation §3.5 (U2) adds the host line `[katashiro: this conversation was just reconnected…]`
+to the first prompt after **every** `session/resume` / `session/new` of a conversation that has
+messages, because Katashiro cannot tell a resumed session from one the broker silently recreated.
+An investigation on 2026-10-12 found that the line fires far more often than the agent's memory is
+actually lost:
+
+- Most socket drops are **network drops between the browser and the Cloudflare edge**: the browser
+  gives up ~35 s after the last pong and reconnects; no close frame reaches the gateway. A
+  socket-only reconnect never loses the agent's session — the broker keeps it in its pool, and
+  `session/resume` attaches the new socket to it.
+- **Panel reloads** reconnect too (one more line per reload).
+- **A conversation opened on the current socket** (switch tabs, reopen from 🗂️) gets its first
+  `session/resume` on that socket, so the line fires with no socket reconnect at all.
+
+The line is only really needed when the openab process restarted (a new ECS task, a pod restart)
+or the pool lost the session — which Katashiro cannot detect today.
+
+### 9.2 Decision A′ — Katashiro-only heuristic (interim)
+
+A conn keeps a **run**: the time its current chain of sockets started (`runStartAt`). When a socket
+opens, it **continues** the run only if the previous socket of this conn (in this panel's lifetime)
+**dropped uncleanly** — no close frame reached the browser (`wasClean` false / 1006), or the
+heartbeat tore it down (§8.6) — **and** received its last inbound frame **less than 2 minutes**
+before the new socket opened: a network blip cannot send a close frame, and a quick reconnect after
+one means the same openab process is almost certainly still running. Otherwise the run starts afresh
+at the open time: the first socket since the panel loaded, a retargeted agent, a gap ≥ 2 min, a
+manual reconnect that replaces an open socket (a manual retry while the link is down keeps the
+last drop's verdict), a conn turned off and on — and **any clean close** (1000, 1001 going away, 1012
+service restart, …), however fast the reconnect. A clean close means the server side closed on
+purpose; in an ECS rolling deploy the new task is already up when the old one gets SIGTERM, so the
+reconnect a second later (§9.5) reaches a new process (cloudflared hands both connectors the same tunnel), and an
+in-place restart (crash, OOM, `run.sh restart`) is back within seconds too (review of #136).
+
+The first prompt after a `session/resume` / `session/new` carries the line unless **all** hold:
+
+1. the conversation had messages before the queued prompt (unchanged);
+2. the session was **resumed**, not created — a `session/new`, including the fallback after a failed
+   resume, always keeps the line;
+3. **this agent replied in this conversation during the current run** — its last recorded reply
+   (`senderId` = the agent) is at or after `runStartAt`. This covers the socket reconnect (a quick
+   reconnect keeps the run, a slow one starts a new run the old reply predates), the panel reload
+   (a new run), and the switch / gallery reopen on a live socket (the conversation was used with
+   this same openab process, or it was not);
+4. that reply is **less than 1 hour old** (openab's pool `session_ttl_hours = 1`): older, the pool may
+   have suspended or evicted the session, so keep the line.
+
+The "needs the line" flag is **sticky**: a later open never clears it, only an accepted
+`session/prompt` does. So a conversation that had the line pending when the socket dropped again
+still gets it, whatever the next reconnect looks like.
+
+The decision is the pure `ConvCore.reconnectHintDecision` (unit-tested case by case); the run rule is
+`ConvCore.continuesRun`. Each decision is logged to the console with its reason.
+
+**Known gaps (accepted):**
+
+- an openab restart that completes in **under 2 minutes** (counting from the last frame the old
+  process sent) **and** whose socket drops without a close frame reaching the browser (the process
+  killed hard, the path to it cut) looks like a quick reconnect, so the line is skipped and an agent
+  that lost its memory is not told to read `chat_history`. The §9.3 records (`code` / `wasClean` /
+  `sameRun` per drop) are what checks this rule against real restarts.
+- the pool suspends a session not only after the TTL: when `max_sessions` is reached it suspends the
+  least recently used one (openab `pool.rs`), so on a busy shared pool a session can be suspended in
+  well under 1 h. Whether it comes back intact then depends on `session/load`.
+**Future work (proposal A):** openab sends a boot id (process start id) in the `initialize` response's
+`_meta`; Katashiro compares it with the previous socket's and replaces the heuristic with a fact —
+and, if openab also reports a failed `session/load`, with a visible notice (multi-conversation §3.5).
+
+### 9.3 Decision E — disconnect diagnostics
+
+Every socket end is recorded as one compact record:
+
+- **when** (`at`), which agent, the panel's window;
+- the close event: `code`, `reason`, `wasClean` (and whether `onerror` fired first);
+- **ms since the last inbound frame** and **since the last outbound frame**, whether a turn was
+  active, and the **connection age** (since `onopen`; none if it never opened);
+- **the path taken**: `auto-reconnect` (onclose, retried after the §9.5 backoff — the line says `in <delay>`), `none` (the conn is turned off —
+  `disconnect()` detaches `onclose` first, so it records the end itself, with no close event),
+  `heartbeat-reconnect` (two missed idle probes, §8.6) or `manual-reconnect` (a retry / reconnect
+  that replaced an open socket);
+- filled in when the next socket opens: how long after the drop, and whether it **continued the run**
+  (§9.2) — so the hint heuristic can be checked against real drops;
+- failed reconnect attempts (a socket that never opened) are counted on the record before them, not
+  recorded one by one, so an outage does not flush the history.
+
+Records go to the console (`console.info`, `console.warn` for an unclean close) and the last **20**
+are kept in memory and in `chrome.storage.session` (key `katashiro.diag.disconnects`), so they
+survive a panel reload but not a browser restart. `katashiro.client_info` appends the **last 5**, one
+line each (`RoomCore.formatDisconnect`), so the agent can read them without a screenshot.
+
+### 9.5 Decision C — retry at once, then back off
+
+Auto-reconnect used to wait a fixed **5 s** after every close. Now (`RoomCore.reconnectDelay` /
+`reconnectFailuresAfter`, unit-tested):
+
+- **The first retry after an unclean drop is immediate.** The browser already took ~35 s to notice
+  the drop (§9.1), so waiting again only delays the reconnect, and keeps it well inside A′'s 2 min
+  window (§9.2) after a network blip.
+- **After a clean close** (1001 going away, 1012 service restart, …) the first retry waits **1 s**:
+  the server closed on purpose, and in a rolling deploy the old process may still be draining. An
+  immediate retry that reached it would only be closed again (another record, a new run either way).
+- **Each failure after that doubles the wait**: 1, 2, 4, 8, 16 s, then **30 s** for every further
+  attempt, each **±20 %** so several panels that dropped together do not all hit the tunnel at once.
+- **A failure** is an attempt that never opened, **or** a socket that opened (even past the
+  handshake) and closed within **30 s**. Only a socket that stayed up 30 s resets the count, so a
+  server that accepts and then drops at once is not retried in a tight loop.
+- A manual reconnect (the chip, retry) and a heartbeat teardown (§8.6) start the count over.
+
+A long outage therefore spaces its attempts out (35 s + 0 + 1 + 2 + 4 + 8 + 16 + 30 … passes 2 min
+after about eight attempts), and the socket that finally opens starts a new run — the hint is kept,
+which is the safe direction. The §9.3 record shows the delay chosen (`→ auto-reconnect in 0ms`);
+attempts that never opened are still counted on it, not recorded one by one.
+
+### 9.4 Status
+
+Accepted 2026-10-12 (Brett, 23:11 TPE). Revises multi-conversation §3.5 U2 ("first prompt after
+**any** resume/new") to §9.2's rule; everything else stands.

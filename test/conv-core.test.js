@@ -120,6 +120,77 @@ test("U2: the host line goes first, only when the conversation had messages befo
   assert.match(C.RECONNECT_HINT, /^\[katashiro: this conversation was just reconnected\. If you do not have its earlier messages, read them with katashiro\.chat_history before answering\.\]$/);
 });
 
+// --- A′: when the host line is skipped (tunnel-liveness §9.2) -------------------------------------
+
+test("A′ continuesRun: an unclean drop reopened < 2 min after the previous socket's last inbound frame continues the run", () => {
+  const T = 1_000_000_000;
+  const u = { prevEnd: "unclean" };
+  assert.equal(C.QUICK_RECONNECT_MS, 120000);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 35_000 }), true);     // edge blip: browser gives up after ~35 s
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 119_999 }), true);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 120_000 }), false);   // ≥ 2 min: maybe a restart
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 125_000 }), false);   // heartbeat teardown (~125 s of silence)
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: 0, openedAt: T }), false);             // no earlier socket: panel reload / new conn
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T + 5, openedAt: T }), false);         // clock went backwards: don't vouch
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: NaN }), false);
+  assert.equal(C.continuesRun(), false);
+  assert.equal(C.continuesRun({ ...u, prevLastRecvAt: T, openedAt: T + 50, quickMs: 10 }), false);
+});
+
+test("A′ continuesRun: a clean close starts a new run however fast the next socket opens (rolling deploy, restart)", () => {
+  const T = 1_000_000_000;
+  // Rolling deploy: the old task closes its socket, the reconnect 5 s later lands on the new task.
+  assert.equal(C.continuesRun({ prevEnd: "clean", prevLastRecvAt: T, openedAt: T + 5_000 }), false);
+  assert.equal(C.continuesRun({ prevEnd: null, prevLastRecvAt: T, openedAt: T + 5_000 }), false);   // unknown end: don't vouch
+  assert.equal(C.continuesRun({ prevLastRecvAt: T, openedAt: T + 5_000 }), false);                  // prevEnd defaults to unknown
+  assert.equal(C.continuesRun({ prevEnd: "unclean", prevLastRecvAt: T, openedAt: T + 5_000 }), true);
+});
+
+test("A′ lastReplyAt: the newest reply of that agent only (not the user's, another agent's, or an error)", () => {
+  const msgs = [
+    { kind: "sent", senderId: "user", timestamp: 900 },
+    { kind: "received", senderId: "wss://a", timestamp: 100 },
+    { kind: "received", senderId: "wss://a", timestamp: 300 },
+    { kind: "received", senderId: "wss://b", timestamp: 500 },
+    { kind: "error", senderName: "A", timestamp: 700 },
+    { kind: "received", senderId: "wss://a", timestamp: 200 },
+    null,
+  ];
+  assert.equal(C.lastReplyAt(msgs, "wss://a"), 300);
+  assert.equal(C.lastReplyAt(msgs, "wss://b"), 500);
+  assert.equal(C.lastReplyAt(msgs, "wss://c"), 0);
+  assert.equal(C.lastReplyAt(undefined, "wss://a"), 0);
+});
+
+test("A′ reconnectHintDecision: each case of the rule", () => {
+  const H = 3600_000, M = 60_000;
+  const now = 10 * H;
+  const base = { messageCount: 6, queuedCount: 1, resumed: true, runStartAt: now - 30 * M, lastReplyAt: now - 5 * M, now };
+  const d = (o) => C.reconnectHintDecision({ ...base, ...o });
+  assert.equal(C.POOL_TTL_MS, H);
+  // Skip: a quick reconnect (the run continued) or a switch / gallery reopen on a live socket — the
+  // agent replied in this conversation during the current run, 5 min ago.
+  assert.deepEqual(d({}), { hint: false, reason: "session intact (same connection run)" });
+  assert.equal(d({ lastReplyAt: base.runStartAt }).hint, false);                       // reply at the run's start counts
+  // No earlier messages: never (a new conversation's first prompt).
+  assert.deepEqual(d({ messageCount: 1, queuedCount: 1, resumed: false }), { hint: false, reason: "no earlier messages" });
+  // session/new (no saved session, or the fallback after a failed resume): always.
+  assert.deepEqual(d({ resumed: false }), { hint: true, reason: "new session" });
+  // A panel reload / slow reconnect (≥ 2 min) starts a new run: the reply predates it.
+  assert.deepEqual(d({ runStartAt: now - 1000, lastReplyAt: now - 5 * M }), { hint: true, reason: "last reply before this connection run" });
+  // Reopened from the gallery / switched to: used 30 min ago but before this run (e.g. before a reload).
+  assert.equal(d({ runStartAt: now - 10 * M, lastReplyAt: now - 30 * M }).hint, true);
+  // Within the run but idle ≥ the pool TTL: the pool may have suspended / evicted the session.
+  assert.deepEqual(d({ runStartAt: now - 3 * H, lastReplyAt: now - H }), { hint: true, reason: "last reply older than the pool TTL" });
+  assert.equal(d({ runStartAt: now - 3 * H, lastReplyAt: now - H + 1 }).hint, false);
+  // This agent never replied here (another agent did, or every turn failed): can't vouch.
+  assert.deepEqual(d({ lastReplyAt: 0 }), { hint: true, reason: "no reply from this agent" });
+  // No run (no socket ever opened) or no clock: keep the line.
+  assert.deepEqual(d({ runStartAt: 0 }), { hint: true, reason: "no connection run" });
+  assert.equal(d({ now: undefined }).hint, true);
+  assert.equal(C.reconnectHintDecision().hint, false);                                  // nothing at all: nothing to hint
+});
+
 test("U2 + reply hint: the host line before the batch keeps batchWithReplyHint's endsWith strip working on a retry", () => {
   const R = require("../room-core.js");
   const a = R.framePrompt({ timestamp: 1, senderName: "user" }, "one");

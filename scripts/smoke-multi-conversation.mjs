@@ -15,6 +15,9 @@
 //   - the tab strip: titles (auto from the first user message), ＋, switching, rename, ×;
 //   - per-conversation sessions: session/new for a new one, session/resume on a switch back, its own
 //     MCP server declared; the U2 host line goes first in the first prompt after a resume, once;
+//   - A′ / E (tunnel-liveness §9): after a socket drop with a quick reconnect, no host line — in the
+//     resumed conversation or one first resumed on the new socket; the drop is in storage.session and
+//     in katashiro.client_info's "recent disconnects";
 //   - no switching while a turn runs; a late session/update for another session is dropped;
 //   - with 3 open, ＋ shows the picker; picking archives one (asks close as 對話已封存);
 //   - a second window: a conversation open in window 1 is not opened again (Web Lock), and with 3
@@ -427,6 +430,25 @@ try {
   check(t[0].title === "My name", "rename sets a user title", t);
   await until(p1, () => { const i = JSON.parse(localStorage.getItem("ls:conv:index")); return Object.values(i).some((e) => e.title === "My name" && e.titleSource === "user"); }, "the user title is stored");
 
+  // A′ (tunnel-liveness §9.2): a socket drop with a quick reconnect continues the run, so the
+  // resumed conversation's next prompt has no host line (the agent replied in it during this run);
+  // the drop is recorded for client_info (§9.3). Conversation 2's first prompt after its switch on
+  // the new socket is checked below ("ask me something").
+  await until(p1, () => document.getElementById("stop-btn").hidden, "idle before the drop");
+  await p1.evaluate(() => { const ws = window.__acp.ws; ws.readyState = 3; ws.onclose({ code: 1006, reason: "", wasClean: false }); });
+  await until(p1, () => window.__acp.log.filter((m) => m.method === "session/resume").length === 2, "the quick reconnect resumes conversation 1", null, 15000);
+  await send(p1, "after the blip");
+  await until(p1, () => window.__acp.log.some((m) => m.method === "session/prompt" && m.params.prompt[0].text.includes("after the blip")), "the prompt after the blip");
+  log = await acpLog(p1);
+  const blip = log.filter((m) => m.method === "session/prompt").pop().params.prompt[0].text;
+  check(!blip.includes("just reconnected"), "A′: no host line after a quick reconnect", blip.slice(0, 80));
+  const diag = await p1.evaluate(async () => (await chrome.storage.session.get("katashiro.diag.disconnects"))["katashiro.diag.disconnects"]);
+  const d0 = Array.isArray(diag) ? diag[diag.length - 1] : null;
+  // §9.5 (C): the socket was up well under 30 s, so this drop counts as a failure: retried after 1 s (±20 %).
+  check(d0 && d0.code === 1006 && d0.wasClean === false && d0.path === "auto-reconnect" && d0.sameRun === true && Number.isFinite(d0.retryInMs) && d0.retryInMs >= 800 && d0.retryInMs <= 1200 && d0.reopenAfterMs >= d0.retryInMs && d0.windowId === 1,
+    "E: the drop is recorded in storage.session with its code, path and same-run reopen", d0);
+  await until(p1, () => document.getElementById("stop-btn").hidden, "idle after the blip");
+
   // An ask card in conversation 2, then a tool call from it while it is not on screen.
   await p1.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => t.textContent.startsWith("Second topic")).click());
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "Second topic about tabs", "back on conversation 2");
@@ -435,8 +457,17 @@ try {
   await until(p1, () => { const l = Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden); return l && l.querySelector(".ask-card.pending"); }, "the ask card in conversation 2");
   await p1.evaluate(() => { window.__askCard = document.querySelector(".ask-card.pending"); window.__acp.hold = false; window.__acp.release(); });
   await until(p1, () => document.getElementById("stop-btn").hidden, "conversation 2 idle");
+  const askPrompt = (await acpLog(p1)).filter((m) => m.method === "session/prompt").find((m) => m.params.prompt[0].text.includes("ask me something"));
+  check(askPrompt && !askPrompt.params.prompt[0].text.includes("just reconnected"), "A′: no host line in a conversation first resumed on the new socket of the same run", askPrompt && askPrompt.params.prompt[0].text.slice(0, 80));
   const askRes = await p1.evaluate(() => window.__acp.responses[9100]);
   check(askRes && askRes.result && !askRes.result.isError, "ask_user over conversation 2's own tunnel works while it is on screen", askRes);
+  // E (§9.3): the agent reads the drop through client_info, one line per disconnect.
+  const ci = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.client_info", {}));
+  await until(p1, (id) => !!window.__acp.responses[id], "client_info is answered", ci);
+  const ciText = (await p1.evaluate((id) => window.__acp.responses[id], ci)).result.content[0].text;
+  if (process.env.SHOW_CLIENT_INFO) console.log(ciText);
+  check(/\nrecent disconnects \(newest first\):\n- \S+ \(\S+ ago\) Orca \[window 1\]: close 1006 unclean; .*→ auto-reconnect in \S+; reopened after \S+, same run/.test(ciText),
+    "E: client_info lists the drop", ciText);
   await p1.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => t.textContent.startsWith("My name")).click());
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "My name", "switched to conversation 1");
   const late = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.chat_history", {}));
@@ -529,9 +560,24 @@ try {
   t = await tabs(p1);
   check(t.find((x) => x.current).title === "Second topic about tabs", "…and switched to", t);
   check((await visibleText(p1)).includes("Second topic"), "its messages are back", null);
-  await until(p1, () => window.__acp.log.filter((m) => m.method === "session/resume").length === 2, "the reopened conversation resumes its session");
+  // Resumes so far: conversation 1 on load and after the drop (A′ above), conversation 2 on its switch.
+  await until(p1, () => window.__acp.log.filter((m) => m.method === "session/resume").length === 4, "the reopened conversation resumes its session");
   log = await acpLog(p1);
-  check(log.filter((m) => m.method === "session/resume")[1].params.sessionId === "sess_1", "…the same ACP session", log.filter((m) => m.method === "session/resume")[1]);
+  check(log.filter((m) => m.method === "session/resume")[3].params.sessionId === "sess_1", "…the same ACP session", log.filter((m) => m.method === "session/resume")[3]);
+
+  // A′: a clean close (the server shut its side on purpose — a rolling deploy or a restart) starts a
+  // new run however fast the reconnect, so the next prompt carries the host line again.
+  const resumesBefore = await p1.evaluate(() => window.__acp.log.filter((m) => m.method === "session/resume").length);
+  await p1.evaluate(() => { const ws = window.__acp.ws; ws.readyState = 3; ws.onclose({ code: 1012, reason: "service restart", wasClean: true }); });
+  await until(p1, (n) => window.__acp.log.filter((m) => m.method === "session/resume").length > n, "the reconnect after a clean close resumes", resumesBefore, 15000);
+  await send(p1, "after the restart");
+  await until(p1, () => window.__acp.log.some((m) => m.method === "session/prompt" && m.params.prompt[0].text.includes("after the restart")), "the prompt after the clean close");
+  const restarted = (await acpLog(p1)).filter((m) => m.method === "session/prompt").pop().params.prompt[0].text;
+  check(restarted.startsWith("[katashiro: this conversation was just reconnected."), "A′: the host line after a quick reconnect that followed a clean close", restarted.slice(0, 80));
+  const diag2 = await p1.evaluate(async () => (await chrome.storage.session.get("katashiro.diag.disconnects"))["katashiro.diag.disconnects"]);
+  const d1 = Array.isArray(diag2) ? diag2[diag2.length - 1] : null;
+  check(d1 && d1.code === 1012 && d1.wasClean === true && d1.sameRun === false, "E: the clean close is recorded with a new-run reopen", d1);
+  await until(p1, () => document.getElementById("stop-btn").hidden, "idle after the clean close");
 
   // 重新打開 into a window with no panel while 3 are open elsewhere: the panel loads full (picker →
   // "new conversation"), then picks up the pending reopen. After the pick the REOPEN must win.

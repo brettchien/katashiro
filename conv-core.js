@@ -180,6 +180,61 @@
     return messageCount > queuedCount;
   }
 
+  // Tunnel-liveness §9.2 (A′). A socket that opens within QUICK_RECONNECT_MS of the previous
+  // socket's last inbound frame is almost certainly talking to the same openab process (an edge
+  // network blip, not a restart), so its pooled sessions are intact. POOL_TTL_MS mirrors openab's
+  // `session_ttl_hours = 1`: a session idle longer may have been suspended or evicted.
+  const QUICK_RECONNECT_MS = 2 * 60 * 1000;
+  const POOL_TTL_MS = 60 * 60 * 1000;
+
+  /**
+   * §9.2: does a socket opening at `openedAt` continue the current run of the agent's sockets?
+   * `prevLastRecvAt` = the last inbound frame of any earlier socket of this conn in this panel's
+   * lifetime (0 = none: a panel reload or a new conn → a new run; we cannot know what happened).
+   * `prevEnd` = how that socket ended: only an `"unclean"` drop (no close frame — a network blip
+   * cannot send one) or a heartbeat teardown can continue the run. A clean close means the server
+   * side closed on purpose (openab or cloudflared shutting down: a rolling deploy, a restart), so
+   * the next socket may reach a new process however fast it opens; `"clean"` / null → a new run.
+   */
+  function continuesRun({ prevLastRecvAt = 0, prevEnd = null, openedAt, quickMs = QUICK_RECONNECT_MS } = {}) {
+    if (prevEnd !== "unclean") return false;
+    if (!(prevLastRecvAt > 0) || !Number.isFinite(openedAt)) return false;
+    const gap = openedAt - prevLastRecvAt;
+    return gap >= 0 && gap < quickMs;
+  }
+
+  /** The newest reply of `agentId` in a conversation's messages (0 if none) — §9.2 rule 3. */
+  function lastReplyAt(messages, agentId) {
+    let at = 0;
+    for (const m of Array.isArray(messages) ? messages : []) {
+      if (m && m.kind === "received" && m.senderId === agentId && Number.isFinite(m.timestamp) && m.timestamp > at) at = m.timestamp;
+    }
+    return at;
+  }
+
+  /**
+   * §9.2 (A′): after a session/resume or session/new, does the conversation's next prompt carry the
+   * host line? Skip it only when the agent's session is almost certainly intact: it was resumed, the
+   * agent replied in this conversation during the current run of quick reconnects (so the same
+   * openab process holds it — this also covers a switch / gallery reopen on a live socket), and that
+   * reply is younger than the pool TTL. Everything we cannot vouch for keeps the line.
+   * Known gap: an openab restart under QUICK_RECONNECT_MS whose socket drops uncleanly (no close
+   * frame reached the browser) looks like a quick reconnect.
+   * → { hint, reason } (the reason is for the console log).
+   */
+  function reconnectHintDecision({
+    messageCount = 0, queuedCount = 0, resumed = false, runStartAt = 0, lastReplyAt: replyAt = 0, now,
+    poolTtlMs = POOL_TTL_MS,
+  } = {}) {
+    if (!needsReconnectHint({ messageCount, queuedCount })) return { hint: false, reason: "no earlier messages" };
+    if (!resumed) return { hint: true, reason: "new session" };
+    if (!(runStartAt > 0)) return { hint: true, reason: "no connection run" };
+    if (!(replyAt > 0)) return { hint: true, reason: "no reply from this agent" };
+    if (replyAt < runStartAt) return { hint: true, reason: "last reply before this connection run" };
+    if (!Number.isFinite(now) || now - replyAt >= poolTtlMs) return { hint: true, reason: "last reply older than the pool TTL" };
+    return { hint: false, reason: "session intact (same connection run)" };
+  }
+
   /** The prompt text with the host line first (flush time only; never stored or retried). */
   function withReconnectHint(text) {
     const t = text == null ? "" : String(text);
@@ -727,6 +782,7 @@
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
     switchBlocked, needsReconnectHint, withReconnectHint,
+    QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,
   };
