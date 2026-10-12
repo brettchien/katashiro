@@ -2459,7 +2459,13 @@ async function startCanvasCompare(id) {
   const base = chrome.runtime.getURL("canvas.html");
   const existing = await findCanvasTab(id);
   const tab = existing || (await openCanvasTab(id, { active: true }));
-  const r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
+  let r = await askCanvasTab({ type: "katashiro-canvas-compare-start", id, tabId: tab.id }, COMPARE_ASK_MS);
+  if (!r.ok && r.error === CANVAS_TAB_TIMEOUT) {
+    if (!CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) {
+      return { ok: false, error: `${CANVAS_TAB_TIMEOUT}; the compare may still open — check the tabs before asking again` };
+    }
+    r = { ok: true };                       // it did open: shown below like any started compare
+  }
   if (existing && r.ok) {
     // Started: now show it — the compare tab when it opened as a plain tab, else the canvas tab
     // (Split View brings its pair along).
@@ -2470,9 +2476,7 @@ async function startCanvasCompare(id) {
       await chrome.windows.update(front.windowId, { focused: true });
     } catch (_) { /* compared either way */ }
   }
-  if (r.ok || r.error !== CANVAS_TAB_TIMEOUT) return r;
-  if (CanvasTabs.compareTabsFor(await chrome.tabs.query({}), base, id).length) return { ok: true };
-  return { ok: false, error: `${CANVAS_TAB_TIMEOUT}; the compare may still open — check the tabs before asking again` };
+  return r;
 }
 
 // ✕ 結束比較: close that canvas's compare tab(s), as the button does; the canvas tab sees the close
