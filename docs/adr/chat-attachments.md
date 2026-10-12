@@ -32,17 +32,20 @@ No new dependency. Everything runs on the first 8 KB of the file, as pure functi
 1. **Image: magic bytes.** PNG `89 50 4E 47`, JPEG `FF D8 FF`, GIF `47 49 46 38`, WebP
    `RIFF····WEBP`. A match goes through the existing paste-image pipeline (re-encode, per-turn
    budget, the agent's `promptCapabilities.image`).
-2. **Text: the heuristic git uses.** Any NUL byte → binary. The bytes must decode with
+2. **Text: git's NUL check plus two stricter rules.** Any NUL byte → binary (this is all git's
+   `buffer_is_binary` checks). The bytes must decode with
    `new TextDecoder("utf-8", { fatal: true })` (a BOM is fine; a multi-byte character cut at the
    8 KB boundary is tolerated with `stream: true`). More than ~1 % other C0 control characters
-   (tab, LF, CR and FF excluded) → binary.
+   (tab, LF, CR, FF and ESC excluded — ESC so ANSI-coloured logs pass) → binary. When a text file
+   is read in full, the whole file is checked again the same way.
 3. **Anything else** is refused: 「不支援的檔案類型（看起來是二進位檔）」.
 
 The extension and MIME type are used only for the chip label and the code-fence language.
 
 ### 2.3 Limits (Settings → 附加檔案)
 
-- **File size limit**, default **10 MB**: a larger file is refused at drop.
+- **File size limit**, default **10 MB**: a larger file is refused at drop. A text file larger than
+  the highest text cap the settings allow (4096 KB) is refused at drop too, before it is read.
 - **Text cap**, default **256 KB**: checked **on send**, per text file and for the **total** of all
   text attachments in one message. Over it, the message is not sent and the panel says why; the
   text is never truncated (issue #85 option (a)). The cap exists because the gateway caps
@@ -77,3 +80,4 @@ never the content — like images, which are not stored either.
 - Large text files can be attached but not sent; the user removes the chip or raises the cap.
 - A text file whose first 8 KB is clean but whose later bytes are not UTF-8 is refused when it is
   read in full (the decision stays "text or nothing", no replacement characters).
+- Only UTF-8 text is accepted: UTF-16, Big5 and other legacy encodings are refused as binary.

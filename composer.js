@@ -137,16 +137,16 @@
     return null;
   }
 
-  // git's text heuristic on a file's first bytes: no NUL, strict UTF-8 (BOM ok), and at most ~1% other
-  // C0 controls (tab, LF, CR, FF excluded). `complete` false ⇒ `bytes` is a prefix of a longer file,
-  // so a multi-byte character cut at its end is tolerated (stream: true).
+  // Text or not: no NUL (git's check), strict UTF-8 (BOM ok), and at most ~1% other C0 controls (tab,
+  // LF, CR, FF and ESC excluded — ESC so ANSI-coloured logs pass). `complete` false ⇒ `bytes` is a
+  // prefix of a longer file, so a multi-byte character cut at its end is tolerated (stream: true).
   function looksLikeText(bytes, complete) {
     const b = bytes || new Uint8Array(0);
     let controls = 0;
     for (let i = 0; i < b.length; i++) {
       const c = b[i];
       if (c === 0) return false;
-      if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d && c !== 0x0c) controls++;
+      if (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d && c !== 0x0c && c !== 0x1b) controls++;
     }
     try {
       new TextDecoder("utf-8", { fatal: true }).decode(b, { stream: !complete });
@@ -163,11 +163,14 @@
     return looksLikeText(bytes, complete) ? { kind: "text" } : { kind: "binary" };
   }
 
-  // A whole text file as a string (a UTF-8 BOM is dropped), or null when it is not valid UTF-8 —
-  // the first 8 KB can be clean while a later part is not; never decode that with U+FFFD.
+  // A whole text file as a string (a UTF-8 BOM is dropped), or null when the whole file does not pass
+  // looksLikeText — the first 8 KB can be clean while a later part is not (bad UTF-8, a NUL); never
+  // decode that with U+FFFD.
   function decodeText(bytes) {
+    const b = bytes || new Uint8Array(0);
+    if (!looksLikeText(b, true)) return null;
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes || new Uint8Array(0));
+      return new TextDecoder("utf-8", { fatal: true }).decode(b);
     } catch {
       return null;
     }
@@ -196,9 +199,12 @@
     return `${(v / 1048576).toFixed(1).replace(/\.0$/, "")} MB`;
   }
 
-  // A file name on one line: control characters (line breaks included) become spaces.
+  // A file name on one line: control characters (line breaks included) and bidi controls (which can
+  // fake an extension, "a\u202etxt.exe") become spaces.
   function displayName(name) {
-    return String(name == null ? "" : name).replace(/[\u0000-\u001f\u007f]+/g, " ").trim() || "file";
+    return String(name == null ? "" : name)
+      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]+/g, " ")
+      .trim() || "file";
   }
 
   const FENCE_LANGS = {

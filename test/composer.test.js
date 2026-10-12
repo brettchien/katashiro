@@ -132,10 +132,15 @@ test("looksLikeText: NUL, strict UTF-8 (BOM, cut character) and the control-char
   const cut = utf8("x".repeat(10) + "中").slice(0, 12);
   assert.equal(Composer.looksLikeText(cut, false), true);
   assert.equal(Composer.looksLikeText(cut, true), false);
-  // Other C0 controls: up to 1% is text (an ANSI-coloured log), more is binary.
-  const ok = utf8("\x1b" + "a".repeat(99));
-  assert.equal(Composer.looksLikeText(ok, true), true);
-  assert.equal(Composer.looksLikeText(utf8("\x1b\x01" + "a".repeat(98)), true), false);
+  // Other C0 controls: up to 1% is text, more is binary.
+  assert.equal(Composer.looksLikeText(utf8("\x01" + "a".repeat(99)), true), true);
+  assert.equal(Composer.looksLikeText(utf8("\x01\x02" + "a".repeat(98)), true), false);
+  // ESC is not counted: an ANSI-coloured log (~3% ESC) is text.
+  const line = "\x1b[32m   Compiling\x1b[0m foo v0.1.0 (/tmp/foo)\n";
+  assert.equal(Composer.looksLikeText(utf8(line.repeat(100)), true), true);
+  // UTF-16 (BOM FF FE, or NULs in ASCII content) is refused, like any non-UTF-8 text.
+  assert.equal(Composer.looksLikeText(bytes(0xff, 0xfe, 0x2d, 0x4e, 0x87, 0x65), true), false);
+  assert.equal(Composer.looksLikeText(bytes(0x68, 0x00, 0x69, 0x00), true), false);
 });
 
 test("classifyFileBytes: image by magic, else text, else binary — never by name", () => {
@@ -151,6 +156,9 @@ test("decodeText decodes strict UTF-8, drops a BOM, and refuses invalid bytes", 
   assert.equal(Composer.decodeText(bytes(0xef, 0xbb, 0xbf, ...utf8("hi 中"))), "hi 中");
   assert.equal(Composer.decodeText(bytes(...utf8("ok"), 0xff)), null);
   assert.equal(Composer.decodeText(new Uint8Array(0)), "");
+  // The whole file is checked, not only the first 8 KB: a late NUL or control run is refused.
+  assert.equal(Composer.decodeText(utf8("a".repeat(9000) + "\0")), null);
+  assert.equal(Composer.decodeText(utf8("a".repeat(9000) + "\x01".repeat(200))), null);
 });
 
 test("normalizeAttachConfig: defaults 10 MB / 256 KB, clamped, junk falls back", () => {
@@ -179,6 +187,8 @@ test("formatBytes and displayName", () => {
   assert.equal(Composer.formatBytes(1.25 * 1024 * 1024), "1.3 MB");
   assert.equal(Composer.displayName("a\nb\r\n.md"), "a b .md");
   assert.equal(Composer.displayName(""), "file");
+  assert.equal(Composer.displayName("a\u202etxt.exe"), "a txt.exe");             // RLO can't fake an extension
+  assert.equal(Composer.displayName("a\u2066b\u2069\u200f\u0085c"), "a b c");
 });
 
 test("fenceLanguage comes from the extension (or a bare Dockerfile/Makefile) only", () => {

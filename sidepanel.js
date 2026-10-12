@@ -2027,6 +2027,12 @@ async function stageDroppedFiles(files) {
     }
     if (kind === "image") { images.push(file); continue; }
     if (kind === "binary") { binary.push(name); continue; }
+    // Never sendable at any cap setting — refuse before reading the whole file into memory.
+    const hardCapKB = Composer.ATTACH_LIMITS.textCapKB[1];
+    if (file.size > hardCapKB * 1024) {
+      appendSystemMessage(`文字檔 ${name}（${Composer.formatBytes(file.size)}）超過可傳送的最大上限 ${Composer.formatBytes(hardCapKB * 1024)}，未附加`);
+      continue;
+    }
     let text = null;
     try { text = Composer.decodeText(new Uint8Array(await file.arrayBuffer())); } catch { /* reported below */ }
     if (text === null) {
@@ -2109,7 +2115,12 @@ messageInput.addEventListener("paste", (e) => {
   stagingPending++;
   updateSendEnabled();
   stagingChain = stagingChain
-    .then(() => stageImages(blobs))
+    .then(() => {
+      // Counted when the chain gets here, after any drop still being staged.
+      const room = Math.max(0, Composer.MAX_ATTACHMENTS - stagedImages.length - stagedFiles.length);
+      if (blobs.length > room) appendSystemMessage(`一則訊息最多附加 ${Composer.MAX_ATTACHMENTS} 個檔案，${blobs.length - room} 張圖片未附加。`);
+      return stageImages(blobs.slice(0, room));
+    })
     .catch(() => appendSystemMessage("圖片處理失敗，未附加"))  // keep the chain alive for later pastes
     .finally(() => { stagingPending--; updateSendEnabled(); });
 });
