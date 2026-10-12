@@ -1101,14 +1101,14 @@ tool, with the same preconditions and the same code path as the button; never ar
 - **Seeing the result.** `katashiro.screenshot` already captured canvas tabs (§3.2 allow-list by
   exact URL prefix). It now also captures `canvas-gallery.html`, and only that page: other
   extension pages, Katashiro's own included, stay refused, and DOM tools stay refused on both.
-- **Open — Brett decides before merge: may an agent see other conversations' canvases?**
+- **May an agent see other conversations' canvases? — (a) accepted (Brett, 2026-10-12 16:01 TPE).**
   The gallery lists every conversation's canvases with snippets, and `canvas_gallery({query})`
   searches their text, so an agent that screenshots it reads canvases of other conversations (and
   other agents) that `canvas_list` (session scope) does not show it. (A canvas tab of another
   conversation that happens to be in front is screenshot-able already, before §3.11.)
-  - **(a) Accept.** It is the view the user has, in the user's own browser; `canvas_list`'s
+  - **(a) Accept — chosen.** It is the view the user has, in the user's own browser; `canvas_list`'s
     scope keeps tool results tidy and is not a boundary between conversations. Written down here.
-  - **(b) Scope it.** An agent-opened gallery shows only that conversation (`#conv=`), and
+  - (b) Scope it (not chosen; the way to tighten it later). An agent-opened gallery shows only that conversation (`#conv=`), and
     screenshot refuses canvas tabs of other conversations.
 - **Not gated by act mode**, like the other canvas tools (§3.4): they change what is shown, not any
   web page, and never content.
