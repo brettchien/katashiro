@@ -3,7 +3,9 @@
 - **Status:** Proposed (design placeholder — not yet decided)
 - **Date:** 2026-08-03
 - **Author:** Brett Chien
-- **Related:** [chat markdown rendering ADR](./chat-markdown-rendering.md) §3.7 (which surfaced this)
+- **Related:** [chat markdown rendering ADR](./chat-markdown-rendering.md) §3.7 (which surfaced this);
+  [multi-conversation](./multi-conversation.md) §6 (its P3, background turns with the panel closed, is
+  option B/C here; decided after its P2)
 
 ---
 

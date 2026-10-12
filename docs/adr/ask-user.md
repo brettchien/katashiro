@@ -4,7 +4,8 @@
 - **Date:** 2026-10-12
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** the 🔒 confirm card (#80, `confirm-core.js`); [canvas](./canvas.md) §3.4 (agent tools that
-  are not page actions); reply-to (#61, the `↩` convention); multi-conversation (ADR pending).
+  are not page actions); reply-to (#61, the `↩` convention); [multi-conversation](./multi-conversation.md) §3.8 (cards
+  bound to their conversation).
 
 ---
 
@@ -74,7 +75,8 @@ reply-to marker (#61): that one needs an ISO time after it, so the panel never s
   side panel document is visible, the chat view (not Settings) is shown, and the card's conversation
   is the one on screen. Today a panel has exactly one conversation, so that last check compares the
   card's `conversationId` with the panel's (`askConversationShown`), the named hook a
-  multi-conversation panel will extend. Hidden time is not counted: a user who closes the laptop
+  multi-conversation panel will extend (it compares with the panel's *current* conversation,
+  [multi-conversation](./multi-conversation.md) §3.8). Hidden time is not counted: a user who closes the laptop
   lid does not come back to a question that silently expired.
 - **Q2 = c — the agent may set `timeoutSec`, clamped to 30–300, default 120.** On timeout the card
   reads **未回答（逾時）** and **nothing is sent** to the agent. The agent learns "no answer" from
@@ -84,7 +86,8 @@ reply-to marker (#61): that one needs an ISO time after it, so the panel never s
 - **Q4 = b — another message supersedes the card.** If the user sends any other chat message while
   a card is pending (typed, or posted from a canvas tab), every pending card closes as
   **未回答（你送了別的訊息）**, nothing is sent for them, and the user's message goes out as a normal
-  message. The user changing the subject is the answer.
+  message. The user changing the subject is the answer. With several conversations, only the cards
+  of the conversation the message is sent in close ([multi-conversation](./multi-conversation.md) §3.8).
 
 `allowOther: true` adds a small 「其他…」 text box to the card; what the user submits there is the
 answer, instead of an option.
