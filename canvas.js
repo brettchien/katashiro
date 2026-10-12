@@ -620,10 +620,15 @@
 
   // --- ↶ 復原 / ↷ 重做 (§3.5, Brett 2026-10-11: "just use editor's undo/redo") ----------------
   // The editor's own history: the frame runs prosemirror-history's undo / redo, the same stack as
-  // Ctrl/⌘+Z in the editor, and reports undoState{} back. Pressing a button must not take focus
-  // out of the editor (typing goes on where it was), so mousedown keeps it in the frame.
+  // Ctrl/⌘+Z in the editor, and reports undoState{} back. After a button (or ⌘Z in the header)
+  // typing goes on in the editor: mousedown keeps the button from taking focus, but a click in this
+  // page still moves the window focus out of the sandboxed (cross-origin) frame, and the frame
+  // cannot take it back by itself — its editor still counts as focused inside the frame, and a
+  // focus() there without the user's activation does not move window focus. So we focus the frame
+  // element here, in the click, before the command (real Chrome 2026-10-12: typing after ↶ went nowhere).
   function editCmd(cmd) {
     if (compareView || mode !== "edit" || deleted || !conflictEl.hidden || !CanvasCore.isEditCmd(cmd)) return;
+    if (frame) frame.focus({ preventScroll: true });
     toFrame({ type: "editCmd", cmd });
   }
   for (const [btn, cmd] of [[undoBtn, "undo"], [redoBtn, "redo"]]) {

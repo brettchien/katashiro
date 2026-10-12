@@ -120,7 +120,7 @@
     try {
       withView(state, (view) => {
         (cmd === "undo" ? M.undo : M.redo)(view.state, view.dispatch);
-        if (!view.hasFocus()) view.focus();   // the host keeps focus here; this is a fallback
+        view.focus();                         // the host focused this frame; put the caret back in the editor
       });
     } catch (_) { /* nothing to undo, or the editor is gone */ }
     postUndoState(state);
