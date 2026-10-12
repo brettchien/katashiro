@@ -50,7 +50,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   openab repo, which drives the gateway with a mock extension.
 - Contract: `docs/mcp-over-acp-tunnel-contract.md` in the openab repo.
 - **Canvas folder mirror (ADR §3.6):** Settings → 畫布存到資料夾 → 📁 選擇資料夾, pick an empty
-  folder, then let the agent write a canvas: `<folder>/c_…/<title>.md` appears, plus
+  folder, then let the agent write a canvas: `<folder>/<7-char id>-<conversation title>/<title>.md` appears, plus
   `.katashiro/<id>.json`. Edit the `.md` in an editor and save in the canvas: the file is left
   alone, a `<title>.katashiro-<UTC time>.md` appears beside it, and the canvas header shows
   "📁 檔案在 Katashiro 外被修改過". Delete the `.md` and reopen the canvas tab: "📁 檔案已刪除，不再同步", and
@@ -60,6 +60,35 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   and the header leaves the deleted state. Delete, put different text back, click: the file is left
   alone and the notice names the `.katashiro-<time>.md` conflict copy. Restart Chrome: the canvas header shows **📁 Reconnect folder**
   (unless Chrome kept the grant); saves made before reconnecting are written after it.
+- **Mirror renames by `move()` (#101, multi-conversation §7):** with the folder mirror on and a
+  conversation holding a markdown canvas and an image canvas:
+  - **Canvas rename:** ask the agent to rename the markdown canvas (`canvas_open` with `id` and a
+    new title). In the folder the `.md` is renamed (same file: an editor or `git status` shows a
+    rename, not delete + add) and holds the latest; no old file is left. Rename the image canvas:
+    `<old>.assets/` is gone, `<new>.assets/` holds the image, the `.md` links it.
+  - **Outside edit moves with it:** edit the `.md` in an editor and save, then rename the canvas: the
+    edited text is in the renamed file, not overwritten; the latest is in a
+    `<new-slug>.katashiro-<time>.md` beside it and the header says "📁 檔案在 Katashiro 外被修改過".
+  - **Conversation rename:** double-click the conversation's tab and rename it (or let the agent call
+    `set_title`). About 10 s later (not at once) the folder `<id>-<old title>` is replaced by
+    `<id>-<new title>` holding the same files. Rename twice within a few seconds: one move, straight
+    to the last name. Put a `notes.txt` of your own in the conversation folder first: it is never
+    moved, and the old folder stays with only that file in it.
+  - **Existing `c_…` folders** (written before this change): open the panel; its catch-up moves them
+    to `<id>-<title>` (a canvas whose file you had deleted is not brought back).
+  - **Existing target name:** create `<conversation folder>/x.md` yourself, then have the agent rename
+    a canvas to "x": your `x.md` is untouched (the canvas becomes `x-2.md`). To hit the check in
+    `move()` itself, create the target right before a rename lands (e.g. rename the conversation and,
+    within the 10 s, create `<id>-<new title>/<canvas>.md`): that file is untouched, the canvas's
+    latest goes to a `.katashiro-<time>.md` beside it and the old file stays in the old folder.
+  - **VS Code holding the file open:** with the `.md` open (unsaved changes, and once with none) in
+    VS Code, rename the canvas. Note whether `move()` succeeds (VS Code then shows the file as
+    deleted or follows it) or fails: on failure the new name must still get the latest (written fresh)
+    and the old file is removed only if unchanged. On Windows also try a program that locks the file.
+  - **Interrupted move:** rename a conversation with many canvases and close Chrome (or revoke the
+    folder permission in the site settings) right after the 10 s; reopen and reconnect: the next sync
+    finishes the move (no file left in the old folder except your own, nothing duplicated), and
+    `meta.file.move` is gone from each canvas's meta (`chrome.storage.local`, DevTools).
 - **canvas_patch and Ask agent (ADR §3.5, §3.7):** with a markdown canvas open, select a sentence:
   **💬 Ask agent** appears in the header (not in a compare tab, not while editing, gone when the
   selection is cleared). Click it, type a request in the popover, Enter: the chat shows your request, then

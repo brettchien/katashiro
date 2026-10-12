@@ -3299,6 +3299,16 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (canvasMirrorPending.size) runCanvasMirror();
 });
+// Multi-conversation §7 / #101: a conversation's mirror folder follows its title. A title change
+// moves nothing by itself; once it has settled (CanvasMirror.TITLE_SETTLE_MS without another change)
+// the conversation's canvases are synced, which moves their files to the new folder in one go.
+const canvasTitleSettle = CanvasMirror.createTitleSettle({
+  settled: (convId) => { canvasMirror.syncConversation(convId).catch(() => {}); },
+});
+chrome.storage.onChanged.addListener((changes, area) => {
+  const ch = area === "local" && changes[CanvasMirror.CONV_INDEX_KEY];
+  if (ch) canvasTitleSettle.changed(CanvasMirror.convTitlesChanged(ch.oldValue, ch.newValue));
+});
 
 // Settings → 畫布存到資料夾. Picking and reconnecting need this click (File System Access).
 const canvasFolderStatusEl = document.getElementById("canvas-folder-status");

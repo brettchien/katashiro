@@ -43,17 +43,23 @@ function memLock() {
 const domErr = (name) => Object.assign(new Error(name), { name });
 
 // A FileSystemDirectoryHandle stand-in: nested Maps; names with / \ or . / .. are refused like Chrome.
-function fakeDir(name = "root") {
+// File handles have move(dir, name) like Chrome's FileSystemFileHandle.move() (#101), which REPLACES
+// an existing file at the target silently (seen in real Chrome 2026-10-11). shared.noMove drops
+// move() (an older Chrome); an entry's failMove = "<DOMException name>" makes its move throw (a file
+// an editor holds open). removeEntry refuses a non-empty directory unless { recursive: true }.
+function fakeDir(name = "root", shared = { noMove: false, moves: [] }) {
   const entries = new Map();
+  const self = {};
   const checkName = (n) => { if (!n || n === "." || n === ".." || /[/\\]/.test(n)) throw new TypeError(`bad name ${n}`); };
-  return {
-    kind: "directory", name, entries,
+  return Object.assign(self, {
+    kind: "directory", name, entries, shared,
+    async *keys() { for (const k of [...entries.keys()]) yield k; },
     async getDirectoryHandle(n, { create = false } = {}) {
       checkName(n);
       let e = entries.get(n);
       if (!e) {
         if (!create) throw domErr("NotFoundError");
-        e = { kind: "dir", dir: fakeDir(n) };
+        e = { kind: "dir", dir: fakeDir(n, shared) };
         entries.set(n, e);
       }
       if (e.kind !== "dir") throw domErr("TypeMismatchError");
@@ -68,7 +74,9 @@ function fakeDir(name = "root") {
         entries.set(n, e);
       }
       if (e.kind !== "file") throw domErr("TypeMismatchError");
-      return {
+      let parent = entries;
+      let cur = n;
+      const fh = {
         async getFile() { return { async arrayBuffer() { return e.bytes.slice().buffer; } }; },
         async createWritable() {
           if (e.failWrites) throw new Error("disk full");
@@ -76,12 +84,30 @@ function fakeDir(name = "root") {
           return { async write(b) { buf = new Uint8Array(b); }, async close() { e.bytes = buf; }, async abort() {} };
         },
       };
+      if (!shared.noMove) {
+        fh.move = async (a, b) => {
+          const dest = typeof a === "string" ? self : a;
+          const to = typeof a === "string" ? a : (b === undefined ? cur : b);
+          checkName(to);
+          if (e.failMove) throw domErr(e.failMove);
+          const there = dest.entries.get(to);
+          if (there && there.kind === "dir") throw domErr("InvalidModificationError");
+          shared.moves.push(`${cur} → ${dest.name}/${to}`);
+          parent.delete(cur);
+          dest.entries.set(to, e);                           // an existing file there is replaced, silently
+          parent = dest.entries;
+          cur = to;
+        };
+      }
+      return fh;
     },
-    async removeEntry(n) {
-      if (!entries.has(n)) throw domErr("NotFoundError");
+    async removeEntry(n, { recursive = false } = {}) {
+      const e = entries.get(n);
+      if (!e) throw domErr("NotFoundError");
+      if (e.kind === "dir" && e.dir.entries.size && !recursive) throw domErr("InvalidModificationError");
       entries.delete(n);
     },
-  };
+  });
 }
 
 async function entryAt(root, path) {
@@ -112,7 +138,7 @@ function listFiles(dir, prefix = "") {
   return out.sort();
 }
 
-function setup({ connected = true } = {}) {
+function setup({ connected = true, noMove = false } = {}) {
   const storage = memStorage();
   const lock = memLock();
   let n = 0;
@@ -121,7 +147,7 @@ function setup({ connected = true } = {}) {
   const store = CanvasStore.createCanvasStore({
     storage, lock, now, randomHex: () => (++n).toString(16).padStart(12, "0"),
   });
-  const dir = fakeDir();
+  const dir = fakeDir("root", { noMove, moves: [] });
   const env = { storage, store, dir, folderId: "f1", connected, advance: (ms) => { t += ms; } };
   env.mirror = M.createCanvasMirror({
     storage, lock, now, getRoot: async () => (env.connected ? { dir: env.dir, folderId: env.folderId } : null),
@@ -601,7 +627,7 @@ test("image canvas deleted on save: no new asset, and a removed conversation fol
   // rm -rf of the whole conversation folder, detected on save
   const b = await env.store.agentWrite({ conversationId: "d", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG } });
   await env.mirror.sync(b.id);
-  await env.dir.removeEntry("d");
+  await env.dir.removeEntry("d", { recursive: true });
   await env.store.agentWrite({ conversationId: "d", id: b.id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
   assert.deepEqual(await env.mirror.sync(b.id), { action: "none", state: "deleted" });
   assert.equal(env.dir.entries.has("d"), false);
@@ -676,8 +702,40 @@ test("slug collisions get -2; a conversation keeps one slug; slugs come from sto
   assert.ok(listFiles(env.dir).every((p) => !p.includes("..")));
 });
 
-test("rename moves the file only if it is still what Katashiro wrote", async () => {
+// --- #101: renames move files with FileSystemFileHandle.move() ----------------------------------
+
+test("rename moves the .md with move(): an outside edit moves with it, then the usual rules apply", async () => {
   const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Old name", content: "v1" });
+  await env.mirror.sync(id);
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "New name", content: "v2" });
+  assert.equal((await env.mirror.sync(id)).action, "write");             // moved, then ours → written over
+  assert.deepEqual(env.dir.shared.moves, ["old-name.md → c/new-name.md"]);
+  assert.equal(await readText(env.dir, "c/old-name.md"), null);
+  assert.equal(await readText(env.dir, "c/new-name.md"), "v2");
+  assert.equal((await env.meta(id)).file.move, undefined);               // the pending move is cleared
+  // Edited outside, then renamed: the edit moves with the file and is not overwritten; the latest
+  // goes to a conflict file beside it at the new path.
+  await writeText(env.dir, "c/new-name.md", "kept\n");
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Third", content: "v3" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "conflict");
+  assert.equal(await readText(env.dir, "c/new-name.md"), null);
+  assert.equal(await readText(env.dir, "c/third.md"), "kept\n");
+  assert.match(r.conflictName, /^third\.katashiro-\d{8}T\d{6}Z\.md$/);
+  assert.equal(await readText(env.dir, `c/${r.conflictName}`), "v3");
+  assert.equal((await env.meta(id)).file.state, "changed");
+  // Renamed again while changed: the conflict file named in meta moves too (renamed to the new
+  // slug) and is reused for this episode.
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 3, title: "Fourth", content: "v4" });
+  const r2 = await env.mirror.sync(id);
+  assert.equal(r2.conflictName, r.conflictName.replace(/^third/, "fourth"));
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), ["fourth.md", r2.conflictName].sort());
+  assert.equal(await readText(env.dir, `c/${r2.conflictName}`), "v4");
+});
+
+test("rename without move() (older Chrome): written fresh, the old .md removed only if still ours", async () => {
+  const env = setup({ noMove: true });
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Old name", content: "v1" });
   await env.mirror.sync(id);
   await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "New name", content: "v2" });
@@ -690,7 +748,281 @@ test("rename moves the file only if it is still what Katashiro wrote", async () 
   await env.mirror.sync(id);
   assert.equal(await readText(env.dir, "c/new-name.md"), "kept\n");
   assert.equal(await readText(env.dir, "c/third.md"), "v3");
+  const file = (await env.meta(id)).file;
+  assert.equal(file.state, "ok");
+  assert.equal(file.move, undefined);
+});
+
+test("move() throwing (a file an editor holds open) falls back to write-new + delete-if-ours", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Plan", content: "v1" });
+  await env.mirror.sync(id);
+  (await entryAt(env.dir, "c/plan.md")).failMove = "NoModificationAllowedError";
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Plan B", content: "v2" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "write");
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), ["plan-b.md"]);
+  assert.equal(await readText(env.dir, "c/plan-b.md"), "v2");
   assert.equal((await env.meta(id)).file.state, "ok");
+  // A permission error is not a failed move: the sync reads as disconnected and the move stays pending.
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Plan C", content: "v3" });
+  (await entryAt(env.dir, "c/plan-b.md")).failMove = "NotAllowedError";
+  assert.deepEqual(await env.mirror.sync(id), { action: "disconnected" });
+  assert.equal((await env.meta(id)).file.move.slug, "plan-b");
+});
+
+test("moveFile never overwrites: an existing target (file or directory) is left, nothing moves", async () => {
+  const env = setup();
+  await writeText(env.dir, "c/a.md", "mine");
+  await writeText(env.dir, "c/b.md", "theirs");
+  await writeText(env.dir, "c/d.md/inner", "x");
+  assert.equal(await M.moveFile(env.dir, ["c", "a.md"], ["c", "b.md"]), "exists");
+  assert.equal(await M.moveFile(env.dir, ["c", "a.md"], ["c", "d.md"]), "exists");
+  assert.equal(await readText(env.dir, "c/a.md"), "mine");
+  assert.equal(await readText(env.dir, "c/b.md"), "theirs");
+  assert.equal(await M.moveFile(env.dir, ["c", "nope.md"], ["c", "e.md"]), "gone");
+  assert.equal(await M.moveFile(env.dir, ["c", "a.md"], ["x", "e.md"]), "moved");  // into a new sibling folder
+  assert.equal(await readText(env.dir, "x/e.md"), "mine");
+  assert.deepEqual(env.dir.shared.moves, ["a.md → x/e.md"]);
+  // The fake really behaves like Chrome's move(): it replaces a target silently.
+  const fh = await (await env.dir.getDirectoryHandle("c")).getFileHandle("b.md");
+  await fh.move(await env.dir.getDirectoryHandle("x"), "e.md");
+  assert.equal(await readText(env.dir, "x/e.md"), "theirs");
+});
+
+test("a same-name target found when the move runs is a conflict: not moved, not overwritten", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Old", content: "v1" });
+  await env.mirror.sync(id);
+  // The slugs were assigned (and the move recorded) when "new.md" did not exist yet; it appears
+  // before the move runs (a sync cut short, or another program, in that window).
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "New", content: "v2" });
+  const m = await env.meta(id);
+  await env.storage.set({ [CanvasStore.metaKey(id)]: { ...m, file: { ...m.file, slug: "new", slugBase: "new", hash: null,
+    move: { convSlug: "c", slug: "old", hash: m.file.hash, conflictName: null, conflictHash: null } } } });
+  await writeText(env.dir, "c/new.md", "someone else's\n");
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "conflict");
+  assert.equal(await readText(env.dir, "c/new.md"), "someone else's\n");
+  assert.equal(await readText(env.dir, `c/${r.conflictName}`), "v2");
+  assert.equal(await readText(env.dir, "c/old.md"), "v1");               // a conflict: the old one stays
+  assert.equal((await env.meta(id)).file.move, undefined);
+});
+
+const PNG1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const PNG2 = PNG1.slice(0, -8) + "AAAAAA==";
+
+test("rename moves the content-addressed assets into <new-slug>.assets/; unknown files stay", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env.mirror.sync(id);
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  await env.mirror.sync(id);
+  const [h1, h2] = [PNG1, PNG2].map((b) => require("node:crypto").createHash("sha256").update(Buffer.from(b, "base64")).digest("hex"));
+  await writeText(env.dir, "c/shot.assets/README.txt", "mine");
+  await writeText(env.dir, `c/shot.assets/${"0".repeat(64)}.png`, "not what the name says");
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Shot 2", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  assert.equal((await env.mirror.sync(id)).action, "write");             // the moved .md now links shot-2.assets
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), [
+    "shot-2.assets/" + `${h1}.png`, "shot-2.assets/" + `${h2}.png`, "shot-2.md",
+    `shot.assets/${"0".repeat(64)}.png`, "shot.assets/README.txt",
+  ].sort());
+  assert.match(await readText(env.dir, "c/shot-2.md"), new RegExp(`\\(shot-2\\.assets/${h2}\\.png\\)`));
+  // With nothing unknown left in it, the old .assets/ folder goes.
+  const env2 = setup();
+  const b = await env2.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env2.mirror.sync(b.id);
+  await env2.store.agentWrite({ conversationId: "c", id: b.id, baseVersion: 1, title: "Other", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env2.mirror.sync(b.id);
+  assert.deepEqual(listFiles(await env2.dir.getDirectoryHandle("c")), [`other.assets/${h1}.png`, "other.md"]);
+});
+
+test("an asset already at the target with the same bytes: the source is a duplicate and goes", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env.mirror.sync(id);
+  const name = listFiles(await env.dir.getDirectoryHandle("c")).find((f) => f.startsWith("shot.assets/")).slice("shot.assets/".length);
+  const bytes = (await entryAt(env.dir, `c/shot.assets/${name}`)).bytes;
+  const d = await (await env.dir.getDirectoryHandle("c")).getDirectoryHandle("pic.assets", { create: true });
+  const w = await (await d.getFileHandle(name, { create: true })).createWritable();
+  await w.write(bytes);
+  await w.close();
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Pic", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env.mirror.sync(id);
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), [`pic.assets/${name}`, "pic.md"]);
+});
+
+test("an interrupted move is recorded before anything moves and finished by the next sync (idempotent)", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env.mirror.sync(id);
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  await env.mirror.sync(id);
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Renamed", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  // Cut short after the .md moved: the second move hits a permission error (as if Chrome closed).
+  const seen = [];
+  const realPush = env.dir.shared.moves.push.bind(env.dir.shared.moves);
+  env.dir.shared.moves.push = (s) => {
+    seen.push(structuredClone(env.storage.data[CanvasStore.metaKey(id)].file));
+    if (seen.length === 2) throw domErr("NotAllowedError");
+    return realPush(s);
+  };
+  assert.deepEqual(await env.mirror.sync(id), { action: "disconnected" });
+  assert.equal(seen[0].slug, "renamed");                                  // recorded before the first move
+  assert.deepEqual(seen[0].move && [seen[0].move.convSlug, seen[0].move.slug], ["c", "shot"]);
+  assert.equal(await readText(env.dir, "c/shot.md"), null);
+  assert.ok(await readText(env.dir, "c/renamed.md"));
+  assert.ok(listFiles(await env.dir.getDirectoryHandle("c")).some((f) => f.startsWith("shot.assets/")));
+  env.dir.shared.moves.push = realPush;
+  // Next sync: finishes (the .md already moved is recognised as ours), then writes as usual.
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  const files = listFiles(await env.dir.getDirectoryHandle("c"));
+  assert.ok(files.every((f) => f.startsWith("renamed.")), files.join(", "));
+  assert.equal(files.length, 3);
+  const file = (await env.meta(id)).file;
+  assert.equal(file.move, undefined);
+  assert.equal(file.state, "ok");
+  // And again: nothing to do.
+  const sets = env.storage.sets;
+  assert.equal((await env.mirror.sync(id)).action, "none");
+  assert.equal(env.storage.sets, sets);
+});
+
+// --- Conversation folders: <7-char short id>-<title slug> (multi-conversation §7) -----------------
+
+test("convFolderSlug / convTitlesChanged / isAllowedDir", () => {
+  assert.equal(M.convFolderSlug("c_9f2a41d0abcd", "市場調查"), "9f2a41d-市場調查");
+  assert.equal(M.convFolderSlug("c_9f2a41d0abcd", "Q3 Plan: draft!"), "9f2a41d-q3-plan-draft");
+  assert.equal(M.convFolderSlug("c_9f2a41d0abcd", null), "9f2a41d");
+  assert.equal(M.convFolderSlug("c_9f2a41d0abcd", "!!!"), "9f2a41d");
+  assert.equal(M.convFolderSlug("c_9f2a41d0abcd", ".git"), "9f2a41d-git");
+  const long = M.convFolderSlug("c_9f2a41d0abcd", "中".repeat(200));
+  assert.ok(M.isValidSlug(long) && long.startsWith("9f2a41d-"));
+  assert.equal(M.convFolderSlug("c_abc", "Title"), "c_abc");             // not a minted id: the slugged id, as before
+  assert.deepEqual(M.convTitlesChanged(
+    { c_000000000001: { title: "a" }, c_000000000002: { title: "b" }, c_000000000003: { title: null } },
+    { c_000000000001: { title: "a", lastMessageAt: 5 }, c_000000000002: { title: "B" }, c_000000000003: { title: "c" }, c_000000000004: { title: null } }),
+  ["c_000000000002", "c_000000000003"]);
+  assert.deepEqual(M.convTitlesChanged(undefined, { c_000000000001: { title: "x" } }), ["c_000000000001"]);
+  const ctx = { id: "cv_000000000001", convSlug: "abc", slug: "plan" };
+  assert.ok(M.isAllowedDir(["abc"], ctx));
+  assert.ok(M.isAllowedDir(["abc", "plan.assets"], ctx));
+  for (const p of [["other"], [".katashiro"], ["abc", "other.assets"], ["abc", "plan.assets", "x"], []]) assert.ok(!M.isAllowedDir(p, ctx), p.join("/"));
+});
+
+test("createTitleSettle: one call per conversation once its title has stopped changing", () => {
+  const timers = [];
+  const settled = [];
+  const s = M.createTitleSettle({
+    settled: (id) => settled.push(id), quietMs: 10,
+    setTimer: (fn, ms) => { const t = { fn, ms, live: true }; timers.push(t); return t; },
+    clearTimer: (t) => { t.live = false; },
+  });
+  s.changed(["c_000000000001"]);
+  s.changed(["c_000000000001", "c_000000000002"]);                       // auto title, then set_title
+  assert.deepEqual(s.pending().sort(), ["c_000000000001", "c_000000000002"]);
+  for (const t of timers) if (t.live) t.fn();
+  assert.deepEqual(settled.sort(), ["c_000000000001", "c_000000000002"]);
+  assert.deepEqual(s.pending(), []);
+  assert.equal(timers.filter((t) => t.ms === 10).length, 3);
+});
+
+const CID = "c_0123456789ab";
+const CID2 = "c_fedcba987654";
+async function setTitle(env, id, title) {
+  const idx = (await env.storage.get("conv:index"))["conv:index"] || {};
+  await env.storage.set({ "conv:index": { ...idx, [id]: { ...(idx[id] || {}), title, titleSource: title ? "user" : null } } });
+}
+
+test("the conversation folder is <short id>-<title slug>; untitled → the short id", async () => {
+  const env = setup();
+  await setTitle(env, CID, "市場調查");
+  await setTitle(env, CID2, null);
+  const a = await env.store.agentWrite({ conversationId: CID, title: "Plan", content: "a" });
+  const b = await env.store.agentWrite({ conversationId: CID2, title: "Plan", content: "b" });
+  await env.mirror.syncAll();
+  assert.equal(await readText(env.dir, "0123456-市場調查/plan.md"), "a");
+  assert.equal(await readText(env.dir, "fedcba9/plan.md"), "b");
+  assert.equal((await env.meta(a.id)).file.convBase, "0123456-市場調查");
+  assert.equal(JSON.parse(await readText(env.dir, `.katashiro/${b.id}.json`)).conversation, "fedcba9");
+});
+
+test("renaming a conversation moves its canvases' files into the new folder; the old one goes when empty", async () => {
+  const env = setup();
+  await setTitle(env, CID, "Draft");
+  const a = await env.store.agentWrite({ conversationId: CID, title: "Plan", content: "a" });
+  const b = await env.store.agentWrite({ conversationId: CID, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  const other = await env.store.agentWrite({ conversationId: CID2, title: "Plan", content: "z" });
+  await setTitle(env, CID2, "Else");
+  await env.mirror.syncAll();
+  await setTitle(env, CID, "Final report");
+  const counts = await env.mirror.syncConversation(CID);
+  assert.deepEqual(counts, { adopt: 2 });                                // moved as they are: nothing to write (the link is relative)
+  assert.equal(env.dir.entries.has("0123456-draft"), false);
+  const files = listFiles(await env.dir.getDirectoryHandle("0123456-final-report"));
+  assert.equal(files.length, 3);
+  assert.ok(files.includes("plan.md") && files.includes("shot.md") && files.some((f) => f.startsWith("shot.assets/")));
+  assert.equal(await readText(env.dir, "fedcba9-else/plan.md"), "z");     // another conversation is untouched
+  for (const id of [a.id, b.id]) assert.equal((await env.meta(id)).file.convSlug, "0123456-final-report");
+  assert.equal((await env.meta(other.id)).file.convSlug, "fedcba9-else");
+  // A file the user put in the conversation folder is never moved, and keeps the old folder.
+  await writeText(env.dir, "0123456-final-report/notes.txt", "mine");
+  await setTitle(env, CID, "Final");
+  await env.mirror.syncConversation(CID);
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("0123456-final-report")), ["notes.txt"]);
+  assert.equal(listFiles(await env.dir.getDirectoryHandle("0123456-final")).length, 3);
+});
+
+test("legacy c_<id> folders are migrated to the new name on the next sync; a deleted file stays put", async () => {
+  const env = setup();
+  await setTitle(env, CID, "Research");
+  const a = await env.store.agentWrite({ conversationId: CID, title: "Plan", content: "a" });
+  const b = await env.store.agentWrite({ conversationId: CID, title: "Gone", content: "b" });
+  const c = await env.store.agentWrite({ conversationId: CID, title: "Unseen", content: "c" });
+  await env.mirror.syncAll();
+  // Make it look like a mirror written before multi-conversation: c_<id> folder, no convBase.
+  env.dir.entries.set(CID, env.dir.entries.get("0123456-research"));
+  env.dir.entries.delete("0123456-research");
+  for (const id of [a.id, b.id, c.id]) {
+    const m = await env.meta(id);
+    const file = { ...m.file, convSlug: CID };
+    delete file.convBase;
+    await env.storage.set({ [CanvasStore.metaKey(id)]: { ...m, file } });
+  }
+  // Deleted outside and seen as deleted (state "deleted"): it stays where it is, nothing moves.
+  (await env.dir.getDirectoryHandle(CID)).removeEntry("gone.md");
+  const mb = await env.meta(b.id);
+  await env.storage.set({ [CanvasStore.metaKey(b.id)]: { ...mb, file: { ...mb.file, state: "deleted" } } });
+  // Deleted outside, not noticed yet: the move finds it gone, which marks it deleted — the
+  // migration does not bring it back under the new folder.
+  (await env.dir.getDirectoryHandle(CID)).removeEntry("unseen.md");
+  await env.mirror.syncAll();
+  assert.equal((await env.meta(c.id)).file.state, "deleted");
+  assert.equal((await env.meta(c.id)).file.move, undefined);               // the move is over: nothing left to move
+  assert.equal(await readText(env.dir, "0123456-research/plan.md"), "a");
+  assert.equal((await env.meta(a.id)).file.convSlug, "0123456-research");
+  // The deleted one writes nothing (not under the new folder either) and keeps its old record.
+  assert.equal((await env.meta(b.id)).file.convSlug, CID);
+  assert.deepEqual(listFiles(env.dir).filter((f) => !f.startsWith(".katashiro/")), ["0123456-research/plan.md"]);
+  assert.equal(env.dir.entries.has(CID), false);                         // emptied, so removed
+  // 重新寫入 brings it back, under the new folder.
+  assert.equal((await env.mirror.sync(c.id, { rewrite: true })).action, "write");
+  assert.equal(await readText(env.dir, "0123456-research/unseen.md"), "c");
+});
+
+test("a conversation with no index entry keeps its folder; same-titled conversations stay apart", async () => {
+  const env = setup();
+  await setTitle(env, CID, "Plan");
+  const a = await env.store.agentWrite({ conversationId: CID, title: "Doc", content: "a" });
+  await env.mirror.sync(a.id);
+  await env.storage.set({ "conv:index": {} });                           // entry gone (deleted conversation)
+  await env.store.userSave({ id: a.id, baseVersion: 1, content: "a2" });
+  await env.mirror.sync(a.id);
+  assert.equal(await readText(env.dir, "0123456-plan/doc.md"), "a2");
+  await setTitle(env, CID2, "Plan");
+  const b = await env.store.agentWrite({ conversationId: CID2, title: "Doc", content: "b" });
+  await env.mirror.sync(b.id);
+  assert.equal(await readText(env.dir, "fedcba9-plan/doc.md"), "b");
 });
 
 test("image canvas: the asset by magic bytes under <slug>.assets/<sha256>.<ext>, linked relatively; SVG never written", async () => {
