@@ -402,3 +402,29 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   and trailing spaces inside a code block are kept (`canvas_read` shows the stored text).
   Esc leaves edit mode with one press, also with the cursor in a table cell and the pointer resting
   on the table (#104); with the slash menu (`/`) or the link editor open, Esc only closes it.
+
+## P2 prerequisite: two-session test
+
+Multi-conversation P2 (ADR `docs/adr/multi-conversation.md` §5) assumes one `/acp` WebSocket can run
+two ACP sessions at once, each with its own MCP-over-ACP tunnel. `scripts/acp-two-sessions.mjs`
+checks that on a real gateway, with no browser and no npm dependencies (Node 22+):
+
+```sh
+ACP_TOKEN='<transport token>' node scripts/acp-two-sessions.mjs --url wss://<gateway>/acp
+```
+
+It opens one socket, creates sessions A and B (each declaring its own server, `probeA` / `probeB`,
+serving one tool `whoami` that answers with a random nonce), sends both prompts back to back and
+asks each agent to find `whoami` through `search_capabilities` / `execute_capability` and reply with
+the nonce. **PASS** = both turns end with `end_turn`, each agent's `tools/call` arrived on its own
+server's tunnel inside its own turn, each reply carries its own nonce and not the other's, the
+turns overlap and the later one was already active before the first ended, and nothing failed with
+`-32001 Session busy` or "pool exhausted". The exit code is 0 on PASS, 1 on FAIL.
+
+- It starts real agent sessions: each running turn takes a broker pool slot (3, shared with
+  Discord and usercron). Run it when the pool has room; "pool exhausted" is reported as such.
+- The token is read from `ACP_TOKEN` only and never printed. `--sessions 3`, `--timeout SEC`
+  (default 300; running turns get `session/cancel`), `--hold SEC` (how long `whoami` holds before
+  answering, default 10, to widen the overlap), `--verbose` (every frame).
+- It does not touch Katashiro's storage. The pure helpers are unit-tested in
+  `test/acp-two-sessions-core.test.js`.
