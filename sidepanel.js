@@ -4025,11 +4025,7 @@ function askCard(spec, conn, st = conn.cur) {
 // conversation, that agent) or disconnect (the agent deliberately disconnected: its cards in EVERY
 // conversation). A transient socket drop closes nothing. Nothing is sent to any agent.
 function settlePendingAsks(how, { conn = null, convId = null } = {}) {
-  for (const e of [...pendingAsks.values()]) {
-    if (conn && e.conn !== conn) continue;
-    if (convId && e.conversationId !== convId) continue;
-    e.ask[how]();
-  }
+  for (const e of AskCore.selectToSettle([...pendingAsks.values()], { conn, convId })) e.ask[how]();
 }
 function supersedePendingAsks(convId) { settlePendingAsks("supersede", { convId }); }
 function cancelPendingAsks(convId) { settlePendingAsks("cancel", { convId }); }

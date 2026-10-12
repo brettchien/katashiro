@@ -209,5 +209,130 @@
     return api.tabs.create(opts);
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
+  // --- One tab group per conversation (multi-conversation ADR §4) -----------------------------------
+  // The conversation's group holds its canvases and the tabs its agent opened. The GROUP is the
+  // membership: a tab dragged out is the user's again, so everything below reads groupId, never a
+  // list of tab ids Katashiro once grouped.
+
+  const urlOf = (t) => (t && (t.url || t.pendingUrl)) || "";
+
+  /**
+   * The URL a group tab comes back as (§4.4), or null for a tab not worth reopening: a canvas tab
+   * (never a compare tab) or an http(s)/file page; a blank, chrome:// or other extension page is not kept.
+   */
+  function restorableUrl(tab, canvasBase) {
+    const kind = classifyTab(tab, canvasBase);
+    return kind === "canvas" || kind === "web" ? urlOf(tab) : null;
+  }
+
+  /** The restorable URLs of group `groupId`'s tabs, in tab order, each once. */
+  function groupTabUrls(tabs, groupId, canvasBase) {
+    if (groupId == null || groupId === TAB_GROUP_NONE) return [];
+    const out = [];
+    const inGroup = (tabs || []).filter((t) => t && t.groupId === groupId).sort((a, b) => (a.windowId - b.windowId) || (a.index - b.index));
+    for (const t of inGroup) {
+      const u = restorableUrl(t, canvasBase);
+      if (u && !out.includes(u)) out.push(u);
+    }
+    return out;
+  }
+
+  /**
+   * A conversation comes back (browser-restart adoption, or 重新打開 from the gallery, §4.4): which of
+   * its saved URLs are already open in the panel's window (adopt those tabs into the group instead of
+   * opening them twice) and which to open. A tab is adoptable when it shows exactly that URL, is in
+   * the window, not pinned (a pinned tab cannot be grouped), not in a split (both sides of a split
+   * share a group state, §3.1) and not in another open conversation's group. A URL whose only match
+   * is a split or pinned tab is neither adopted nor opened again. If every adopted tab already sits
+   * in the same group (Chrome's restored copy of this one), that group is reused.
+   * → { adopt: [tabId], open: [url], reuseGroupId: groupId | null }
+   */
+  function planGroupRestore({ urls, tabs, windowId, otherGroupIds }) {
+    const others = otherGroupIds instanceof Set ? otherGroupIds : new Set(otherGroupIds || []);
+    const claimed = new Set();
+    const adopt = [];
+    const adoptGroups = new Set();
+    const open = [];
+    for (const url of new Set(Array.isArray(urls) ? urls : [])) {   // a URL is kept once (groupTabUrls)
+      if (typeof url !== "string" || !url) continue;
+      const same = (tabs || []).filter((t) => t && !claimed.has(t.id) && t.windowId === windowId && urlOf(t) === url && !others.has(groupOf(t)));
+      const usable = same.find((t) => !t.pinned && !inSplit(t));
+      if (usable) {
+        claimed.add(usable.id);
+        adopt.push(usable.id);
+        adoptGroups.add(groupOf(usable));
+      } else if (same.length) {
+        claimed.add(same[0].id);                        // open already, just not groupable: no duplicate
+      } else {
+        open.push(url);
+      }
+    }
+    const only = adoptGroups.size === 1 ? [...adoptGroups][0] : TAB_GROUP_NONE;
+    return { adopt, open, reuseGroupId: only !== TAB_GROUP_NONE ? only : null };
+  }
+
+  function originOf(url) {
+    try { const u = new URL(url); return u.protocol === "file:" ? "file:" : u.origin; } catch (_) { return null; }
+  }
+
+  /**
+   * The conversation's working tab (§4.3), re-validated: the tab with the saved id if it still shows
+   * the same origin (the user or the agent may have navigated it since); else (tab ids are reused after
+   * a browser restart) the first open tab with exactly the saved URL; else null.
+   * saved = { id, url } | null.
+   */
+  function pickWorkingTab({ saved, tabs }) {
+    if (!saved || typeof saved.url !== "string") return null;
+    const list = tabs || [];
+    const byId = list.find((t) => t && t.id === saved.id);
+    if (byId && originOf(urlOf(byId)) !== null && originOf(urlOf(byId)) === originOf(saved.url)) return byId;
+    return list.find((t) => t && urlOf(t) === saved.url) || null;
+  }
+
+  /**
+   * Q5 (§4.2): the panel switches conversation. `tabs` = the panel's window's tabs; `groupId` = the
+   * new conversation's group (null if none here); `otherGroupIds` = the other open conversations'
+   * groups. If the active tab sits in one of those, activate first: the working tab when it is in
+   * this window and not in another conversation's group, else the new group's most recently used
+   * tab, else the most recently used tab in no conversation's group. With nothing to activate, no
+   * group is collapsed (Chrome has to put the focus somewhere).
+   * → { activate: tabId | null, collapse: [groupId], expand: groupId | null }
+   */
+  function planGroupSwitch({ tabs, groupId, otherGroupIds, workingTabId }) {
+    const list = tabs || [];
+    const exists = (g) => list.some((t) => t && t.groupId === g);
+    const others = [...new Set(otherGroupIds || [])].filter((g) => g != null && g !== TAB_GROUP_NONE && g !== groupId && exists(g));
+    const expand = groupId != null && groupId !== TAB_GROUP_NONE && exists(groupId) ? groupId : null;
+    const active = list.find((t) => t && t.active);
+    let activate = null;
+    if (active && others.includes(groupOf(active))) {
+      const outside = (t) => t && !others.includes(groupOf(t));
+      const working = list.find((t) => t && t.id === workingTabId);
+      if (working && outside(working)) activate = working.id;
+      else {
+        const inNew = expand != null ? mostRecent(list.filter((t) => t && t.groupId === expand)) : null;
+        const free = mostRecent(list.filter((t) => t && groupOf(t) === TAB_GROUP_NONE));
+        const pick = inNew || free;
+        if (!pick) return { activate: null, collapse: [], expand };
+        activate = pick.id;
+      }
+    }
+    return { activate, collapse: others, expand };
+  }
+
+  /**
+   * §4.5: archive closes the group's tabs. `dirtyIds` = canvas tabs that said (or could not say
+   * otherwise) they hold unsaved edits: those stay. If closing would empty the window, a New Tab
+   * page must be opened first. → { close: [tabId], keep: [tabId], needNewTab }
+   */
+  function planArchiveClose({ tabs, groupId, dirtyIds }) {
+    const dirty = new Set(dirtyIds || []);
+    const inGroup = (tabs || []).filter((t) => t && groupId != null && groupId !== TAB_GROUP_NONE && t.groupId === groupId);
+    const close = inGroup.filter((t) => !dirty.has(t.id)).map((t) => t.id);
+    const keep = inGroup.filter((t) => dirty.has(t.id)).map((t) => t.id);
+    const needNewTab = close.length > 0 && (tabs || []).filter((t) => t && !close.includes(t.id)).length === 0;
+    return { close, keep, needNewTab };
+  }
+
+  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
 });

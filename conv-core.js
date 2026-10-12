@@ -41,6 +41,11 @@
   const SWITCH_BLOCKED_TEXT = "回覆中不能切換——等回完或先按 ⏹ 停止";
   const OPEN_ELSEWHERE_TEXT = "這段對話開在另一個視窗";
   const ARCHIVED_PUSH_TEXT = "這段對話已封存，先從總覽重新打開";
+  // P1b §4.8: a push for a conversation open in another live window whose panel is closed.
+  const PANEL_CLOSED_PUSH_TEXT = "這段對話開在另一個視窗，那個視窗的側邊欄沒開：到那個視窗打開側邊欄再送";
+  // P1b §4.6: set_title refusals the agent reads (English, like every tool result).
+  const SET_TITLE_USER_TEXT = "the user named this conversation; set_title never replaces a name the user typed";
+  const SET_TITLE_EMPTY_TEXT = "title is empty after removing control and layout characters";
 
   // §3.5 U2: added at flush time only, BEFORE the batch (batchWithReplyHint strips the reply hint by
   // endsWith, so a line after it would break that on a retry).
@@ -92,16 +97,35 @@
    */
   function titleAfterUserMessage(entry, text) {
     const e = entry || {};
-    if (e.titleSource === "user" || (e.title && e.titleSource === "auto")) return null;
+    if (e.titleSource === "user" || (e.title && (e.titleSource === "auto" || e.titleSource === "agent"))) return null;
     const t = autoTitle(text);
     if (!t) return null;
     return { ...e, title: t, titleSource: "auto" };
   }
 
+  // A name typed by the user or given by the agent: sanitised like confirm-card text, whitespace
+  // collapsed, ≤ 80 code points.
+  function cleanName(name) {
+    return Array.from(ConfirmCore.plainText(name, Number.MAX_SAFE_INTEGER).replace(/\s+/g, " ").trim()).slice(0, USER_TITLE_MAX).join("").trim();
+  }
+
+  /**
+   * P1b §4.6 katashiro.set_title: the agent names its conversation. A user title always wins (the
+   * call changes nothing); an auto title or an earlier agent title is replaced.
+   * → { ok: true, entry, title } | { ok: false, error }
+   */
+  function agentTitledEntry(entry, title) {
+    const e = entry || {};
+    if (e.titleSource === "user") return { ok: false, error: SET_TITLE_USER_TEXT, title: e.title };
+    const t = cleanName(typeof title === "string" ? title : "");
+    if (!t) return { ok: false, error: SET_TITLE_EMPTY_TEXT };
+    return { ok: true, entry: { ...e, title: t, titleSource: "agent" }, title: t };
+  }
+
   /** Double-click rename: a typed name wins; an empty one returns to the auto title (or none). */
   function renamedEntry(entry, name, messages) {
     const e = entry || {};
-    const typed = Array.from(ConfirmCore.plainText(name, Number.MAX_SAFE_INTEGER).replace(/\s+/g, " ").trim()).slice(0, USER_TITLE_MAX).join("").trim();
+    const typed = cleanName(name);
     if (typed) return { ...e, title: typed, titleSource: "user" };
     const auto = firstUserTitle(messages);
     return auto ? { ...e, title: auto, titleSource: "auto" } : { ...e, title: null, titleSource: null };
@@ -351,6 +375,19 @@
     return { convWrites, index: idx, windowWrites, remove };
   }
 
+  /**
+   * P1b §4.8: a canvas push for conversation `id` that no panel holds (its Web Lock is free), answered
+   * by the panel of the canvas tab's window. Open in another LIVE window's record → that window's
+   * panel is closed (say so, and which window); otherwise (archived, or only in a closed window's
+   * record) → it is not open anywhere.
+   * → { text, windowId: string | null }
+   */
+  function pushRefusal({ windows, liveIds, id, ownWindowId }) {
+    const holder = windowHolding(windows, liveIds, id);
+    if (holder !== null && liveIds.has(holder) && holder !== String(ownWindowId)) return { text: PANEL_CLOSED_PUSH_TEXT, windowId: holder };
+    return { text: ARCHIVED_PUSH_TEXT, windowId: null };
+  }
+
   // --- the gallery's 對話 section (§3.4) ----------------------------------------------------------
 
   function normalize(s) {
@@ -486,7 +523,8 @@
     MAX_OPEN, AUTO_TITLE_MAX, USER_TITLE_MAX, INDEX_TIME_MIN_MS, ORPHAN_KEEP_MS,
     HISTORY_PREFIX, CONV_PREFIX, WINDOW_PREFIX, INDEX_KEY, SCHEMA_KEY, REOPEN_KEY_PREFIX,
     LOCK_MIGRATE, LOCK_WINDOWS, LOCK_INDEX, ID_RE,
-    SWITCH_BLOCKED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, RECONNECT_HINT,
+    SWITCH_BLOCKED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
+    SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
     switchBlocked, needsReconnectHint, withReconnectHint,

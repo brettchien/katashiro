@@ -212,10 +212,27 @@
     };
   }
 
+  /**
+   * Which pending cards a close applies to (multi-conversation §3.8 scopes). entries: iterable of
+   * { conn, conversationId }; `conn` given → only that agent's; `convId` given → only that
+   * conversation's. A close acts on the cards pending NOW: a card asked later (say, by a turn still
+   * running when the user's message was queued) is not touched (§3.8, the 2026-10-12 18:31 report).
+   */
+  function selectToSettle(entries, { conn = null, convId = null } = {}) {
+    const out = [];
+    for (const e of entries || []) {
+      if (!e) continue;
+      if (conn && e.conn !== conn) continue;
+      if (convId && e.conversationId !== convId) continue;
+      out.push(e);
+    }
+    return out;
+  }
+
   return {
     QUESTION_MAX, OPTION_MAX, OPTIONS_MIN, OPTIONS_MAX, OTHER_MAX, PENDING_MAX,
     TIMEOUT_DEFAULT_SEC, TIMEOUT_MIN_SEC, TIMEOUT_MAX_SEC,
     clampTimeoutMs, normalizeSpec, canAsk, newAskId, normalizeAnswer, answerText, answerMessage,
-    outcomeText, timeoutHint, createAsk,
+    outcomeText, timeoutHint, createAsk, selectToSettle,
   };
 });

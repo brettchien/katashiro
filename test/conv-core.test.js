@@ -413,3 +413,33 @@ test("galleryRows: only conversations not open in a live window, newest first, t
   assert.equal(rows[1].archived, true);
   assert.deepEqual(C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "ＰＬＡＮ", now }).map((r) => r.id), [ID(2)]);
 });
+
+// --- P1b (ADR §4) -------------------------------------------------------------------------------
+test("agentTitledEntry (set_title): sanitised, ≤ 80, titleSource agent; a user title always wins", () => {
+  const r = C.agentTitledEntry({ title: "auto one", titleSource: "auto", createdAt: 3 }, "  Market‮  research\n2026 ");
+  assert.deepEqual(r, { ok: true, entry: { title: "Market research 2026", titleSource: "agent", createdAt: 3 }, title: "Market research 2026" });
+  assert.equal(C.agentTitledEntry({ title: "A", titleSource: "agent" }, "B").entry.title, "B");          // its own earlier title
+  assert.equal(C.agentTitledEntry({ title: null, titleSource: null }, "New").entry.titleSource, "agent");
+  const user = C.agentTitledEntry({ title: "Mine", titleSource: "user" }, "Agent's");
+  assert.equal(user.ok, false);
+  assert.match(user.error, /the user named this conversation/);
+  assert.equal(C.agentTitledEntry({}, "​‮  ").ok, false);
+  assert.equal(C.agentTitledEntry({}, 42).ok, false);
+  assert.equal(Array.from(C.agentTitledEntry({}, "字".repeat(200)).title).length, C.USER_TITLE_MAX);
+});
+
+test("titleAfterUserMessage: an agent title is not replaced by the next user message", () => {
+  assert.equal(C.titleAfterUserMessage({ title: "Named by agent", titleSource: "agent" }, "hello"), null);
+  // an agent source with no title left (should not happen) still gets the auto title
+  assert.deepEqual(C.titleAfterUserMessage({ title: null, titleSource: "agent" }, "hello"), { title: "hello", titleSource: "auto" });
+});
+
+test("pushRefusal: open in another live window with its panel closed vs archived / closed window", () => {
+  const windows = { 1: { open: [ID(1)] }, 2: { open: [ID(2)] }, 9: { open: [ID(3)] } };
+  const live = new Set(["1", "2"]);
+  assert.deepEqual(C.pushRefusal({ windows, liveIds: live, id: ID(2), ownWindowId: 1 }), { text: C.PANEL_CLOSED_PUSH_TEXT, windowId: "2" });
+  assert.deepEqual(C.pushRefusal({ windows, liveIds: live, id: ID(3), ownWindowId: 1 }), { text: C.ARCHIVED_PUSH_TEXT, windowId: null });   // closed window's record
+  assert.deepEqual(C.pushRefusal({ windows, liveIds: live, id: ID(4), ownWindowId: 1 }), { text: C.ARCHIVED_PUSH_TEXT, windowId: null });   // archived
+  // in this window's own record but its lock is free: not "another window"
+  assert.equal(C.pushRefusal({ windows, liveIds: live, id: ID(1), ownWindowId: 1 }).text, C.ARCHIVED_PUSH_TEXT);
+});
