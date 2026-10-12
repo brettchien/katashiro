@@ -589,7 +589,7 @@
       if (ranges) msg.glowRanges = ranges;
     }
     lastRenderedVersion = c.meta.version;
-    startRender(msg);
+    startRender(msg, c.meta.version);
   }
 
   // While this canvas's compare tab is open, the differing blocks stay marked here too (Brett,
@@ -686,12 +686,14 @@
   let renderingSeq = 0;
   let renderFailed = "";
   let renderingVersion = 0;               // the version render{renderingSeq} shows (its errors name it)
-  function startRender(msg) {
+  // shows: the version whose content this render displays (a normalize render names the agent copy
+  // in msg.version, but shows the latest when the user saved since).
+  function startRender(msg, shows = msg.version) {
     askDispatch({ type: "render" });                        // the DOM the selection was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
-    renderingVersion = msg.version;
+    renderingVersion = shows;
     renderedText = { seq: renderingSeq, content: typeof msg.content === "string" ? msg.content : null };
     toFrame({ ...msg, seq: renderingSeq });
   }

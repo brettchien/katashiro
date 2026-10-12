@@ -505,6 +505,9 @@ test("askExcerpt: a ZWJ between emoji stays, so composed emoji are not split (#1
   assert.equal(C.askExcerpt("\u{1F468}\u200Da"), "\u{1F468}a");
   assert.equal(C.askExcerpt("a\u200D\u{1F468}"), "a\u{1F468}");
   assert.equal(C.askExcerpt("\u200D\u200D"), "");
+  // A stripped character between emoji and ZWJ does not make the ZWJ join them: the canvas shows two.
+  assert.equal(C.askExcerpt("\u{1F468}\u200B\u200D\u{1F4BB}"), "\u{1F468}\u{1F4BB}");
+  assert.equal(C.askExcerpt("\u{1F468}\u200D\u202E\u{1F4BB}"), "\u{1F468}\u{1F4BB}");
   // ZWNJ still goes (it is no emoji joiner).
   assert.equal(C.askExcerpt("\u{1F468}\u200C\u{1F469}"), "\u{1F468}\u{1F469}");
   // A cut inside the sequence leaves no dangling ZWJ before the ellipsis.
@@ -970,6 +973,9 @@ test("askReduce rect: moves the selection's rect, keeps its text/where; null = o
   // Another render's rect, or no selection: ignored.
   assert.equal(C.askReduce(s, { type: "rect", seq: 2, rect: r2 }), s);
   assert.equal(C.askReduce(C.ASK_IDLE, { type: "rect", seq: 1, rect: r2 }), C.ASK_IDLE);
+  // A sel without a rect field (selection{} stores null, but the reducer does not rely on it), and no rect: no new state.
+  const noRect = { ...C.ASK_IDLE, phase: "pill", sel: { text: "hi", seq: 1 } };
+  assert.equal(C.askReduce(noRect, { type: "rect", seq: 1 }), noRect);
   // While the popover is open the rect still follows (so it can follow or dock); captured is untouched.
   s = C.askReduce(s, { type: "open", version: 4, title: "Plan", from: "pill" });
   const cap = s.captured;

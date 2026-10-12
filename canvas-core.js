@@ -736,7 +736,7 @@
   const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{E0000}-\u{E007F}]/gu;
   const LONE_ZWJ = /(?<!\p{Extended_Pictographic}[\u{FE0F}\u{1F3FB}-\u{1F3FF}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/gu;
   function askExcerpt(text, max = 60) {
-    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(EXCERPT_STRIP, "").replace(LONE_ZWJ, "").replace(/ {2,}/g, " ").trim();
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(LONE_ZWJ, "").replace(EXCERPT_STRIP, "").replace(/ {2,}/g, " ").trim();
     const cps = Array.from(s);
     // A cut inside an emoji sequence leaves its ZWJ dangling at the end: drop it with the cut.
     return cps.length > max ? `${cps.slice(0, max).join("").replace(/\u200d+$/u, "").trimEnd()}…` : s;
@@ -888,7 +888,7 @@
         // of that render; null = out of view (the 💬 hides, an open popover docks).
         if (!s.sel || s.sel.seq !== ev.seq) return s;
         const rect = askRect(ev.rect);
-        if (JSON.stringify(rect) === JSON.stringify(s.sel.rect)) return s;
+        if (JSON.stringify(rect) === JSON.stringify(s.sel.rect || null)) return s;
         return { ...s, sel: { ...s.sel, rect } };
       }
       case "render":
