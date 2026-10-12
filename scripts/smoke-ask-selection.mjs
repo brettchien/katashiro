@@ -7,9 +7,11 @@
 //     node scripts/smoke-ask-selection.mjs
 //
 // Same harness as smoke-editor-undo.mjs. The host page offsets the iframe (as canvas.html's header
-// does) and places a 💬-sized box with CanvasCore.askPlace, as canvas.js does. Checks:
+// does) and places a 💬-sized box with CanvasCore.askPlace, and a 📨-sized one beside it with
+// CanvasCore.askBeside, as canvas.js does. Checks:
 //   - a selection posts selection{text, seq, rect}, rect = the range's box in the frame viewport;
 //   - the placed 💬 does not cover the selection (below it, or above it near the bottom);
+//   - the 📨 (Send selection, Brett 2026-10-13) goes on the 💬's row, right beside it, inside the frame;
 //   - scrolling re-posts only the rect, as selectionRect{seq, rect?} — no selection{} with the
 //     text again (#125d); scrolled out of view, the rect is left out (the 💬 hides);
 //   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect;
@@ -35,11 +37,13 @@ const HOST = `<!doctype html><meta charset="utf-8"><body style="margin:0">
   window.__msgs = [];
   addEventListener("message", (e) => { if (e.data && e.data.nonce === "nonce0") __msgs.push(e.data); });
   window.__send = (msg) => document.getElementById("f").contentWindow.postMessage({ ...msg, nonce: "nonce0" }, "*");
-  // As canvas.js: the frame's rect, the iframe's box → where the 💬 (30 × 26) goes, in page coordinates.
+  // As canvas.js: the frame's rect, the iframe's box → where the 💬 (30 × 26) goes, in page
+  // coordinates, and the 📨 (30 × 26) beside it.
   window.__place = (rect) => {
     const fb = document.getElementById("f").getBoundingClientRect();
-    return { box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height },
-      p: CanvasCore.askPlace({ rect, box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height }, size: { w: 30, h: 26 } }) };
+    const box = { left: fb.left, top: fb.top, width: fb.width, height: fb.height };
+    const p = CanvasCore.askPlace({ rect, box, size: { w: 30, h: 26 } });
+    return { box, p, q: p && CanvasCore.askBeside({ anchor: { left: p.left, top: p.top, w: 30, h: 26 }, box, size: { w: 30, h: 26 } }) };
   };
 </script>`;
 const server = http.createServer((req, res) => {
@@ -132,6 +136,9 @@ try {
     const { box: fb, p } = await page.evaluate((r) => __place(r), s1.rect);
     check(p && p.placement === "below" && p.top >= fb.top + s1.rect.bottom, "the 💬 goes below the selection (page coordinates, frame offset added)", { p, fb, rect: s1.rect });
     check(p && p.left >= fb.left && p.left + 30 <= fb.left + fb.width, "the 💬 is inside the frame box", { p, fb });
+    const { q } = await page.evaluate((r) => __place(r), s1.rect);
+    check(q && q.side === "right" && q.top === p.top && q.left === p.left + 30 + 4 && q.left + 30 <= fb.left + fb.width,
+      "the 📨 goes right beside the 💬, on its row, inside the frame box", { p, q, fb });
   }
 
   // Near the bottom of the view: above it, still not over it.

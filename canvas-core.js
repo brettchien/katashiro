@@ -654,6 +654,7 @@
   // so, since a canvas_patch `find` must be the stored text.
   // where (Brett 2026-10-12 17:43, askWhere): the heading path, the source lines of the stored
   // version, the slide — each left out when not known; the agent decides whether to read more.
+  // Send selection (Brett 2026-10-13) passes no note: the push then starts with the host line.
   function composeAskAgent({ note, title, id, version, text, truncated, where }) {
     const t = String(title == null ? "" : title).slice(0, 120);
     const w = askWhere(where) || {};
@@ -713,6 +714,25 @@
     else if (r.top - gap - h >= margin) { top = Math.min(r.top, H) - gap - h; placement = "above"; }
     else { top = clamp(r.bottom + gap, margin, H - h - margin); placement = "over"; }
     return { left: Math.round(box.left + left), top: Math.round(box.top + top), placement };
+  }
+
+  /**
+   * Send selection (§3.7, Brett 2026-10-13): where the 📨 goes beside the placed 💬. `anchor` =
+   * the 💬's box {left, top, w, h} and `box` the frame's {left, top, width, height}, both in page
+   * coordinates; `size` {w, h} = the 📨's. → { left, top, side: "right" | "left" }: on the 💬's row,
+   * to its right, to its left when the frame has no room on the right; null when neither fits
+   * (the header button still sends). Never over the 💬.
+   */
+  function askBeside({ anchor, box, size, gap = 4, margin = 4 }) {
+    if (!anchor || !box || !size) return null;
+    const nums = [anchor.left, anchor.top, anchor.w, anchor.h, box.left, box.top, box.width, box.height, size.w, size.h];
+    if (!nums.every(Number.isFinite) || box.width <= 0 || box.height <= 0 || size.w <= 0) return null;
+    const top = Math.round(anchor.top + (anchor.h - size.h) / 2);
+    const right = anchor.left + anchor.w + gap;
+    if (right + size.w <= box.left + box.width - margin) return { left: Math.round(right), top, side: "right" };
+    const left = anchor.left - gap - size.w;
+    if (left >= box.left + margin) return { left: Math.round(left), top, side: "left" };
+    return null;
   }
 
   /**
@@ -919,5 +939,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

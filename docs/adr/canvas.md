@@ -940,6 +940,21 @@ is silent, the conservative choice:
       `slide` a positive integer; headings plain strings, cleaned and capped as above. Anything
       malformed is dropped on its own — the selection is still offered without it.
     - **Not in this change:** the quick-action chips (below) stay unbuilt.
+    *Send selection (Brett, 2026-10-13; canvas only first):* to hand the agent a passage without a
+    request, a **📨** sits right beside the 💬 (on its row, to its right; to its left at the
+    frame's right edge; hidden when neither fits, and whenever the 💬 is hidden —
+    `CanvasCore.askBeside`), and **📨 Send selection** sits in the header next to 💬 Ask agent with
+    the same visibility (📤 Send to agent stays the saved-edits push). A click pushes the selection
+    at once — no popover, no note: the same `composeAskAgent` text (host line with title, id,
+    version and where, `askWhereAtSend` as at an Ask agent send; the rendered-not-source caveat;
+    the fenced selection; the truncation note), so the message starts with the host line. Same
+    `katashiro-canvas-push` path and the same refusals as Ask agent (view mode, a frame, a text
+    kind, never a compare tab). Both controls are disabled while the push is in flight; the
+    result is a header notice (「📨 已傳給 <agent>（vN 的選取文字）」, or 「送出失敗：…」). The
+    selection stays; like after an Ask agent send, its 💬 / 📨 stay away until it changes.
+    Showing or hiding the header buttons can wrap a narrow header onto another row, so the 💬 /
+    📨 / popover are placed again once the header settles. Web pages (a context-menu entry) are
+    deferred.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
     message, sent as data (rules below). **The `html` frame never gets this button with its

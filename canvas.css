@@ -151,6 +151,7 @@ body {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
 }
 .ask-pill:hover, .ask-pill:focus-visible { background: #334155; outline: none; box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.5); }
+.ask-pill:disabled { opacity: 0.5; cursor: default; }          /* 📨 while its push is in flight */
 .ask-pill[hidden], .ask-pop[hidden] { display: none; }
 .ask-pop {
   position: fixed; z-index: 7; width: min(360px, calc(100vw - 16px)); box-sizing: border-box;

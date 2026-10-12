@@ -9,7 +9,7 @@
 //  - render is sent only after a `ready` with the current nonce;
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
 // With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
-// Send to agent, Ask agent, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
+// Send to agent, Ask agent, Send selection, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
 (function () {
   "use strict";
 
@@ -26,6 +26,7 @@
   const noticeAction = document.getElementById("canvas-notice-action");
   const sendBtn = document.getElementById("canvas-send");
   const askBtn = document.getElementById("canvas-ask");
+  const sendSelBtn = document.getElementById("canvas-send-sel");
   const downloadBtn = document.getElementById("canvas-download");
   const printBtn = document.getElementById("canvas-print");
   const mainEl = document.getElementById("canvas-main");
@@ -122,7 +123,7 @@
   async function updateButtons() {
     if (compareView) {
       // The compare tab is not the canvas (§3.10): nothing here can change it.
-      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, undoBtn, redoBtn, sendBtn, askBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, undoBtn, redoBtn, sendBtn, askBtn, sendSelBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
       return;
     }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
@@ -159,6 +160,9 @@
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
     // Ask agent (§3.7): while text is selected in the view.
     askBtn.hidden = !(textKind && mode === "view" && !!frame && !!ask.sel);
+    // Send selection (§3.7, Brett 2026-10-13): the same rule; disabled while its push is in flight.
+    sendSelBtn.hidden = askBtn.hidden;
+    sendSelBtn.disabled = sendingSel;
     downloadBtn.hidden = !textKind;
     const ext = current && current.meta.kind === "mermaid" ? "mmd" : "md";
     downloadBtn.textContent = `⬇ .${ext}`;
@@ -255,7 +259,10 @@
   // window.prompt. A 💬 shows beside the selection (selection{rect}); it and the header button open
   // the popover. Both are elements of this page over the frame, so canvas content cannot imitate
   // them. The state is CanvasCore.askReduce's; this draws it.
+  // Send selection (Brett 2026-10-13): a 📨 right beside the 💬 (and 📨 Send selection in the
+  // header) pushes the selection at once, with no request and no popover. Shown with the 💬.
   const askPill = document.getElementById("ask-pill");
+  const sendPill = document.getElementById("send-pill");
   const askPop = document.getElementById("ask-pop");
   const askExcerptEl = document.getElementById("ask-excerpt");
   const askNote = document.getElementById("ask-note");
@@ -269,6 +276,7 @@
   // made in: Ask agent's source lines hold only while that is still what is stored (§3.7).
   let renderedText = { seq: 0, content: null };
   let askShownText = null;
+  let sendingSel = false;             // a Send selection push in flight: its 📨 controls are disabled
   const sameAsCaptured = (sel, cap) => !!sel && !!cap && sel.text === cap.text && sel.seq === cap.seq;
 
   function askDispatch(ev) {
@@ -287,8 +295,14 @@
     // An open popover follows its selection; once that scrolls out of view (no rect, #125e) it
     // docks under the header button (placeAskPop's fallback) instead of hanging over unrelated text.
     else if (now.popover && sameAsCaptured(ask.sel, ask.captured)) { askPopRect = ask.sel.rect || null; placeAskPop(); }
-    if (now.pill) placeAskPill(); else askPill.hidden = true;
-    if (!!prev.sel !== !!ask.sel) updateButtons();          // the header 💬 Ask agent
+    if (now.pill) placeAskPill(); else askPill.hidden = sendPill.hidden = true;
+    // The header 💬 Ask agent, 📨 Send selection. Showing or hiding them can wrap the header onto
+    // another row (a narrow tab), which moves the frame: the 💬 / 📨 / popover are placed again.
+    if (!!prev.sel !== !!ask.sel) updateButtons().then(placeAsk, () => {});
+  }
+  function placeAsk() {
+    if (CanvasCore.askView(ask).pill) placeAskPill();
+    if (CanvasCore.askView(ask).popover) placeAskPop();
   }
 
   // Place `el` by a frame-coordinate rect (CanvasCore.askPlace: below the selection's end, above
@@ -305,8 +319,22 @@
     el.style.top = `${p.top}px`;
     return true;
   }
+  // The 💬, then the 📨 beside it on the same row (CanvasCore.askBeside: right, else left). The 📨
+  // never shows without the 💬; with no room on either side it stays hidden (the header has one).
   function placeAskPill() {
-    if (!placeOverFrame(askPill, ask.sel && ask.sel.rect)) askPill.hidden = true;
+    if (!placeOverFrame(askPill, ask.sel && ask.sel.rect)) { askPill.hidden = sendPill.hidden = true; return; }
+    const a = askPill.getBoundingClientRect(), fb = frame.getBoundingClientRect();
+    sendPill.style.visibility = "hidden";                   // measured where it is about to go
+    sendPill.hidden = false;
+    const p = CanvasCore.askBeside({
+      anchor: { left: a.left, top: a.top, w: a.width, h: a.height },
+      box: { left: fb.left, top: fb.top, width: fb.width, height: fb.height },
+      size: { w: sendPill.offsetWidth, h: sendPill.offsetHeight },
+    });
+    sendPill.style.visibility = "";
+    if (!p) { sendPill.hidden = true; return; }
+    sendPill.style.left = `${p.left}px`;
+    sendPill.style.top = `${p.top}px`;
   }
   // The popover by its selection; with none in view (scrolled away, or the header button was used
   // for a selection off screen), under the header button, else at the top of the frame.
@@ -409,7 +437,36 @@
     askTimer = setTimeout(() => { if (ask.phase === "sent") closeAsk(); }, 1500);
   }
 
+  // Send selection (§3.7, Brett 2026-10-13): the selection now, as Ask agent would send it but with
+  // no note — the same host line (title, id, version, where) and the same refusals (view mode, a
+  // frame, a text kind, never a compare tab). The selection stays; after a send only its 💬 / 📨
+  // go away, as after Ask agent (the header buttons stay while it is selected).
+  async function sendSelection() {
+    if (sendingSel || !current || compareView || mode !== "view" || !frame || !CanvasCore.textKind(current.meta.kind)) return;
+    const sel = ask.sel;
+    if (!sel) return;
+    const version = current.meta.version;
+    const shown = renderedText.seq === sel.seq ? renderedText.content : null;
+    const where = CanvasCore.askWhereAtSend(sel.where, { shown, stored: current.content, sameVersion: true });
+    const text = CanvasCore.composeAskAgent({ note: "", title: current.meta.title, id: canvasId, version, text: sel.text, truncated: sel.truncated, where });
+    sendingSel = true;                            // one push per click; the panel also dedupes by reqId
+    sendSelBtn.disabled = sendPill.disabled = true;
+    let r;
+    try {
+      r = await pushToAgent(text, "");
+    } finally {
+      sendingSel = false;
+      sendSelBtn.disabled = sendPill.disabled = false;
+    }
+    if (!r.ok) { if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
+    flash(`📨 已傳給 ${r.agent || "agent"}（v${version} 的選取文字）`);
+    if (ask.phase === "pill" && sameAsCaptured(ask.sel, sel)) askDispatch({ type: "close" });
+  }
+
   askBtn.addEventListener("click", () => { if (ask.sel) openAsk("header"); });
+  sendSelBtn.addEventListener("click", () => sendSelection());
+  sendPill.addEventListener("click", () => sendSelection());
+  sendPill.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeAsk(); } });
   askPill.addEventListener("click", () => openAsk("pill"));
   askPill.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeAsk(); } });
   askSendBtn.addEventListener("click", () => sendAsk());
@@ -430,10 +487,7 @@
   window.addEventListener("blur", () => {
     setTimeout(() => { if (frame && document.activeElement === frame) askDispatch({ type: "blur" }); }, 0);
   });
-  window.addEventListener("resize", () => {
-    if (CanvasCore.askView(ask).pill) placeAskPill();
-    if (CanvasCore.askView(ask).popover) placeAskPop();
-  });
+  window.addEventListener("resize", () => placeAsk());
 
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
   // diagram: only a mermaid diagram failed (§3.3) and the rest rendered, so the agent is pointed at
