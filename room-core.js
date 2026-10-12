@@ -396,24 +396,26 @@
 
   /**
    * The message an agent's "↩ <time>" marker answers, from `messages` (history records, oldest
-   * first; error notices never). A stamp with milliseconds matches that exact message only; one
-   * without falls back to the second it names: the user's newest message of that second (agents
-   * almost always answer the user), else the newest of any sender. → the record, or null.
+   * first; error notices never). A stamp with milliseconds matches that exact message; when none
+   * has it (agents miscopy them, or write .000) it falls back to the second only if that second
+   * holds a single message — with several, guessing is the bug the milliseconds fixed. One without
+   * milliseconds names the second: the user's newest message of it (agents almost always answer
+   * the user), else the newest of any sender. → the record, or null.
    */
   function findByStamp(messages, stamp) {
     const p = parseStamp(stamp);
     if (!p) return null;
     const list = Array.isArray(messages) ? messages : [];
-    let fallback = null;
+    const second = Math.floor(p.ms / 1000);
+    const inSecond = [];                     // newest first
     for (let i = list.length - 1; i >= 0; i--) {
       const m = list[i];
       if (!m || !Number.isFinite(m.timestamp) || m.kind === "error") continue;
-      if (p.exact) { if (m.timestamp === p.ms) return m; continue; }
-      if (Math.floor(m.timestamp / 1000) !== Math.floor(p.ms / 1000)) continue;
-      if (m.kind === "sent") return m;
-      if (!fallback) fallback = m;
+      if (p.exact && m.timestamp === p.ms) return m;
+      if (Math.floor(m.timestamp / 1000) === second) inSecond.push(m);
     }
-    return fallback;
+    if (p.exact) return inSecond.length === 1 ? inSecond[0] : null;
+    return inSecond.find((m) => m.kind === "sent") || inSecond[0] || null;
   }
 
   // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.

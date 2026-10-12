@@ -449,7 +449,7 @@ test("parseStamp: milliseconds make it exact; a second-only stamp names a second
   assert.equal(RoomCore.parseStamp(""), null);
 });
 
-test("findByStamp: exact ms first; a second-only stamp falls back to the user's newest of that second", () => {
+test("findByStamp: exact ms first; a second-only stamp falls back to the user's newest of that second; a miscopied ms only to a lone message", () => {
   const s0 = at(10, 12, 14, 54, 11);
   // Real Chrome 2026-10-12: "`" and "2" sent in the same second; the agent answered the first.
   const msgs = [
@@ -462,7 +462,10 @@ test("findByStamp: exact ms first; a second-only stamp falls back to the user's 
   assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 870)).text, "2");
   assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 900)).text, "a reply");   // exact beats "prefer the user"
   assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 950)), null);             // error notices never
-  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 500)), null);             // ms given: no second fallback
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 500)), null);             // ms miscopied, several in that second: no guess
+  assert.equal(RoomCore.findByStamp(msgs.slice(2), RoomCore.msgTime(s0 + 500)).text, "a reply");        // …a lone message of that second: it
+  assert.equal(RoomCore.findByStamp(msgs.slice(1, 2), RoomCore.msgTime(s0)).text, "2");                  // ".000" written by the agent
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 1500)), null);                          // nothing in that second
   // Old second-only markers (and replayed history) keep the old rule.
   const second = RoomCore.msgTime(s0).replace(".000", "");
   assert.equal(RoomCore.findByStamp(msgs, second).text, "2");
