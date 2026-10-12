@@ -57,6 +57,29 @@
     }
   });
 
+  // Source lines (canvas Ask agent, ADR canvas §3.7): with env.sourceLines, every block element
+  // markdown-it maps to source lines carries them as data-line-start / data-line-end (its
+  // token.map: 0-based, end exclusive), so the canvas frame can say which lines a selection is in.
+  // Numbers only, from the parser — never from the text. Off for the chat (no env). DOMPurify keeps
+  // data-* attributes by default (ALLOW_DATA_ATTR), so DP_CONFIG needs no change for them.
+  const lineAttrs = (map) => [["data-line-start", String(map[0])], ["data-line-end", String(map[1])]];
+  md.core.ruler.push("source_lines", (state) => {
+    if (!state.env || state.env.sourceLines !== true) return;
+    for (const t of state.tokens) {
+      if (!t.block || !t.map || t.nesting === -1 || t.type === "inline") continue;
+      for (const [k, v] of lineAttrs(t.map)) t.attrSet(k, v);
+    }
+  });
+  // highlightFence returns a whole <pre>, which markdown-it emits as is (without the token's
+  // attributes): put them on that <pre> here.
+  const fenceRule = md.renderer.rules.fence;
+  md.renderer.rules.fence = (tokens, idx, options, env, slf) => {
+    const out = fenceRule(tokens, idx, options, env, slf);
+    const t = tokens[idx];
+    if (!env || env.sourceLines !== true || !t.map || !out.startsWith("<pre")) return out;
+    return `<pre data-line-start="${t.map[0]}" data-line-end="${t.map[1]}"${out.slice(4)}`;
+  };
+
   // Pinned, no-relax sanitizer config (ADR §3.2). This is where the defense is most easily
   // broken, so relaxing any of it is forbidden:
   //   - HTML profile only — no `svg`/`mathMl` profile.
@@ -105,8 +128,10 @@
   // The only path remote text may take to reach innerHTML. A lint/grep rule bans any other
   // `innerHTML =` of remote text (streaming stays textContent; system notices stay textContent).
 
-  function renderMarkdown(text) {
-    const html = md.render(text == null ? "" : String(text));
+  // opts.sourceLines: tag block elements with their source lines (the canvas frame only).
+  function renderMarkdown(text, opts) {
+    const env = opts && opts.sourceLines === true ? { sourceLines: true } : {};
+    const html = md.render(text == null ? "" : String(text), env);
     return global.DOMPurify.sanitize(html, DP_CONFIG);
   }
 
@@ -148,7 +173,7 @@
 
   // The sanctioned way to place rendered markdown in the DOM: sanitized innerHTML, then enhance.
   function renderMarkdownInto(el, text, opts) {
-    el.innerHTML = renderMarkdown(text);
+    el.innerHTML = renderMarkdown(text, opts);
     addCopyButtons(el, opts && opts.copyText);
   }
 

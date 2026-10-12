@@ -221,12 +221,13 @@ below is built around that.
   - `canvas-frame.html`: `ready`, `rendered{version, seq, normalized?}` (§3.5), `error{msg, seq?}` (`seq`:
     the render that failed; one from an older render than the host's latest is dropped), `openLink{url}`,
     `save{content, baseVersion}` (phase 1, markdown editing; slides from phase 2), and
-    `selection{text, seq, truncated?, rect?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
+    `selection{text, seq, truncated?, rect?, where?}` (Ask agent, §3.7; implemented: ≤ 20 K chars, refused from a
     compare tab like `save`; `seq` is the render it was made in, and one from an older render is
     dropped, #107 — by seq, not version: a same-version re-render replaces the DOM too; `rect`
     `{top, bottom, left, right, x}` is where the selection is in the frame's viewport, `x` its end,
     absent while it is out of view — finite and bounded, and the host clamps it to the frame box:
-    it only places the host's 💬, §3.7), and
+    it only places the host's 💬, §3.7; `where{headings?, lines?, slide?}` says where it is, each
+    part checked and capped by the host and dropped alone when malformed, §3.7), and
     `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
     refused from a compare tab, and acted on only in edit mode).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save`,
@@ -838,6 +839,40 @@ is silent, the conservative choice:
     - After a send or Esc the 💬 stays hidden for that selection until the selection changes; the
       header button still opens the popover for it. On close, focus goes back to the header button
       when the popover was opened from there, else to the canvas frame.
+    *Where the selection is (Brett, 2026-10-12 17:43):* a selected common word ("the", 「決定」)
+    told the agent nothing about where it is. The host line now carries **only two essentials**;
+    the agent decides whether to `canvas_read` more (no surrounding paragraph, no offsets):
+    `[canvas "X" (<id>) v7, text selected by the user in 「決定紀錄」 › 「2026-10-12」, lines 61–62 of the canvas content
+    — as rendered, not the markdown source; canvas_read before canvas_patch]` (a deck adds
+    `on slide 3`). Each part is left out when it is not known; with neither, the line is as before.
+    - **Heading path:** the chain of enclosing headings of the selection's start, in document
+      order — each heading above it closes the deeper ones (an `h2` after an `h3` replaces both
+      levels), so the depth is the document's (`h1 › h3` when there is no `h2`). A selection in a
+      heading ends the path with that heading. Rendered heading text, whitespace collapsed,
+      control and bidi characters dropped, each ≤ 80 characters (cut with `…`), ≤ 6 deep, empty
+      ones skipped; none above the selection → no path. In a deck: the headings of the
+      selection's own slide only (a deck's slides are not sections of one document).
+    - **Source line range:** the 1-based, inclusive lines of the **stored markdown of the version
+      in the line** — the same text `canvas_read` returns for that version — that hold the
+      block(s) the selection starts and ends in. The frame's markdown sink tags block elements
+      with markdown-it's `token.map` (`data-line-start` / `data-line-end` on paragraphs,
+      headings, list items, table rows, blockquotes, code blocks, rules; canvas rendering only —
+      the chat renders without them; DOMPurify keeps `data-*` by default, no config change). The
+      frame takes the nearest tagged ancestor of the first and last selected text and maps
+      those lines back to the stored text: the document view renders
+      `cleanEditorMarkdown(stored)`, which only drops or trims whole lines, so its line map gives
+      the stored line exactly; a slide's lines are offset by where the slide starts in the deck
+      text. Blank lines at a block's edge (a list item's tail) are trimmed.
+    - **Never a wrong range — left out instead:** when the selection is not inside a tagged
+      block; when the text has a lone CR (markdown-it counts it as a line break, a reader of the
+      stored text may not); and, checked by the host at send, when the stored text is no longer
+      the one rendered — the §3.5 normalization rewrites an agent version's text in place
+      without a new version number, and a new version supersedes it (the header names the
+      captured version; `canvas_read` returns the latest).
+    - **Host checks** (`CanvasCore.askWhere`, the frame is not trusted with the line): `lines`
+      `{from, to}` finite positive integers, `from ≤ to ≤` a sane maximum (the 2 MB text cap);
+      `slide` a positive integer; headings plain strings, cleaned and capped as above. Anything
+      malformed is dropped on its own — the selection is still offered without it.
     - **Not in this change:** the quick-action chips (below) stay unbuilt.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the

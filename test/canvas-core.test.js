@@ -503,7 +503,7 @@ test("askReduce: the 💬 follows the selection; the open popover keeps what it 
   // Opening captures the selection, version and title.
   s = C.askReduce(s, { type: "open", version: 7, title: "Plan", from: "pill" });
   assert.equal(s.phase, "open");
-  assert.deepEqual(s.captured, { text: "hello", truncated: false, seq: 1, version: 7, title: "Plan" });
+  assert.deepEqual(s.captured, { text: "hello", truncated: false, seq: 1, where: null, version: 7, title: "Plan" });
   assert.deepEqual(C.askView(s), { pill: false, popover: true });
   // Focus into the note clears the frame's selection; another arrives: the capture stands.
   s = C.askReduce(s, { type: "selection", sel: null });
@@ -770,4 +770,126 @@ test("compareBlocker: the ⇆ button's rule, one reason for the agent's canvas_v
   assert.match(C.compareBlocker({ ...ok, author: "agent", agentCopy: "b" }), /nothing to compare/);
   assert.match(C.compareBlocker({ ...ok, editing: true }), /editing/);
   assert.match(C.compareBlocker({ ...ok, framed: false }), /not shown in its tab/);
+});
+
+// --- Ask agent: where the selection is (§3.7, Brett 2026-10-12 17:43) -----------------------------
+test("cleanEditorMarkdownMap: the cleaned text plus each output line's stored line", () => {
+  const stored = "a  \n\n<br />\n\n\nb\n```\n<br />\n```";
+  const r = C.cleanEditorMarkdownMap(stored);
+  assert.equal(r.text, C.cleanEditorMarkdown(stored));
+  const sl = stored.split("\n"), ol = r.text.split("\n");
+  assert.equal(r.lines.length, ol.length);
+  // every output line is its stored line, at most less its trailing spaces
+  ol.forEach((line, i) => assert.equal(sl[r.lines[i]].replace(/[ \t]+$/, ""), line.replace(/[ \t]+$/, "")));
+  assert.deepEqual(r.lines, [0, 1, 5, 6, 7, 8]);
+});
+
+test("splitSlidesAt: each slide with its first line; splitSlides unchanged", () => {
+  const deck = "\n---\n# A\n\n---\n# B\n```\n---\n```\n---\n\n";
+  assert.deepEqual(C.splitSlidesAt(deck), [{ text: "# A\n", line: 2 }, { text: "# B\n```\n---\n```", line: 5 }]);
+  assert.deepEqual(C.splitSlides(deck), ["# A\n", "# B\n```\n---\n```"]);
+  assert.deepEqual(C.splitSlidesAt(""), [{ text: "", line: 0 }]);
+  assert.deepEqual(C.splitSlidesAt("x\r\n---\r\ny"), [{ text: "x", line: 0 }, { text: "y", line: 2 }]);
+});
+
+test("askHeadingPath: each heading closes the deeper ones; the document's own depth", () => {
+  const H = (level, text) => ({ level, text });
+  assert.deepEqual(C.askHeadingPath([H(1, "Doc"), H(2, "A"), H(3, "a1"), H(2, "決定紀錄"), H(3, "2026-10-12")]), ["Doc", "決定紀錄", "2026-10-12"]);
+  assert.deepEqual(C.askHeadingPath([H(1, "Doc"), H(3, "deep"), H(3, "deep2")]), ["Doc", "deep2"]);
+  assert.deepEqual(C.askHeadingPath([H(2, "x"), H(1, "y")]), ["y"]);
+  assert.deepEqual(C.askHeadingPath([]), []);
+  assert.deepEqual(C.askHeadingPath(null), []);
+  assert.deepEqual(C.askHeadingPath([H(7, "no"), { level: "1", text: "no" }, H(2, "ok")]), ["ok"]);
+});
+
+test("askSourceLines: 1-based inclusive stored lines; blank edges trimmed; null rather than a guess", () => {
+  const stored = "l1\nl2\nl3\n\nl5\nl6\n\n";
+  assert.deepEqual(C.askSourceLines([{ start: 1, end: 3, offset: 0 }], { stored }), { from: 2, to: 3 });
+  // start and end in two blocks, given in either order
+  assert.deepEqual(C.askSourceLines([{ start: 4, end: 6, offset: 0 }, { start: 0, end: 1, offset: 0 }], { stored }), { from: 1, to: 6 });
+  // a list item's map runs over the blank line after it
+  assert.deepEqual(C.askSourceLines([{ start: 4, end: 7, offset: 0 }], { stored }), { from: 5, to: 6 });
+  // offset (a slide) and a line map (the cleaned document view)
+  assert.deepEqual(C.askSourceLines([{ start: 0, end: 1, offset: 4 }], { stored }), { from: 5, to: 5 });
+  assert.deepEqual(C.askSourceLines([{ start: 1, end: 2, offset: 0 }], { map: [0, 4], stored }), { from: 5, to: 5 });
+  // never a wrong range
+  assert.equal(C.askSourceLines([{ start: 1, end: 3, offset: 0 }], { stored: "a\rb\nc\nd" }), null);   // lone CR
+  assert.deepEqual(C.askSourceLines([{ start: 0, end: 1, offset: 0 }], { stored: "a\r\nb" }), { from: 1, to: 1 });
+  assert.equal(C.askSourceLines([{ start: 0, end: 20, offset: 0 }], { stored }), null);            // past the end
+  assert.equal(C.askSourceLines([{ start: 0, end: 3, offset: 0 }], { map: [0, 4], stored }), null);   // past the map
+  assert.equal(C.askSourceLines([{ start: 2, end: 2, offset: 0 }], { stored }), null);
+  assert.equal(C.askSourceLines([{ start: -1, end: 2, offset: 0 }], { stored }), null);
+  assert.equal(C.askSourceLines([{ start: 0, end: 1.5, offset: 0 }], { stored }), null);
+  assert.equal(C.askSourceLines([{ start: 0, end: 1 }], { stored }), null);
+  assert.equal(C.askSourceLines([null], { stored }), null);
+  assert.equal(C.askSourceLines([], { stored }), null);
+  assert.equal(C.askSourceLines([{ start: 0, end: 1, offset: 0 }], {}), null);
+});
+
+test("askWhere: every part checked on its own; a bad part is dropped alone", () => {
+  assert.deepEqual(C.askWhere({ headings: ["決定紀錄", "2026-10-12"], lines: { from: 61, to: 62 }, slide: 3 }),
+    { headings: ["決定紀錄", "2026-10-12"], lines: { from: 61, to: 62 }, slide: 3 });
+  for (const bad of [null, undefined, "x", 5, [], {}]) assert.equal(C.askWhere(bad), null);
+  // lines: positive integers, from ≤ to, bounded
+  for (const lines of [{ from: 0, to: 1 }, { from: 2, to: 1 }, { from: 1.5, to: 2 }, { from: "1", to: 2 }, { from: 1, to: Infinity },
+    { from: 1, to: NaN }, { from: 1, to: 3 * 1024 * 1024 }, { from: 1 }, null, [1, 2]]) {
+    assert.deepEqual(C.askWhere({ lines, slide: 2 }), { slide: 2 }, JSON.stringify(lines));
+  }
+  assert.deepEqual(C.askWhere({ lines: { from: 7, to: 7, extra: "x" } }), { lines: { from: 7, to: 7 } });
+  for (const slide of [0, -1, 1.5, "2", 1e9]) assert.equal(C.askWhere({ slide }), null);
+  // headings: plain strings, cleaned, capped at 80 characters, ≤ 6 deep, empties skipped
+  const w = C.askWhere({ headings: [" a \n b ", "‮evil‬\u0007", "", "x".repeat(200), "  "] });
+  assert.deepEqual(w.headings.slice(0, 2), ["a b", "evil"]);
+  assert.equal(w.headings.length, 3);
+  assert.equal(Array.from(w.headings[2]).length, 80);
+  assert.ok(w.headings[2].endsWith("…"));
+  assert.deepEqual(C.askWhere(w), w);                       // idempotent (the host checks twice)
+  assert.equal(C.askWhere({ headings: Array(7).fill("h") }), null);
+  assert.equal(C.askWhere({ headings: ["ok", 5] }), null);
+  assert.equal(C.askWhere({ headings: ["x".repeat(5000)] }), null);
+  assert.equal(C.askWhere({ headings: "h" }), null);
+});
+
+test("askWhereAtSend: the lines go only while the rendered text is still the captured version's stored text", () => {
+  const where = { headings: ["H"], lines: { from: 3, to: 4 } };
+  const four = "a\nb\nc\nd";
+  assert.deepEqual(C.askWhereAtSend(where, { shown: four, stored: four, sameVersion: true }), where);
+  // #129 review: a range past the stored text's last line is never sent
+  assert.deepEqual(C.askWhereAtSend(where, { shown: "a\nb\nc", stored: "a\nb\nc", sameVersion: true }), { headings: ["H"] });
+  // §3.5 normalization rewrote the version in place / a newer version / the render is not known
+  assert.deepEqual(C.askWhereAtSend(where, { shown: "t", stored: "t2", sameVersion: true }), { headings: ["H"] });
+  assert.deepEqual(C.askWhereAtSend(where, { shown: "t", stored: "t", sameVersion: false }), { headings: ["H"] });
+  assert.deepEqual(C.askWhereAtSend(where, { shown: null, stored: "t", sameVersion: true }), { headings: ["H"] });
+  assert.equal(C.askWhereAtSend({ lines: { from: 1, to: 1 } }, { shown: "a", stored: "b", sameVersion: true }), null);
+  assert.equal(C.askWhereAtSend(null, { shown: "t", stored: "t", sameVersion: true }), null);
+});
+
+test("composeAskAgent: where goes into the host line; each part left out when unknown", () => {
+  const base = { note: "n", title: "T", id: "cv_000000000001", version: 5, text: "x" };
+  const head = (where) => C.composeAskAgent({ ...base, where }).split("\n\n")[1];
+  assert.equal(head({ headings: ["決定紀錄", "2026-10-12"], lines: { from: 61, to: 62 } }),
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user in 「決定紀錄」 › 「2026-10-12」, lines 61–62 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
+  assert.equal(head({ lines: { from: 9, to: 9 } }),
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user, line 9 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
+  assert.equal(head({ slide: 3, headings: ["Intro"], lines: { from: 20, to: 22 } }),
+    "[canvas \"T\" (cv_000000000001) v5, text selected by the user on slide 3 in 「Intro」, lines 20–22 of the canvas content — as rendered, not the markdown source; canvas_read before canvas_patch]");
+  const plain = head(undefined);
+  assert.equal(head(null), plain);
+  assert.equal(head({ lines: { from: 3, to: 1 }, headings: [7] }), plain);       // all malformed: as before
+  // headings are cleaned again here: no line break or bidi control gets into the host line
+  assert.ok(!/[\n‮]/.test(head({ headings: ["a‮\nb"] })));
+});
+
+test("askReduce: the selection's where is checked and captured with it", () => {
+  let s = C.askReduce(C.ASK_IDLE, { type: "selection", sel: { text: "x", seq: 1, where: { headings: ["H"], lines: { from: 0, to: 1 } } } });
+  assert.deepEqual(s.sel.where, { headings: ["H"] });
+  s = C.askReduce(s, { type: "open", version: 2, title: "T" });
+  assert.deepEqual(s.captured.where, { headings: ["H"] });
+  s = C.askReduce(C.ASK_IDLE, { type: "selection", sel: { text: "x", seq: 1 } });
+  assert.equal(s.sel.where, null);
+});
+
+test("frame selection{where}: never refuses the selection — askWhere drops a bad part", () => {
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: { lines: { from: 1, to: 2 } } }));
+  assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: "junk" }));
 });

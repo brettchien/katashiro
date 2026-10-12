@@ -46,6 +46,8 @@
     // Capped at the push data cap (the frame cuts it and says so with truncated). version: the
     // render it was made in (its seq, #107) — the host drops a selection from an older one.
     // rect (the popover, §3.7): where the selection is in the frame's viewport; absent = out of view.
+    // where (§3.7): heading path / source lines / slide — not checked here: askWhere drops a bad part
+    // alone, so a malformed one never costs the user the selection.
     selection: (m) => typeof m.text === "string" && m.text.length <= SELECTION_MAX && Number.isInteger(m.seq) &&
       (m.truncated === undefined || typeof m.truncated === "boolean") && (m.rect === undefined || askRect(m.rect) !== null),
     // #69: the frame has no clipboard; it asks the host (a user click in the frame gives the host
@@ -180,26 +182,33 @@
    * slide is always returned. Pure, so the frame and the tests share it.
    */
   function splitSlides(text) {
+    return splitSlidesAt(text).map((s) => s.text);
+  }
+  // splitSlides with where each slide starts: [{ text, line }], line = the 0-based line of the
+  // deck text its first line is (Ask agent's source lines, §3.7).
+  function splitSlidesAt(text) {
     const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
     const slides = [];
     let cur = [];
+    let start = 0;
     let fence = null;                       // the opening fence string while inside a code block
-    for (const line of lines) {
+    for (const [i, line] of lines.entries()) {
       const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
       if (f) {
         if (fence === null) fence = f[1];
         else if (f[1][0] === fence[0] && f[1].length >= fence.length && line.trim() === f[1]) fence = null;
       }
       if (fence === null && /^ {0,3}---\s*$/.test(line)) {
-        slides.push(cur.join("\n"));
+        slides.push({ text: cur.join("\n"), line: start });
         cur = [];
+        start = i + 1;
       } else {
         cur.push(line);
       }
     }
-    slides.push(cur.join("\n"));
-    const kept = slides.filter((s, i) => s.trim() !== "" || (i > 0 && i < slides.length - 1));
-    return kept.length ? kept : [""];
+    slides.push({ text: cur.join("\n"), line: start });
+    const kept = slides.filter((s, i) => s.text.trim() !== "" || (i > 0 && i < slides.length - 1));
+    return kept.length ? kept : [{ text: "", line: 0 }];
   }
 
   // image render payload (host → frame): only a data: URL of an allowed image type.
@@ -260,8 +269,15 @@
    */
   const BR_LINE = /^\s*<br\s*\/?>\s*$/i;
   function cleanEditorMarkdown(text) {
+    return cleanEditorMarkdownMap(text).text;
+  }
+  // cleanEditorMarkdown with a line map: { text, lines }, lines[i] = the 0-based line of `text`'s
+  // input that output line i is. It only drops lines and trims their ends, never joins or splits
+  // them, so a line of the cleaned text maps to exactly one stored line (Ask agent, §3.7).
+  function cleanEditorMarkdownMap(text) {
     const lines = String(text == null ? "" : text).split("\n");
     const out = [];
+    const from = [];
     let fence = null;
     for (let i = 0; i < lines.length; i++) {
       let line = lines[i];
@@ -278,8 +294,9 @@
       }
       if (fence === null && line.trim() === "" && out.length && out[out.length - 1].trim() === "") continue;
       out.push(line);
+      from.push(i);
     }
-    return out.join("\n");
+    return { text: out.join("\n"), lines: from };
   }
 
   // --- Showing what changed (§3.10) ------------------------------------------------------------
@@ -617,9 +634,17 @@
   // naming the canvas (id + version, so the agent can canvas_read / canvas_patch it), then the
   // selected text as data. The selection is rendered text, not the markdown source: the header says
   // so, since a canvas_patch `find` must be the stored text.
-  function composeAskAgent({ note, title, id, version, text, truncated }) {
+  // where (Brett 2026-10-12 17:43, askWhere): the heading path, the source lines of the stored
+  // version, the slide — each left out when not known; the agent decides whether to read more.
+  function composeAskAgent({ note, title, id, version, text, truncated, where }) {
     const t = String(title == null ? "" : title).slice(0, 120);
-    const header = `[canvas "${t}" (${id}) v${version}, text selected by the user — as rendered, not the markdown source; canvas_read before canvas_patch]`;
+    const w = askWhere(where) || {};
+    let loc = "";
+    if (w.slide) loc += ` on slide ${w.slide}`;
+    if (w.headings) loc += ` in ${w.headings.map((h) => `「${h}」`).join(" › ")}`;   // quoted: agent-written text (#129 review)
+    // "of the canvas content": canvas_read prints a JSON line and a blank line first (#129 review).
+    if (w.lines) loc += `, ${w.lines.from === w.lines.to ? `line ${w.lines.from}` : `lines ${w.lines.from}–${w.lines.to}`} of the canvas content`;
+    const header = `[canvas "${t}" (${id}) v${version}, text selected by the user${loc} — as rendered, not the markdown source; canvas_read before canvas_patch]`;
     const CUT = "(the selection was cut at 20 KB — canvas_read for the rest)";
     const body = composeCanvasPush({ note, header, data: text, truncatedNote: CUT });
     // Cut here (over the cap) or already in the frame (`truncated`): say so once.
@@ -693,12 +718,103 @@
     return cps.length > max ? `${cps.slice(0, max).join("").trimEnd()}…` : s;
   }
 
+  // --- Where the selection is (§3.7, Brett 2026-10-12 17:43) ------------------------------------
+  // The frame reports selection{where: {headings?, lines?, slide?}}; the host trusts none of it.
+  const HEADING_MAX = 80;                     // characters per heading, "…" included
+  const HEADING_DEPTH = 6;
+  const HEADING_RAW_MAX = 4096;               // longer than any heading worth reading: refused, not cut
+  const LINES_MAX = TEXT_MAX + 1;             // a 2 MB text has at most this many lines
+  const SLIDE_MAX = 10000;
+
+  /**
+   * selection{where} → { headings?, lines?: {from, to}, slide? } or null. Each part is checked on its
+   * own and dropped alone when malformed: headings plain strings (cleaned like the excerpt, ≤ 80
+   * characters, ≤ 6, empty ones skipped), lines 1-based integers with 1 ≤ from ≤ to ≤ LINES_MAX,
+   * slide an integer 1..SLIDE_MAX. Idempotent.
+   */
+  function askWhere(w) {
+    if (!w || typeof w !== "object" || Array.isArray(w)) return null;
+    const out = {};
+    if (Array.isArray(w.headings) && w.headings.length <= HEADING_DEPTH && w.headings.every((h) => typeof h === "string" && h.length <= HEADING_RAW_MAX)) {
+      const hs = w.headings.map((h) => askExcerpt(h, HEADING_MAX - 1)).filter(Boolean);
+      if (hs.length) out.headings = hs;
+    }
+    const l = w.lines;
+    if (l && typeof l === "object" && Number.isInteger(l.from) && Number.isInteger(l.to) && l.from >= 1 && l.from <= l.to && l.to <= LINES_MAX) {
+      out.lines = { from: l.from, to: l.to };
+    }
+    if (Number.isInteger(w.slide) && w.slide >= 1 && w.slide <= SLIDE_MAX) out.slide = w.slide;
+    return Object.keys(out).length ? out : null;
+  }
+
+  /**
+   * At send: `where` (askWhere) without its lines unless the text rendered when the selection was
+   * made (`shown`) is still the stored text of the captured version (`stored`, `sameVersion`). The
+   * §3.5 normalization rewrites an agent version in place, and a newer version is what canvas_read
+   * returns: a line number into another text would point at the wrong place.
+   */
+  function askWhereAtSend(where, { shown, stored, sameVersion } = {}) {
+    const w = askWhere(where);
+    // ...and the range must lie inside that text (#129 review: never point past its last line).
+    if (!w || !w.lines || (sameVersion === true && typeof shown === "string" && shown === stored &&
+      w.lines.to <= stored.split("\n").length)) return w;
+    const { lines, ...rest } = w;
+    return Object.keys(rest).length ? rest : null;
+  }
+
+  /**
+   * The heading path of a selection: `headings` = [{ level 1..6, text }] in document order, every
+   * heading before the selection's start (and the one it starts in). Each closes the deeper ones,
+   * so the depth is the document's. → [text] (raw; askWhere cleans and caps).
+   */
+  function askHeadingPath(headings) {
+    const stack = [];
+    for (const h of Array.isArray(headings) ? headings : []) {
+      if (!h || !Number.isInteger(h.level) || h.level < 1 || h.level > 6) continue;
+      while (stack.length && stack[stack.length - 1].level >= h.level) stack.pop();
+      stack.push({ level: h.level, text: String(h.text == null ? "" : h.text) });
+    }
+    return stack.map((h) => h.text);
+  }
+
+  /**
+   * The stored lines a selection spans → { from, to } (1-based, inclusive) or null.
+   * `ends`: the blocks the selection starts and ends in, [{ start, end, offset }] — markdown-it's
+   * token.map of the rendered text (0-based, end exclusive) and where that text starts in the stored
+   * one (a slide's line, splitSlidesAt; 0 for a document). `map`: the document view's line map
+   * (cleanEditorMarkdownMap; rendered line → stored line), absent when the text was rendered as is.
+   * `stored`: the stored text, for bounds and to trim blank lines at a block's edge (a list item's
+   * tail). null — never a guess — when anything does not line up, or the text has a lone CR
+   * (markdown-it breaks a line there; a reader splitting on "\n" does not).
+   */
+  function askSourceLines(ends, { map, stored } = {}) {
+    if (typeof stored !== "string" || /\r(?!\n)/.test(stored) || !Array.isArray(ends) || !ends.length) return null;
+    const lines = stored.split("\n");
+    let lo = Infinity, hi = -Infinity;
+    for (const e of ends) {
+      if (!e || !Number.isInteger(e.start) || !Number.isInteger(e.end) || !Number.isInteger(e.offset)) return null;
+      if (e.start < 0 || e.end <= e.start || e.offset < 0) return null;
+      let a = e.start, b = e.end - 1;
+      if (map) {
+        if (!Array.isArray(map) || b >= map.length) return null;
+        a = map[a];
+        b = map[b];
+      }
+      lo = Math.min(lo, a + e.offset);
+      hi = Math.max(hi, b + e.offset);
+    }
+    if (!Number.isInteger(lo) || !Number.isInteger(hi) || hi >= lines.length) return null;
+    while (hi > lo && lines[hi].trim() === "") hi--;
+    while (lo < hi && lines[lo].trim() === "") lo++;
+    return { from: lo + 1, to: hi + 1 };
+  }
+
   /**
    * The popover's state → the next state. Phases: "idle" (no selection), "pill" (a selection; the
    * 💬 shows when it has a rect), "dismissed" (a selection the user closed the popover on: no 💬
    * until it changes; the header button still opens), "open", "sending", "sent" (the result shows,
-   * then it closes). sel = the latest selection {text, truncated, seq, rect}; captured = what the
-   * popover is about, fixed when it opened {text, truncated, seq, version, title}; from = what
+   * then it closes). sel = the latest selection {text, truncated, seq, rect, where}; captured = what the
+   * popover is about, fixed when it opened {text, truncated, seq, where, version, title}; from = what
    * opened it ("pill" | "header", for focus on close).
    * Events: selection{sel} | open{version, title, from} | send | sent | failed | close | blur |
    * render | edit | reset.
@@ -711,7 +827,7 @@
     if (!ev || typeof ev.type !== "string") return s;
     switch (ev.type) {
       case "selection": {
-        const sel = ev.sel && ev.sel.text ? { text: ev.sel.text, truncated: ev.sel.truncated === true, seq: ev.sel.seq, rect: askRect(ev.sel.rect) } : null;
+        const sel = ev.sel && ev.sel.text ? { text: ev.sel.text, truncated: ev.sel.truncated === true, seq: ev.sel.seq, rect: askRect(ev.sel.rect), where: askWhere(ev.sel.where) } : null;
         // While open, the popover keeps what it captured (focus moving into the note can clear
         // the frame's selection); the header button still follows the latest.
         if (askOpen(s.phase)) return { ...s, sel };
@@ -725,7 +841,7 @@
         if (!s.sel) return s;
         return {
           ...s, phase: "open", from: ev.from === "header" ? "header" : "pill",
-          captured: { text: s.sel.text, truncated: s.sel.truncated, seq: s.sel.seq, version: ev.version, title: ev.title },
+          captured: { text: s.sel.text, truncated: s.sel.truncated, seq: s.sel.seq, where: s.sel.where || null, version: ev.version, title: ev.title },
         };
       case "send":
         return s.phase === "open" ? { ...s, phase: "sending" } : s;
@@ -771,5 +887,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
