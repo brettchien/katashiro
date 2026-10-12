@@ -129,7 +129,6 @@ const ACP_CWD = "/home/agent";
 const ACP_REQUEST_TIMEOUT_MS = 60000;
 // session/prompt times out on silence, not length (RoomCore.turnDeadline): TURN_IDLE_TIMEOUT_MS
 // after the last activity of the turn, or TURN_MAX_TIMEOUT_MS after its start.
-const RECONNECT_INTERVAL_MS = 5000;
 const TUNNEL_FRESH_MS = 60000;        // an inbound mcp/message keeps the tunnel "活躍" this long (§8.3)
 const HEARTBEAT_DEAD_THRESHOLD = 2;   // consecutive missed idle probes before a destructive reconnect (§8.6)
 const ROSTER_REFRESH_MS = 15000;      // periodic re-render so time-based states (活躍→閒置) stay current
@@ -190,6 +189,7 @@ class Conn {
     // connectionId → instance. The tunnel a frame arrives on names its conversation (§3.9).
     this.mcpState = { servers: [], connections: {}, mcpConnectionId: null };
     this.reconnectTimer = null;
+    this.reconnectFailures = 0;                          // attempts since the last socket that stayed up (§9.5)
     this.lastFailure = null;                             // null | "auth" | "unreachable"
     this.openedThisAttempt = false;                      // did the current attempt reach onopen?
     this.heartbeatTimer = null;                          // liveness probe timer (ADR tunnel-liveness)
@@ -289,7 +289,7 @@ class Conn {
   // §9.3 (E): record one socket end. `ev` is the CloseEvent (null when connect() replaced an open
   // socket — its onclose is detached, so no event comes); `path` is what happens next. The frame
   // gaps count this socket only (null = none since it opened).
-  recordDisconnect(ev, path) {
+  recordDisconnect(ev, path, retryInMs) {
     const now = Date.now();
     const since = (t) => (this.socketOpenedAt > 0 && t >= this.socketOpenedAt ? now - t : null);
     const rec = {
@@ -298,6 +298,7 @@ class Conn {
       error: this.sawError, sinceRecvMs: since(this.lastRecvAt), sinceSendMs: since(this.lastSentAt),
       turnActive: this.turnActive, ageMs: this.socketOpenedAt > 0 ? now - this.socketOpenedAt : null, path,
     };
+    if (Number.isFinite(retryInMs)) rec.retryInMs = retryInMs;
     this.lastDiag = { id: rec.id, at: now };
     (ev && ev.code === 1000 ? console.info : console.warn)(`ACP[${this.name}]: disconnect — ${RoomCore.formatDisconnect(rec)}`);
     logDisconnectOp({ push: rec });
@@ -441,6 +442,7 @@ class Conn {
   connect(reason = "manual") {
     this.enabled = true;
     this.stopHeartbeat();                                // don't probe across a teardown/reconnect
+    if (reason !== "auto") this.reconnectFailures = 0;   // a manual / heartbeat reconnect starts the backoff over (§9.5)
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.openedThisAttempt) {
       this.recordDisconnect(null, `${reason}-reconnect`);
       // A heartbeat teardown replaces a silent socket (the unclean case); a manual retry starts afresh.
@@ -492,10 +494,18 @@ class Conn {
       };
 
       this.ws.onclose = (ev) => {
+        // §9.5 (C): retry at once after an unclean drop (1 s after a clean close), then back off
+        // (1, 2, 4, 8, 16, 30 s…, ±20 %) while attempts fail or the new socket dies within 30 s.
+        this.reconnectFailures = RoomCore.reconnectFailuresAfter({
+          failures: this.reconnectFailures, opened: this.openedThisAttempt,
+          upMs: this.socketOpenedAt > 0 ? Date.now() - this.socketOpenedAt : 0,
+          clean: !!(ev && ev.wasClean && ev.code !== 1006),
+        });
+        const retryInMs = RoomCore.reconnectDelay(this.reconnectFailures);
         // §9.3 (E): an opened socket's end is one record; an attempt that never opened is counted
-        // on the record before it (an outage retries every 5 s and must not flush the history).
+        // on the record before it (an outage keeps retrying and must not flush the history).
         if (this.openedThisAttempt) {
-          this.recordDisconnect(ev, this.enabled ? "auto-reconnect" : "none");
+          this.recordDisconnect(ev, this.enabled ? "auto-reconnect" : "none", this.enabled ? retryInMs : undefined);
           this.lastSocketEnd = ev && ev.wasClean && ev.code !== 1006 ? "clean" : "unclean";
         }
         else if (this.lastDiag && this.enabled) logDisconnectOp({ bump: this.lastDiag.id });
@@ -513,7 +523,7 @@ class Conn {
         updateRoster();
         // Auto reconnect (only if the user still wants this conn up) — the next handshake
         // resumes the current conversation's session if it has one.
-        if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect("auto"), RECONNECT_INTERVAL_MS);
+        if (this.enabled) this.reconnectTimer = setTimeout(() => this.connect("auto"), retryInMs);
       };
 
       this.ws.onerror = () => {

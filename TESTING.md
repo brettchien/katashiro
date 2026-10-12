@@ -262,14 +262,19 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     ~40 s; then send: the line is **still** there (`still pending from before`).
   - **Diagnostics:** after the drops above, ask the agent to call `katashiro.client_info`: it ends
     with `recent disconnects (newest first):`, one line per drop (close code, e.g. 1006 unclean,
-    the frame gaps, `→ auto-reconnect; reopened after …, same run / new run`, failed retries during
-    the slow drop). Reload the panel and ask again: the same lines are still there
+    the frame gaps, `→ auto-reconnect in 0ms; reopened after …, same run / new run`, failed retries
+    during the slow drop). Reload the panel and ask again: the same lines are still there
     (storage.session). DevTools: `chrome.storage.session.get("katashiro.diag.disconnects")` holds
     ≤ 20 records.
   - **Restart / deploy:** restart openab (or redeploy its ECS service) while the panel is connected:
     the drop is a clean close (e.g. 1001 / 1012, `clean` in the record) → `new run (previous end:
     clean)` even though it reconnects within seconds; the next prompt **has** the line. If the record
     says `unclean` and `same run` instead, that is the known gap below — note the code in the PR.
+  - **Backoff (C, §9.5):** in the quick blip, the console's `disconnect — …` line says
+    `→ auto-reconnect in 0ms` and the reconnect follows the moment Wi-Fi is back. During the slow
+    drop, the failed attempts space out (DevTools Network → WS: about 1, 2, 4, 8, 16 s apart, then
+    every ~30 s), not every 5 s. After the restart / deploy above (a clean close) the record says
+    `in 1s` (±20 %).
   - **Turn off:** turn the agent's conn off (or make another agent active): `client_info` (from
     another agent) lists `closed by Katashiro (conn turned off) … → none`.
   - **Known gap:** an openab restart in under 2 min whose socket drops **without** a close frame

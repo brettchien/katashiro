@@ -261,6 +261,34 @@
     return next.length > max ? next.slice(next.length - max) : next;
   }
 
+  // Auto-reconnect backoff (ADR browser-tunnel-liveness §9.5, C). `failures` counts the attempts
+  // since the last socket that stayed up: the first retry after a drop is immediate, each failure
+  // after it doubles the wait (±20 % jitter, so several panels that dropped together spread out),
+  // capped at 30 s (was: a fixed 5 s).
+  const RECONNECT_BACKOFF_MS = [0, 1000, 2000, 4000, 8000, 16000];
+  const RECONNECT_MAX_MS = 30000;
+  const RECONNECT_JITTER = 0.2;
+  // A socket that closes sooner than this after opening counts as a failure, so a server that
+  // accepts (even completes the handshake) and then drops at once is not retried in a tight loop.
+  const RECONNECT_STABLE_MS = 30000;
+
+  function reconnectDelay(failures, random = Math.random) {
+    const n = Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0;
+    const base = n < RECONNECT_BACKOFF_MS.length ? RECONNECT_BACKOFF_MS[n] : RECONNECT_MAX_MS;
+    const r = Number(random());
+    const j = Number.isFinite(r) ? Math.min(Math.max(r, 0), 1) * 2 - 1 : 0;   // -1 … 1
+    return Math.min(RECONNECT_MAX_MS, Math.round(base * (1 + RECONNECT_JITTER * j)));
+  }
+
+  // The failure count after a socket end: 0 when the socket stayed up ≥ RECONNECT_STABLE_MS and
+  // dropped uncleanly (a network blip: retry at once); 1 when it stayed up but the server closed it
+  // on purpose (1001 / 1012 …: the old process may still be draining, so wait a second); +1 when it
+  // never opened or died sooner.
+  function reconnectFailuresAfter({ failures = 0, opened = false, upMs = 0, clean = false, stableMs = RECONNECT_STABLE_MS } = {}) {
+    if (opened && Number.isFinite(upMs) && upMs >= stableMs) return clean ? 1 : 0;
+    return (Number.isFinite(failures) && failures > 0 ? Math.floor(failures) : 0) + 1;
+  }
+
   // A duration for a diagnostics line: 850ms, 37s, 4m05s, 2h03m.
   function shortDuration(ms) {
     if (!Number.isFinite(ms) || ms < 0) return "?";
@@ -288,7 +316,7 @@
       r.turnActive ? "turn active" : "idle",
       `up ${shortDuration(r.ageMs)}`,
     ];
-    let tail = `→ ${r.path || "?"}`;
+    let tail = `→ ${r.path || "?"}${Number.isFinite(r.retryInMs) ? ` in ${shortDuration(r.retryInMs)}` : ""}`;
     if (Number.isFinite(r.reopenAfterMs)) tail += `; reopened after ${shortDuration(r.reopenAfterMs)}, ${r.sameRun ? "same run (hint skipped if recently used)" : "new run (hint kept)"}`;
     else if (r.path !== "none") tail += "; no reopen recorded";
     if (r.failedRetries) tail += `; ${r.failedRetries} failed ${r.failedRetries === 1 ? "retry" : "retries"}`;
@@ -618,6 +646,12 @@
     applyDisconnectOp,
     shortDuration,
     formatDisconnect,
+    RECONNECT_BACKOFF_MS,
+    RECONNECT_MAX_MS,
+    RECONNECT_JITTER,
+    RECONNECT_STABLE_MS,
+    reconnectDelay,
+    reconnectFailuresAfter,
     roomStatus,
     resolveActiveUrl,
     parseMentions,

@@ -467,7 +467,7 @@ manual reconnect that replaces an open socket (a manual retry while the link is 
 last drop's verdict), a conn turned off and on — and **any clean close** (1000, 1001 going away, 1012
 service restart, …), however fast the reconnect. A clean close means the server side closed on
 purpose; in an ECS rolling deploy the new task is already up when the old one gets SIGTERM, so the
-reconnect 5 s later reaches a new process (cloudflared hands both connectors the same tunnel), and an
+reconnect a second later (§9.5) reaches a new process (cloudflared hands both connectors the same tunnel), and an
 in-place restart (crash, OOM, `run.sh restart`) is back within seconds too (review of #136).
 
 The first prompt after a `session/resume` / `session/new` carries the line unless **all** hold:
@@ -512,7 +512,7 @@ Every socket end is recorded as one compact record:
 - the close event: `code`, `reason`, `wasClean` (and whether `onerror` fired first);
 - **ms since the last inbound frame** and **since the last outbound frame**, whether a turn was
   active, and the **connection age** (since `onopen`; none if it never opened);
-- **the path taken**: `auto-reconnect` (onclose, retried in 5 s), `none` (the conn is turned off —
+- **the path taken**: `auto-reconnect` (onclose, retried after the §9.5 backoff — the line says `in <delay>`), `none` (the conn is turned off —
   `disconnect()` detaches `onclose` first, so it records the end itself, with no close event),
   `heartbeat-reconnect` (two missed idle probes, §8.6) or `manual-reconnect` (a retry / reconnect
   that replaced an open socket);
@@ -525,6 +525,29 @@ Records go to the console (`console.info`, `console.warn` for an unclean close) 
 are kept in memory and in `chrome.storage.session` (key `katashiro.diag.disconnects`), so they
 survive a panel reload but not a browser restart. `katashiro.client_info` appends the **last 5**, one
 line each (`RoomCore.formatDisconnect`), so the agent can read them without a screenshot.
+
+### 9.5 Decision C — retry at once, then back off
+
+Auto-reconnect used to wait a fixed **5 s** after every close. Now (`RoomCore.reconnectDelay` /
+`reconnectFailuresAfter`, unit-tested):
+
+- **The first retry after an unclean drop is immediate.** The browser already took ~35 s to notice
+  the drop (§9.1), so waiting again only delays the reconnect, and keeps it well inside A′'s 2 min
+  window (§9.2) after a network blip.
+- **After a clean close** (1001 going away, 1012 service restart, …) the first retry waits **1 s**:
+  the server closed on purpose, and in a rolling deploy the old process may still be draining. An
+  immediate retry that reached it would only be closed again (another record, a new run either way).
+- **Each failure after that doubles the wait**: 1, 2, 4, 8, 16 s, then **30 s** for every further
+  attempt, each **±20 %** so several panels that dropped together do not all hit the tunnel at once.
+- **A failure** is an attempt that never opened, **or** a socket that opened (even past the
+  handshake) and closed within **30 s**. Only a socket that stayed up 30 s resets the count, so a
+  server that accepts and then drops at once is not retried in a tight loop.
+- A manual reconnect (the chip, retry) and a heartbeat teardown (§8.6) start the count over.
+
+A long outage therefore spaces its attempts out (35 s + 0 + 1 + 2 + 4 + 8 + 16 + 30 … passes 2 min
+after about eight attempts), and the socket that finally opens starts a new run — the hint is kept,
+which is the safe direction. The §9.3 record shows the delay chosen (`→ auto-reconnect in 0ms`);
+attempts that never opened are still counted on it, not recorded one by one.
 
 ### 9.4 Status
 

@@ -444,7 +444,8 @@ try {
   check(!blip.includes("just reconnected"), "A′: no host line after a quick reconnect", blip.slice(0, 80));
   const diag = await p1.evaluate(async () => (await chrome.storage.session.get("katashiro.diag.disconnects"))["katashiro.diag.disconnects"]);
   const d0 = Array.isArray(diag) ? diag[diag.length - 1] : null;
-  check(d0 && d0.code === 1006 && d0.wasClean === false && d0.path === "auto-reconnect" && d0.sameRun === true && d0.reopenAfterMs >= 5000 && d0.windowId === 1,
+  // §9.5 (C): the socket was up well under 30 s, so this drop counts as a failure: retried after 1 s (±20 %).
+  check(d0 && d0.code === 1006 && d0.wasClean === false && d0.path === "auto-reconnect" && d0.sameRun === true && Number.isFinite(d0.retryInMs) && d0.retryInMs >= 800 && d0.retryInMs <= 1200 && d0.reopenAfterMs >= d0.retryInMs && d0.windowId === 1,
     "E: the drop is recorded in storage.session with its code, path and same-run reopen", d0);
   await until(p1, () => document.getElementById("stop-btn").hidden, "idle after the blip");
 
@@ -465,7 +466,7 @@ try {
   await until(p1, (id) => !!window.__acp.responses[id], "client_info is answered", ci);
   const ciText = (await p1.evaluate((id) => window.__acp.responses[id], ci)).result.content[0].text;
   if (process.env.SHOW_CLIENT_INFO) console.log(ciText);
-  check(/\nrecent disconnects \(newest first\):\n- \S+ \(\S+ ago\) Orca \[window 1\]: close 1006 unclean; .*→ auto-reconnect; reopened after 5s, same run/.test(ciText),
+  check(/\nrecent disconnects \(newest first\):\n- \S+ \(\S+ ago\) Orca \[window 1\]: close 1006 unclean; .*→ auto-reconnect in \S+; reopened after \S+, same run/.test(ciText),
     "E: client_info lists the drop", ciText);
   await p1.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => t.textContent.startsWith("My name")).click());
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "My name", "switched to conversation 1");

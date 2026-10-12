@@ -671,11 +671,11 @@ test("formatDisconnect: one line with close code, gaps, turn, age, path and the 
   const line = RoomCore.formatDisconnect({
     id: "x", at, agent: "Orca", windowId: 7, code: 1006, reason: "", wasClean: false, error: true,
     sinceRecvMs: 37_000, sinceSendMs: 2_000, turnActive: false, ageMs: 14 * 60_000,
-    path: "auto-reconnect", reopenAfterMs: 5_100, sameRun: true, failedRetries: 1,
+    path: "auto-reconnect", retryInMs: 0, reopenAfterMs: 5_100, sameRun: true, failedRetries: 1,
   }, at + 4 * 60_000);
   assert.equal(line,
     `${stamp} (4m00s ago) Orca [window 7]: close 1006 unclean after error; last in 37s before, last out 2s before; ` +
-    "idle; up 14m00s; → auto-reconnect; reopened after 5s, same run (hint skipped if recently used); 1 failed retry");
+    "idle; up 14m00s; → auto-reconnect in 0ms; reopened after 5s, same run (hint skipped if recently used); 1 failed retry");
   assert.doesNotMatch(line, /\n/);
   assert.match(stamp, /^2026-10-12T23:41:05[+-]\d\d:\d\d$/);
   // A clean close with a reason, a slow reopen, a turn in flight.
@@ -694,4 +694,63 @@ test("formatDisconnect: one line with close code, gaps, turn, age, path and the 
   // A long reason is cut; nothing at all still renders.
   assert.match(RoomCore.formatDisconnect({ at, code: 4000, reason: "r".repeat(200), path: "none" }), new RegExp(`"r{80}"`));
   assert.match(RoomCore.formatDisconnect(null), /^\? agent: socket replaced/);
+});
+
+// --- Auto-reconnect backoff (ADR browser-tunnel-liveness §9.5, C) ---------------------------------
+test("reconnectDelay: immediate first, then 1, 2, 4, 8, 16 s and 30 s from then on", () => {
+  const mid = () => 0.5;                                              // no jitter
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7, 50].map((n) => RoomCore.reconnectDelay(n, mid)),
+    [0, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]);
+  // junk counts are the first attempt
+  for (const n of [undefined, null, -3, NaN, "2"]) assert.equal(RoomCore.reconnectDelay(n, mid), 0);
+  assert.equal(RoomCore.reconnectDelay(2.9, mid), 2000);
+});
+
+test("reconnectDelay: ±20 % jitter, never past the 30 s cap, the immediate retry stays immediate", () => {
+  assert.equal(RoomCore.reconnectDelay(3, () => 0), 3200);
+  assert.equal(RoomCore.reconnectDelay(3, () => 1), 4800);
+  assert.equal(RoomCore.reconnectDelay(9, () => 1), 30000);
+  assert.equal(RoomCore.reconnectDelay(9, () => 0), 24000);
+  assert.equal(RoomCore.reconnectDelay(0, () => 1), 0);
+  assert.equal(RoomCore.reconnectDelay(3, () => NaN), 4000);           // a broken random: no jitter
+  assert.equal(RoomCore.reconnectDelay(3, () => 7), 4800);             // clamped to [0, 1]
+  for (let i = 0; i < 200; i++) {
+    const d = RoomCore.reconnectDelay(1 + (i % 8));
+    assert.ok(d >= 800 && d <= 30000, String(d));
+  }
+});
+
+test("reconnectFailuresAfter: a socket that stayed up resets; a failed or short-lived one counts", () => {
+  const S = RoomCore.RECONNECT_STABLE_MS;
+  assert.equal(S, 30000);
+  // an unclean drop after a long-lived socket: retry at once
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 4, opened: true, upMs: S }), 0);
+  // a clean close (the server closed on purpose, 1001 / 1012): the old process may still be draining
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 4, opened: true, upMs: 3_600_000, clean: true }), 1);
+  // never opened (unreachable / rejected): one more failure
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 0, opened: false }), 1);
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 3, opened: false }), 4);
+  // opened (even past the handshake) but dropped within 30 s: no tight loop
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 0, opened: true, upMs: S - 1 }), 1);
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: 2, opened: true, upMs: 200 }), 3);
+  assert.equal(RoomCore.reconnectFailuresAfter({ failures: NaN, opened: true, upMs: NaN }), 1);
+  assert.equal(RoomCore.reconnectFailuresAfter(), 1);
+});
+
+test("backoff × A′: a blip's immediate retry is well inside the 2 min run window; an outage leaves it", () => {
+  const mid = () => 0.5;
+  const QUICK = 2 * 60 * 1000;                                        // ConvCore.QUICK_RECONNECT_MS
+  const DETECT = 35_000;                                              // the browser gives up ~35 s after the last pong
+  // A blip: drop detected, the immediate retry fails a few times while the network comes back.
+  let failures = RoomCore.reconnectFailuresAfter({ opened: true, upMs: 600_000 });
+  let waited = RoomCore.reconnectDelay(failures, mid);
+  assert.equal(waited, 0);
+  for (let i = 0; i < 4; i++) {                                       // 4 failed attempts: 1 + 2 + 4 + 8 s
+    failures = RoomCore.reconnectFailuresAfter({ failures, opened: false });
+    waited += RoomCore.reconnectDelay(failures, mid);
+  }
+  assert.ok(DETECT + waited < QUICK, String(DETECT + waited));
+  // A long outage: the waits keep adding up past the window, so the next socket starts a new run.
+  for (let i = 0; i < 4; i++) { failures = RoomCore.reconnectFailuresAfter({ failures, opened: false }); waited += RoomCore.reconnectDelay(failures, mid); }
+  assert.ok(DETECT + waited > QUICK, String(DETECT + waited));
 });
