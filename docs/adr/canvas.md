@@ -1094,22 +1094,22 @@ tool, with the same preconditions and the same code path as the button; never ar
 | Button | Agent tool | Behaves like the button |
 |---|---|---|
 | ◐ 顯示變更 on / off | `canvas_view({showChanges})` | Writes `canvas:showChanges` in `chrome.storage.local`; every canvas tab follows through `storage.onChanged`, exactly as after a click in one tab. It is **global**, not per canvas, and the tool description and result say so. |
-| ⇆ Compare with agent's | `canvas_view({id, compare: true})` | Refused, with the reason, where the button is hidden: not a text kind (image, html), no agent copy, the latest is the agent's own write (identical), the user is editing, the canvas is not shown in its tab. Otherwise the canvas tab is asked (an open one stays where it is until the compare has started, so a refused request never takes focus from an edit; a canvas with no tab is opened in front) (panel → canvas tab, runtime messaging, side panel only, never a compare tab) to run the button's own handler: `katashiro-canvas-compare` back to the panel, which splits as in §3.10, and the tab holds the compare markers. An open compare is just focused. The answer waits on the tab queue, so the panel allows 20 s; past that, a compare tab that did open counts as success, and otherwise the error says the compare may still open. |
+| ⇆ Compare with agent's | `canvas_view({id, compare: true})` | Refused, with the reason, where the button is hidden: not a text kind (image, html), no agent copy, the latest is the agent's own write (identical), the user is editing, the canvas is not shown in its tab. Otherwise the canvas tab is asked (an open one stays where it is until the compare has started, so a refused request never takes focus from an edit; a canvas with no tab is opened in front) (panel → canvas tab, runtime messaging, side panel only, never a compare tab) to run the button's own handler: `katashiro-canvas-compare` back to the panel, which splits as in §3.10, and the tab holds the compare markers. An open compare is just focused. The answer waits on the tab queue, so the panel allows 20 s (the only outer bound is the tunnel's `tunnel_timeout_seconds`, 170 s by default, on the facade path too); past that, a compare tab that did open counts as success, and otherwise the error says the compare may still open. |
 | ✕ 結束比較 | `canvas_view({id, compare: false})` | Closes that canvas's compare tab(s), as the button does; the canvas tab sees the close and clears its compare markers (§3.10). "No compare was open" is not an error. |
 | 🗂️ 總覽 | `canvas_gallery({query?})` | The panel's 🗂️: one reused gallery tab, in the panel's window. `query` fills the search box: the URL carries `#q=<encoded>`, the gallery reads it on load and on `hashchange`, strips control and bidi-control characters, drops zero-width ones, collapses whitespace, caps it at 200 characters, puts it in the box (`value`, never markup) and clears the fragment, so the next query is a new navigation. |
 
 - **Seeing the result.** `katashiro.screenshot` already captured canvas tabs (§3.2 allow-list by
   exact URL prefix). It now also captures `canvas-gallery.html`, and only that page: other
   extension pages, Katashiro's own included, stay refused, and DOM tools stay refused on both.
-- **The gallery is not scoped to the conversation — accepted (Orca, 2026-10-12; Brett may revert).**
+- **Open — Brett decides before merge: may an agent see other conversations' canvases?**
   The gallery lists every conversation's canvases with snippets, and `canvas_gallery({query})`
-  searches their text, so an agent that screenshots it can read canvases of other conversations
-  (and other agents), which `canvas_list` (session scope) does not show it. Accepted because it is
-  the same view the user has and the screenshot is of the user's own browser — the same holds for a
-  canvas tab of another conversation that happens to be in front (already so before §3.11).
-  `canvas_list`'s scope keeps tool results tidy; it was never a confidentiality boundary between a
-  user's conversations. If it must become one: an agent-opened gallery shows only that agent's
-  conversation (`#conv=`), and screenshot refuses canvas tabs of other conversations.
+  searches their text, so an agent that screenshots it reads canvases of other conversations (and
+  other agents) that `canvas_list` (session scope) does not show it. (A canvas tab of another
+  conversation that happens to be in front is screenshot-able already, before §3.11.)
+  - **(a) Accept.** It is the view the user has, in the user's own browser; `canvas_list`'s
+    scope keeps tool results tidy and is not a boundary between conversations. Written down here.
+  - **(b) Scope it.** An agent-opened gallery shows only that conversation (`#conv=`), and
+    screenshot refuses canvas tabs of other conversations.
 - **Not gated by act mode**, like the other canvas tools (§3.4): they change what is shown, not any
   web page, and never content.
 - **Deliberately not offered to the agent** (the user's decisions): ✏️ edit / 💾 save / ↶ ↷ undo
