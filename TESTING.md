@@ -255,6 +255,30 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     opens on its conversations (as many as fit under 3), the rest are in 對話.
   - **Downgrade:** load the previous release over this one: it starts empty; chat a bit; load this
     build again: that chat is one more conversation (open if it fits, else in 對話); nothing lost.
+- **Deleting a conversation (ADR multi-conversation §7.1).** The headless smoke covers the gallery
+  flow (confirm text, lock refusal, what goes and what stays, stale reopen, finishing a cut-short
+  delete); the unit tests cut the delete short at every storage write. In Chrome:
+  - **What it says:** in conversation A have the agent write two canvases (one updated twice, one
+    image canvas) and, with Settings → 畫布存到資料夾 on, let them reach the folder. × on A. 🗂️ →
+    對話 → 🗑 刪除 on A: the dialog names A and lists the message count, 2 canvases with their
+    stored versions and the image, the agent session line, 「資料夾裡的畫布檔案不會被刪除。」 and
+    「這個動作無法復原。」. 取消: nothing changes.
+  - **What it does:** 確定: A leaves the 對話 list and its canvases leave the canvas list
+    (「已刪除對話「A」和 2 個畫布。」); the folder still has A's files. In the side panel's DevTools,
+    `chrome.storage.local.get(null)` has no `conv:<A>`, no `conv:index` entry for A and no
+    `canvas:<id>:*` key of A's canvases; the image key is gone too if nothing else uses it and it was
+    written more than 10 minutes ago (else it goes on a later save or delete). Another
+    conversation's canvas that shows the same image keeps it.
+  - **Tabs:** before 🗑, keep one of A's canvas tabs open with unsaved edits (× leaves it): after
+    the delete it stays open with its text to copy out; a clean canvas tab of A closes itself.
+  - **Open elsewhere:** open the gallery, then reopen A in window 2's panel without reloading the
+    gallery; 🗑 on A's stale row: 「沒有刪除：這段對話開在另一個視窗：先在那裡封存再刪除」 with
+    「前往那個視窗」, which focuses window 2. A stale 重新打開 of a deleted conversation says
+    「這段對話已經刪除了」 in the panel and opens nothing.
+  - **Interrupted:** in the gallery's DevTools, set a breakpoint in `finishDeletion` after the
+    canvases are removed, click 🗑 → 確定, close the tab at the breakpoint. A is not in 對話
+    (`conv:index` entry has `deletingAt`); open the gallery again (or the panel, or restart Chrome):
+    the rest is removed.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito

@@ -1450,6 +1450,10 @@ const convStore = ConvCore.createConvStore({
   lock: (name, fn) => navigator.locks.request(name, fn),
   liveWindowIds,
   randomUUID: () => crypto.randomUUID(),
+  // §7.1: only for finishing a delete a gallery tab left half done (finishDeletions on load).
+  lockIfAvailable: (name, fn) => navigator.locks.request(name, { ifAvailable: true }, fn),
+  get canvases() { return ConvCore.canvasOps(canvasStore); },       // read at call time: canvasStore is declared further down
+  sessionStorage: chrome.storage.session,
 });
 const withWindowsLock = (fn) => navigator.locks.request(ConvCore.LOCK_WINDOWS, fn);
 const newConversationId = () => ConvCore.mintId(() => crypto.randomUUID());
@@ -1595,6 +1599,9 @@ async function loadConversations() {
   panelWindowId = win.id;
   // §3.2: AWAIT the migration (never ifAvailable), so a panel never builds from a half-migrated state.
   try { await convStore.migrate(); } catch (e) { console.warn("katashiro: conversation migration failed (retried on the next load):", e); }
+  // §7.1: a delete cut short (gallery tab closed, browser quit) is finished here. Not awaited: its
+  // conversation is in no window record any more, so nothing below depends on it.
+  convStore.finishDeletions().catch((e) => console.warn("katashiro: finishing a conversation delete failed (retried on the next load):", e));
   const wid = String(win.id);
   const out = await withWindowsLock(async () => {
     const [windows, index, live] = await Promise.all([convStore.readWindows(), convStore.readIndex(), liveWindowIds()]);
@@ -1869,7 +1876,10 @@ async function reopenConversation(id) {
   const blocked = convSwitchBlock();
   if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
   const r = await withWindowsLock(async () => {
-    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    const [windows, live, index] = await Promise.all([convStore.readWindows(), liveWindowIds(), convStore.readIndex()]);
+    // §7.1: deleted (or being deleted) — never recreated as an empty conversation by a stale gallery tab.
+    const gone = ConvCore.reopenRefusal(index[id]);
+    if (gone) return { gone };
     const wid = String(panelWindowId);
     windows[wid] = windowRec;
     const holder = ConvCore.windowHolding(windows, live, id);
@@ -1891,6 +1901,7 @@ async function reopenConversation(id) {
     showArchivePicker(() => reopenConversation(id));
     return { ok: false, error: "已經開了 3 段對話：在側邊欄選一段封存後就會打開" };
   }
+  if (r.gone) { appendSystemMessage(r.gone); return { ok: false, error: r.gone }; }
   if (r.elsewhere) { noticeOpenElsewhere(id); return { ok: false, error: ConvCore.OPEN_ELSEWHERE_TEXT }; }
   const got = await chrome.storage.local.get([ConvCore.convKey(id), ConvCore.INDEX_KEY]);
   if (got[ConvCore.INDEX_KEY]) adoptIndex(got[ConvCore.INDEX_KEY]);

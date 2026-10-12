@@ -25,13 +25,13 @@ chrome.sidePanel
 chrome.runtime.onInstalled.addListener(() => {
   console.log("Katashiro - OpenAB Companion has been installed.");
   removeIncognitoCanvases();
-  migrateConversations();
+  migrateConversations().then(finishConversationDeletes);
 });
 // Also on every browser start (#113 review): a cleanup cut short by the worker stopping is
 // finished without waiting for the next update.
 chrome.runtime.onStartup.addListener(() => {
   removeIncognitoCanvases();
-  migrateConversations();
+  migrateConversations().then(finishConversationDeletes);
 });
 
 // §3.2: runs whenever a history:* key exists (an update, or what an older version wrote during a
@@ -52,6 +52,30 @@ async function migrateConversations() {
     if (r.migrated) console.log(`Katashiro: migrated ${r.migrated} conversation(s) to the multi-conversation layout.`);
   } catch (e) {
     console.warn("Katashiro: conversation migration failed (a panel retries on load):", e);
+  }
+}
+
+// Multi-conversation §7.1: a conversation delete the gallery started and did not finish (its tab
+// closed, the browser quit) carries deletingAt in conv:index; finish it. Each one's conv:<id> lock
+// is taken with ifAvailable, so a delete still running in a gallery tab is left to that tab. Best
+// effort and idempotent, like the two above.
+async function finishConversationDeletes() {
+  try {
+    if (typeof ConvCore === "undefined" || typeof CanvasStore === "undefined") return;
+    const lock = (name, fn) => navigator.locks.request(name, fn);
+    const store = ConvCore.createConvStore({
+      storage: chrome.storage.local,
+      lock,
+      liveWindowIds: async () => new Set((await chrome.windows.getAll({ windowTypes: ["normal", "popup", "panel", "app", "devtools"] })).map((w) => String(w.id))),
+      randomUUID: () => crypto.randomUUID(),
+      lockIfAvailable: (name, fn) => navigator.locks.request(name, { ifAvailable: true }, fn),
+      canvases: ConvCore.canvasOps(CanvasStore.createCanvasStore({ storage: chrome.storage.local, lock })),
+      sessionStorage: chrome.storage.session,
+    });
+    const done = await store.finishDeletions();
+    if (done.length) console.log(`Katashiro: finished deleting ${done.length} conversation(s).`);
+  } catch (e) {
+    console.warn("Katashiro: finishing a conversation delete failed (a panel or the gallery retries):", e);
   }
 }
 

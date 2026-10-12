@@ -575,7 +575,8 @@ Archive (§3.4) never deletes; this is the only way a conversation with content 
   `ifAvailable` too, §3.6). Lock not available, or the id in a live window's record by then
   (reopened between the render and the click) → **refused**, nothing deleted:
   `這段對話開在另一個視窗：先在那裡封存再刪除`, with **前往那個視窗**, which focuses the window
-  `ConvCore.windowHolding` names.
+  `ConvCore.windowHolding` names when it is live (the panel holding the lock lists the id in its
+  window's record; a closed window's record names no window to focus, so then there is no button).
 - **Steps** (`ConvStore.deleteConversation`), under `conv:<id>`:
   1. Under `conv:windows` → `conv:index`, in **one `set()`**: remove the id from every window record
      that still lists it (closed windows', `withClosed`) and mark its index entry **`deletingAt`**.

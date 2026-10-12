@@ -443,3 +443,167 @@ test("pushRefusal: open in another live window with its panel closed vs archived
   // in this window's own record but its lock is free: not "another window"
   assert.equal(C.pushRefusal({ windows, liveIds: live, id: ID(1), ownWindowId: 1 }).text, C.ARCHIVED_PUSH_TEXT);
 });
+
+// --- §7.1 deleting a conversation ----------------------------------------------------------------
+const CanvasStore = require("../canvas-store.js");
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const PNG2 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+test("planDelete: refused while open in a live window (with it); else closed-window records drop it and the entry is marked", () => {
+  const windows = { 1: { open: [ID(1)], current: ID(1) }, 9: { open: [ID(2), ID(3)], current: ID(2), savedAt: 7 } };
+  const live = new Set(["1"]);
+  const index = { [ID(1)]: { title: "a" }, [ID(2)]: { title: "b", archivedAt: null }, [ID(4)]: { title: "d", archivedAt: 5 } };
+  assert.deepEqual(C.planDelete({ id: ID(1), windows, liveIds: live, index, now: 50 }), { refuse: "open", windowId: "1" });
+  const p = C.planDelete({ id: ID(2), windows, liveIds: live, index, now: 50 });
+  assert.equal(p.refuse, null);
+  assert.deepEqual(p.windowWrites, { 9: { open: [ID(3)], current: ID(3), savedAt: 7 } });
+  assert.deepEqual(p.entry, { title: "b", archivedAt: null, deletingAt: 50 });
+  // an archived one: no record touched; an earlier mark keeps its time
+  const q = C.planDelete({ id: ID(4), windows, liveIds: live, index: { [ID(4)]: { title: "d", deletingAt: 9 } }, now: 50 });
+  assert.deepEqual([q.windowWrites, q.entry.deletingAt, q.known], [{}, 9, true]);
+  // no index entry (lost): still marked, so a cut-short run is finished later
+  const r = C.planDelete({ id: ID(5), windows, liveIds: live, index, now: 50 });
+  assert.equal(r.known, false);
+  assert.equal(r.entry.deletingAt, 50);
+});
+
+test("pendingDeletions / reopenRefusal / galleryRows: a marked conversation is gone for the user", () => {
+  const index = { [ID(1)]: { title: "keep", lastMessageAt: 2 }, [ID(2)]: { title: "going", deletingAt: 3, lastMessageAt: 3 }, bogus: { deletingAt: 1 } };
+  assert.deepEqual(C.pendingDeletions(index), [ID(2)]);
+  assert.equal(C.reopenRefusal(index[ID(1)]), null);
+  assert.equal(C.reopenRefusal(index[ID(2)]), C.DELETED_TEXT);
+  assert.equal(C.reopenRefusal(undefined), C.DELETED_TEXT);
+  assert.deepEqual(C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "", now: 10 }).map((r) => r.id), [ID(1)]);
+});
+
+test("deleteConfirmText: counts, folder files stay only when mirrored, cannot be undone; a title cannot add a line", () => {
+  const t = C.deleteConfirmText({ title: "Plan\n(nothing will be deleted)", messages: 12, summary: { canvases: 3, versions: 8, images: 2, mirrored: true } });
+  const lines = t.split("\n");
+  assert.equal(lines[0], "刪除對話「Plan (nothing will be deleted)」？");
+  assert.ok(lines.includes("・12 則訊息"));
+  assert.ok(lines.some((l) => l.startsWith("・3 個畫布，連同存著的 8 個版本和 2 張圖片")));
+  assert.ok(lines.includes("資料夾裡的畫布檔案不會被刪除。"));
+  assert.equal(lines[lines.length - 1], "這個動作無法復原。");
+  const bare = C.deleteConfirmText({ title: "", messages: 0, summary: {} });
+  assert.ok(bare.includes("・0 則訊息") && bare.includes("・沒有畫布") && !bare.includes("資料夾"));
+  assert.ok(bare.startsWith("刪除對話「未命名」？"));
+});
+
+// A Web Locks stand-in that also does ifAvailable: `hold(name)` makes a name busy (another window).
+function locks() {
+  const { lock } = fakeLock();
+  const busy = new Set();
+  const lockIfAvailable = async (name, fn) => {
+    if (busy.has(name)) return fn(null);
+    busy.add(name);
+    try { return await fn({ name }); } finally { busy.delete(name); }
+  };
+  return { lock, lockIfAvailable, hold: (n) => busy.add(n), free: (n) => busy.delete(n) };
+}
+
+// Two conversations with canvases: A has a markdown canvas with 2 versions and an image canvas
+// (its own image + one B shares); B has one image canvas with the shared image.
+async function deleteFixture({ failAfter = Infinity } = {}) {
+  const storage = fakeStorage({}, {});
+  const L = locks();
+  let clock = 1000 * DAY;
+  let hex = 0;
+  const canvasStore = CanvasStore.createCanvasStore({ storage, lock: L.lock, now: () => clock, randomHex: () => String(++hex).padStart(12, "0") });
+  const a1 = await canvasStore.agentWrite({ conversationId: ID(1), title: "Plan", content: "# v1" });
+  await canvasStore.agentWrite({ conversationId: ID(1), id: a1.id, baseVersion: 1, title: "Plan", content: "# v2" });
+  const a2 = await canvasStore.agentWrite({ conversationId: ID(1), title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG2 } });
+  await canvasStore.agentWrite({ conversationId: ID(1), id: a2.id, baseVersion: 1, title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  const b1 = await canvasStore.agentWrite({ conversationId: ID(2), title: "Other", kind: "image", image: { mimeType: "image/png", data: PNG } });
+  clock += 11 * 60 * 1000;                        // past the sweep's 10-minute grace
+  await storage.set({
+    [C.convKey(ID(1))]: { id: ID(1), sessions: { "ws://a": "sess_1" }, messages: [msg("sent", "hi", 1)], savedAt: 1 },
+    [C.convKey(ID(2))]: { id: ID(2), sessions: {}, messages: [msg("sent", "yo", 2)], savedAt: 2 },
+    [C.INDEX_KEY]: { [ID(1)]: { title: "A", archivedAt: 5, lastMessageAt: 1 }, [ID(2)]: { title: "B", archivedAt: null, lastMessageAt: 2 } },
+    "window:1": { open: [ID(2)], current: ID(2), savedAt: 3 },
+    "window:9": { open: [ID(1), ID(3)], current: ID(1), savedAt: 4 },     // a closed window still lists A
+  });
+  const session = fakeStorage({ [`${C.GROUP_KEY_PREFIX}${ID(1)}`]: 77, [`${C.GROUP_KEY_PREFIX}${ID(2)}`]: 78 });
+  const conv = C.createConvStore({
+    storage, lock: L.lock, lockIfAvailable: L.lockIfAvailable, now: () => clock,
+    liveWindowIds: async () => new Set(["1"]),
+    canvases: C.canvasOps(canvasStore), sessionStorage: session,
+  });
+  storage.setFailAfter(failAfter);
+  return { storage, session, conv, L, ids: { a1: a1.id, a2: a2.id, b1: b1.id } };
+}
+const imageKeys = (data) => Object.keys(data).filter((k) => k.startsWith("canvas:img:")).sort();
+
+test("deleteConversation: messages, sessions, every canvas version and its unshared images go; the rest stays", async () => {
+  const f = await deleteFixture();
+  const before = imageKeys(f.storage.data);
+  assert.equal(before.length, 2);
+  const r = await f.conv.deleteConversation(ID(1));
+  assert.deepEqual(r, { ok: true, canvases: 2 });
+  const d = f.storage.data;
+  assert.equal(d[C.convKey(ID(1))], undefined);
+  assert.equal(d[C.INDEX_KEY][ID(1)], undefined);
+  assert.ok(d[C.INDEX_KEY][ID(2)]);
+  assert.deepEqual(d["window:9"], { open: [ID(3)], current: ID(3), savedAt: 4 });
+  assert.deepEqual(d["window:1"], { open: [ID(2)], current: ID(2), savedAt: 3 });
+  for (const id of [f.ids.a1, f.ids.a2]) assert.deepEqual(Object.keys(d).filter((k) => k.startsWith(`canvas:${id}:`)), [], id);
+  assert.equal(d[`canvas:${ID(1)}:index`], undefined);
+  assert.ok(d[`canvas:${f.ids.b1}:meta`] && d[`canvas:${ID(2)}:index`].length === 1);
+  // the image only A used is swept; the one B shows stays
+  const after = imageKeys(d);
+  assert.equal(after.length, 1);
+  const bRef = JSON.parse(d[`canvas:${f.ids.b1}:latest`]).image;
+  assert.deepEqual(after, [`canvas:img:${bRef}`]);
+  assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(1)}`], undefined);
+  assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(2)}`], 78);
+  // again: nothing left to do, still ok
+  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 0 });
+  assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
+});
+
+test("deleteConversation: refused (nothing touched) while open in a live window, or its lock is held elsewhere", async () => {
+  const f = await deleteFixture();
+  const snap = JSON.stringify(f.storage.data);
+  assert.deepEqual(await f.conv.deleteConversation(ID(2)), { ok: false, reason: "open", windowId: "1" });
+  f.L.hold(`conv:${ID(1)}`);                       // a panel holds it (reopened between render and click)
+  // only in a closed window's record: no window to name
+  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: false, reason: "locked", windowId: null });
+  // the panel that took it lists it in its live window's record: that window is named
+  await f.storage.set({ "window:1": { open: [ID(2), ID(1)], current: ID(1), savedAt: 3 } });
+  const snap2 = JSON.stringify(f.storage.data);
+  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: false, reason: "locked", windowId: "1" });
+  assert.equal(JSON.stringify(f.storage.data), snap2);
+  await f.storage.set({ "window:1": { open: [ID(2)], current: ID(2), savedAt: 3 } });
+  assert.equal(JSON.stringify(f.storage.data), snap);
+  assert.deepEqual(await f.conv.deleteConversation("nope"), { ok: false, reason: "invalid", windowId: null });
+});
+
+test("deleteConversation: cut short at every write, finishDeletions completes it; before the mark nothing changed", async () => {
+  const ref = await deleteFixture();
+  const original = JSON.stringify(ref.storage.data);
+  await ref.conv.deleteConversation(ID(1));
+  const want = JSON.stringify(ref.storage.data);
+  let cuts = 0;
+  for (let cut = 0; ; cut++) {
+    const f = await deleteFixture({ failAfter: cut });
+    let threw = false;
+    try { await f.conv.deleteConversation(ID(1)); } catch (_) { threw = true; }
+    if (!threw) break;                              // the run fits in `cut` writes: every cut point tried
+    cuts++;
+    f.storage.setFailAfter(Infinity);
+    if (cut === 0) {
+      assert.equal(JSON.stringify(f.storage.data), original, "cut before the mark: untouched");
+      assert.deepEqual(await f.conv.finishDeletions(), []);
+      continue;
+    }
+    assert.deepEqual(C.pendingDeletions(f.storage.data[C.INDEX_KEY]), [ID(1)], `cut ${cut}: marked`);
+    // the gallery hides it meanwhile
+    assert.deepEqual(C.galleryRows({ index: f.storage.data[C.INDEX_KEY], openLive: new Set(), canvasCounts: {}, query: "", now: 1 }).map((r) => r.id), [ID(2)]);
+    // a delete running elsewhere (lock held) is not finished from here
+    f.L.hold(`conv:${ID(1)}`);
+    assert.deepEqual(await f.conv.finishDeletions(), []);
+    f.L.free(`conv:${ID(1)}`);
+    assert.deepEqual(await f.conv.finishDeletions(), [ID(1)], `cut ${cut}`);
+    assert.equal(JSON.stringify(f.storage.data), want, `cut ${cut}: same end state`);
+  }
+  assert.ok(cuts >= 5, `tried ${cuts} cut points`);
+});

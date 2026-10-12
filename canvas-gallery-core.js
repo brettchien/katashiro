@@ -175,7 +175,30 @@
     return Array.from(clean).slice(0, QUERY_MAX).join("").trim();
   }
 
+  /**
+   * What deleting a conversation removes on the canvas side (multi-conversation ADR §7.1), for the
+   * confirm text: its canvases (metas naming it), the versions stored for them (historyOf: CanvasStore's,
+   * so a canvas from before history counts what it has), the distinct images those versions show, the
+   * bytes they take (footprint), and whether any was written to the mirror folder (whose files stay).
+   * → { canvases, versions, images, bytes, mirrored }
+   */
+  function conversationDeleteSummary(metas, conversationId, { historyOf, footprint } = {}) {
+    let canvases = 0, versions = 0, bytes = 0, mirrored = false;
+    const images = new Set();
+    for (const m of metas || []) {
+      if (!m || typeof m !== "object" || typeof m.id !== "string" || m.conversationId !== conversationId) continue;
+      canvases++;
+      const h = typeof historyOf === "function" ? historyOf(m) : (Array.isArray(m.history) && m.history.length ? m.history : [m]);
+      versions += h.length;
+      for (const e of h) if (e && e.image) images.add(e.image);
+      bytes += typeof footprint === "function" ? footprint(m) : (m.bytes || 0);
+      if (m.file || (m.filesByFolder && typeof m.filesByFolder === "object" && Object.keys(m.filesByFolder).length)) mirrored = true;
+    }
+    return { canvases, versions, images: images.size, bytes, mirrored };
+  }
+
   return {
+    conversationDeleteSummary,
     QUERY_MAX, queryFromHash,
     KIND_ICONS, KIND_LABELS, AUTHOR_LABELS, TEXT_KINDS, CONTENT_READ_MAX_BYTES, CONTENT_READ_MAX_COUNT,
     normalize, queryTerms, conversationLabel, formatSize, absoluteTime, relativeTime, buildRows, filterRows, snippet, planContentReads,

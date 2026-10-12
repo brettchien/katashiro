@@ -9,7 +9,9 @@
 // DOM, the per-conversation Web Locks (`conv:<id>`) and the ACP sessions.
 //
 // Lock order, everywhere: `conv:migrate` → `conv:windows` → `conv:index`. A `conv:<id>` lock is only
-// ever taken with ifAvailable, so it never waits and cannot deadlock with these.
+// ever taken with ifAvailable, so it never waits and cannot deadlock with these. A delete (§7.1)
+// holds `conv:<id>` and then waits for `conv:windows`: safe, because whoever holds `conv:windows`
+// only ever TRIES `conv:<id>` (ifAvailable) and never waits for it.
 //
 // Dual target like ask-core.js (globalThis.ConvCore / module.exports); needs ConfirmCore first
 // (titles are sanitised like confirm-card text).
@@ -32,6 +34,7 @@
   const INDEX_KEY = "conv:index";
   const SCHEMA_KEY = "conv:schema";
   const REOPEN_KEY_PREFIX = "katashiro.convOpen.";       // storage.session: a gallery reopen for a panel not open yet
+  const GROUP_KEY_PREFIX = "katashiro.canvasGroup.";     // storage.session: a conversation's tab group (sidepanel.js canvasGroupKey)
   const LOCK_MIGRATE = "conv:migrate";
   const LOCK_WINDOWS = "conv:windows";
   const LOCK_INDEX = "conv:index";
@@ -43,6 +46,9 @@
   const ARCHIVED_PUSH_TEXT = "這段對話已封存，先從總覽重新打開";
   // P1b §4.8: a push for a conversation open in another live window whose panel is closed.
   const PANEL_CLOSED_PUSH_TEXT = "這段對話開在另一個視窗，那個視窗的側邊欄沒開：到那個視窗打開側邊欄再送";
+  // §7.1 deleting a conversation.
+  const DELETED_TEXT = "這段對話已經刪除了";
+  const DELETE_OPEN_TEXT = "這段對話開在另一個視窗：先在那裡封存再刪除";
   // P1b §4.6: set_title refusals the agent reads (English, like every tool result).
   const SET_TITLE_USER_TEXT = "the user named this conversation; set_title never replaces a name the user typed";
   const SET_TITLE_EMPTY_TEXT = "title is empty after removing control and layout characters";
@@ -405,12 +411,85 @@
     const rows = [];
     for (const [id, e] of Object.entries(index || {})) {
       if (!isConvId(id) || !e || openLive.has(id)) continue;
+      if (e.deletingAt != null) continue;              // §7.1: being deleted (finished on the next start)
       const title = displayTitle(e, id);
       if (terms.length && !terms.every((t) => normalize(title).includes(t))) continue;
       const at = Number(e.lastMessageAt || e.createdAt || 0);
       rows.push({ id, title, at, time: tabTime(at, now), canvases: Number((canvasCounts && canvasCounts[id]) || 0), archived: e.archivedAt != null });
     }
     return rows.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
+  }
+
+  // --- deleting a conversation (§7.1) ---------------------------------------------------------------
+
+  /**
+   * Step 1 of a delete, decided under `conv:windows` → `conv:index`. Refused while the id is in a LIVE
+   * window's record (open there: archive it first) — with that window, for "focus it". Otherwise the
+   * id leaves every (closed-window) record that still lists it and its index entry gets deletingAt,
+   * written together in one set(). An id with no index entry still gets one (just the mark), so a
+   * delete cut short after this step is finished by the next start rather than leaving its
+   * conv:<id> and canvases behind with nothing pointing at them.
+   * → { refuse: "open", windowId } | { refuse: null, windowWrites: { [windowId]: record }, entry, known }
+   */
+  function planDelete({ id, windows, liveIds, index, now }) {
+    const holder = windowHolding(windows, liveIds, id);
+    if (holder !== null && liveIds.has(holder)) return { refuse: "open", windowId: holder };
+    const windowWrites = {};
+    for (const [w, rec] of Object.entries(windows || {})) {
+      if (openOf(rec).includes(id)) windowWrites[w] = { ...withClosed(rec, id), savedAt: Number((rec && rec.savedAt) || 0) };
+    }
+    const e = index && index[id];
+    const base = e && typeof e === "object" ? e : { title: null, titleSource: null, createdAt: now, lastMessageAt: null, archivedAt: now };
+    return { refuse: null, windowWrites, entry: { ...base, deletingAt: base.deletingAt != null ? base.deletingAt : now }, known: !!e };
+  }
+
+  /** The ids a delete was started for and not finished (their index entry still carries deletingAt). */
+  function pendingDeletions(index) {
+    return Object.entries(index || {}).filter(([id, e]) => isConvId(id) && e && e.deletingAt != null).map(([id]) => id);
+  }
+
+  /** A reopen (§3.4) of a conversation that is gone or being deleted is refused → the text, or null. */
+  function reopenRefusal(entry) {
+    return !entry || entry.deletingAt != null ? DELETED_TEXT : null;
+  }
+
+  /**
+   * The gallery's confirm text (§7.1): what goes, that the mirror folder's files stay, that it cannot
+   * be undone. The title is agent-writable (set_title, first message): flattened to one line, like
+   * a confirm card's, so it cannot add a line such as "(nothing will be deleted)".
+   * summary = { canvases, versions, images, mirrored } (CanvasGalleryCore.conversationDeleteSummary).
+   */
+  function deleteConfirmText({ title, messages = 0, summary = {} } = {}) {
+    const t = ConfirmCore.plainText(title, 60) || "未命名";
+    const n = Math.max(0, Number(messages) || 0);
+    const c = Math.max(0, Number(summary.canvases) || 0);
+    const v = Math.max(0, Number(summary.versions) || 0);
+    const img = Math.max(0, Number(summary.images) || 0);
+    const lines = [`刪除對話「${t}」？`, "", "會刪除："];
+    lines.push(`・${n} 則訊息`);
+    if (c) lines.push(`・${c} 個畫布，連同存著的 ${v} 個版本${img ? `和 ${img} 張圖片（其他畫布也用到的圖片會留著）` : ""}`);
+    else lines.push("・沒有畫布");
+    lines.push("・Katashiro 記著的 agent session（不會通知 agent；它那邊閒置後自己結束）");
+    lines.push("");
+    if (summary.mirrored) lines.push("資料夾裡的畫布檔案不會被刪除。");
+    lines.push("這個動作無法復原。");
+    return lines.join("\n");
+  }
+
+  /**
+   * The canvas side of a delete, from a CanvasStore (canvas-store.js createCanvasStore): the canvases
+   * whose meta names the conversation, each through store.remove (the canvas 🗑's path: every
+   * version, the index entry; conversationId set so a canvas of another conversation can never go),
+   * and one image sweep after all of them, as removeIncognitoLeftovers does.
+   */
+  function canvasOps(store) {
+    return {
+      async idsOf(conversationId) {
+        return (await store.allMetas()).filter((m) => m && m.conversationId === conversationId && /^cv_[0-9a-f]{12}$/.test(String(m.id))).map((m) => m.id);
+      },
+      remove: (id, conversationId) => store.remove({ conversationId, id, sweep: false }),
+      sweep: () => store.sweepImages(),
+    };
   }
 
   // --- storage steps (chrome.storage.local + Web Locks injected) ------------------------------------
@@ -427,7 +506,9 @@
   }
 
   /**
-   * deps = { storage, lock(name, fn), liveWindowIds: async () => Set<string>, randomUUID, now }
+   * deps = { storage, lock(name, fn), liveWindowIds: async () => Set<string>, randomUUID, now,
+   *          lockIfAvailable(name, fn(lock | null)), canvases: canvasOps(store), sessionStorage }
+   * (the last three only for deleting, §7.1).
    */
   function createConvStore(deps) {
     const { storage, lock } = deps;
@@ -516,12 +597,96 @@
       });
     }
 
-    return { readWindows, readIndex, updateIndex, archiveIds, migrate, getMatching: (test) => getMatching(storage, test) };
+    // --- §7.1 delete ---------------------------------------------------------------------------------
+
+    // Step 1 (planDelete), under conv:windows → conv:index; records and mark in ONE set().
+    function markDeleting(id) {
+      return lock(LOCK_WINDOWS, () => lock(LOCK_INDEX, async () => {
+        const [windows, index, liveIds] = await Promise.all([readWindows(), readIndex(), deps.liveWindowIds()]);
+        const plan = planDelete({ id, windows, liveIds, index, now: now() });
+        if (plan.refuse) return { ok: false, reason: plan.refuse, windowId: plan.windowId };
+        const writes = { [INDEX_KEY]: { ...index, [id]: plan.entry } };
+        for (const [w, rec] of Object.entries(plan.windowWrites)) writes[windowKey(w)] = rec;
+        await storage.set(writes);
+        return { ok: true, known: plan.known };
+      }));
+    }
+
+    // Steps 2–4. Each finds nothing to do once done, so a run cut short is simply run again.
+    // sweepAlways: a resumed run sweeps even with no canvas left to remove — the cut may have come
+    // after the last remove and before (or inside) the sweep, leaving their images behind.
+    async function finishDeletion(id, { sweepAlways = false } = {}) {
+      const ops = deps.canvases;
+      let canvases = 0;
+      if (ops) {
+        const ids = await ops.idsOf(id);
+        for (const cid of ids) if ((await ops.remove(cid, id)).removed) canvases++;
+        // One sweep after all of them; best effort (the next save or delete sweeps again).
+        if (ids.length || sweepAlways) { try { await ops.sweep(); } catch (_) { /* best effort */ } }
+      }
+      await storage.remove([convKey(id), canvasIndexKey(id)]);
+      if (deps.sessionStorage) { try { await deps.sessionStorage.remove(`${GROUP_KEY_PREFIX}${id}`); } catch (_) { /* best effort */ } }
+      // Last: the mark itself (only if it is still a mark: never an entry someone re-created).
+      await updateIndex((idx) => {
+        if (!idx[id] || idx[id].deletingAt == null) return undefined;
+        delete idx[id];
+        return idx;
+      });
+      return canvases;
+    }
+
+    /**
+     * Delete conversation `id` (§7.1): its messages, sessions, canvases with every version, and
+     * (by the sweep) images nothing else uses. Holds the conversation's Web Lock for the whole run,
+     * taken with ifAvailable: a panel holding it has it open → refused with the window holding it.
+     * → { ok: true, canvases } | { ok: false, reason: "open" | "locked", windowId }
+     */
+    function deleteConversation(id) {
+      if (!isConvId(id)) return Promise.resolve({ ok: false, reason: "invalid", windowId: null });
+      return deps.lockIfAvailable(`${CONV_PREFIX}${id}`, async (held) => {
+        if (!held) {
+          // The panel holding it lists it in its live window's record; a closed window's record is
+          // no answer to "which window" (nothing to focus there).
+          let windowId = null;
+          try {
+            const live = await deps.liveWindowIds();
+            const w = windowHolding(await readWindows(), live, id);
+            if (w !== null && live.has(w)) windowId = w;
+          } catch (_) { /* unknown */ }
+          return { ok: false, reason: "locked", windowId };
+        }
+        const mark = await markDeleting(id);
+        if (!mark.ok) return mark;
+        return { ok: true, canvases: await finishDeletion(id) };
+      });
+    }
+
+    /**
+     * Finish every delete a run left half done (§7.1: worker start, panel load, gallery load). A
+     * conversation whose lock is held is skipped: a delete of it is running right now elsewhere.
+     * → the ids finished.
+     */
+    async function finishDeletions() {
+      const done = [];
+      for (const id of pendingDeletions(await readIndex())) {
+        await deps.lockIfAvailable(`${CONV_PREFIX}${id}`, async (held) => {
+          if (!held) return;
+          const mark = await markDeleting(id);
+          if (!mark.ok) return;
+          await finishDeletion(id, { sweepAlways: true });
+          done.push(id);
+        });
+      }
+      return done;
+    }
+
+    return { readWindows, readIndex, updateIndex, archiveIds, migrate, deleteConversation, finishDeletions, getMatching: (test) => getMatching(storage, test) };
   }
 
   return {
     MAX_OPEN, AUTO_TITLE_MAX, USER_TITLE_MAX, INDEX_TIME_MIN_MS, ORPHAN_KEEP_MS,
-    HISTORY_PREFIX, CONV_PREFIX, WINDOW_PREFIX, INDEX_KEY, SCHEMA_KEY, REOPEN_KEY_PREFIX,
+    HISTORY_PREFIX, CONV_PREFIX, WINDOW_PREFIX, INDEX_KEY, SCHEMA_KEY, REOPEN_KEY_PREFIX, GROUP_KEY_PREFIX,
+    DELETED_TEXT, DELETE_OPEN_TEXT, planDelete, pendingDeletions, reopenRefusal, deleteConfirmText, canvasOps,
     LOCK_MIGRATE, LOCK_WINDOWS, LOCK_INDEX, ID_RE,
     SWITCH_BLOCKED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
