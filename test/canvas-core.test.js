@@ -893,3 +893,23 @@ test("frame selection{where}: never refuses the selection — askWhere drops a b
   assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: { lines: { from: 1, to: 2 } } }));
   assert.ok(ok({ type: "selection", nonce: "n1", text: "x", seq: 1, where: "junk" }));
 });
+
+test("renderNoticeStale: a render-error notice clears once a newer render reports rendered{}", () => {
+  // v22's diagram error (seq 3); v23 renders fine (seq 4): the notice goes.
+  assert.equal(C.renderNoticeStale({ seq: 3, version: 22 }, 4), true);
+  // The frame posts diagramError{seq} before rendered{seq}: the same render's notice stays.
+  assert.equal(C.renderNoticeStale({ seq: 4, version: 23 }, 4), false);
+  // Untagged notices (saved, sent, folder…) are never cleared by a render.
+  assert.equal(C.renderNoticeStale(null, 4), false);
+  assert.equal(C.renderNoticeStale({}, 4), false);
+  assert.equal(C.renderNoticeStale({ seq: 3 }, undefined), false);
+});
+
+test("renderErrorHeader: names the failed render's version, and says so when the canvas has moved on", () => {
+  const base = { title: "Plan", id: "cv_1", version: 22, kind: "markdown", diagram: true };
+  assert.equal(C.renderErrorHeader({ ...base, nowVersion: 22 }),
+    '[canvas "Plan" (cv_1) v22 (markdown) has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence]');
+  assert.equal(C.renderErrorHeader({ ...base, nowVersion: 23 }),
+    '[canvas "Plan" (cv_1) v22 (markdown) has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence; this error is from v22, the canvas is now v23 — check it still applies]');
+  assert.equal(C.renderErrorHeader({ ...base, diagram: false }), '[canvas "Plan" (cv_1) v22 (markdown) failed to render]');
+});

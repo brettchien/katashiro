@@ -127,6 +127,22 @@
   // that render no longer holds. A report without a seq is about no render in particular.
   const fromOlderRender = (m, renderingSeq) => !!m && Number.isInteger(m.seq) && m.seq !== renderingSeq;
 
+  // A render-error notice ("圖表有錯誤" / "顯示時發生錯誤") is tied to the render it came from
+  // ({seq, version}). Once a newer render reports rendered{} it says nothing about what is shown —
+  // a diagram fixed in v23 must not keep v22's error in the header (real Chrome 2026-10-12). The
+  // frame posts a render's diagramError{} before its rendered{}, so the same seq's notice stays.
+  const renderNoticeStale = (tag, renderedSeq) => !!tag && Number.isInteger(tag.seq) && Number.isInteger(renderedSeq) && tag.seq !== renderedSeq;
+
+  // The header of 送給 agent 修 (§3.7): the version is the one whose render failed, not whatever
+  // the canvas holds at click time; when a newer version is already in, the agent is told so, so
+  // it never "fixes" an error that the latest version may no longer have.
+  function renderErrorHeader({ title, id, version, kind, diagram, nowVersion }) {
+    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
+    const older = Number.isInteger(nowVersion) && Number.isInteger(version) && nowVersion !== version
+      ? `; this error is from v${version}, the canvas is now v${nowVersion} — check it still applies` : "";
+    return `[canvas "${title}" (${id}) v${version} (${kind}) ${what}${older}]`;
+  }
+
   // The host's edit mode after a frame message: only editFailed ends it. Always (#93): the editor
   // never opened, so there are no unsaved edits, and the frame has already gone back to the view
   // (stopEdit) — staying in edit would leave Save with no editor behind it. A plain error (e.g. a
@@ -887,5 +903,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

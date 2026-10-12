@@ -88,8 +88,11 @@
   const gate = CanvasCore.createLoadGate();
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
+  // tag: the render a render-error notice belongs to ({seq, version}); any other notice drops it.
   let noticeActionFn = null;
-  function notice(text, action) {
+  let noticeTag = null;
+  function notice(text, action, tag) {
+    noticeTag = text && tag ? tag : null;
     noticeEl.textContent = text;      // textContent: may carry frame-supplied text
     noticeBar.hidden = !text;
     noticeActionFn = action && text ? action.fn : null;
@@ -428,21 +431,26 @@
   // Send error to agent (§3.7 "Try fixing"): only canvas-frame errors exist in phase 1.
   // diagram: only a mermaid diagram failed (§3.3) and the rest rendered, so the agent is pointed at
   // that fence rather than told the whole canvas is broken.
-  function offerSendError(msg, diagram = false) {
+  // tag ({seq, version}): the render the error came from. A newer render's rendered{} clears the
+  // notice, and the push names that version, not whatever the canvas holds at click time.
+  function offerSendError(msg, diagram = false, tag = null) {
     const c = current;
-    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
-    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}：${CanvasCore.clipError(msg)}`, {
+    const version = tag && Number.isInteger(tag.version) ? tag.version : c && c.meta.version;
+    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
         const text = CanvasCore.composeCanvasPush({
-          header: `[canvas "${String(c.meta.title).slice(0, TITLE_MAX)}" (${canvasId}) v${c.meta.version} (${c.meta.kind}) ${what}]`,
+          header: CanvasCore.renderErrorHeader({
+            title: String(c.meta.title).slice(0, TITLE_MAX), id: canvasId, version, kind: c.meta.kind, diagram,
+            nowVersion: current ? current.meta.version : undefined,
+          }),
           data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
         if (r.ok) notice(`📤 已把錯誤送給 ${r.agent || "agent"}`); else if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`);
       },
-    });
+    }, tag);
   }
 
   // --- Export (§3.8) --------------------------------------------------------------------------
@@ -670,11 +678,13 @@
   let renderSeq = 0;
   let renderingSeq = 0;
   let renderFailed = "";
+  let renderingVersion = 0;               // the version render{renderingSeq} shows (its errors name it)
   function startRender(msg) {
     askDispatch({ type: "render" });                        // the DOM the selection was in is replaced
     rendered = false;
     renderFailed = "";
     renderingSeq = ++renderSeq;
+    renderingVersion = msg.version;
     renderedText = { seq: renderingSeq, content: typeof msg.content === "string" ? msg.content : null };
     toFrame({ ...msg, seq: renderingSeq });
   }
@@ -948,6 +958,7 @@
         if (m.seq !== renderingSeq) break;                   // an older render; a newer one is on its way
         rendered = true;
         renderFailed = "";
+        if (CanvasCore.renderNoticeStale(noticeTag, m.seq)) notice("");    // an older render's error
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (comparing && !compareView) holdCompareGlow();     // re-mark on the new DOM
@@ -987,8 +998,8 @@
         if (CanvasCore.fromOlderRender(m, renderingSeq)) break;
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
         if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
-        if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`);
-        else offerSendError(m.msg);
+        if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
+        else offerSendError(m.msg, false, { seq: renderingSeq, version: renderingVersion });
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         finishHighlight({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
@@ -996,8 +1007,8 @@
         // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
         // nothing is marked failed and pending goto / highlight carry on.
         if (m.seq !== renderingSeq) break;                   // an older render's
-        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`);
-        else offerSendError(m.msg, true);
+        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
+        else offerSendError(m.msg, true, { seq: renderingSeq, version: renderingVersion });
         break;
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });
