@@ -837,6 +837,21 @@ test("rename moves the content-addressed assets into <new-slug>.assets/; unknown
   assert.deepEqual(listFiles(await env2.dir.getDirectoryHandle("c")), [`other.assets/${h1}.png`, "other.md"]);
 });
 
+test("an image .md deleted outside before a rename: marked deleted, its assets and conflict file stay put", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  await env.mirror.sync(id);
+  const m = await env.meta(id);
+  await writeText(env.dir, "c/shot.katashiro-20261012-2200.md", "kept");
+  await env.storage.set({ [CanvasStore.metaKey(id)]: { ...m, file: { ...m.file, conflictName: "shot.katashiro-20261012-2200.md", conflictHash: "x" } } });
+  (await env.dir.getDirectoryHandle("c")).removeEntry("shot.md");
+  const before = listFiles(await env.dir.getDirectoryHandle("c"));
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Shot 2", kind: "image", image: { mimeType: "image/png", data: PNG1 } });
+  assert.equal((await env.mirror.sync(id)).state, "deleted");
+  assert.deepEqual(listFiles(await env.dir.getDirectoryHandle("c")), before);   // no shot-2.assets/ made
+  assert.equal((await env.meta(id)).file.move, undefined);
+});
+
 test("an asset already at the target with the same bytes: the source is a duplicate and goes", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c", title: "Shot", kind: "image", image: { mimeType: "image/png", data: PNG1 } });

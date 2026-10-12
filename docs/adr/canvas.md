@@ -754,11 +754,17 @@ is silent, the conservative choice:
   - **What moves:** the `.md` (if Katashiro ever wrote it: `meta.file.hash` set, whatever is in it
     now — an outside edit moves with it, and the usual rules then apply at the new path: ours →
     written over, changed → conflict file; already gone → a deletion outside, so the canvas is marked
-    deleted as in 1B below rather than written again under the new name); the current conflict file named in `meta.file`
+    deleted as in 1B below rather than written again under the new name, and nothing else of that
+    canvas moves either: its conflict file and assets stay where they are, no new folder is made); the current conflict file named in `meta.file`
     (renamed to the new slug, same time tail); and the files in `<slug>.assets/` whose name is a
     valid asset name **and** whose bytes hash to it (content-addressed, so they are ours or
     identical to ours). Older conflict files, anything else in `.assets/` or in the conversation
     folder (the user's notes) are unknown and never moved. The `.katashiro/<id>.json` does not move.
+    Known gap: an image canvas's `.md` edited outside moves as it is, so it still links
+    `<old-slug>.assets/` while the assets moved; it becomes a conflict at the new path (changed →
+    conflict file) and its image link is broken until the user fixes or drops their edit. Rare,
+    accepted. Likewise a fallback write cut short before the final write, with the canvas changed
+    meanwhile, sees its own new file as a conflict on resume (unchanged → adopted).
   - **Never overwrite.** `move()` silently replaces an existing target (verified in real Chrome
     2026-10-11), so the target is checked first: anything there (file or directory) means that file
     is not moved. For the `.md` it then falls back as below, and the file at the new path gets the

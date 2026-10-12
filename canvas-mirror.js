@@ -641,6 +641,9 @@
           // bringing the file back under the new name. Something else at the target: not ours.
           const there = await hashAt(dir, mdPath(to), to);
           if (there === mv.hash || there === null) next.hash = mv.hash;
+          // Deleted outside: nothing else moves either — a deleted canvas writes no asset and makes
+          // no folder (1B), so its conflict file and assets stay where they are.
+          if (there === null) return { file: next, from: null, oldMd: null };
         } else {
           // exists / unsupported / failed: the pre-#101 way — written fresh at the new path, the old
           // one removed after that only if it is still ours. A target holding exactly our bytes is ours.
