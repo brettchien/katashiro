@@ -646,3 +646,24 @@ test("turn timeouts: the max sits above the core's 30-min prompt hard timeout, i
 test("turnDeadline reasons keep isDeadProbeReason's 'timed out' match (the cancel path)", () => {
   assert.equal(RoomCore.promptFailureAction(RoomCore.isDeadProbeReason("request timed out: session/prompt (idle)"), true), "cancel");
 });
+
+// --- avatar colour per sender, not per row --------------------------------------------------------
+
+test("avatarTone: a stable tone per agent id, in range, the same for live and replayed rows", () => {
+  const ids = ["wss://orca.example/acp", "wss://jelly.example/acp", "wss://mira.example/acp", "Orca", "", null];
+  for (const id of ids) {
+    const t = RoomCore.avatarTone(id);
+    assert.ok(Number.isInteger(t) && t >= 0 && t < RoomCore.AVATAR_TONES, String(id));
+    assert.equal(RoomCore.avatarTone(id), t);                  // deterministic
+  }
+  assert.equal(RoomCore.avatarTone(null), RoomCore.avatarTone(""));
+  // Spread: a handful of agents do not all land on one colour.
+  const tones = new Set(Array.from({ length: 12 }, (_, i) => RoomCore.avatarTone(`wss://agent-${i}.example/acp`)));
+  assert.ok(tones.size >= 3, `only ${tones.size} tones`);
+});
+
+test("sidepanel.css: avatar colour comes from the tone class, never the row position", () => {
+  const css = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "sidepanel.css"), "utf8");
+  assert.doesNotMatch(css, /nth-child\([^)]*\)\s*\.avatar/);
+  for (let i = 1; i < RoomCore.AVATAR_TONES; i++) assert.match(css, new RegExp(`\\.avatar\\.tone-${i}\\s*\\{[^}]*background:`));
+});

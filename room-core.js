@@ -537,7 +537,24 @@
     return t > last ? t : last + 1;
   }
 
+  // An agent's avatar colour: one of AVATAR_TONES gradients (sidepanel.css .avatar.tone-N), from a
+  // stable hash of its id (the agent's URL; its name for history recorded without one), so the
+  // same agent has the same colour in every row, live or replayed — not alternating per row, which
+  // made two replies of one agent look like two agents. FNV-1a over the UTF-16 code units.
+  const AVATAR_TONES = 6;
+  function avatarTone(key) {
+    const s = String(key == null ? "" : key);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h % AVATAR_TONES;
+  }
+
   return {
+    AVATAR_TONES,
+    avatarTone,
     batchWithReplyHint,
     nextUniqueMs,
     planHistoryAdoption,

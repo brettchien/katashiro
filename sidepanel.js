@@ -668,7 +668,7 @@ class Conn {
     msgDiv.className = "message received";
 
     const avatar = document.createElement("div");
-    avatar.className = "avatar";
+    avatar.className = `avatar tone-${RoomCore.avatarTone(this.id)}`;   // per agent, not per row
     avatar.textContent = this.name.charAt(0).toUpperCase();
 
     const contentEl = document.createElement("div");
@@ -3252,7 +3252,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
 
   if (!isMe) {
     const avatar = document.createElement("div");
-    avatar.className = "avatar";
+    // Per sender (its id; the name for old records without one), the same as its live rows.
+    avatar.className = `avatar tone-${RoomCore.avatarTone(senderId || senderName)}`;
     avatar.textContent = senderName ? senderName[0] : "?";
     msgDiv.appendChild(avatar);
   }
