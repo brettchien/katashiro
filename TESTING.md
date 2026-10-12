@@ -425,7 +425,7 @@ already active before the first ended, and nothing failed with `-32001 Session b
 Which rows actually decide it: isolation is the nonce rows and the `CAPS:` row; concurrency is
 "later turn active before first ended" (the gateway relays only text chunks, sent once at the end,
 so that row is in effect "the later turn's `tools/call` arrived before the first turn ended").
-"turns overlap in time" and "calls inside own turn" always pass when the prompts go out back to
+"turns overlap in time" and "calls inside own turn" nearly always pass when the prompts go out back to
 back and the turns overlap — they catch gross breakage (e.g. a call after its own turn ended), not
 serialisation or cross-talk.
 
