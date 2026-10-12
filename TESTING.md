@@ -275,6 +275,10 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     gallery; 🗑 on A's stale row: 「沒有刪除：這段對話開在另一個視窗：先在那裡封存再刪除」 with
     「前往那個視窗」, which focuses window 2. A stale 重新打開 of a deleted conversation says
     「這段對話已經刪除了」 in the panel and opens nothing.
+  - **Changed while the dialog is open:** 🗑 on A, leave the dialog open; in another window reopen
+    A, send one message, × it again; 確定: 「沒有刪除：這段對話在確認期間有變動：…」 and A is still
+    there; 🗑 again shows the new count. Two gallery tabs: open both dialogs for A, 確定 in one, then
+    確定 in the other: 「沒有刪除：找不到這段對話（可能已經在別的分頁刪除了）」.
   - **Interrupted:** in the gallery's DevTools, set a breakpoint in `finishDeletion` after the
     canvases are removed, click 🗑 → 確定, close the tab at the breakpoint. A is not in 對話
     (`conv:index` entry has `deletingAt`); open the gallery again (or the panel, or restart Chrome):

@@ -1924,7 +1924,16 @@ async function focusConversationWindow(id) {
   } catch (_) { /* the window closed meanwhile */ }
 }
 
-function noticeOpenElsewhere(id) {
+// The lock was taken, but no other live window lists the id: a gallery delete holds it (§7.1,
+// before its mark is down) — no window to go to.
+async function noticeOpenElsewhere(id) {
+  let other = true;
+  try {
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    const own = String(panelWindowId);
+    other = Object.entries(windows).some(([w, rec]) => w !== own && live.has(String(w)) && Array.isArray(rec && rec.open) && rec.open.includes(id));
+  } catch (_) { /* unknown: offer the button, as before */ }
+  if (!other) { appendSystemMessage(`${ConvCore.CONV_BUSY_TEXT}：「${ConvCore.displayTitle(convIndex[id], id)}」`); return; }
   appendSystemActions(`${ConvCore.OPEN_ELSEWHERE_TEXT}：「${ConvCore.displayTitle(convIndex[id], id)}」`, [
     { label: "前往那個視窗", onClick: () => focusConversationWindow(id) },
   ]);

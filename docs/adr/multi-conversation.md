@@ -577,14 +577,22 @@ Archive (§3.4) never deletes; this is the only way a conversation with content 
   `這段對話開在另一個視窗：先在那裡封存再刪除`, with **前往那個視窗**, which focuses the window
   `ConvCore.windowHolding` names when it is live (the panel holding the lock lists the id in its
   window's record; a closed window's record names no window to focus, so then there is no button).
+  A panel that fails to take `conv:<id>` while no other live window lists it (a delete holds it,
+  before its mark is down) says `這段對話正在別處處理中（可能正在刪除）：稍後再試`, with no button.
+- **Re-check after 確定.** The dialog can stay open indefinitely, so what it showed is captured at
+  the click (`ConvCore.deleteSnapshot`: the index entry's `lastMessageAt`, the message count, each
+  canvas's id, version and time) and read again once the lock is held, before anything is written.
+  Different → **refused**, nothing deleted: `這段對話在確認期間有變動：再按一次 🗑，看過新的內容再確認`;
+  no index entry (or already marked: another gallery tab deleted it) → `找不到這段對話`.
 - **Steps** (`ConvStore.deleteConversation`), under `conv:<id>`:
   1. Under `conv:windows` → `conv:index`, in **one `set()`**: remove the id from every window record
      that still lists it (closed windows', `withClosed`) and mark its index entry **`deletingAt`**.
      From here the gallery no longer lists it, and a reopen (`katashiro-conv-open` from a stale
      gallery tab) is refused with `這段對話已經刪除了` — as is a reopen of an id with no index entry,
      which used to be recreated as an empty conversation.
-  2. **Canvases**: every canvas whose meta names the conversation, plus any still in
-     `canvas:<id>:index`, through `CanvasStore.remove` (meta, latest, every `v:<n>`, the legacy
+  2. **Canvases**: every canvas whose meta names the conversation (an entry left in
+     `canvas:<id>:index` with no meta has nothing to remove; the index key goes in step 3), through
+     `CanvasStore.remove` (meta, latest, every `v:<n>`, the legacy
      `agent` copy, the index entry — the canvas 🗑's path), then **one** image sweep (canvas §3.6:
      images no remaining version references go; one written in the last 10 minutes waits for a later
      sweep). Their open canvas tabs close themselves, except one holding unsaved edits, which stays

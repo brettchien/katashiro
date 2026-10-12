@@ -194,29 +194,51 @@
 
   // 🗑 刪除 (§7.1). The counts are read fresh at the click; window.confirm blocks this tab only (not
   // the side panel, #80's concern). The delete itself refuses — nothing deleted — when a panel has
-  // the conversation open by then (reopened since this list was drawn), naming that window.
+  // the conversation open by then (reopened since this list was drawn), naming that window. The dialog
+  // can stay open for as long as the user likes: once the lock is held, what it showed is read again
+  // (ConvCore.deleteSnapshot) and a change — reopened, written to, archived again — refuses it.
+  async function readDeleteFacts(id) {
+    const [got, index, metas] = await Promise.all([
+      chrome.storage.local.get(ConvCore.convKey(id)),
+      convStore.readIndex(),
+      store.allMetas(),
+    ]);
+    const conv = (got || {})[ConvCore.convKey(id)];
+    const mine = metas.filter((m) => m && m.conversationId === id);
+    return {
+      conv,
+      metas,
+      snapshot: ConvCore.deleteSnapshot({ entry: index[id], conv, canvases: mine }),
+    };
+  }
+
   async function deleteConversation(r, btn) {
     btn.disabled = true;
     try {
-      let messages = 0, summary;
+      let messages = 0, summary, before;
       try {
-        const got = (await chrome.storage.local.get(ConvCore.convKey(r.id))) || {};
-        const conv = got[ConvCore.convKey(r.id)];
-        messages = conv && Array.isArray(conv.messages) ? conv.messages.length : 0;
-        summary = G.conversationDeleteSummary(await store.allMetas(), r.id, { historyOf: CanvasStore.historyOf, footprint: CanvasStore.footprint });
+        const facts = await readDeleteFacts(r.id);
+        if (facts.snapshot === null) { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
+        before = facts.snapshot;
+        messages = facts.conv && Array.isArray(facts.conv.messages) ? facts.conv.messages.length : 0;
+        summary = G.conversationDeleteSummary(facts.metas, r.id, { historyOf: CanvasStore.historyOf, footprint: CanvasStore.footprint });
       } catch (e) {
         notice(`讀取對話失敗：${CanvasCore.clipError((e && e.message) || e)}`, 8000);
         return;
       }
       if (!window.confirm(ConvCore.deleteConfirmText({ title: r.title, messages, summary }))) return;
+      const recheck = async () => ConvCore.deleteRecheck(before, (await readDeleteFacts(r.id)).snapshot);
       let res;
-      try { res = await convStore.deleteConversation(r.id); }
+      try { res = await convStore.deleteConversation(r.id, { recheck }); }
       catch (e) {
         // The mark is down, so the gallery hides it and the next start (or this tab's reload) finishes it.
         notice(`刪除沒有做完：${CanvasCore.clipError((e && e.message) || e)}。下次開啟總覽或側邊欄時會接著刪完。`, 10000);
         return;
       }
+      if (res && res.ok && res.known === false) { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
       if (res && res.ok) { notice(`已刪除對話「${r.title}」${res.canvases ? `和 ${res.canvases} 個畫布` : ""}。`, 5000); return; }
+      if (res && res.reason === "changed") { notice(`沒有刪除：${ConvCore.DELETE_CHANGED_TEXT}`, 10000); return; }
+      if (res && res.reason === "missing") { notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000); return; }
       if (res && (res.reason === "open" || res.reason === "locked")) {
         const w = res.windowId != null && /^\d+$/.test(String(res.windowId)) ? Number(res.windowId) : null;
         notice(`沒有刪除：${ConvCore.DELETE_OPEN_TEXT}`, 10000, w == null ? null : {
@@ -225,7 +247,7 @@
         });
         return;
       }
-      notice("沒有刪除：找不到這段對話。", 6000);
+      notice(`沒有刪除：${ConvCore.DELETE_MISSING_TEXT}`, 6000);
     } finally {
       btn.disabled = false;
       reload();

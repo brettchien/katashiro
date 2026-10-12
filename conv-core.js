@@ -49,6 +49,11 @@
   // §7.1 deleting a conversation.
   const DELETED_TEXT = "這段對話已經刪除了";
   const DELETE_OPEN_TEXT = "這段對話開在另一個視窗：先在那裡封存再刪除";
+  const DELETE_CHANGED_TEXT = "這段對話在確認期間有變動：再按一次 🗑，看過新的內容再確認";
+  const DELETE_MISSING_TEXT = "找不到這段對話（可能已經在別的分頁刪除了）";
+  // A panel could not take conv:<id> and no live window lists it: held by a delete in progress
+  // (§7.1), not by another window's panel — so no "前往那個視窗".
+  const CONV_BUSY_TEXT = "這段對話正在別處處理中（可能正在刪除）：稍後再試";
   // P1b §4.6: set_title refusals the agent reads (English, like every tool result).
   const SET_TITLE_USER_TEXT = "the user named this conversation; set_title never replaces a name the user typed";
   const SET_TITLE_EMPTY_TEXT = "title is empty after removing control and layout characters";
@@ -443,6 +448,27 @@
     return { refuse: null, windowWrites, entry: { ...base, deletingAt: base.deletingAt != null ? base.deletingAt : now }, known: !!e };
   }
 
+  /**
+   * What the gallery's confirm dialog showed (§7.1), as one comparable string: read again under the
+   * conversation's lock after 確定, a different value means the dialog under-reports what would go.
+   * null = no index entry, or one already being deleted (another tab deleted it meanwhile).
+   * entry = its index entry, conv = conv:<id>, canvases = the canvas metas naming it.
+   */
+  function deleteSnapshot({ entry, conv, canvases }) {
+    if (!entry || typeof entry !== "object" || entry.deletingAt != null) return null;
+    const messages = conv && Array.isArray(conv.messages) ? conv.messages.length : 0;
+    const cs = (canvases || []).filter((m) => m && typeof m.id === "string")
+      .map((m) => [m.id, Number(m.version || 0), Number(m.at || 0)])
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    return JSON.stringify({ lastMessageAt: Number(entry.lastMessageAt || 0), messages, canvases: cs });
+  }
+
+  /** The refusal for a delete whose dialog showed `before` and now finds `after` → null | "missing" | "changed". */
+  function deleteRecheck(before, after) {
+    if (after === null) return "missing";
+    return before === after ? null : "changed";
+  }
+
   /** The ids a delete was started for and not finished (their index entry still carries deletingAt). */
   function pendingDeletions(index) {
     return Object.entries(index || {}).filter(([id, e]) => isConvId(id) && e && e.deletingAt != null).map(([id]) => id);
@@ -639,9 +665,12 @@
      * Delete conversation `id` (§7.1): its messages, sessions, canvases with every version, and
      * (by the sweep) images nothing else uses. Holds the conversation's Web Lock for the whole run,
      * taken with ifAvailable: a panel holding it has it open → refused with the window holding it.
-     * → { ok: true, canvases } | { ok: false, reason: "open" | "locked", windowId }
+     * recheck (the gallery's): run once the lock is held, before anything is written; a reason it
+     * returns refuses the delete, nothing touched (the dialog's counts are no longer what would go).
+     * → { ok: true, canvases, known } | { ok: false, reason: "open" | "locked" | <recheck's>, windowId }
+     * known = false: there was no index entry (only leftovers went; nothing the user saw).
      */
-    function deleteConversation(id) {
+    function deleteConversation(id, { recheck } = {}) {
       if (!isConvId(id)) return Promise.resolve({ ok: false, reason: "invalid", windowId: null });
       return deps.lockIfAvailable(`${CONV_PREFIX}${id}`, async (held) => {
         if (!held) {
@@ -655,9 +684,13 @@
           } catch (_) { /* unknown */ }
           return { ok: false, reason: "locked", windowId };
         }
+        if (recheck) {
+          const why = await recheck();
+          if (why) return { ok: false, reason: why, windowId: null };
+        }
         const mark = await markDeleting(id);
         if (!mark.ok) return mark;
-        return { ok: true, canvases: await finishDeletion(id) };
+        return { ok: true, canvases: await finishDeletion(id), known: mark.known };
       });
     }
 
@@ -686,7 +719,8 @@
   return {
     MAX_OPEN, AUTO_TITLE_MAX, USER_TITLE_MAX, INDEX_TIME_MIN_MS, ORPHAN_KEEP_MS,
     HISTORY_PREFIX, CONV_PREFIX, WINDOW_PREFIX, INDEX_KEY, SCHEMA_KEY, REOPEN_KEY_PREFIX, GROUP_KEY_PREFIX,
-    DELETED_TEXT, DELETE_OPEN_TEXT, planDelete, pendingDeletions, reopenRefusal, deleteConfirmText, canvasOps,
+    DELETED_TEXT, DELETE_OPEN_TEXT, DELETE_CHANGED_TEXT, DELETE_MISSING_TEXT, CONV_BUSY_TEXT,
+    planDelete, deleteSnapshot, deleteRecheck, pendingDeletions, reopenRefusal, deleteConfirmText, canvasOps,
     LOCK_MIGRATE, LOCK_WINDOWS, LOCK_INDEX, ID_RE,
     SWITCH_BLOCKED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,

@@ -538,7 +538,7 @@ test("deleteConversation: messages, sessions, every canvas version and its unsha
   const before = imageKeys(f.storage.data);
   assert.equal(before.length, 2);
   const r = await f.conv.deleteConversation(ID(1));
-  assert.deepEqual(r, { ok: true, canvases: 2 });
+  assert.deepEqual(r, { ok: true, canvases: 2, known: true });
   const d = f.storage.data;
   assert.equal(d[C.convKey(ID(1))], undefined);
   assert.equal(d[C.INDEX_KEY][ID(1)], undefined);
@@ -555,8 +555,8 @@ test("deleteConversation: messages, sessions, every canvas version and its unsha
   assert.deepEqual(after, [`canvas:img:${bRef}`]);
   assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(1)}`], undefined);
   assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(2)}`], 78);
-  // again: nothing left to do, still ok
-  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 0 });
+  // again: no entry any more — known: false (the gallery says 找不到這段對話)
+  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 0, known: false });
   assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
 });
 
@@ -606,4 +606,49 @@ test("deleteConversation: cut short at every write, finishDeletions completes it
     assert.equal(JSON.stringify(f.storage.data), want, `cut ${cut}: same end state`);
   }
   assert.ok(cuts >= 5, `tried ${cuts} cut points`);
+});
+
+test("deleteSnapshot / deleteRecheck: what the dialog showed, compared after 確定", () => {
+  const entry = { title: "A", lastMessageAt: 5, archivedAt: 6 };
+  const conv = { messages: [msg("sent", "hi", 1)] };
+  const canvases = [{ id: "cv_000000000002", version: 1, at: 9 }, { id: "cv_000000000001", version: 2, at: 8 }];
+  const s = C.deleteSnapshot({ entry, conv, canvases });
+  // canvas order does not matter; the title (not shown as a count) does not either
+  assert.equal(C.deleteSnapshot({ entry: { ...entry, title: "B" }, conv, canvases: [...canvases].reverse() }), s);
+  assert.equal(C.deleteRecheck(s, s), null);
+  for (const changed of [
+    C.deleteSnapshot({ entry: { ...entry, lastMessageAt: 7 }, conv, canvases }),                  // talked to
+    C.deleteSnapshot({ entry, conv: { messages: [...conv.messages, msg("sent", "yo", 2)] }, canvases }),
+    C.deleteSnapshot({ entry, conv, canvases: [...canvases, { id: "cv_000000000003", version: 1, at: 10 }] }), // a new canvas
+    C.deleteSnapshot({ entry, conv, canvases: [canvases[0], { ...canvases[1], version: 3, at: 11 }] }),       // a new version
+  ]) assert.equal(C.deleteRecheck(s, changed), "changed");
+  assert.equal(C.deleteSnapshot({ entry: undefined, conv, canvases }), null);
+  assert.equal(C.deleteSnapshot({ entry: { ...entry, deletingAt: 1 }, conv, canvases }), null);
+  assert.equal(C.deleteRecheck(s, null), "missing");
+});
+
+test("deleteConversation: a recheck reason refuses it under the lock, nothing touched; null lets it run", async () => {
+  const f = await deleteFixture();
+  const snap = JSON.stringify(f.storage.data);
+  let ran = 0;
+  for (const why of ["changed", "missing"]) {
+    const r = await f.conv.deleteConversation(ID(1), { recheck: async () => { ran++; return why; } });
+    assert.deepEqual(r, { ok: false, reason: why, windowId: null });
+    assert.equal(JSON.stringify(f.storage.data), snap);
+  }
+  // not run at all when the lock is not available
+  f.L.hold(`conv:${ID(1)}`);
+  assert.equal((await f.conv.deleteConversation(ID(1), { recheck: async () => { ran++; return null; } })).reason, "locked");
+  f.L.free(`conv:${ID(1)}`);
+  assert.equal(ran, 2);
+  // run while the lock is held: a panel cannot take it meanwhile
+  const r = await f.conv.deleteConversation(ID(1), {
+    recheck: async () => {
+      let busy = false;
+      await f.L.lockIfAvailable(`conv:${ID(1)}`, async (held) => { busy = !held; });
+      assert.ok(busy, "conv:<id> held during the recheck");
+      return null;
+    },
+  });
+  assert.deepEqual(r, { ok: true, canvases: 2, known: true });
 });
