@@ -3188,38 +3188,43 @@ function postUserText(text, images, replyTo, mentions, files) {
   return sentTo;
 }
 
-// §3.7: a canvas tab asks this panel to post as the user (Send to agent / Send error). Only from
+// §3.7: a canvas tab asks this panel to post as the user (Send to agent / Ask agent / Send error). Only from
 // Katashiro's own canvas.html (never a content script in a web page), only for a conversation open
 // in THIS panel (every open panel hears the broadcast), only while an agent is connected, capped,
 // and deduped by request id against double clicks. Multi-conversation §3.10: an open but not
 // current conversation is switched to first (refused while the current one is replying); one open
 // nowhere (archived, or left in a closed window) is refused by the panel of the canvas tab's window.
 const seenPushIds = new Set();
-chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (!msg || msg.type !== "katashiro-canvas-push") return false;
-  let fromCanvas = false;
+// From Katashiro's own canvas.html, never a compare tab (§3.10), never a content script in a web page.
+function fromCanvasTab(sender) {
   try {
     const u = new URL(sender && sender.url);
-    fromCanvas = sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html"
-      && !u.searchParams.get("view");                                   // a compare tab never pushes (§3.10)
-  } catch (_) { /* no or bad url */ }
-  if (!fromCanvas) {
+    return sender.id === chrome.runtime.id && u.origin === new URL(chrome.runtime.getURL("")).origin && u.pathname === "/canvas.html"
+      && !u.searchParams.get("view");
+  } catch (_) { return false; }                                       // no or bad url
+}
+// A canvas request for conversation `cid`, not open in this panel. Held by another panel → that one
+// answers. Free → no panel has it, and the panel of the canvas tab's window says what is really the
+// case (P1b §4.8): open in another window whose panel is closed, or not open anywhere (archived).
+// → the onMessage return value (true: answered later).
+function refuseNotHere(cid, sender, sendResponse) {
+  if (!ConvCore.isConvId(cid) || !sender.tab || sender.tab.windowId !== panelWindowId) return false;
+  navigator.locks.query().then(async (st) => {
+    if ((st.held || []).some((l) => l.name === `conv:${cid}`)) return;
+    const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
+    const r = ConvCore.pushRefusal({ windows, liveIds: live, id: cid, ownWindowId: panelWindowId });
+    sendResponse({ ok: false, error: r.text, windowId: r.windowId == null ? null : Number(r.windowId) });
+  }).catch(() => sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT }));
+  return true;
+}
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-push") return false;
+  if (!fromCanvasTab(sender)) {
     sendResponse({ ok: false, error: "not from a Katashiro canvas" });
     return false;
   }
   const cid = msg.conversationId;
-  if (!convs.has(cid)) {
-    if (!ConvCore.isConvId(cid) || !sender.tab || sender.tab.windowId !== panelWindowId) return false;
-    // Held by another panel → that one answers. Free → no panel has it: say what is really the case
-    // (P1b §4.8): open in another window whose panel is closed, or not open anywhere (archived).
-    navigator.locks.query().then(async (st) => {
-      if ((st.held || []).some((l) => l.name === `conv:${cid}`)) return;
-      const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
-      const r = ConvCore.pushRefusal({ windows, liveIds: live, id: cid, ownWindowId: panelWindowId });
-      sendResponse({ ok: false, error: r.text, windowId: r.windowId == null ? null : Number(r.windowId) });
-    }).catch(() => sendResponse({ ok: false, error: ConvCore.ARCHIVED_PUSH_TEXT }));
-    return true;
-  }
+  if (!convs.has(cid)) return refuseNotHere(cid, sender, sendResponse);
   if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.PUSH_TEXT_MAX || typeof msg.note !== "string") {
     sendResponse({ ok: false, error: "nothing to send, or too long" });
     return false;
@@ -3238,6 +3243,46 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
   // A canvas tab in another window posts here: it says so (P1b §4.8), or the user sees nothing happen.
   sendResponse({ ok: true, agent: sentTo.map((c) => c.name).join("、"), elsewhere: !!sender.tab && sender.tab.windowId !== panelWindowId });
+  return false;
+});
+
+// §3.7 To chat input (Brett 2026-10-13 01:12): a canvas tab's 📨 puts the selected text into the
+// input box of the canvas's conversation. Nothing is sent: the user reads it, edits it and sends it
+// as their own message (so it is the user's words by design, unlike a push's fenced data). Same gate
+// and refusals as a push (Katashiro's canvas.html, the conversation open in THIS panel, deduped by
+// request id); no agent has to be connected. An open but not current conversation is switched to,
+// as for a push; while the current one is replying (no switch) the text goes into that
+// conversation's draft instead (`draft: true`). A draft is kept: the text goes after it on a new
+// line (CanvasCore.inputWithSelection). Capped at the frame's selection cap (refused over it).
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-to-input") return false;
+  if (!fromCanvasTab(sender)) {
+    sendResponse({ ok: false, error: "not from a Katashiro canvas" });
+    return false;
+  }
+  const cid = msg.conversationId;
+  if (!convs.has(cid)) return refuseNotHere(cid, sender, sendResponse);
+  if (typeof msg.text !== "string" || !msg.text.trim() || msg.text.length > CanvasCore.SELECTION_MAX) {
+    sendResponse({ ok: false, error: "nothing to put in, or too long" });
+    return false;
+  }
+  if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
+  seenPushIds.add(msg.reqId);
+  const conv = convs.get(cid);
+  if (cid !== conversationId && !convSwitchBlock()) switchConversation(cid);
+  const elsewhere = !!sender.tab && sender.tab.windowId !== panelWindowId;
+  if (conv !== currentConv) {
+    if (!conv.draft) conv.draft = { text: "", images: [], files: [] };
+    conv.draft.text = CanvasCore.inputWithSelection(conv.draft.text, msg.text);
+    sendResponse({ ok: true, draft: true, elsewhere });
+    return false;
+  }
+  messageInput.value = CanvasCore.inputWithSelection(messageInput.value, msg.text);
+  messageInput.dispatchEvent(new Event("input"));       // its height, the send button
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  messageInput.scrollTop = messageInput.scrollHeight;
+  sendResponse({ ok: true, elsewhere });
   return false;
 });
 

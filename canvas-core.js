@@ -654,7 +654,6 @@
   // so, since a canvas_patch `find` must be the stored text.
   // where (Brett 2026-10-12 17:43, askWhere): the heading path, the source lines of the stored
   // version, the slide — each left out when not known; the agent decides whether to read more.
-  // Send selection (Brett 2026-10-13) passes no note: the push then starts with the host line.
   function composeAskAgent({ note, title, id, version, text, truncated, where }) {
     const t = String(title == null ? "" : title).slice(0, 120);
     const w = askWhere(where) || {};
@@ -668,6 +667,16 @@
     const body = composeCanvasPush({ note, header, data: text, truncatedNote: CUT });
     // Cut here (over the cap) or already in the frame (`truncated`): say so once.
     return truncated === true && !body.endsWith(CUT) ? `${body}\n\n${CUT}` : body;
+  }
+
+  // To chat input (§3.7, Brett 2026-10-13 01:12): the side panel's input box after a canvas
+  // selection is put in. Empty (or only blanks) → the selection; a draft → kept, the selection on
+  // a new line after it (never in the middle of its last line, never over it).
+  function inputWithSelection(draft, text) {
+    const d = typeof draft === "string" ? draft : "";
+    const t = String(text == null ? "" : text);
+    if (!d.trim()) return t;
+    return d.endsWith("\n") ? d + t : `${d}\n${t}`;
   }
 
   // --- Ask agent popover (§3.7, Brett 2026-10-12 option a) -------------------------------------
@@ -717,11 +726,11 @@
   }
 
   /**
-   * Send selection (§3.7, Brett 2026-10-13): where the 📨 goes beside the placed 💬. `anchor` =
+   * To chat input (§3.7, Brett 2026-10-13): where the 📨 goes beside the placed 💬. `anchor` =
    * the 💬's box {left, top, w, h} and `box` the frame's {left, top, width, height}, both in page
    * coordinates; `size` {w, h} = the 📨's. → { left, top, side: "right" | "left" }: on the 💬's row,
    * to its right, to its left when the frame has no room on the right; null when neither fits
-   * (the header button still sends). Never over the 💬.
+   * (the header button still works). Never over the 💬.
    */
   function askBeside({ anchor, box, size, gap = 4, margin = 4 }) {
     if (!anchor || !box || !size) return null;
@@ -939,5 +948,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

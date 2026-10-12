@@ -9,7 +9,7 @@
 //  - render is sent only after a `ready` with the current nonce;
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
 // With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
-// Send to agent, Ask agent, Send selection, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
+// Send to agent, Ask agent, To chat input, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
 (function () {
   "use strict";
 
@@ -160,9 +160,9 @@
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
     // Ask agent (§3.7): while text is selected in the view.
     askBtn.hidden = !(textKind && mode === "view" && !!frame && !!ask.sel);
-    // Send selection (§3.7, Brett 2026-10-13): the same rule; disabled while its push is in flight.
+    // To chat input (§3.7, Brett 2026-10-13): the same rule; disabled while the panel is asked.
     sendSelBtn.hidden = askBtn.hidden;
-    sendSelBtn.disabled = sendingSel;
+    sendSelBtn.disabled = toInputBusy;
     downloadBtn.hidden = !textKind;
     const ext = current && current.meta.kind === "mermaid" ? "mmd" : "md";
     downloadBtn.textContent = `⬇ .${ext}`;
@@ -177,11 +177,14 @@
   // Composed here (host, from storage), posted by the side panel as the user. The panel checks the
   // sender is this page and the conversation is its own.
   async function pushToAgent(text, note) {
+    return askPanel({ type: "katashiro-canvas-push", text, note: note || "" }, "送出失敗");
+  }
+  // A request to the panel of this canvas's conversation (a push, or To chat input), with the
+  // conversation id and a request id added. `failed` heads a refusal that comes with a button.
+  async function askPanel(msg, failed) {
     let r;
     try {
-      r = await chrome.runtime.sendMessage({
-        type: "katashiro-canvas-push", conversationId: current.meta.conversationId, text, note: note || "", reqId: crypto.randomUUID(),
-      });
+      r = await chrome.runtime.sendMessage({ ...msg, conversationId: current.meta.conversationId, reqId: crypto.randomUUID() });
     } catch (_) { r = undefined; }
     if (!r) {
       // No panel answered (multi-conversation P1b §4.8): the panel of this tab's window answers every
@@ -198,7 +201,7 @@
     if (r.ok && r.elsewhere) r.agent = `${r.agent || "agent"}（在另一個視窗）`;
     if (!r.ok && r.windowId != null) {
       // Open in another window whose panel is closed: a button to go there.
-      notice(`送出失敗：${CanvasCore.clipError(r.error)}`, { label: "前往那個視窗", fn: () => chrome.windows.update(r.windowId, { focused: true }).catch(() => {}) });
+      notice(`${failed}：${CanvasCore.clipError(r.error)}`, { label: "前往那個視窗", fn: () => chrome.windows.update(r.windowId, { focused: true }).catch(() => {}) });
       r.shown = true;                           // callers keep this notice (it has the button)
     }
     return r;
@@ -259,8 +262,8 @@
   // window.prompt. A 💬 shows beside the selection (selection{rect}); it and the header button open
   // the popover. Both are elements of this page over the frame, so canvas content cannot imitate
   // them. The state is CanvasCore.askReduce's; this draws it.
-  // Send selection (Brett 2026-10-13): a 📨 right beside the 💬 (and 📨 Send selection in the
-  // header) pushes the selection at once, with no request and no popover. Shown with the 💬.
+  // To chat input (Brett 2026-10-13 01:12): a 📨 right beside the 💬 (and 📨 To chat input in the
+  // header) puts the selection into the side panel's input box; nothing is sent. Shown with the 💬.
   const askPill = document.getElementById("ask-pill");
   const sendPill = document.getElementById("send-pill");
   const askPop = document.getElementById("ask-pop");
@@ -276,7 +279,7 @@
   // made in: Ask agent's source lines hold only while that is still what is stored (§3.7).
   let renderedText = { seq: 0, content: null };
   let askShownText = null;
-  let sendingSel = false;             // a Send selection push in flight: its 📨 controls are disabled
+  let toInputBusy = false;            // the panel is being asked to take the selection: its 📨 controls are disabled
   const sameAsCaptured = (sel, cap) => !!sel && !!cap && sel.text === cap.text && sel.seq === cap.seq;
 
   function askDispatch(ev) {
@@ -296,7 +299,7 @@
     // docks under the header button (placeAskPop's fallback) instead of hanging over unrelated text.
     else if (now.popover && sameAsCaptured(ask.sel, ask.captured)) { askPopRect = ask.sel.rect || null; placeAskPop(); }
     if (now.pill) placeAskPill(); else askPill.hidden = sendPill.hidden = true;
-    // The header 💬 Ask agent, 📨 Send selection. Showing or hiding them can wrap the header onto
+    // The header 💬 Ask agent, 📨 To chat input. Showing or hiding them can wrap the header onto
     // another row (a narrow tab), which moves the frame: the 💬 / 📨 / popover are placed again.
     if (!!prev.sel !== !!ask.sel) updateButtons().then(placeAsk, () => {});
   }
@@ -437,35 +440,36 @@
     askTimer = setTimeout(() => { if (ask.phase === "sent") closeAsk(); }, 1500);
   }
 
-  // Send selection (§3.7, Brett 2026-10-13): the selection now, as Ask agent would send it but with
-  // no note — the same host line (title, id, version, where) and the same refusals (view mode, a
-  // frame, a text kind, never a compare tab). The selection stays; after a send only its 💬 / 📨
-  // go away, as after Ask agent (the header buttons stay while it is selected).
-  async function sendSelection() {
-    if (sendingSel || !current || compareView || mode !== "view" || !frame || !CanvasCore.textKind(current.meta.kind)) return;
+  // To chat input (§3.7, Brett 2026-10-13 01:12): the selection, as plain rendered text (no host
+  // line, no fence, nothing else), goes into the side panel's input box of this canvas's
+  // conversation (appended on a new line to a draft there) — nothing is sent; the user reads it,
+  // edits it and sends it as their own message. Same refusals as Ask agent (view mode, a frame, a
+  // text kind, never a compare tab). A selection the frame cut at SELECTION_MAX is refused, never
+  // put in cut. The selection stays; after it went in only its 💬 / 📨 go away, as after Ask agent.
+  async function selectionToInput() {
+    if (toInputBusy || !current || compareView || mode !== "view" || !frame || !CanvasCore.textKind(current.meta.kind)) return;
     const sel = ask.sel;
     if (!sel) return;
-    const version = current.meta.version;
-    const shown = renderedText.seq === sel.seq ? renderedText.content : null;
-    const where = CanvasCore.askWhereAtSend(sel.where, { shown, stored: current.content, sameVersion: true });
-    const text = CanvasCore.composeAskAgent({ note: "", title: current.meta.title, id: canvasId, version, text: sel.text, truncated: sel.truncated, where });
-    sendingSel = true;                            // one push per click; the panel also dedupes by reqId
+    if (sel.truncated) { notice(`選取的文字超過 ${CanvasCore.SELECTION_MAX / 1024} KB，沒放進輸入框：選短一點再試。`); return; }
+    toInputBusy = true;                           // one request per click; the panel also dedupes by reqId
     sendSelBtn.disabled = sendPill.disabled = true;
     let r;
     try {
-      r = await pushToAgent(text, "");
+      r = await askPanel({ type: "katashiro-canvas-to-input", text: sel.text }, "沒放進輸入框");
     } finally {
-      sendingSel = false;
+      toInputBusy = false;
       sendSelBtn.disabled = sendPill.disabled = false;
     }
-    if (!r.ok) { if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`); return; }
-    flash(`📨 已傳給 ${r.agent || "agent"}（v${version} 的選取文字）`);
+    if (!r.ok) { if (!r.shown) notice(`沒放進輸入框：${CanvasCore.clipError(r.error)}`); return; }
+    // r.draft: the panel could not switch to this conversation (the current one is replying).
+    flash(r.draft ? "📨 已放進那段對話的草稿（目前的對話回覆中，沒切過去）"
+      : `📨 已放進輸入框${r.elsewhere ? "（在另一個視窗）" : ""}`);
     if (ask.phase === "pill" && sameAsCaptured(ask.sel, sel)) askDispatch({ type: "close" });
   }
 
   askBtn.addEventListener("click", () => { if (ask.sel) openAsk("header"); });
-  sendSelBtn.addEventListener("click", () => sendSelection());
-  sendPill.addEventListener("click", () => sendSelection());
+  sendSelBtn.addEventListener("click", () => selectionToInput());
+  sendPill.addEventListener("click", () => selectionToInput());
   sendPill.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeAsk(); } });
   askPill.addEventListener("click", () => openAsk("pill"));
   askPill.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeAsk(); } });

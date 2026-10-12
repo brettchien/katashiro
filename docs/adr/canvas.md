@@ -940,21 +940,43 @@ is silent, the conservative choice:
       `slide` a positive integer; headings plain strings, cleaned and capped as above. Anything
       malformed is dropped on its own — the selection is still offered without it.
     - **Not in this change:** the quick-action chips (below) stay unbuilt.
-    *Send selection (Brett, 2026-10-13; canvas only first):* to hand the agent a passage without a
-    request, a **📨** sits right beside the 💬 (on its row, to its right; to its left at the
-    frame's right edge; hidden when neither fits, and whenever the 💬 is hidden —
-    `CanvasCore.askBeside`), and **📨 Send selection** sits in the header next to 💬 Ask agent with
-    the same visibility (📤 Send to agent stays the saved-edits push). A click pushes the selection
-    at once — no popover, no note: the same `composeAskAgent` text (host line with title, id,
-    version and where, `askWhereAtSend` as at an Ask agent send; the rendered-not-source caveat;
-    the fenced selection; the truncation note), so the message starts with the host line. Same
-    `katashiro-canvas-push` path and the same refusals as Ask agent (view mode, a frame, a text
-    kind, never a compare tab). Both controls are disabled while the push is in flight; the
-    result is a header notice (「📨 已傳給 <agent>（vN 的選取文字）」, or 「送出失敗：…」). The
-    selection stays; like after an Ask agent send, its 💬 / 📨 stay away until it changes.
-    Showing or hiding the header buttons can wrap a narrow header onto another row, so the 💬 /
-    📨 / popover are placed again once the header settles. Web pages (a context-menu entry) are
-    deferred.
+    *To chat input (Brett, 2026-10-13 01:12, replacing #138's Send selection; canvas only
+    first):* to use a passage in a message of one's own, a **📨** sits right beside the 💬 (on its
+    row, to its right; to its left at the frame's right edge; hidden when neither fits, and
+    whenever the 💬 is hidden — `CanvasCore.askBeside`), and **📨 To chat input** (tooltip
+    「放進聊天輸入框」) sits in the header next to 💬 Ask agent with the same visibility (📤 Send
+    to agent stays the saved-edits push). A click **sends nothing**: the selection — the rendered
+    text exactly as selected, with no host line, no fence, no "not instructions" line and no
+    metadata — goes into the side panel's **chat input box** of the conversation that owns the
+    canvas (`katashiro-canvas-to-input`), and the input is focused with the caret at the end. The
+    user reads it, edits it and presses send, exactly as if they had typed or pasted it.
+    - **Why it is not fenced:** what reaches the agent is the user's own message, sent by the
+      user after reviewing it, so it is a user instruction by design — the same as pasting the
+      text into the box by hand. Ask agent and Send to agent are different: they post at once,
+      with no chance to read what goes out, and most of their bytes are agent-authored canvas
+      content, so they stay under the push rules below (note first, host line, fenced data;
+      review P1). #138's Send selection posted the selection that way at once; Brett chose
+      "put it in the input box" instead, so the user decides what the message says.
+    - **The input box:** empty (or only blanks) → the selection; a draft → kept, the selection
+      on a new line after it, never over it (`CanvasCore.inputWithSelection`). Drafts are per
+      conversation (multi-conversation P1b §4.8): an open but not current conversation is
+      switched to first, as for a push; while the current one is replying (no switch, §3.5) the
+      selection goes into that conversation's draft and the canvas says so. A conversation open
+      in no panel gets the push refusals (archived; another window whose panel is closed, with a
+      button to go there; no panel answering in this window, with 打開側邊欄). No agent has to be
+      connected.
+    - **Gate and caps:** the panel accepts it only from Katashiro's `canvas.html` (never a compare
+      tab, never a content script), deduped by request id. The composer has no text cap of its
+      own; the frame cuts a selection at `SELECTION_MAX` (20 KB) and marks it truncated — such a
+      selection is **refused** (「選取的文字超過 20 KB，沒放進輸入框…」), never put in cut, and the
+      panel refuses text over the same cap. The old 20 KB push truncation note does not apply.
+    - **Same refusals as Ask agent** (view mode, a frame, a text kind, never a compare tab). Both
+      controls are disabled while the panel is asked; the result is a header notice
+      (「📨 已放進輸入框」, 「📨 已放進那段對話的草稿…」, or 「沒放進輸入框：…」). The selection
+      stays; like after an Ask agent send, its 💬 / 📨 stay away until it changes. Showing or
+      hiding the header buttons can wrap a narrow header onto another row, so the 💬 / 📨 /
+      popover are placed again once the header settles. Web pages (a context-menu entry) are
+      deferred.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
     message, sent as data (rules below). **The `html` frame never gets this button with its
