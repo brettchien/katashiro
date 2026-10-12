@@ -2963,10 +2963,11 @@ test("katashiro.show_image accepts SVG (the panel rasterizes it)", async () => {
   assert.equal(shown[0].dataUrl, `data:image/svg+xml;base64,${svg}`);
 });
 
-test("localStamp: local date-time with the UTC offset", () => {
-  const ts = new Date(2026, 9, 10, 16, 5, 12).getTime();
-  assert.match(BrowserMcp.localStamp(ts), /^2026-10-10T16:05:12[+-]\d{2}:\d{2}$/);
+test("localStamp: local date-time with milliseconds and the UTC offset — the prompt header's form", () => {
+  const ts = new Date(2026, 9, 10, 16, 5, 12).getTime() + 34;
+  assert.match(BrowserMcp.localStamp(ts), /^2026-10-10T16:05:12\.034[+-]\d{2}:\d{2}$/);
   assert.equal(Date.parse(BrowserMcp.localStamp(ts)), ts);
+  assert.equal(BrowserMcp.localStamp(ts), require("../room-core.js").msgTime(ts));
 });
 
 test("katashiro.chat_history marks a reply with the time and sender it answers", async () => {

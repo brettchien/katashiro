@@ -21,7 +21,7 @@ the panel takes longer, so the answer comes back separately:
 - If the user answers, you get a **new user message** (a new turn) like:
 
   ```
-  [2026-10-12T11:40:05+08:00 user]
+  [2026-10-12T11:40:05.123+08:00 user]
   ↩ 回答 ask_0a1b2c3d：Open a PR
   ```
 

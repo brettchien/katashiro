@@ -2043,7 +2043,8 @@ function postUserText(text, images, replyTo, mentions) {
   // Q4 (ADR ask-user §2.3): a message instead of answering closes every open ask card; nothing is
   // sent for them, this message goes out as usual.
   supersedePendingAsks();
-  const sentAt = Date.now();
+  // Unique per ms in this panel: the header's milliseconds name exactly this message (#62 follow-up).
+  const sentAt = uniqueMsgMs(Date.now());
   appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
@@ -3187,26 +3188,18 @@ function attachReplyButton(contentEl, target) {
   (ts || contentEl).appendChild(b);
 }
 
-// The newest recorded message sent in the second this ISO stamp names, as a reply target.
+// The recorded message an ISO stamp names, as a reply target: exactly that millisecond when the
+// stamp has one (headers carry ms, #62 follow-up), else the second rule (RoomCore.findByStamp).
 function findMessageByTime(stamp) {
-  // Agents almost always answer the USER, so when several messages share that second prefer the
-  // user's; otherwise the newest match.
-  let fallback = null;
-  for (let i = historyMessages.length - 1; i >= 0; i--) {
-    const m = historyMessages[i];
-    if (!m || !Number.isFinite(m.timestamp) || m.kind === "error" || !RoomCore.sameSecond(stamp, m.timestamp)) continue;
-    const t = { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text };
-    if (m.kind === "sent") return t;
-    if (!fallback) fallback = t;
-  }
-  return fallback;
+  const m = RoomCore.findByStamp(historyMessages, stamp);
+  return m ? { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text } : null;
 }
 
 // The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
 // says the original was not found (its quote does not jump anywhere).
 function replyTargetFor(stamp) {
   return findMessageByTime(stamp) ||
-    { id: null, senderName: "?", timestamp: Date.parse(stamp), text: "（找不到原訊息）" };
+    { id: null, senderName: "?", timestamp: (RoomCore.parseStamp(stamp) || { ms: NaN }).ms, text: "（找不到原訊息）" };
 }
 
 // What a history record keeps of the message a reply answers.

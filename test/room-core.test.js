@@ -427,13 +427,56 @@ test("acpClientInfo: name/title + version with the build as semver metadata", ()
 const at = (mo, d, h, mi, s) => new Date(2026, mo - 1, d, h, mi, s).getTime();
 
 const OFF = /[+-]\d{2}:\d{2}$/;
-test("msgTime: ISO 8601 local time with offset, no spaces", () => {
+test("msgTime: ISO 8601 local time with milliseconds and offset, no spaces", () => {
   const t = RoomCore.msgTime(at(10, 10, 16, 5, 12));
-  assert.match(t, /^2026-10-10T16:05:12[+-]\d{2}:\d{2}$/);
+  assert.match(t, /^2026-10-10T16:05:12\.000[+-]\d{2}:\d{2}$/);
   assert.doesNotMatch(t, /\s/);
   assert.equal(Date.parse(t), at(10, 10, 16, 5, 12));                // round-trips exactly
-  assert.match(RoomCore.msgTime(at(1, 2, 0, 0, 1)), /^2026-01-02T00:00:01/);
-  assert.equal(RoomCore.uiTime(at(10, 10, 16, 5, 12)), "2026-10-10 16:05:12");
+  assert.match(RoomCore.msgTime(at(1, 2, 0, 0, 1) + 7), /^2026-01-02T00:00:01\.007[+-]/);
+  assert.equal(Date.parse(RoomCore.msgTime(at(10, 10, 16, 5, 12) + 234)), at(10, 10, 16, 5, 12) + 234);
+  assert.equal(RoomCore.uiTime(at(10, 10, 16, 5, 12) + 999), "2026-10-10 16:05:12");   // the panel shows seconds
+});
+
+test("parseStamp: milliseconds make it exact; a second-only stamp names a second", () => {
+  const ts = at(10, 10, 16, 5, 12) + 234;
+  assert.deepEqual(RoomCore.parseStamp(RoomCore.msgTime(ts)), { ms: ts, exact: true });
+  assert.deepEqual(RoomCore.parseStamp(new Date(ts).toISOString()), { ms: ts, exact: true });           // Z form
+  assert.deepEqual(RoomCore.parseStamp("2026-10-10T16:05:12.2"), { ms: at(10, 10, 16, 5, 12) + 200, exact: true });
+  assert.deepEqual(RoomCore.parseStamp("2026-10-10T16:05:12.234567"), { ms: ts, exact: true });        // cut to ms
+  assert.deepEqual(RoomCore.parseStamp("2026-10-10 16:05:12.234"), { ms: ts, exact: true });           // space form
+  assert.deepEqual(RoomCore.parseStamp("2026-10-10T16:05:12"), { ms: at(10, 10, 16, 5, 12), exact: false });
+  assert.equal(RoomCore.parseStamp("nonsense"), null);
+  assert.equal(RoomCore.parseStamp(""), null);
+});
+
+test("findByStamp: exact ms first; a second-only stamp falls back to the user's newest of that second", () => {
+  const s0 = at(10, 12, 14, 54, 11);
+  // Real Chrome 2026-10-12: "`" and "2" sent in the same second; the agent answered the first.
+  const msgs = [
+    { kind: "sent", senderName: "You", timestamp: s0 + 120, text: "`" },
+    { kind: "sent", senderName: "You", timestamp: s0 + 870, text: "2" },
+    { kind: "received", senderName: "orca", timestamp: s0 + 900, text: "a reply" },
+    { kind: "error", senderName: "orca", timestamp: s0 + 950, text: "oops" },
+  ];
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 120)).text, "`");
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 870)).text, "2");
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 900)).text, "a reply");   // exact beats "prefer the user"
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 950)), null);             // error notices never
+  assert.equal(RoomCore.findByStamp(msgs, RoomCore.msgTime(s0 + 500)), null);             // ms given: no second fallback
+  // Old second-only markers (and replayed history) keep the old rule.
+  const second = RoomCore.msgTime(s0).replace(".000", "");
+  assert.equal(RoomCore.findByStamp(msgs, second).text, "2");
+  assert.equal(RoomCore.findByStamp(msgs.slice(2), second).text, "a reply");
+  assert.equal(RoomCore.findByStamp(msgs, "nonsense"), null);
+  assert.equal(RoomCore.findByStamp(null, second), null);
+});
+
+test("REPLY_HINT asks for the time with its milliseconds", () => {
+  assert.match(RoomCore.REPLY_HINT, /milliseconds included/);
+  assert.match(RoomCore.REPLY_HINT, /↩ 2026-10-10T16:05:12\.345\+08:00/);
+  // The example is itself a marker the parser reads to the ms.
+  const ex = /e\.g\. "(↩ [^"]+)"/.exec(RoomCore.REPLY_HINT)[1];
+  assert.equal(RoomCore.splitReplySegments(`${ex}\nok`)[0].replyTo, "2026-10-10T16:05:12.345+08:00");
 });
 
 test("sameSecond: matches any ISO form of the same second", () => {

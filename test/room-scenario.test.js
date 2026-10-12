@@ -70,3 +70,31 @@ test("e2e: an agent never receives its own relayed reply", () => {
   assert.ok(!r.targets.includes("a"));
   assert.deepEqual(r.targets, ["b"]);
 });
+
+// #62 follow-up (real Chrome 2026-10-12): "`" and "2" sent in the same second; the agent's
+// "↩ …14:54:11" for the first was quoted as "2". Headers now carry milliseconds, ids are unique
+// per ms (nextUniqueMs, as sidepanel's uniqueMsgMs), and a marker copied from a header names
+// exactly its message. Mirrors postUserText → batchWithReplyHint → replyParts → findMessageByTime.
+test("e2e reply-to: two messages in one second (even one ms) are quoted apart by their ms headers", () => {
+  const s0 = new Date(2026, 9, 12, 14, 54, 11).getTime();
+  let last = 0;
+  const history = [];
+  const send = (now, text) => {
+    const ts = RoomCore.nextUniqueMs(last, now);
+    last = ts;
+    history.push({ kind: "sent", senderName: "You", timestamp: ts, text });
+    return RoomCore.framePrompt({ timestamp: ts, senderName: "user" }, text);
+  };
+  const prompt = RoomCore.batchWithReplyHint([send(s0 + 234, "`"), send(s0 + 234, "2"), send(s0 + 610, "3")]);
+  const stamps = [...prompt.matchAll(/^\[(\S+) user\]$/gm)].map((m) => m[1]);
+  assert.equal(stamps.length, 3);
+  assert.equal(new Set(stamps).size, 3);                         // same ms → still three stamps
+  assert.ok(prompt.endsWith(RoomCore.REPLY_HINT));
+  // The agent answers each, copying the times from the headers.
+  const reply = `↩ ${stamps[0]}\nbacktick\n↩ ${stamps[1]}\ntwo\n↩ ${stamps[2]}\nthree`;
+  const quoted = RoomCore.replyParts(reply).map((p) => [RoomCore.findByStamp(history, p.replyTo).text, p.text]);
+  assert.deepEqual(quoted, [["`", "backtick"], ["2", "two"], ["3", "three"]]);
+  // An agent (or replayed history) with a second-only marker keeps the old rule: the user's newest.
+  const old = RoomCore.replyParts(`↩ ${stamps[0].replace(/\.\d{3}/, "")}\nold`)[0];
+  assert.equal(RoomCore.findByStamp(history, old.replyTo).text, "3");
+});

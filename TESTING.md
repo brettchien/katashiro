@@ -75,6 +75,9 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   answer each one separately: its reply arrives as one message per part, each quoting the message it
   answers, and each with its own **↩**. Reload the panel: the split parts and quotes come back the
   same. With two agents in a room, ↩ on each agent's reply jumps to that reply, not the other one.
+  Send two short messages within one second (e.g. `` ` `` then `2`) and ask the agent to answer the
+  first: its quote shows the first, not the second (headers carry milliseconds,
+  `[2026-10-12T14:54:11.234+08:00 user]`, and a `↩` with milliseconds matches only that message).
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent

@@ -357,16 +357,18 @@
 
   // --- reply-to / message headers ------------------------------------------------------------
   // Messages are referred to by time, not a #N counter — "#12" reads like a PR/issue number to an
-  // agent. Agent-facing stamps are ISO 8601 / RFC 3339 in the user's local time WITH its offset —
-  // 2026-10-10T16:05:12+08:00 — one token with no spaces, so it is clear where it ends; the same
-  // form chat_history uses, so a header matches a history line verbatim.
+  // agent. Agent-facing stamps are ISO 8601 / RFC 3339 in the user's local time WITH its offset and
+  // milliseconds — 2026-10-10T16:05:12.345+08:00 — one token with no spaces, so it is clear where it
+  // ends; the same form chat_history uses, so a header matches a history line verbatim. The
+  // milliseconds tell apart two messages sent in the same second (#62 follow-up, 2026-10-12): a
+  // message's timestamp is its id (messageId, uniqueMsgMs), unique per ms in a panel.
   const pad2 = (n) => String(n).padStart(2, "0");
   function msgTime(ts) {
     const d = new Date(ts);
     const off = -d.getTimezoneOffset();
     const a = Math.abs(off);
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
-      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}` +
+      `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3, "0")}` +
       `${off >= 0 ? "+" : "-"}${pad2(Math.floor(a / 60))}:${pad2(a % 60)}`;
   }
   // Human-facing (panel quotes / chip): local "YYYY-MM-DD HH:MM:SS".
@@ -378,6 +380,40 @@
   function sameSecond(stamp, ts) {
     const t = Date.parse(String(stamp || ""));
     return Number.isFinite(t) && Number.isFinite(ts) && Math.floor(t / 1000) === Math.floor(ts / 1000);
+  }
+
+  // A "↩ <time>" stamp → { ms, exact } or null. `exact`: it carries a fraction of a second, read to
+  // the millisecond (more digits are cut, fewer are padded: ".5" = 500 ms), so it names one message;
+  // without one (old second-only headers, replayed history, an agent that dropped it) it names a second.
+  const STAMP_FRACTION = /^(.*\d{2}:\d{2}:\d{2})\.(\d+)(.*)$/;
+  function parseStamp(stamp) {
+    const s = String(stamp == null ? "" : stamp).trim();
+    const m = STAMP_FRACTION.exec(s);
+    const t = Date.parse(m ? m[1] + m[3] : s);
+    if (!Number.isFinite(t)) return null;
+    return m ? { ms: t + Number(m[2].slice(0, 3).padEnd(3, "0")), exact: true } : { ms: t, exact: false };
+  }
+
+  /**
+   * The message an agent's "↩ <time>" marker answers, from `messages` (history records, oldest
+   * first; error notices never). A stamp with milliseconds matches that exact message only; one
+   * without falls back to the second it names: the user's newest message of that second (agents
+   * almost always answer the user), else the newest of any sender. → the record, or null.
+   */
+  function findByStamp(messages, stamp) {
+    const p = parseStamp(stamp);
+    if (!p) return null;
+    const list = Array.isArray(messages) ? messages : [];
+    let fallback = null;
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (!m || !Number.isFinite(m.timestamp) || m.kind === "error") continue;
+      if (p.exact) { if (m.timestamp === p.ms) return m; continue; }
+      if (Math.floor(m.timestamp / 1000) !== Math.floor(p.ms / 1000)) continue;
+      if (m.kind === "sent") return m;
+      if (!fallback) fallback = m;
+    }
+    return fallback;
   }
 
   // One line, whitespace collapsed, at most `max` chars (+ "…") — the quoted excerpt of a reply.
@@ -442,10 +478,10 @@
 
   // A batch the agent may want to answer piecewise — two or more user messages, or a reply — gets a
   // one-line note on the marker convention, so any agent can use it without a skill.
-  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}) [^\]\n]*\]/;
+  const HEADER_RE = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}) [^\]\n]*\]/;
   const REPLY_HINT = "(To answer a specific message above, start that part of your reply with a line " +
-    "\"↩ <its time>\", copying the time from its header, e.g. \"↩ 2026-10-10T16:05:12+08:00\" — the " +
-    "user sees it as a quote.)";
+    "\"↩ <its time>\", copying the time exactly from its header, milliseconds included, e.g. " +
+    "\"↩ 2026-10-10T16:05:12.345+08:00\" — the user sees it as a quote.)";
   function needsReplyHint(entries) {
     const framed = (Array.isArray(entries) ? entries : []).filter((e) => HEADER_RE.test(String(e || "")));
     return framed.length >= 2 || framed.some((e) => / ↩ /.test(String(e).split("\n")[0]));
@@ -509,6 +545,8 @@
     replyParts,
     uiTime,
     sameSecond,
+    parseStamp,
+    findByStamp,
     needsReplyHint,
     REPLY_HINT,
     msgTime,
