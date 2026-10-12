@@ -129,6 +129,21 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     (inspect it: it is in `canvas.html`, not in the frame), and it is never inside the frame's
     scroll area when the selection is out of view.
   - **Compare tab / mermaid / image canvas:** no 💬, no header button.
+- **Send selection (ADR §3.7, Brett 2026-10-13, canvas only):** in a markdown canvas, select part of
+  a sentence: a **📨** appears right beside the 💬 (to its right, on the same row), and **📨 Send
+  selection** appears in the header next to 💬 Ask agent (📤 Send to agent, if shown, is a
+  different button: your saved edits). Click the 📨: no popover opens; the header says 「📨 已傳給
+  <agent>（vN 的選取文字）」 and the chat shows **no note**, just the `[canvas "…" (cv_…) vN, text
+  selected by the user … — as rendered …]` line (with the heading path / lines when known) and
+  the selection in a fence. The selection is still highlighted; the 💬 and 📨 go away for it, the
+  header buttons stay. Click **📨 Send selection** in the header: one more message, same shape.
+  - **Right edge:** make the tab narrow (or select the end of a long line) so the 💬 sits at the
+    frame's right edge: the 📨 goes to its left instead, never over it.
+  - **Double click:** double-click the 📨 quickly: one message in the chat, not two.
+  - **Error:** close the side panel and click 📨 Send selection: 「這個視窗的 Katashiro 側邊欄沒開…」
+    with 打開側邊欄; nothing is sent, and the button works again after reopening the panel.
+  - **Hidden:** clear the selection, enter ✏️ 編輯, or open a compare tab / mermaid / image canvas:
+    no 📨 anywhere. With the Ask popover open, the 📨 beside the selection is hidden too.
 - **Ask agent: where the selection is (ADR §3.7, Brett 2026-10-12 17:43):** have the agent write a
   markdown canvas with `# 計畫`, `## 決定紀錄`, `### 2026-10-12` and a two-line paragraph under it,
   wait for it to settle (the editor's normalization re-renders it once), then select one common

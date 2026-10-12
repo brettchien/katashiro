@@ -19,7 +19,11 @@
 //   - an open popover follows its selection on scroll, docks under the header button once the
 //     selection scrolls out of view (#125e), and goes back beside it when it scrolls back;
 //   - the excerpt's text is in a <bdi dir="auto"> between the 「」 (#125c);
-//   - entering edit mode closes it.
+//   - Send selection (Brett 2026-10-13): a 📨 right beside the 💬 and 📨 Send selection in the
+//     header, both with the selection; a click pushes exactly one message (no note: it starts with
+//     the host line, the selection fenced), both are disabled while it is in flight, a failure
+//     says 送出失敗, and both go away with the selection;
+//   - entering edit mode closes it (and the 📨).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -54,7 +58,7 @@ const STUB = `
   window.chrome = {
     runtime: {
       id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined,
-      sendMessage: async (msg) => { if (msg && msg.type === "katashiro-canvas-push") { __pushes.push(msg); return __answer; } return undefined; },
+      sendMessage: async (msg) => { if (msg && msg.type === "katashiro-canvas-push") { __pushes.push(msg); if (window.__delay) await new Promise((r) => setTimeout(r, window.__delay)); return __answer; } return undefined; },
     },
     storage: { local: { get: async (k) => pick(k), set: async (o) => { Object.assign(data, o); }, remove: async () => {} }, onChanged: ev() },
     tabs: { query: async () => [], getCurrent: (cb) => { const t = { id: 1 }; if (cb) cb(t); return Promise.resolve(t); }, onRemoved: ev(), onUpdated: ev(), create: async () => ({}), update: async () => ({}), remove: async () => {} },
@@ -119,9 +123,14 @@ try {
   const state = () => page.evaluate(() => {
     const vis = (id) => { const e = document.getElementById(id); return !e.hidden && getComputedStyle(e).display !== "none"; };
     const pill = document.getElementById("ask-pill").getBoundingClientRect();
+    const sp = document.getElementById("send-pill").getBoundingClientRect();
     return {
       pill: vis("ask-pill"), pop: vis("ask-pop"), header: vis("canvas-ask"),
+      sendPill: vis("send-pill"), sendHeader: vis("canvas-send-sel"),
+      sendDisabled: document.getElementById("send-pill").disabled || document.getElementById("canvas-send-sel").disabled,
+      notice: document.getElementById("canvas-notice").textContent,
       pillBox: { top: pill.top, left: pill.left, bottom: pill.bottom, right: pill.right },
+      sendBox: { top: sp.top, left: sp.left, bottom: sp.bottom, right: sp.right },
       frameBox: (() => { const f = document.querySelector("#canvas-main iframe").getBoundingClientRect(); return { top: f.top, left: f.left }; })(),
       focus: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
       note: document.getElementById("ask-note").value,
@@ -140,12 +149,15 @@ try {
   check(s.pillBox.top >= s.frameBox.top + sb.bottom && s.pillBox.top - (s.frameBox.top + sb.bottom) < 20, "the 💬 sits just below the selection (not over it)", { pill: s.pillBox, sel: sb, frame: s.frameBox });
   const endX = s.frameBox.left + sb.right;
   check(s.pillBox.left <= endX && s.pillBox.right >= endX, "the 💬 is at the selection's end", { pill: s.pillBox, endX });
+  check(s.sendPill && s.sendHeader, "the 📨 and the header 📨 Send selection show with the selection", s);
+  check(Math.abs(s.sendBox.top - s.pillBox.top) <= 1 && s.sendBox.left >= s.pillBox.right && s.sendBox.left - s.pillBox.right <= 8,
+    "the 📨 sits right beside the 💬, on its row, not over it", { pill: s.pillBox, send: s.sendBox });
 
   // 2. Open from the 💬.
   await page.click("#ask-pill");
   await until(() => !document.getElementById("ask-pop").hidden, "the popover");
   s = await state();
-  check(s.pop && !s.pill && s.role === "dialog" && s.focus === "ask-note", "the 💬 opens the dialog, note focused, 💬 hidden", s);
+  check(s.pop && !s.pill && !s.sendPill && s.role === "dialog" && s.focus === "ask-note", "the 💬 opens the dialog, note focused, 💬 and 📨 hidden", s);
   check(s.excerpt === "「some words」", "the excerpt is the selection", s.excerpt);
 
   // 3. Empty → hint, nothing sent. Shift+Enter is a new line. An IME Enter does not send.
@@ -238,6 +250,41 @@ try {
   await frame.evaluate(() => getSelection().removeAllRanges());
   await sleep(400);
 
+  // 7c. Send selection (Brett 2026-10-13): the 📨 pushes the selection now, once, with no note.
+  await select("Paragraph 4 ");
+  await until(() => !document.getElementById("send-pill").hidden, "the 📨 for a new selection");
+  s = await state();
+  check(s.pill && s.sendPill && s.header && s.sendHeader && !s.pop, "a selection: 💬 + 📨 beside it, header 💬 Ask agent + 📨 Send selection", s);
+  const before = s.pushes;
+  await page.evaluate(() => { window.__answer = { ok: true, agent: "Jelly" }; window.__delay = 400; });
+  await page.click("#send-pill");
+  await sleep(50);
+  s = await state();
+  check(s.sendDisabled && !s.pop, "in flight: both 📨 controls disabled, no popover", s);
+  await page.evaluate(() => { document.getElementById("send-pill").click(); document.getElementById("canvas-send-sel").click(); });
+  await until(() => /已傳給 Jelly/.test(document.getElementById("canvas-notice").textContent), "📨 已傳給");
+  s = await state();
+  check(s.pushes === before + 1, "a click (and clicks while in flight) push exactly one message", { before, after: s.pushes });
+  const sp = await page.evaluate(() => window.__pushes[window.__pushes.length - 1]);
+  check(sp.conversationId === "conv1" && sp.note === "" && sp.text.startsWith("[canvas \"Plan\" (cv_0123456789ab) v4, text selected by the user")
+    && sp.text.includes("```\nsome words\n```"), "the push has no note: the host line first, the selection fenced", sp);
+  check(s.notice === "📨 已傳給 Jelly（v4 的選取文字）" && !s.sendDisabled, "flash 📨 已傳給 <agent>（vN 的選取文字）; controls enabled again", s);
+  const still = await frame.evaluate(() => getSelection().toString());
+  check(still === "some words" && !s.pill && !s.sendPill && s.header && s.sendHeader, "after a send: the selection stays, its 💬/📨 go away, the header buttons stay", { still, s });
+  // The header 📨 Send selection: a failure says so; nothing stays disabled.
+  await page.evaluate(() => { window.__answer = { ok: false, error: "no agent connected" }; window.__delay = 0; });
+  await page.click("#canvas-send-sel");
+  await until(() => /送出失敗/.test(document.getElementById("canvas-notice").textContent), "送出失敗 (Send selection)");
+  s = await state();
+  check(s.pushes === before + 2 && /no agent connected/.test(s.notice) && !s.sendDisabled, "a failed Send selection: 送出失敗 with the error, controls enabled", s);
+  await page.evaluate(() => { window.__answer = { ok: true, agent: "Jelly" }; });
+  // The selection goes away: so do the 📨 and the header button.
+  await frame.evaluate(() => getSelection().removeAllRanges());
+  await until(() => document.getElementById("canvas-send-sel").hidden, "the header 📨 to hide with the selection", 3000);
+  s = await state();
+  check(!s.pill && !s.sendPill && !s.header && !s.sendHeader, "no selection: no 💬, no 📨, no header buttons", s);
+  await sleep(300);
+
   // 8. A new selection brings the 💬 back; open it, then enter edit mode: it closes.
   await select("Paragraph 5 ");
   await until(() => !document.getElementById("ask-pill").hidden, "the 💬 for a new selection");
@@ -246,7 +293,7 @@ try {
   await page.evaluate(() => document.getElementById("canvas-edit").click());
   await sleep(200);
   s = await state();
-  check(!s.pop && !s.pill && !s.header, "edit mode closes the popover and the 💬", s);
+  check(!s.pop && !s.pill && !s.header && !s.sendPill && !s.sendHeader, "edit mode closes the popover, the 💬 and the 📨 (both)", s);
   check(s.prompts === 0, "no window.prompt anywhere in Ask agent", s.prompts);
   await page.close();
 } catch (e) {
