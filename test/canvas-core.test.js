@@ -488,6 +488,29 @@ test("askExcerpt: one line, no control or bidi characters, cut with an ellipsis"
   assert.equal(C.askExcerpt(null), "");
 });
 
+test("askExcerpt: Unicode Tag characters are dropped (#125a)", () => {
+  assert.equal(C.askExcerpt("x\u{E0041}y"), "xy");
+  assert.equal(C.askExcerpt("a\u{E0000}\u{E0001}\u{E0020}\u{E007E}\u{E007F}b"), "ab");
+  assert.equal(C.askExcerpt("\u{E0068}\u{E0069}"), "");                  // nothing visible left
+});
+
+test("askExcerpt: a ZWJ between emoji stays, so composed emoji are not split (#125b)", () => {
+  const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";          // 👨‍👩‍👧
+  assert.equal(C.askExcerpt(family), family);
+  assert.equal(C.askExcerpt(`看 ${family} 這裡`), `看 ${family} 這裡`);
+  assert.equal(C.askExcerpt("\u2764\uFE0F\u200D\u{1F525}"), "\u2764\uFE0F\u200D\u{1F525}");   // ❤️‍🔥: VS16 before the ZWJ
+  assert.equal(C.askExcerpt("\u{1F44B}\u{1F3FD}\u200D\u{1F468}"), "\u{1F44B}\u{1F3FD}\u200D\u{1F468}"); // skin tone before the ZWJ
+  // Anywhere else it is an invisible character like the rest: dropped.
+  assert.equal(C.askExcerpt("a\u200Db"), "ab");
+  assert.equal(C.askExcerpt("\u{1F468}\u200Da"), "\u{1F468}a");
+  assert.equal(C.askExcerpt("a\u200D\u{1F468}"), "a\u{1F468}");
+  assert.equal(C.askExcerpt("\u200D\u200D"), "");
+  // ZWNJ still goes (it is no emoji joiner).
+  assert.equal(C.askExcerpt("\u{1F468}\u200C\u{1F469}"), "\u{1F468}\u{1F469}");
+  // A cut inside the sequence leaves no dangling ZWJ before the ellipsis.
+  assert.equal(C.askExcerpt(family, 2), "\u{1F468}…");
+});
+
 test("askReduce: the 💬 follows the selection; the open popover keeps what it captured", () => {
   const sel = (text, seq = 1, rect = R(10, 30, 0, 100, 90)) => ({ type: "selection", sel: { text, seq, rect } });
   let s = C.askReduce(undefined, sel("hello"));

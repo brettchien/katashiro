@@ -332,7 +332,12 @@
   function showAskPop() {
     const cap = ask.captured;
     // The excerpt is canvas text (agent-authored): textContent, one line, bidi controls dropped.
-    askExcerptEl.textContent = `「${CanvasCore.askExcerpt(cap.text)}」`;
+    // In its own <bdi dir="auto"> (#125c): RTL text takes its own direction inside the quotes
+    // without carrying 「」 to the other side.
+    const bdi = document.createElement("bdi");
+    bdi.dir = "auto";
+    bdi.textContent = CanvasCore.askExcerpt(cap.text);
+    askExcerptEl.replaceChildren("「", bdi, "」");
     askExcerptEl.title = CanvasCore.askExcerpt(cap.text, 300);
     const draft = askDraft && askDraft.seq === cap.seq && askDraft.text === cap.text ? askDraft.note : "";
     askDraft = null;

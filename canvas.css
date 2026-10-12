@@ -159,10 +159,13 @@ body {
   border: 1px solid #60a5fa; border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
 }
 .ask-pop-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* #125c: the excerpt is isolated from the header around it, and its text (a <bdi dir="auto">)
+   from the 「」 around it, so RTL content cannot move the quotes. */
 .ask-excerpt {
   flex: 1 1 auto; min-width: 0; color: var(--muted); font-size: 12px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; unicode-bidi: isolate;
 }
+.ask-excerpt bdi { unicode-bidi: isolate; }
 .ask-close {
   flex: 0 0 auto; padding: 0 6px; font-size: 12px; color: var(--muted); cursor: pointer;
   background: none; border: 1px solid transparent; border-radius: 4px;

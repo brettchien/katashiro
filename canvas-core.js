@@ -727,11 +727,17 @@
 
   // The popover's one-line excerpt of the selection: whitespace collapsed, control and bidi
   // characters dropped (agent-authored text must not reorder the line), cut at `max` characters.
-  const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+  // Tag characters U+E0000–E007F go too (#125a): invisible, they can carry ASCII the user never
+  // sees (a subdivision flag such as England's then shows as a plain 🏴 — a fair price). ZWJ
+  // (U+200D) is left out of the strip set and dropped below unless it joins two emoji (#125b):
+  // stripping it split 👨‍👩‍👧 into three faces, and between emoji it cannot reorder anything.
+  const EXCERPT_STRIP = /[\u0000-\u001f\u007f-\u009f\u061c\u200b\u200c\u200e\u200f\u2028-\u202e\u2060-\u2069\ufeff\u{E0000}-\u{E007F}]/gu;
+  const LONE_ZWJ = /(?<!\p{Extended_Pictographic}[\u{FE0F}\u{1F3FB}-\u{1F3FF}]?)\u200d|\u200d(?!\p{Extended_Pictographic})/gu;
   function askExcerpt(text, max = 60) {
-    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(EXCERPT_STRIP, "").replace(/ {2,}/g, " ").trim();
+    const s = String(text == null ? "" : text).replace(/\s+/g, " ").replace(EXCERPT_STRIP, "").replace(LONE_ZWJ, "").replace(/ {2,}/g, " ").trim();
     const cps = Array.from(s);
-    return cps.length > max ? `${cps.slice(0, max).join("").trimEnd()}…` : s;
+    // A cut inside an emoji sequence leaves its ZWJ dangling at the end: drop it with the cut.
+    return cps.length > max ? `${cps.slice(0, max).join("").replace(/\u200d+$/u, "").trimEnd()}…` : s;
   }
 
   // --- Where the selection is (§3.7, Brett 2026-10-12 17:43) ------------------------------------
