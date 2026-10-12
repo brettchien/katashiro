@@ -81,6 +81,7 @@
   let pendingSave = null;             // content of a save that came back stale (for the conflict view)
   let conflictBase = 0;               // the version the conflict view showed: "keep mine" saves over it only
   let saving = Promise.resolve();     // saves run one at a time; refresh() waits for the one in flight
+  let savesPending = 0;               // queued or running saves: archiving keeps the tab open meanwhile (§4.5)
   // The editor's undo stack as the frame last reported it (undoState{}, §3.5): the edit-mode ↶ / ↷.
   let editUndo = { canUndo: false, canRedo: false };
   const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
@@ -698,7 +699,8 @@
   // Saves are serialized (refresh() waits on them). The frame gets back the content that was
   // stored, so its baseline is what is saved, not what it holds when the reply arrives.
   function saveFromEditor(content, baseVersion, droppedBlank = false) {
-    const run = saving.then(() => doSave(content, baseVersion, droppedBlank));
+    savesPending++;
+    const run = saving.then(() => doSave(content, baseVersion, droppedBlank)).finally(() => { savesPending--; });
     saving = run.catch(() => {});
     return run;
   }
@@ -1045,7 +1047,8 @@
     // asked answers (two tabs of one canvas each have their own editor).
     if (msg && msg.type === "katashiro-canvas-dirty") {
       if (myTabId == null || msg.tabId !== myTabId) return false;
-      sendResponse({ ok: true, dirty: mode === "edit" && dirty });
+      // A save still running counts: the editor already reported clean, the content is not stored yet.
+      sendResponse({ ok: true, dirty: (mode === "edit" && dirty) || savesPending > 0 });
       return false;
     }
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);

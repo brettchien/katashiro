@@ -451,7 +451,13 @@ still run only in the current conversation (§3.5); P2 lifts that.
   by §4.4 when it is reopened. Canvas content is not touched (closing a tab is not deleting).
 - **Never a tab with unsaved canvas edits.** Each canvas tab of the group is asked whether its editor
   is dirty (`katashiro-canvas-dirty`, answered only by that tab); a tab that says dirty, or does not
-  answer in time, stays open (in its group, collapsed) and the chat says how many were kept and why.
+  answer in time, stays open (in its group, collapsed) and the chat says how many were kept and why. A
+  save still in flight counts as dirty (the editor has already reported clean).
+- **Web pages are closed without asking — deliberate.** A page in the group (a form or document the
+  agent opened with `new_tab`) is closed by `tabs.remove`, which skips its `beforeunload` prompt, so
+  text typed into it and not submitted is lost. Its URL comes back by §4.4, its unsent input does not.
+  Accepted for P1b: asking every page would need a content script in each, and the user archives a
+  conversation they are done with. Revisit if it bites.
 - The window never loses its last tab: if every tab of the window would close, a New Tab page is
   opened first (closing a window's last tab closes the window and its panel).
 - Only a panel that has the conversation open closes its tabs. The picker archiving a conversation
