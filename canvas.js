@@ -181,7 +181,8 @@
   }
   // A request to the panel of this canvas's conversation (a push, or To chat input), with the
   // conversation id and a request id added. `failed` heads a refusal that comes with a button.
-  async function askPanel(msg, failed) {
+  // `retry`: what to do again once the panel is open (a push: send it again; To chat input: 📨 again).
+  async function askPanel(msg, failed, retry = "再送一次") {
     let r;
     try {
       r = await chrome.runtime.sendMessage({ ...msg, conversationId: current.meta.conversationId, reqId: crypto.randomUUID() });
@@ -193,7 +194,7 @@
       // click is. The note stays in the popover (or the user types it again for Send to agent).
       const win = await panellessWindow();
       if (win != null) {
-        notice("這個視窗的 Katashiro 側邊欄沒開：打開側邊欄後再送一次。", { label: "打開側邊欄", fn: () => openSidePanel(win) });
+        notice(`這個視窗的 Katashiro 側邊欄沒開：打開側邊欄後${retry}。`, { label: "打開側邊欄", fn: () => openSidePanel(win, retry) });
         return { ok: false, error: "這個視窗的 Katashiro 側邊欄沒開", shown: true };
       }
       return { ok: false, error: "Katashiro 側邊面板沒有回應（或不在同一個對話）" };
@@ -217,10 +218,10 @@
     } catch (_) { return null; }
   }
   // Called synchronously from the click (the user gesture sidePanel.open needs).
-  function openSidePanel(windowId) {
+  function openSidePanel(windowId, retry = "再送一次") {
     try {
       const p = chrome.sidePanel.open({ windowId });
-      if (p && typeof p.then === "function") return p.then(() => notice("側邊欄打開了：再按一次送出。"), (e) => notice(`打不開側邊欄：${CanvasCore.clipError(String((e && e.message) || e))}`));
+      if (p && typeof p.then === "function") return p.then(() => notice(`側邊欄打開了：${retry}。`), (e) => notice(`打不開側邊欄：${CanvasCore.clipError(String((e && e.message) || e))}`));
     } catch (e) { notice(`打不開側邊欄：${CanvasCore.clipError(String((e && e.message) || e))}`); }
     return undefined;
   }
@@ -390,6 +391,9 @@
     if (CanvasCore.fromOlderRender(m, renderingSeq)) return;
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect, where: m.where } : null;
+    if (armed && !(sel && sel.text === armed.text && sel.seq === armed.seq)) disarm();    // a new selection
+    // For the 📨's sidePanel.open (needs it at the click); at most once a second while dragging.
+    if (sel && Date.now() - panelHereAt >= 1000) refreshPanelHere();
     askDispatch({ type: "selection", sel });
   }
   // Opened by the 💬 or the header button: captures the selection, version and title now.
@@ -451,21 +455,114 @@
     const sel = ask.sel;
     if (!sel) return;
     if (sel.truncated) { notice(`選取的文字超過 ${CanvasCore.SELECTION_MAX / 1024} KB，沒放進輸入框：選短一點再試。`); return; }
+    focusSidePanel();                             // still inside the click: the gesture open() needs
     toInputBusy = true;                           // one request per click; the panel also dedupes by reqId
     sendSelBtn.disabled = sendPill.disabled = true;
     let r;
     try {
-      r = await askPanel({ type: "katashiro-canvas-to-input", text: sel.text }, "沒放進輸入框");
+      r = await askPanel({ type: "katashiro-canvas-to-input", text: sel.text }, "沒放進輸入框", "再按一次 📨");
     } finally {
       toInputBusy = false;
       sendSelBtn.disabled = sendPill.disabled = false;
     }
     if (!r.ok) { if (!r.shown) notice(`沒放進輸入框：${CanvasCore.clipError(r.error)}`); return; }
-    // r.draft: the panel could not switch to this conversation (the current one is replying).
-    flash(r.draft ? "📨 已放進那段對話的草稿（目前的對話回覆中，沒切過去）"
-      : `📨 已放進輸入框${r.elsewhere ? "（在另一個視窗）" : ""}`);
     if (ask.phase === "pill" && sameAsCaptured(ask.sel, sel)) askDispatch({ type: "close" });
+    // r.draft: the panel did not switch to this conversation, so the text is in its draft. Else,
+    // while this tab still has the keyboard focus (the side panel did not take it), Enter here sends.
+    const after = CanvasCore.toInputAfter(r, { focused: document.hasFocus() });
+    if (after.arm) { arm(sel, after.text); return; }
+    flash(after.text);
+    // Not armed: a 📨 left with the focus would turn the next Enter into another click.
+    sendSelBtn.blur();
+    sendPill.blur();
   }
+
+  // --- To chat input, then Enter (§3.7, Brett 2026-10-13 16:31) ----------------------------------
+  // The side panel is another document: its messageInput.focus() cannot take the window's keyboard
+  // focus from this tab. Two things, so that Enter right after 📨 sends:
+  //  1. Best effort: chrome.sidePanel.open() for this window, from the click (it needs the user
+  //     gesture, so it is called before any await, with the window id cached here). Only when a
+  //     panel is already open in this window (a closed one would open and miss the request).
+  //  2. This tab is "armed" for TO_INPUT_ARM_MS: Enter here asks the panel to send its input as its
+  //     own send button would (katashiro-canvas-submit-input; the panel checks the sender, that the
+  //     conversation is on screen and the input not empty, and dedupes by reqId). Esc disarms with
+  //     the text kept; any other key, a mouse press, a selection change, edit mode, the focus
+  //     leaving the tab, or the timeout disarms silently. Keys are read here, in the trusted host
+  //     page; in the frame (canvas-frame.html only, never a compare tab) a key or press is reported
+  //     as armedKey{} under the nonce, and acted on only while armed and the frame has the focus.
+  let myWindowId = null;
+  let panelHere = false;              // a Katashiro side panel is open in this tab's window (last seen)
+  let panelHereAt = 0;                // when refreshPanelHere last started
+  async function refreshPanelHere() {
+    panelHereAt = Date.now();
+    try {
+      const me = await chrome.tabs.getCurrent();
+      if (!me || me.windowId == null) return;
+      myWindowId = me.windowId;
+      if (typeof chrome.runtime.getContexts !== "function") { panelHere = false; return; }
+      const panels = await chrome.runtime.getContexts({ contextTypes: ["SIDE_PANEL"], windowIds: [me.windowId] });
+      panelHere = panels.length > 0;
+    } catch (_) { /* unknown: leave it */ }
+  }
+  refreshPanelHere();
+  window.addEventListener("focus", () => { refreshPanelHere(); });
+  // Synchronous on purpose (the click's user gesture); errors ignored — Enter here still works.
+  function focusSidePanel() {
+    if (!panelHere || myWindowId == null || !chrome.sidePanel || typeof chrome.sidePanel.open !== "function") return;
+    try {
+      const p = chrome.sidePanel.open({ windowId: myWindowId });
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } catch (_) { /* best effort */ }
+  }
+
+  let armed = null;                   // { seq, text, hint, timer }
+  let submitting = false;
+  function arm(sel, hint) {
+    disarm();
+    armed = { seq: sel.seq, text: sel.text, hint, timer: setTimeout(() => disarm(), CanvasCore.TO_INPUT_ARM_MS) };
+    notice(hint);
+    toFrame({ type: "armKeys", on: true });
+  }
+  // keepNotice: the caller says something in its place.
+  function disarm({ keepNotice = false } = {}) {
+    if (!armed) return;
+    const a = armed;
+    armed = null;
+    clearTimeout(a.timer);
+    toFrame({ type: "armKeys", on: false });
+    if (!keepNotice && noticeEl.textContent === a.hint) notice("");
+  }
+  async function submitArmed() {
+    if (!armed || submitting || !current) return;
+    disarm({ keepNotice: true });
+    submitting = true;
+    notice("送出中…");
+    let r;
+    try {
+      r = await askPanel({ type: "katashiro-canvas-submit-input" }, "沒送出", "再按一次 📨");
+    } finally { submitting = false; }
+    if (r.ok) flash(CanvasCore.toInputSubmitText(r));
+    else if (!r.shown) notice(CanvasCore.toInputSubmitText(r));
+  }
+  // k: the key's fields (a KeyboardEvent here, or the frame's armedKey{}); e: the event to stop, if ours.
+  function onArmedKey(k, e) {
+    if (!armed) return;
+    const d = CanvasCore.toInputArmKey(k);
+    if (d === "ignore") return;
+    if (d === "send" || d === "cancel") { if (e) { e.preventDefault(); e.stopPropagation(); } }
+    if (d === "send") submitArmed();
+    else if (d === "cancel") { disarm({ keepNotice: true }); flash("已取消（文字留在輸入框）"); }
+    else disarm();
+  }
+  // Capture on window: ahead of every other key handler here, and before a focused button turns
+  // Enter into a click (the header 📨 would put the selection in again).
+  window.addEventListener("keydown", (e) => { if (armed && e.isTrusted) onArmedKey(e, e); }, true);
+  window.addEventListener("mousedown", () => disarm(), true);
+  // The focus left this tab (the side panel took it, another window): Enter no longer lands here.
+  // Into the frame it stays armed: the frame reports its keys.
+  window.addEventListener("blur", () => {
+    setTimeout(() => { if (armed && !(document.hasFocus() && frame && document.activeElement === frame)) disarm(); }, 0);
+  });
 
   askBtn.addEventListener("click", () => { if (ask.sel) openAsk("header"); });
   sendSelBtn.addEventListener("click", () => selectionToInput());
@@ -572,6 +669,7 @@
     if (frame) frame.remove();
     frameReady = false;
     renderFailed = "";                        // #96: a goto / highlight before the new frame's ready must not get the old failure
+    disarm();                                 // its armKeys went to the old frame
     askDispatch({ type: "reset" });           // the selection and its popover were about the old frame
     nonce = CanvasCore.newNonce();
     frame = document.createElement("iframe");
@@ -595,6 +693,7 @@
     frameReady = false;
     rendered = false;
     nonce = "";
+    disarm();
     askDispatch({ type: "reset" });
     notice(why);
     finishGoto({ ok: false, error: "the canvas is no longer shown" });
@@ -852,6 +951,7 @@
     mode = "edit";
     dirty = false;
     editUndo = { canUndo: false, canRedo: false };    // a new editor: nothing to undo yet
+    disarm();                                          // edit mode: Enter is the editor's
     askDispatch({ type: "edit" });                     // the popover closes; the editor has no selection{}
     notice("");
     toFrame({ type: "edit", content: current.content, version: current.meta.version });
@@ -1058,6 +1158,12 @@
         break;
       case "selection":
         onSelection(m);
+        break;
+      case "armedKey":
+        // Only while armed and the frame holds the focus (a report from a frame not focused is not a
+        // key the user pressed there).
+        if (armed && document.hasFocus() && frame && document.activeElement === frame) onArmedKey(m, null);
+        else if (armed && m.key === "mousedown") disarm();
         break;
       case "selectionRect":
         if (!CanvasCore.fromOlderRender(m, renderingSeq)) askDispatch({ type: "rect", seq: m.seq, rect: m.rect });

@@ -3364,6 +3364,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
+// §3.7 To chat input, then Enter (Brett 2026-10-13 16:31): this panel's focus() cannot take the
+// keyboard focus from the canvas tab, so the canvas tab reads Enter itself after a 📨 and asks this
+// panel to send its input exactly as the send button would (sendMessage). Same gate as To chat
+// input (Katashiro's canvas.html, never a compare tab or a web page; the conversation open in THIS
+// panel; deduped by request id). Refused unless the canvas's conversation is the one on screen (its
+// input box holds the text — a draft in another conversation is never sent from here), the input
+// is not empty, and no earlier request is still being sent. The canvas tab becomes the working tab
+// first (§4.3, as for a push: the user is working there), so the send does not move them off it.
+let canvasSubmitPending = false;
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg || msg.type !== "katashiro-canvas-submit-input") return false;
+  if (!fromCanvasTab(sender)) {
+    sendResponse({ ok: false, error: "not from a Katashiro canvas" });
+    return false;
+  }
+  const cid = msg.conversationId;
+  if (!convs.has(cid)) return refuseNotHere(cid, sender, sendResponse);
+  if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
+  seenPushIds.add(msg.reqId);
+  const isCurrent = () => cid === conversationId && !!currentConv && convs.get(cid) === currentConv;
+  const refused = CanvasCore.submitInputRefusal({ isCurrent: isCurrent(), inputText: messageInput.value, busy: canvasSubmitPending || stagingPending > 0 });
+  if (refused) { sendResponse({ ok: false, ...refused }); return false; }
+  canvasSubmitPending = true;
+  const elsewhere = !!sender.tab && sender.tab.windowId !== panelWindowId;
+  const tabId = sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : null;
+  (tabId == null ? Promise.resolve() : noteWorkingTab(cid, tabId).catch(() => {})).then(() => {
+    // Checked again: the user may have switched conversations or cleared the input meanwhile.
+    const late = CanvasCore.submitInputRefusal({ isCurrent: isCurrent(), inputText: messageInput.value, busy: stagingPending > 0 });
+    if (late) { sendResponse({ ok: false, ...late }); return; }
+    sendMessage();
+    // sendMessage clears the input when it sent; else it said why in the panel (a text cap, …).
+    if (messageInput.value === "") sendResponse({ ok: true, elsewhere });
+    else sendResponse({ ok: false, error: "側邊欄沒送出（原因寫在側邊欄）" });
+  }).finally(() => { canvasSubmitPending = false; });
+  return true;
+});
+
 // Relay an agent's finalized reply into the room so OTHER agents can see + respond to it — the
 // "talk to each other like a Discord thread" mechanic. Wrapped with attribution, routed per
 // mode, and bounded by the loop guard (surfaces a system line once when the cascade is paused).

@@ -32,7 +32,9 @@
 //     (❓ + notification, whose click switches back); per-conversation drafts; archive closes the
 //     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
 //     已封存 vs "that window's panel is closed"; a canvas's 📨 To chat input (canvas §3.7) fills the
-//     input box (a draft appended to, focused, nothing sent; switching, or B's draft while A replies); reopen and a browser restart bring the tabs back
+//     input box (a draft appended to, focused, nothing sent; switching, or B's draft while A replies), and the
+//     canvas's Enter after it (katashiro-canvas-submit-input) sends the input as the send button would,
+//     once (deduped), never for a conversation not on screen, an empty input or a compare tab; reopen and a browser restart bring the tabs back
 //     into one group, adopting open ones instead of duplicating them.
 //   - §7.1 delete from the gallery: the confirm says what goes; refused while another page holds the
 //     conversation's lock; then its record, index entry, closed-window record
@@ -912,6 +914,35 @@ try {
     await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
     await until(q, () => !document.querySelector(".conv-tab.mark-replying"), "A done in the background");
     check(await prompts() === p0 + 1, "to input: nothing was sent to the agent (only the message typed in A)", { p0, now: await prompts() });
+
+    // To chat input, then Enter (canvas §3.7, Brett 2026-10-13 16:31): the canvas tab asks the panel
+    // to send its input, exactly as the send button.
+    const submit = (conversationId, reqId, from = "/canvas.html?id=cv_000000000abc") =>
+      q.evaluate((m, f) => window.__deliver(m, f), { type: "katashiro-canvas-submit-input", conversationId, reqId }, from);
+    const inputNow = await composer();
+    r = await submit(convB, "s0", "/canvas.html?id=cv_000000000abc&view=agent");
+    check(r && !r.ok && r.error === "not from a Katashiro canvas", "submit: refused from a compare tab", r);
+    r = await submit(convB, "s0b", "/sidepanel.html");
+    check(r && !r.ok && r.error === "not from a Katashiro canvas", "submit: refused from a page that is not canvas.html", r);
+    r = await submit(convA, "s1");
+    check(r && !r.ok && r.notCurrent && (await composer()).value === inputNow.value && await prompts() === p0 + 1,
+      "submit: a conversation not on screen is refused (nothing sent, the input untouched)", r);
+    await setInput("   ");
+    r = await submit(convB, "s2");
+    check(r && !r.ok && /輸入框是空的/.test(r.error) && await prompts() === p0 + 1, "submit: an empty input sends nothing", r);
+    await setInput("Sent from the canvas by Enter.");
+    r = await submit(convB, "s3");
+    check(r && r.ok && (await composer()).value === "", "submit: the input is sent and cleared, as by the send button", { r, c: await composer() });
+    await until(q, (n) => window.__acp.log.filter((m) => m.method === "session/prompt").length === n, "submit: the prompt", p0 + 2);
+    const last = (await acpLog(q)).filter((m) => m.method === "session/prompt").pop();
+    check(JSON.stringify(last.params).includes("Sent from the canvas by Enter."), "submit: the agent gets the input's text", last.params);
+    check((await visibleText(q)).includes("Sent from the canvas by Enter."), "submit: shown as the user's message", null);
+    await setInput("again");
+    r = await submit(convB, "s3");
+    check(r && !r.ok && r.error === "duplicate" && (await composer()).value === "again", "submit: the same request id twice sends once", r);
+    await new Promise((res) => setTimeout(res, 200));
+    check(await prompts() === p0 + 2, "submit: exactly one prompt from the canvas's Enter", { p0, now: await prompts() });
+    await turnIdle();
     await setInput("draft for B");
   }
   await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());

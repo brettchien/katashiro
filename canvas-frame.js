@@ -898,10 +898,30 @@
     post({ type: "error", msg: `blocked by CSP: ${e.violatedDirective} ${e.blockedURI || ""}`.trim() });
   });
 
+  // To chat input, then Enter (§3.7): after a 📨 the host is armed for a while. Normally the focus
+  // is on the host page (the 📨 was clicked there), but should it be in this frame, the next key or
+  // mouse press here is reported (armedKey{}); the host decides what it means. Enter / Esc are kept
+  // from the page while armed. Capture phase, on window: ahead of everything in the frame.
+  let armedKeys = false;
+  function reportArmed(e, key) {
+    if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
+    if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier
+    if (key !== "mousedown" && CanvasCore.toInputArmKey(e) !== "disarm") e.preventDefault();
+    armedKeys = false;                    // one report; the host disarms or re-arms
+    post({
+      type: "armedKey", key: String(key).slice(0, 32),
+      shiftKey: !!e.shiftKey, ctrlKey: !!e.ctrlKey, altKey: !!e.altKey, metaKey: !!e.metaKey,
+      isComposing: e.isComposing === true, keyCode: Number.isInteger(e.keyCode) ? e.keyCode : 0,
+    });
+  }
+  window.addEventListener("keydown", (e) => reportArmed(e, e.key), true);
+  window.addEventListener("mousedown", (e) => reportArmed(e, "mousedown"), true);
+
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     const m = event.data;
     if (!m || m.nonce !== nonce) return;
+    if (m.type === "armKeys") { armedKeys = m.on === true && !editing; return; }
     if (m.type === "copied") {
       const done = pendingCopies.get(m.reqId);
       if (done) { pendingCopies.delete(m.reqId); done(m.ok === true); }

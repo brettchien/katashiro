@@ -25,6 +25,12 @@
 //     disabled while it is asked, it says 📨 已放進輸入框 (or the draft case), a refusal says
 //     沒放進輸入框, and both go away with the selection. (The input box itself — empty → the
 //     selection, a draft appended to, focus — is smoke-multi-conversation.mjs, in the real panel.);
+//   - To chat input, then Enter (Brett 2026-10-13 16:31): after a 📨 the canvas says 按 Enter 送出、Esc
+//     取消; Enter in the canvas asks the panel exactly once to send its input
+//     (katashiro-canvas-submit-input, no text: the panel sends what its input holds) and says 已送出,
+//     a second Enter sends nothing; Esc disarms (已取消), so do another key, Shift+Enter and a mouse
+//     press; Enter with the focus in the frame is relayed (armedKey) and sends once; after the draft
+//     case nothing is armed; a refusal (the conversation is not on screen) is shown;
 //   - entering edit mode closes it (and the 📨).
 import http from "node:http";
 import fs from "node:fs";
@@ -57,12 +63,15 @@ const STUB = `
   window.__answer = { ok: true, agent: "Jelly" };
   window.__toInput = [];
   window.__inputAnswer = { ok: true };
+  window.__submits = [];
+  window.__submitAnswer = { ok: true };
   window.__prompts = 0;
   window.prompt = () => { window.__prompts++; return null; };
   window.chrome = {
     runtime: {
       id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined,
       sendMessage: async (msg) => {
+        if (msg && msg.type === "katashiro-canvas-submit-input") { __submits.push(msg); return __submitAnswer; }
         const to = msg && msg.type === "katashiro-canvas-to-input";
         if (!msg || (msg.type !== "katashiro-canvas-push" && !to)) return undefined;
         (to ? __toInput : __pushes).push(msg);
@@ -147,7 +156,7 @@ try {
       status: document.getElementById("ask-status").textContent,
       excerpt: document.getElementById("ask-excerpt").textContent,
       role: document.getElementById("ask-pop").getAttribute("role"),
-      pushes: window.__pushes.length, toInput: window.__toInput.length, prompts: window.__prompts,
+      pushes: window.__pushes.length, toInput: window.__toInput.length, prompts: window.__prompts, submits: window.__submits.length,
     };
   });
 
@@ -283,21 +292,108 @@ try {
   const ti = await page.evaluate(() => window.__toInput[window.__toInput.length - 1]);
   check(ti.conversationId === "conv1" && ti.text === "some words" && typeof ti.reqId === "string" && !("note" in ti),
     "the panel gets exactly the selected text (no host line, no fence) for the canvas's conversation", ti);
-  check(s.notice === "📨 已放進輸入框" && !s.sendDisabled, "flash 📨 已放進輸入框; controls enabled again", s);
+  check(s.notice === "📨 已放進輸入框 — 按 Enter 送出、Esc 取消" && !s.sendDisabled, "📨 已放進輸入框 — 按 Enter 送出、Esc 取消; controls enabled again", s);
   const still = await frame.evaluate(() => getSelection().toString());
   check(still === "some words" && !s.pill && !s.sendPill && s.header && s.sendHeader, "after it went in: the selection stays, its 💬/📨 go away, the header buttons stay", { still, s });
+
+  // 7d. To chat input, then Enter (Brett 2026-10-13 16:31): the side panel cannot take the focus,
+  // so Enter in the canvas asks it to send its input, once.
+  const noticeText = () => page.evaluate(() => document.getElementById("canvas-notice").textContent);
+  const armedHint = /按 Enter 送出、Esc 取消/;
+  const sub0 = s.submits, in0 = s.toInput;
+  await page.keyboard.press("Enter");
+  await until(() => document.getElementById("canvas-notice").textContent === "已送出", "已送出 after Enter");
+  s = await state();
+  check(s.submits === sub0 + 1, "Enter in the canvas asks the panel to send, exactly once", { sub0, now: s.submits });
+  const sub = await page.evaluate(() => window.__submits[window.__submits.length - 1]);
+  check(sub.conversationId === "conv1" && typeof sub.reqId === "string" && !("text" in sub),
+    "the submit names the canvas's conversation and a request id, no text (the panel sends its own input)", sub);
+  check(s.toInput === in0 && s.pushes === before, "Enter did not put the selection in again, nor push anything", s);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1, "a second Enter sends nothing (disarmed)", await state());
+  // The 📨 again (the header button), then Esc: disarmed, the text stays in the input.
+  const arm = async (what) => {
+    await page.click("#canvas-send-sel");
+    await until(() => /按 Enter 送出、Esc 取消/.test(document.getElementById("canvas-notice").textContent), `armed (${what})`);
+  };
+  await arm("Esc");
+  await page.keyboard.press("Escape");
+  await sleep(150);
+  check(/已取消/.test(await noticeText()), "Esc disarms: 已取消", await noticeText());
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1, "after Esc, Enter sends nothing", await state());
+  // Another key disarms silently.
+  await arm("another key");
+  await page.keyboard.press("a");
+  await sleep(150);
+  check(!armedHint.test(await noticeText()), "another key disarms (the hint goes)", await noticeText());
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1, "after another key, Enter sends nothing", await state());
+  // Shift+Enter never sends, and disarms.
+  await arm("Shift+Enter");
+  await page.keyboard.down("Shift");
+  await page.keyboard.press("Enter");
+  await page.keyboard.up("Shift");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1 && !armedHint.test(await noticeText()), "Shift+Enter sends nothing and disarms", await state());
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1, "…and a later Enter sends nothing", await state());
+  // A mouse press disarms.
+  await arm("mouse");
+  await page.mouse.click(5, 5);
+  await sleep(150);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 1, "a mouse press disarms: Enter sends nothing", await state());
+  // The focus in the frame: its Enter is relayed (armedKey) and sends, once.
+  await arm("frame");
+  await page.evaluate(() => document.querySelector("#canvas-main iframe").focus());
+  await sleep(100);
+  check(armedHint.test(await noticeText()), "the focus moving into the frame keeps it armed", await noticeText());
+  await page.keyboard.press("Enter");
+  await until(() => document.getElementById("canvas-notice").textContent === "已送出", "已送出 after Enter in the frame");
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 2, "Enter in the frame sends once (relayed); a second does not", await state());
+  // In the frame: a key other than Enter disarms.
+  await page.evaluate(() => document.getElementById("canvas-title").focus());
+  await arm("frame, other key");
+  await page.evaluate(() => document.querySelector("#canvas-main iframe").focus());
+  await sleep(100);
+  await page.keyboard.press("ArrowDown");
+  await sleep(150);
+  check(!armedHint.test(await noticeText()), "a key in the frame other than Enter disarms", await noticeText());
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  check((await state()).submits === sub0 + 2, "…and Enter after it sends nothing", await state());
+  // The panel refuses (the conversation is no longer the one on screen): said in the canvas.
+  await page.evaluate(() => { window.__submitAnswer = { ok: false, notCurrent: true, error: "那段對話不是側邊欄目前的對話，沒送出（文字留在它的輸入框）" }; });
+  await arm("refused");
+  await page.keyboard.press("Enter");
+  await until(() => /沒送出/.test(document.getElementById("canvas-notice").textContent), "沒送出");
+  check(/不是側邊欄目前的對話/.test(await noticeText()) && (await state()).submits === sub0 + 3, "a refusal is shown in the canvas", await noticeText());
+  await page.evaluate(() => { window.__submitAnswer = { ok: true }; });
   // The header button, when the panel could not switch (the current conversation is replying): the draft.
   await page.evaluate(() => { window.__inputAnswer = { ok: true, draft: true }; window.__delay = 0; });
   await page.click("#canvas-send-sel");
   await until(() => /草稿/.test(document.getElementById("canvas-notice").textContent), "已放進…草稿");
   s = await state();
-  check(s.toInput === beforeIn + 2 && s.pushes === before && /那段對話的草稿/.test(s.notice), "the draft case says so; still nothing pushed", s);
+  check(s.toInput === beforeIn + 9 && s.pushes === before && /那段對話的草稿/.test(s.notice), "the draft case says so; still nothing pushed", s);
+  check(await page.evaluate(() => document.activeElement !== document.getElementById("canvas-send-sel")), "not armed: the 📨 gave up the focus", null);
+  await page.keyboard.press("Enter");
+  await sleep(200);
+  s = await state();
+  check(s.submits === sub0 + 3 && s.toInput === beforeIn + 9, "the draft case is not armed: Enter sends nothing, nor clicks the 📨 again", s);
   // A refusal says so; nothing stays disabled.
   await page.evaluate(() => { window.__inputAnswer = { ok: false, error: "這段對話已封存，先從總覽重新打開" }; });
   await page.click("#canvas-send-sel");
   await until(() => /沒放進輸入框/.test(document.getElementById("canvas-notice").textContent), "沒放進輸入框");
   s = await state();
-  check(s.toInput === beforeIn + 3 && /已封存/.test(s.notice) && !s.sendDisabled, "a refusal: 沒放進輸入框 with the reason, controls enabled", s);
+  check(s.toInput === beforeIn + 10 && /已封存/.test(s.notice) && !s.sendDisabled, "a refusal: 沒放進輸入框 with the reason, controls enabled", s);
   // No panel answering at all: the same notice as a push, nothing pushed.
   await page.evaluate(() => { window.__inputAnswer = undefined; });
   await page.click("#canvas-send-sel");
