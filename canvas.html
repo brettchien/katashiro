@@ -32,8 +32,9 @@
     <button id="canvas-end-compare" class="canvas-btn" data-icon="✕" type="button" title="關閉這個比較分頁，結束比較" hidden>✕ 結束比較</button>
     <button id="canvas-send" class="canvas-btn" data-icon="📤" type="button" title="把你的修改送給 agent" hidden>📤 Send to agent</button>
     <button id="canvas-ask" class="canvas-btn" data-icon="💬" type="button" title="針對選取的文字問 agent（或請它修改）" hidden>💬 Ask agent</button>
-    <!-- Send selection (§3.7, Brett 2026-10-13): the selection as is, no request, no popover. -->
-    <button id="canvas-send-sel" class="canvas-btn" data-icon="📨" type="button" title="把選取的文字直接傳給 agent" hidden>📨 Send selection</button>
+    <!-- To chat input (§3.7, Brett 2026-10-13 01:12): the selection into the side panel's input box;
+         nothing is sent. Not 📤 Send to agent (saved edits) nor 💬 Ask agent (a request). -->
+    <button id="canvas-send-sel" class="canvas-btn" data-icon="📨" type="button" title="把選取的文字放進聊天輸入框（不會送出）" hidden>📨 To chat input</button>
     <button id="canvas-download" class="canvas-btn" type="button" title="下載成 .md" hidden>⬇ .md</button>
     <button id="canvas-print" class="canvas-btn" type="button" title="列印／存成 PDF" hidden>🖨 PDF</button>
     <button id="canvas-delete" class="canvas-btn" type="button" title="刪除這個畫布" hidden>🗑 刪除</button>
@@ -61,8 +62,8 @@
        Host elements positioned over the frame, never frame content, so a canvas cannot imitate them.
        The excerpt is set with textContent. -->
   <button id="ask-pill" class="ask-pill" type="button" title="針對選取的文字問 agent" aria-label="針對選取的文字問 agent" hidden>💬</button>
-  <!-- Send selection (Brett 2026-10-13): beside the 💬, shown and hidden with it. -->
-  <button id="send-pill" class="ask-pill" type="button" title="把選取的文字直接傳給 agent" aria-label="把選取的文字直接傳給 agent" hidden>📨</button>
+  <!-- To chat input (Brett 2026-10-13): beside the 💬, shown and hidden with it. -->
+  <button id="send-pill" class="ask-pill" type="button" title="放進聊天輸入框" aria-label="把選取的文字放進聊天輸入框" hidden>📨</button>
   <div id="ask-pop" class="ask-pop" role="dialog" aria-label="針對選取的文字問 agent" hidden>
     <div class="ask-pop-head">
       <span class="ask-pop-icon" aria-hidden="true">💬</span>

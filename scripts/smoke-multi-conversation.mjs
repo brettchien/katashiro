@@ -30,7 +30,8 @@
 //     tab, a canvas opened in the background does not); Q5 (collapse the left conversation's group, never with the active tab in it); Q12
 //     (❓ + notification, whose click switches back); per-conversation drafts; archive closes the
 //     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
-//     已封存 vs "that window's panel is closed"; reopen and a browser restart bring the tabs back
+//     已封存 vs "that window's panel is closed"; a canvas's 📨 To chat input (canvas §3.7) fills the
+//     input box (a draft appended to, focused, nothing sent; switching, or B's draft while A replies); reopen and a browser restart bring the tabs back
 //     into one group, adopting open ones instead of duplicating them.
 //   - §7.1 delete from the gallery: the confirm says what goes; refused while another page holds the
 //     conversation's lock; then its record, index entry, closed-window record
@@ -721,6 +722,59 @@ try {
   await until(q, (g) => window.__tm().groups[g].collapsed === false, "Q5: A's group expands again", gA);
   await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
   check(await q.evaluate(() => document.getElementById("message-input").value) === "draft for B", "draft: B's draft is back", null);
+
+  // To chat input (canvas §3.7, Brett 2026-10-13 01:12): a canvas's 📨 puts the selected text into
+  // the input box of its conversation, as plain text; nothing is sent to the agent.
+  {
+    const convB = await q.evaluate(() => JSON.parse(localStorage.getItem("ls:window:5")).current);
+    const prompts = async () => (await acpLog(q)).filter((m) => m.method === "session/prompt").length;
+    const p0 = await prompts();
+    const toInput = (conversationId, text, reqId, from = "/canvas.html?id=cv_000000000abc") =>
+      q.evaluate((m, f) => window.__deliver(m, f), { type: "katashiro-canvas-to-input", conversationId, text, reqId }, from);
+    const composer = () => q.evaluate(() => {
+      const i = document.getElementById("message-input");
+      return { value: i.value, focused: document.activeElement === i, caret: i.selectionStart, sendEnabled: !document.getElementById("send-btn").disabled };
+    });
+    const setInput = (t) => q.evaluate((v) => { const i = document.getElementById("message-input"); i.value = v; i.dispatchEvent(new Event("input")); i.blur(); }, t);
+    // The current conversation, with a draft: kept, the selection on a new line, the input focused.
+    r = await toInput(convB, "Selected words.", "ti1");
+    let c = await composer();
+    check(r && r.ok && !r.draft && c.value === "draft for B\nSelected words." && c.focused && c.caret === c.value.length && c.sendEnabled,
+      "to input: a draft is kept, the selection appended on a new line, the input focused (caret at the end)", { r, c });
+    r = await toInput(convB, "Selected words.", "ti1");
+    check(r && !r.ok && r.error === "duplicate", "to input: the same request id twice goes in once", r);
+    // An empty input: exactly the selection.
+    await setInput("");
+    r = await toInput(convB, "Only this, as selected.", "ti2");
+    c = await composer();
+    check(r && r.ok && c.value === "Only this, as selected." && c.focused, "to input: an empty input gets exactly the selection", c);
+    // Refused: a compare tab, over the selection cap, an archived conversation (as a push).
+    r = await toInput(convB, "x", "ti3", "/canvas.html?id=cv_000000000abc&view=agent");
+    check(r && !r.ok && r.error === "not from a Katashiro canvas", "to input: refused from a compare tab", r);
+    r = await toInput(convB, "x".repeat(20 * 1024 + 1), "ti4");
+    check(r && !r.ok && (await composer()).value === "Only this, as selected.", "to input: over 20 KB is refused, the input untouched", r);
+    // Another open conversation (A): the panel switches to it; A's draft is kept, B's goes with B.
+    await setInput("draft for B");
+    r = await toInput(convA, "From A's canvas.", "ti5");
+    c = await composer();
+    check(r && r.ok && !r.draft && c.value === "draft for A\nFrom A's canvas." && c.focused, "to input: A's canvas switches the panel to A, appended to A's draft", { r, c });
+    check(await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-title").textContent) === "Topic A by agent", "to input: A is current", null);
+    // While A is replying the panel cannot switch: B's canvas goes into B's draft; A's input untouched.
+    await q.evaluate(() => { window.__acp.hold = true; });
+    await send(q, "busy in A");
+    await until(q, () => !document.getElementById("stop-btn").hidden, "A replying");
+    r = await toInput(convB, "While A replies.", "ti6");
+    c = await composer();
+    check(r && r.ok && r.draft === true && c.value === "" && await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-title").textContent) === "Topic A by agent",
+      "to input: while A replies, no switch — into B's draft, A's input untouched", { r, c });
+    await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
+    await turnIdle();
+    check(await prompts() === p0 + 1, "to input: nothing was sent to the agent (only the message typed in A)", { p0, now: await prompts() });
+    await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
+    c = await composer();
+    check(c.value === "draft for B\nWhile A replies.", "to input: B's draft has it, after B's own draft", c);
+    await setInput("draft for B");
+  }
   await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
 
   // set_title never overrides a user name.
@@ -754,6 +808,8 @@ try {
   // whose panel is closed → that window's panel is closed.
   r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: convA, text: "x", note: "", reqId: "p1" });
   check(r && r.ok === false && r.error === "這段對話已封存，先從總覽重新打開", "push for an archived conversation: 已封存", r);
+  r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-to-input", conversationId: convA, text: "x", reqId: "ti9" });
+  check(r && r.ok === false && r.error === "這段對話已封存，先從總覽重新打開", "to input for an archived conversation: the same 已封存", r);
   await q.evaluate((id) => { localStorage.setItem("ls:__live", "[5,6]"); localStorage.setItem("ls:window:6", JSON.stringify({ open: [id], current: id, savedAt: Date.now() })); }, ID(77));
   r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: ID(77), text: "x", note: "", reqId: "p2" });
   check(r && r.ok === false && /另一個視窗，那個視窗的側邊欄沒開/.test(r.error) && r.windowId === 6, "push for a conversation whose window's panel is closed says so, with the window", r);

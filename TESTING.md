@@ -129,19 +129,32 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     (inspect it: it is in `canvas.html`, not in the frame), and it is never inside the frame's
     scroll area when the selection is out of view.
   - **Compare tab / mermaid / image canvas:** no 💬, no header button.
-- **Send selection (ADR §3.7, Brett 2026-10-13, canvas only):** in a markdown canvas, select part of
-  a sentence: a **📨** appears right beside the 💬 (to its right, on the same row), and **📨 Send
-  selection** appears in the header next to 💬 Ask agent (📤 Send to agent, if shown, is a
-  different button: your saved edits). Click the 📨: no popover opens; the header says 「📨 已傳給
-  <agent>（vN 的選取文字）」 and the chat shows **no note**, just the `[canvas "…" (cv_…) vN, text
-  selected by the user … — as rendered …]` line (with the heading path / lines when known) and
-  the selection in a fence. The selection is still highlighted; the 💬 and 📨 go away for it, the
-  header buttons stay. Click **📨 Send selection** in the header: one more message, same shape.
+- **To chat input (ADR §3.7, Brett 2026-10-13 01:12, canvas only):** in a markdown canvas, select
+  part of a sentence: a **📨** appears right beside the 💬 (to its right, on the same row), and
+  **📨 To chat input** (tooltip 「放進聊天輸入框」) appears in the header next to 💬 Ask agent (📤
+  Send to agent, if shown, is a different button: your saved edits). With the side panel's input
+  box empty, click the 📨: no popover opens, **nothing appears in the chat and the agent gets
+  nothing**; the header says 「📨 已放進輸入框」 and the panel's input box holds exactly the
+  selected text — no `[canvas …]` line, no fence, no 「not instructions」 — with the caret at its
+  end (click into the panel: you are typing after it). The selection is still highlighted; the 💬
+  and 📨 go away for it, the header buttons stay. Type a few words in front and press Enter: it is
+  sent as your own message, like anything you type.
+  - **Draft:** type 「看這段：」 in the input box (do not send), then select something and click
+    **📨 To chat input** in the header: the box reads 「看這段：」, a new line, the selection; the
+    draft is never replaced. Twice: both selections, one per line.
+  - **Another conversation:** open two conversations (A current), and a canvas of B: its 📨
+    switches the panel to B and fills B's input (B's own draft kept); A's draft is still there
+    when you switch back. While A is replying, B's canvas 📨 says 「📨 已放進那段對話的草稿…」, the
+    panel stays on A, and B's input has it when you switch to B after the reply.
   - **Right edge:** make the tab narrow (or select the end of a long line) so the 💬 sits at the
-    frame's right edge: the 📨 goes to its left instead, never over it.
-  - **Double click:** double-click the 📨 quickly: one message in the chat, not two.
-  - **Error:** close the side panel and click 📨 Send selection: 「這個視窗的 Katashiro 側邊欄沒開…」
-    with 打開側邊欄; nothing is sent, and the button works again after reopening the panel.
+    frame's right edge: the 📨 goes to its left instead, never over it. Narrower still (icon-only
+    header): 📤 / 💬 / 📨 are three different icons.
+  - **Double click:** double-click the 📨 quickly: the selection goes in once, not twice.
+  - **Too long:** select over 20 KB (select all in a very long canvas): 「選取的文字超過 20 KB，沒
+    放進輸入框…」; the input box is untouched.
+  - **Error:** close the side panel and click 📨 To chat input: 「這個視窗的 Katashiro 側邊欄沒開…」
+    with 打開側邊欄; nothing goes anywhere, and the button works again after reopening the panel.
+    An archived conversation's canvas: 「沒放進輸入框：這段對話已封存…」.
   - **Hidden:** clear the selection, enter ✏️ 編輯, or open a compare tab / mermaid / image canvas:
     no 📨 anywhere. With the Ask popover open, the 📨 beside the selection is hidden too.
 - **Ask agent: where the selection is (ADR §3.7, Brett 2026-10-12 17:43):** have the agent write a

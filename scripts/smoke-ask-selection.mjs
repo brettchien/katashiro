@@ -11,7 +11,7 @@
 // CanvasCore.askBeside, as canvas.js does. Checks:
 //   - a selection posts selection{text, seq, rect}, rect = the range's box in the frame viewport;
 //   - the placed 💬 does not cover the selection (below it, or above it near the bottom);
-//   - the 📨 (Send selection, Brett 2026-10-13) goes on the 💬's row, right beside it, inside the frame;
+//   - the 📨 (To chat input, Brett 2026-10-13) goes on the 💬's row, right beside it, inside the frame;
 //   - scrolling re-posts only the rect, as selectionRect{seq, rect?} — no selection{} with the
 //     text again (#125d); scrolled out of view, the rect is left out (the 💬 hides);
 //   - slides: a selection on slide 1 has a rect; moving to slide 2 clears it or drops the rect;

@@ -19,10 +19,12 @@
 //   - an open popover follows its selection on scroll, docks under the header button once the
 //     selection scrolls out of view (#125e), and goes back beside it when it scrolls back;
 //   - the excerpt's text is in a <bdi dir="auto"> between the 「」 (#125c);
-//   - Send selection (Brett 2026-10-13): a 📨 right beside the 💬 and 📨 Send selection in the
-//     header, both with the selection; a click pushes exactly one message (no note: it starts with
-//     the host line, the selection fenced), both are disabled while it is in flight, a failure
-//     says 送出失敗, and both go away with the selection;
+//   - To chat input (Brett 2026-10-13 01:12): a 📨 right beside the 💬 and 📨 To chat input in the
+//     header, both with the selection; a click pushes NOTHING to the agent — it asks the panel once
+//     (katashiro-canvas-to-input) with exactly the selected text (no host line, no fence), both are
+//     disabled while it is asked, it says 📨 已放進輸入框 (or the draft case), a refusal says
+//     沒放進輸入框, and both go away with the selection. (The input box itself — empty → the
+//     selection, a draft appended to, focus — is smoke-multi-conversation.mjs, in the real panel.);
 //   - entering edit mode closes it (and the 📨).
 import http from "node:http";
 import fs from "node:fs";
@@ -53,12 +55,20 @@ const STUB = `
   };
   window.__pushes = [];
   window.__answer = { ok: true, agent: "Jelly" };
+  window.__toInput = [];
+  window.__inputAnswer = { ok: true };
   window.__prompts = 0;
   window.prompt = () => { window.__prompts++; return null; };
   window.chrome = {
     runtime: {
       id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined,
-      sendMessage: async (msg) => { if (msg && msg.type === "katashiro-canvas-push") { __pushes.push(msg); if (window.__delay) await new Promise((r) => setTimeout(r, window.__delay)); return __answer; } return undefined; },
+      sendMessage: async (msg) => {
+        const to = msg && msg.type === "katashiro-canvas-to-input";
+        if (!msg || (msg.type !== "katashiro-canvas-push" && !to)) return undefined;
+        (to ? __toInput : __pushes).push(msg);
+        if (window.__delay) await new Promise((r) => setTimeout(r, window.__delay));
+        return to ? __inputAnswer : __answer;
+      },
     },
     storage: { local: { get: async (k) => pick(k), set: async (o) => { Object.assign(data, o); }, remove: async () => {} }, onChanged: ev() },
     tabs: { query: async () => [], getCurrent: (cb) => { const t = { id: 1 }; if (cb) cb(t); return Promise.resolve(t); }, onRemoved: ev(), onUpdated: ev(), create: async () => ({}), update: async () => ({}), remove: async () => {} },
@@ -137,7 +147,7 @@ try {
       status: document.getElementById("ask-status").textContent,
       excerpt: document.getElementById("ask-excerpt").textContent,
       role: document.getElementById("ask-pop").getAttribute("role"),
-      pushes: window.__pushes.length, prompts: window.__prompts,
+      pushes: window.__pushes.length, toInput: window.__toInput.length, prompts: window.__prompts,
     };
   });
 
@@ -149,7 +159,7 @@ try {
   check(s.pillBox.top >= s.frameBox.top + sb.bottom && s.pillBox.top - (s.frameBox.top + sb.bottom) < 20, "the 💬 sits just below the selection (not over it)", { pill: s.pillBox, sel: sb, frame: s.frameBox });
   const endX = s.frameBox.left + sb.right;
   check(s.pillBox.left <= endX && s.pillBox.right >= endX, "the 💬 is at the selection's end", { pill: s.pillBox, endX });
-  check(s.sendPill && s.sendHeader, "the 📨 and the header 📨 Send selection show with the selection", s);
+  check(s.sendPill && s.sendHeader, "the 📨 and the header 📨 To chat input show with the selection", s);
   check(Math.abs(s.sendBox.top - s.pillBox.top) <= 1 && s.sendBox.left >= s.pillBox.right && s.sendBox.left - s.pillBox.right <= 8,
     "the 📨 sits right beside the 💬, on its row, not over it", { pill: s.pillBox, send: s.sendBox });
 
@@ -250,34 +260,51 @@ try {
   await frame.evaluate(() => getSelection().removeAllRanges());
   await sleep(400);
 
-  // 7c. Send selection (Brett 2026-10-13): the 📨 pushes the selection now, once, with no note.
+  // 7c. To chat input (Brett 2026-10-13 01:12): the 📨 sends nothing to the agent; it hands the
+  // panel exactly the selected text for its input box, once.
   await select("Paragraph 4 ");
   await until(() => !document.getElementById("send-pill").hidden, "the 📨 for a new selection");
   s = await state();
-  check(s.pill && s.sendPill && s.header && s.sendHeader && !s.pop, "a selection: 💬 + 📨 beside it, header 💬 Ask agent + 📨 Send selection", s);
-  const before = s.pushes;
-  await page.evaluate(() => { window.__answer = { ok: true, agent: "Jelly" }; window.__delay = 400; });
+  check(s.pill && s.sendPill && s.header && s.sendHeader && !s.pop, "a selection: 💬 + 📨 beside it, header 💬 Ask agent + 📨 To chat input", s);
+  const labels = await page.evaluate(() => { const b = document.getElementById("canvas-send-sel"), p = document.getElementById("send-pill"); return { text: b.textContent, title: b.title, icon: b.dataset.icon, pill: p.title }; });
+  check(labels.text === "📨 To chat input" && /放進聊天輸入框/.test(labels.title) && labels.icon === "📨" && labels.pill === "放進聊天輸入框",
+    "the controls say To chat input / 放進聊天輸入框", labels);
+  const before = s.pushes, beforeIn = s.toInput;
+  await page.evaluate(() => { window.__inputAnswer = { ok: true }; window.__delay = 400; });
   await page.click("#send-pill");
   await sleep(50);
   s = await state();
   check(s.sendDisabled && !s.pop, "in flight: both 📨 controls disabled, no popover", s);
   await page.evaluate(() => { document.getElementById("send-pill").click(); document.getElementById("canvas-send-sel").click(); });
-  await until(() => /已傳給 Jelly/.test(document.getElementById("canvas-notice").textContent), "📨 已傳給");
+  await until(() => /已放進輸入框/.test(document.getElementById("canvas-notice").textContent), "📨 已放進輸入框");
   s = await state();
-  check(s.pushes === before + 1, "a click (and clicks while in flight) push exactly one message", { before, after: s.pushes });
-  const sp = await page.evaluate(() => window.__pushes[window.__pushes.length - 1]);
-  check(sp.conversationId === "conv1" && sp.note === "" && sp.text.startsWith("[canvas \"Plan\" (cv_0123456789ab) v4, text selected by the user")
-    && sp.text.includes("```\nsome words\n```"), "the push has no note: the host line first, the selection fenced", sp);
-  check(s.notice === "📨 已傳給 Jelly（v4 的選取文字）" && !s.sendDisabled, "flash 📨 已傳給 <agent>（vN 的選取文字）; controls enabled again", s);
+  check(s.pushes === before, "📨 pushes NOTHING to the agent", { before, after: s.pushes });
+  check(s.toInput === beforeIn + 1, "a click (and clicks while in flight) ask the panel exactly once", { beforeIn, after: s.toInput });
+  const ti = await page.evaluate(() => window.__toInput[window.__toInput.length - 1]);
+  check(ti.conversationId === "conv1" && ti.text === "some words" && typeof ti.reqId === "string" && !("note" in ti),
+    "the panel gets exactly the selected text (no host line, no fence) for the canvas's conversation", ti);
+  check(s.notice === "📨 已放進輸入框" && !s.sendDisabled, "flash 📨 已放進輸入框; controls enabled again", s);
   const still = await frame.evaluate(() => getSelection().toString());
-  check(still === "some words" && !s.pill && !s.sendPill && s.header && s.sendHeader, "after a send: the selection stays, its 💬/📨 go away, the header buttons stay", { still, s });
-  // The header 📨 Send selection: a failure says so; nothing stays disabled.
-  await page.evaluate(() => { window.__answer = { ok: false, error: "no agent connected" }; window.__delay = 0; });
+  check(still === "some words" && !s.pill && !s.sendPill && s.header && s.sendHeader, "after it went in: the selection stays, its 💬/📨 go away, the header buttons stay", { still, s });
+  // The header button, when the panel could not switch (the current conversation is replying): the draft.
+  await page.evaluate(() => { window.__inputAnswer = { ok: true, draft: true }; window.__delay = 0; });
   await page.click("#canvas-send-sel");
-  await until(() => /送出失敗/.test(document.getElementById("canvas-notice").textContent), "送出失敗 (Send selection)");
+  await until(() => /草稿/.test(document.getElementById("canvas-notice").textContent), "已放進…草稿");
   s = await state();
-  check(s.pushes === before + 2 && /no agent connected/.test(s.notice) && !s.sendDisabled, "a failed Send selection: 送出失敗 with the error, controls enabled", s);
-  await page.evaluate(() => { window.__answer = { ok: true, agent: "Jelly" }; });
+  check(s.toInput === beforeIn + 2 && s.pushes === before && /那段對話的草稿/.test(s.notice), "the draft case says so; still nothing pushed", s);
+  // A refusal says so; nothing stays disabled.
+  await page.evaluate(() => { window.__inputAnswer = { ok: false, error: "這段對話已封存，先從總覽重新打開" }; });
+  await page.click("#canvas-send-sel");
+  await until(() => /沒放進輸入框/.test(document.getElementById("canvas-notice").textContent), "沒放進輸入框");
+  s = await state();
+  check(s.toInput === beforeIn + 3 && /已封存/.test(s.notice) && !s.sendDisabled, "a refusal: 沒放進輸入框 with the reason, controls enabled", s);
+  // No panel answering at all: the same notice as a push, nothing pushed.
+  await page.evaluate(() => { window.__inputAnswer = undefined; });
+  await page.click("#canvas-send-sel");
+  await until(() => /沒放進輸入框|沒有回應/.test(document.getElementById("canvas-notice").textContent), "no panel");
+  s = await state();
+  check(s.pushes === before && /側邊面板沒有回應/.test(s.notice), "no panel: says the panel did not answer; nothing pushed", s);
+  await page.evaluate(() => { window.__inputAnswer = { ok: true }; });
   // The selection goes away: so do the 📨 and the header button.
   await frame.evaluate(() => getSelection().removeAllRanges());
   await until(() => document.getElementById("canvas-send-sel").hidden, "the header 📨 to hide with the selection", 3000);
