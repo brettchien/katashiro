@@ -74,7 +74,7 @@ export default [
       await gw.waitPrompt((p) => p.sessionId === sidA);
       await h.switchTo(panel, "Gamma");
       // Window 1: ＋ with 3 open → the picker; Alpha, replying, cannot be picked.
-      await panel.click(".conv-tab-new");
+      await panel.evaluate(() => document.querySelector(".conv-tab-new").click());
       await h.until(panel, () => !!document.querySelector(".conv-picker"), "the picker with 3 open");
       const opts = await panel.evaluate(() => Array.from(document.querySelectorAll(".conv-picker-option")).map((b) => ({ text: b.textContent, disabled: b.disabled })));
       const a = opts.find((o) => o.text.startsWith("Alpha"));
