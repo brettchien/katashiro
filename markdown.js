@@ -34,51 +34,62 @@
   // html:false ⇒ any raw HTML in the message is ESCAPED to text before it ever reaches the
   // sanitizer (double defense); linkify auto-links bare URLs. GFM-style pipe tables are on in
   // markdown-it's default preset — the readability fix this ADR is motivated by (§1.1).
-  const md = global.markdownit({ html: false, linkify: true, highlight: highlightFence });
+  // `extra` only ever adds `breaks` (the user's own messages, below); every rule is the same.
+  function buildMd(extra) {
+    const md = global.markdownit(Object.assign({ html: false, linkify: true, highlight: highlightFence }, extra));
 
-  // GFM task lists: a list item starting "[ ] " or "[x] " gets a read-only checkbox. A small core
-  // rule instead of a plugin dependency. The checkbox markup is a CONSTANT string (never built from
-  // message text) and still passes through DOMPurify, which keeps <input type=checkbox disabled>.
-  const TASK_RE = /^\[([ xX])\][ \u00a0]/;
-  const TASK_BOX = '<input type="checkbox" class="task-list-item-checkbox" disabled> ';
-  const TASK_BOX_CHECKED = '<input type="checkbox" class="task-list-item-checkbox" checked disabled> ';
-  md.core.ruler.after("inline", "task_lists", (state) => {
-    const t = state.tokens;
-    for (let i = 2; i < t.length; i++) {
-      if (t[i].type !== "inline" || t[i - 1].type !== "paragraph_open" || t[i - 2].type !== "list_item_open") continue;
-      const first = t[i].children && t[i].children[0];
-      const m = first && first.type === "text" ? TASK_RE.exec(first.content) : null;
-      if (!m) continue;
-      first.content = first.content.slice(m[0].length);
-      const box = new state.Token("html_inline", "", 0);
-      box.content = m[1] === " " ? TASK_BOX : TASK_BOX_CHECKED;
-      t[i].children.unshift(box);
-      t[i - 2].attrJoin("class", "task-list-item");
-    }
-  });
+    // GFM task lists: a list item starting "[ ] " or "[x] " gets a read-only checkbox. A small core
+    // rule instead of a plugin dependency. The checkbox markup is a CONSTANT string (never built from
+    // message text) and still passes through DOMPurify, which keeps <input type=checkbox disabled>.
+    const TASK_RE = /^\[([ xX])\][ \u00a0]/;
+    const TASK_BOX = '<input type="checkbox" class="task-list-item-checkbox" disabled> ';
+    const TASK_BOX_CHECKED = '<input type="checkbox" class="task-list-item-checkbox" checked disabled> ';
+    md.core.ruler.after("inline", "task_lists", (state) => {
+      const t = state.tokens;
+      for (let i = 2; i < t.length; i++) {
+        if (t[i].type !== "inline" || t[i - 1].type !== "paragraph_open" || t[i - 2].type !== "list_item_open") continue;
+        const first = t[i].children && t[i].children[0];
+        const m = first && first.type === "text" ? TASK_RE.exec(first.content) : null;
+        if (!m) continue;
+        first.content = first.content.slice(m[0].length);
+        const box = new state.Token("html_inline", "", 0);
+        box.content = m[1] === " " ? TASK_BOX : TASK_BOX_CHECKED;
+        t[i].children.unshift(box);
+        t[i - 2].attrJoin("class", "task-list-item");
+      }
+    });
 
-  // Source lines (canvas Ask agent, ADR canvas §3.7): with env.sourceLines, every block element
-  // markdown-it maps to source lines carries them as data-line-start / data-line-end (its
-  // token.map: 0-based, end exclusive), so the canvas frame can say which lines a selection is in.
-  // Numbers only, from the parser — never from the text. Off for the chat (no env). DOMPurify keeps
-  // data-* attributes by default (ALLOW_DATA_ATTR), so DP_CONFIG needs no change for them.
-  const lineAttrs = (map) => [["data-line-start", String(map[0])], ["data-line-end", String(map[1])]];
-  md.core.ruler.push("source_lines", (state) => {
-    if (!state.env || state.env.sourceLines !== true) return;
-    for (const t of state.tokens) {
-      if (!t.block || !t.map || t.nesting === -1 || t.type === "inline") continue;
-      for (const [k, v] of lineAttrs(t.map)) t.attrSet(k, v);
-    }
-  });
-  // highlightFence returns a whole <pre>, which markdown-it emits as is (without the token's
-  // attributes): put them on that <pre> here.
-  const fenceRule = md.renderer.rules.fence;
-  md.renderer.rules.fence = (tokens, idx, options, env, slf) => {
-    const out = fenceRule(tokens, idx, options, env, slf);
-    const t = tokens[idx];
-    if (!env || env.sourceLines !== true || !t.map || !out.startsWith("<pre")) return out;
-    return `<pre data-line-start="${t.map[0]}" data-line-end="${t.map[1]}"${out.slice(4)}`;
-  };
+    // Source lines (canvas Ask agent, ADR canvas §3.7): with env.sourceLines, every block element
+    // markdown-it maps to source lines carries them as data-line-start / data-line-end (its
+    // token.map: 0-based, end exclusive), so the canvas frame can say which lines a selection is in.
+    // Numbers only, from the parser — never from the text. Off for the chat (no env). DOMPurify keeps
+    // data-* attributes by default (ALLOW_DATA_ATTR), so DP_CONFIG needs no change for them.
+    const lineAttrs = (map) => [["data-line-start", String(map[0])], ["data-line-end", String(map[1])]];
+    md.core.ruler.push("source_lines", (state) => {
+      if (!state.env || state.env.sourceLines !== true) return;
+      for (const t of state.tokens) {
+        if (!t.block || !t.map || t.nesting === -1 || t.type === "inline") continue;
+        for (const [k, v] of lineAttrs(t.map)) t.attrSet(k, v);
+      }
+    });
+    // highlightFence returns a whole <pre>, which markdown-it emits as is (without the token's
+    // attributes): put them on that <pre> here.
+    const fenceRule = md.renderer.rules.fence;
+    md.renderer.rules.fence = (tokens, idx, options, env, slf) => {
+      const out = fenceRule(tokens, idx, options, env, slf);
+      const t = tokens[idx];
+      if (!env || env.sourceLines !== true || !t.map || !out.startsWith("<pre")) return out;
+      return `<pre data-line-start="${t.map[0]}" data-line-end="${t.map[1]}"${out.slice(4)}`;
+    };
+    return md;
+  }
+
+  // Agent replies (and the canvas): a single newline is a soft break, rendered as a space — the
+  // CommonMark default, left as is on purpose (agent text is wrapped markdown).
+  const md = buildMd({});
+  // The user's own messages: what they typed with Shift+Enter keeps its line breaks (soft break →
+  // <br>). Fenced/indented code, lists and quotes are unaffected by `breaks`.
+  const mdUser = buildMd({ breaks: true });
 
   // Pinned, no-relax sanitizer config (ADR §3.2). This is where the defense is most easily
   // broken, so relaxing any of it is forbidden:
@@ -129,9 +140,11 @@
   // `innerHTML =` of remote text (streaming stays textContent; system notices stay textContent).
 
   // opts.sourceLines: tag block elements with their source lines (the canvas frame only).
+  // opts.userText: the user's own message — single newlines stay line breaks (mdUser).
   function renderMarkdown(text, opts) {
     const env = opts && opts.sourceLines === true ? { sourceLines: true } : {};
-    const html = md.render(text == null ? "" : String(text), env);
+    const parser = opts && opts.userText === true ? mdUser : md;
+    const html = parser.render(text == null ? "" : String(text), env);
     return global.DOMPurify.sanitize(html, DP_CONFIG);
   }
 
@@ -181,6 +194,6 @@
   global.renderMarkdownInto = renderMarkdownInto;
   // node (test) — jsdom supplies window for DOMPurify.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMarkdown, renderMarkdownInto, md, DP_CONFIG };
+    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG };
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

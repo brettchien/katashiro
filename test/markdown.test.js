@@ -157,3 +157,40 @@ test("source lines of a slide are offset by where it starts in the deck text", (
   const lines = C.askSourceLines([{ start: p[1], end: p[2], offset: slides[1].line }], { stored });
   assert.equal(stored.split("\n")[lines.from - 1], "second **here**");
 });
+
+// --- The user's own messages keep their line breaks (mdUser, breaks:true) ------------------------
+const { mdUser } = require("../markdown.js");
+
+test("user messages: each typed newline is a <br> (Shift+Enter lines stay lines)", () => {
+  assert.equal(mdUser.render("a\nb\nc"), "<p>a<br>\nb<br>\nc</p>\n");
+  // a blank line still starts a new paragraph
+  assert.equal(mdUser.render("a\n\nb"), "<p>a</p>\n<p>b</p>\n");
+});
+
+test("agent messages are unchanged: a single newline is still a soft break (a space)", () => {
+  assert.equal(md.render("a\nb"), "<p>a\nb</p>\n");
+  assert.doesNotMatch(md.render("a\nb\nc"), /<br/);
+});
+
+test("user messages: fenced code is rendered exactly as for the agent (no <br> inside)", () => {
+  for (const src of ["```js\nconst x = 1;\nconst y = 2;\n```", "```\nline 1\nline 2\n```", "```mermaid\ngraph TD\n  A --> B\n```"]) {
+    assert.equal(mdUser.render(src), md.render(src));
+    assert.doesNotMatch(mdUser.render(src), /<br/);
+  }
+  // a canvas push: a note line, then a fence — the note keeps its break, the fence is untouched
+  const push = "📤 from canvas\nsee below\n\n```md\n# Title\nbody\n```";
+  const h = mdUser.render(push);
+  assert.match(h, /<p>📤 from canvas<br>\nsee below<\/p>/);
+  assert.match(h, /<pre class="hljs"><code># Title\nbody\n<\/code><\/pre>/);
+});
+
+test("user messages: lists, quotes, task lists and html escaping still work with breaks", () => {
+  const list = mdUser.render("- one\n- two\n\n1. a\n2. b");
+  assert.match(list, /<ul>\n<li>one<\/li>\n<li>two<\/li>\n<\/ul>/);
+  assert.match(list, /<ol>\n<li>a<\/li>\n<li>b<\/li>\n<\/ol>/);
+  assert.match(mdUser.render("> q1\n> q2"), /<blockquote>\n<p>q1<br>\nq2<\/p>\n<\/blockquote>/);
+  assert.match(mdUser.render("- [x] done"), /checked disabled> done/);
+  assert.match(mdUser.render("<img src=x onerror=alert(1)>\nnext"), /&lt;img src=x onerror=alert\(1\)&gt;<br>\nnext/);
+  assert.equal(mdUser.options.html, false);
+  assert.equal(md.options.breaks, false);
+});

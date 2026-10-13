@@ -376,7 +376,7 @@ try {
     for (const [k, v] of Object.entries(entries)) localStorage.setItem("ls:" + k, JSON.stringify(v));
   }, {
     "__live": [1, 2],
-    "history:1": { conversationId: ID(1), sessions: { "ws://fake/acp": "sess_old1" }, messages: [msg("sent", "First topic in window one", now - 60000), msg("received", "ok one", now - 50000)], savedAt: now - 50000 },
+    "history:1": { conversationId: ID(1), sessions: { "ws://fake/acp": "sess_old1" }, messages: [msg("sent", "First topic in window one", now - 60000), msg("received", "ok one", now - 50000), msg("sent", "replayed line one\nreplayed line two", now - 45000)], savedAt: now - 45000 },
     "history:7": { sessions: {}, messages: [msg("sent", "pre-61 closed window chat", now - 90000)], savedAt: now - 90000 },
     "history:8": { conversationId: ID(8), messages: [msg("sent", "older closed window", now - 900000)], savedAt: now - 900000 },
     "history:9": { conversationId: ID(9), messages: [msg("sent", "oldest closed window", now - 9000000)], savedAt: now - 9000000 },
@@ -401,6 +401,9 @@ try {
   const resume = log.find((m) => m.method === "session/resume");
   check(resume && resume.params.sessionId === "sess_old1" && resume.params.mcpServers.length === 1, "it resumes its saved session with its own MCP server", resume);
   check((await visibleText(p1)).includes("ok one"), "its messages are replayed", await visibleText(p1));
+  // The user's own multi-line message keeps its line breaks when replayed from history (breaks:true).
+  const replayedBubble = await p1.evaluate(() => { const b = Array.from(document.querySelectorAll(".message.sent .bubble")).find((x) => x.textContent.includes("replayed line one")); return b ? b.innerHTML : null; });
+  check(replayedBubble && /replayed line one<br>\s*replayed line two/.test(replayedBubble), "a replayed user message keeps its line break (<br>)", replayedBubble);
 
   // U2: the first prompt after the resume carries the host line first; the next one does not.
   await send(p1, "hello again");
@@ -431,6 +434,9 @@ try {
   const news = log.filter((m) => m.method === "session/new");
   check(news[0].params.mcpServers[0].id !== resume.params.mcpServers[0].id, "each conversation declares its own MCP server", [news[0].params.mcpServers, resume.params.mcpServers]);
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "Second topic about tabs", "auto title");
+  // The user's own message keeps the line break typed with Shift+Enter (live send).
+  const sentBubble = await p1.evaluate(() => { const b = Array.from(document.querySelectorAll(".message.sent .bubble")).find((x) => x.textContent.includes("about tabs")); return b ? b.innerHTML : null; });
+  check(sentBubble && /Second {3}topic<br>\s*about tabs/.test(sentBubble), "a sent multi-line user message shows a <br> between its lines", sentBubble);
 
   // P2 (§5): switching while a turn runs — the turn continues in the background and its reply lands
   // in its own (hidden) list: ⏳ + ⏹ on its tab while it runs, then ● and a notification (Q9). A late
