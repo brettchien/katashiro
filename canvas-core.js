@@ -62,10 +62,17 @@
       (m.text === undefined || (typeof m.text === "string" && m.text.length <= HIGHLIGHT_TEXT_MAX)) &&
       (m.slide === undefined || (Number.isInteger(m.slide) && m.slide >= 1)) &&
       (m.error === undefined || (typeof m.error === "string" && m.error.length <= ERROR_MAX)),
+    // To chat input, then Enter (§3.7): while the host has armed the frame (armKeys{on}), the
+    // frame reports the next key or mouse press there ("mousedown" for a press). Only the key and
+    // its modifier flags: the host decides (toInputArmKey), and acts only while it is armed and the
+    // frame holds the focus.
+    armedKey: (m) => typeof m.key === "string" && m.key.length <= 32 &&
+      ["shiftKey", "ctrlKey", "altKey", "metaKey", "isComposing"].every((k) => typeof m[k] === "boolean") &&
+      Number.isInteger(m.keyCode),
   };
   // A compare tab (view=agent, §3.10) is read-only: no save (a forged "user" edit), no editor
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
-  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState"]);
+  const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState", "armedKey"]);
 
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
@@ -756,6 +763,63 @@
     return null;
   }
 
+  // --- To chat input, then Enter (§3.7, Brett 2026-10-13 16:31) ----------------------------------
+  // The side panel is another document: its messageInput.focus() cannot take the window's keyboard
+  // focus away from the canvas tab, so Enter right after 📨 landed in the canvas and did nothing.
+  // After a 📨 the canvas tab is "armed" for a while: Enter there asks the panel to send its input
+  // exactly as its own send would; Esc disarms; anything else disarms silently.
+  const TO_INPUT_ARM_MS = 30000;
+  const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta", "AltGraph", "CapsLock", "Fn", "OS"]);
+
+  /**
+   * What the canvas says (and whether it arms) after the panel answered a To chat input request.
+   * r: the panel's answer (ok); focused: this canvas tab still has the keyboard focus (when the
+   * side panel took it, Enter goes to its input box and the canvas must not send as well).
+   * → { arm, text }
+   */
+  function toInputAfter(r, { focused }) {
+    const where = r && r.elsewhere ? "（在另一個視窗）" : "";
+    // The panel did not switch to the canvas's conversation: Enter here would send another
+    // conversation's input, so it never arms.
+    if (r && r.draft) return { arm: false, text: "📨 已放進那段對話的草稿（側邊欄沒切到那段對話，Enter 不會送出）" };
+    if (!focused) return { arm: false, text: `📨 已放進輸入框${where}` };
+    return { arm: true, text: `📨 已放進輸入框${where} — 按 Enter 送出、Esc 取消` };
+  }
+
+  /**
+   * A key while armed → "send" | "cancel" | "ignore" | "disarm". Enter with no modifier sends,
+   * Esc cancels, a lone modifier changes nothing (Shift on its way to Shift+Enter), an IME key and
+   * every other key (Shift+Enter included) disarm.
+   */
+  function toInputArmKey(e) {
+    if (!e || typeof e.key !== "string") return "disarm";
+    if (MODIFIER_KEYS.has(e.key)) return "ignore";
+    if (imeKey(e)) return "disarm";
+    const mods = !!(e.shiftKey || e.ctrlKey || e.altKey || e.metaKey);
+    if (e.key === "Enter" && !mods) return "send";
+    if (e.key === "Escape" && !mods) return "cancel";
+    return "disarm";
+  }
+
+  /**
+   * The side panel's check before it sends its input for a canvas's Enter. → null (send) or
+   * { error, notCurrent? }. isCurrent: the canvas's conversation is the one on screen (its input
+   * box is the one that holds the text); busy: a request is already being sent, or a pasted image
+   * is still being encoded.
+   */
+  function submitInputRefusal({ isCurrent, inputText, busy }) {
+    if (!isCurrent) return { error: "那段對話不是側邊欄目前的對話，沒送出（文字留在它的輸入框）", notCurrent: true };
+    if (busy) return { error: "側邊欄正在送出，沒再送一次" };
+    if (typeof inputText !== "string" || !inputText.trim()) return { error: "輸入框是空的，沒送出" };
+    return null;
+  }
+
+  /** The canvas's line for the panel's answer to a canvas Enter. */
+  function toInputSubmitText(r) {
+    if (r && r.ok) return `已送出${r.elsewhere ? "（在另一個視窗）" : ""}`;
+    return `沒送出：${clipError(r && r.error ? r.error : "側邊欄沒有回應")}`;
+  }
+
   // The popover's one-line excerpt of the selection: whitespace collapsed, control and bidi
   // characters dropped (agent-authored text must not reorder the line), cut at `max` characters.
   // Tag characters U+E0000–E007F go too (#125a): invisible, they can carry ASCII the user never
@@ -948,5 +1012,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

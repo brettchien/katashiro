@@ -1026,3 +1026,65 @@ test("askReduce rect: moves the selection's rect, keeps its text/where; null = o
   assert.equal(s.sel.rect, null);
   assert.equal(s.captured, cap);
 });
+
+// --- To chat input, then Enter (§3.7, Brett 2026-10-13 16:31) ---------------------------------------
+const key = (k, o = {}) => ({ key: k, shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, keyCode: 0, ...o });
+
+test("toInputArmKey: Enter sends, Esc cancels, a lone modifier changes nothing, anything else disarms", () => {
+  assert.equal(C.toInputArmKey(key("Enter")), "send");
+  assert.equal(C.toInputArmKey(key("Escape")), "cancel");
+  for (const m of ["Shift", "Control", "Alt", "Meta"]) assert.equal(C.toInputArmKey(key(m)), "ignore", m);
+  for (const o of [{ shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+    assert.equal(C.toInputArmKey(key("Enter", o)), "disarm", JSON.stringify(o));     // Shift+Enter & co never send
+  }
+  assert.equal(C.toInputArmKey(key("Escape", { shiftKey: true })), "disarm");
+  // An IME Enter (picks a candidate) never sends.
+  assert.equal(C.toInputArmKey(key("Enter", { isComposing: true })), "disarm");
+  assert.equal(C.toInputArmKey(key("Enter", { keyCode: 229 })), "disarm");
+  for (const k of ["a", " ", "ArrowDown", "Tab", "Backspace", "mousedown"]) assert.equal(C.toInputArmKey(key(k)), "disarm", k);
+  assert.equal(C.toInputArmKey(null), "disarm");
+  assert.equal(C.toInputArmKey({}), "disarm");
+});
+
+test("toInputAfter: arms only when the canvas still has the focus and the text is in the input on screen", () => {
+  assert.deepEqual(C.toInputAfter({ ok: true }, { focused: true }), { arm: true, text: "📨 已放進輸入框 — 按 Enter 送出、Esc 取消" });
+  assert.deepEqual(C.toInputAfter({ ok: true, elsewhere: true }, { focused: true }), { arm: true, text: "📨 已放進輸入框（在另一個視窗） — 按 Enter 送出、Esc 取消" });
+  // The side panel took the focus: Enter goes to its input, the canvas must not send as well.
+  assert.deepEqual(C.toInputAfter({ ok: true }, { focused: false }), { arm: false, text: "📨 已放進輸入框" });
+  // A draft of a conversation not on screen: never armed (Enter would send another conversation's input).
+  const d = C.toInputAfter({ ok: true, draft: true }, { focused: true });
+  assert.equal(d.arm, false);
+  assert.match(d.text, /那段對話的草稿/);
+  assert.doesNotMatch(d.text, /回覆中/);          // #142 b: not only a reply keeps the panel where it is
+  assert.equal(C.TO_INPUT_ARM_MS, 30000);
+});
+
+test("submitInputRefusal: the conversation on screen, a non-empty input, nothing in flight", () => {
+  assert.equal(C.submitInputRefusal({ isCurrent: true, inputText: "hello", busy: false }), null);
+  const nc = C.submitInputRefusal({ isCurrent: false, inputText: "hello", busy: false });
+  assert.equal(nc.notCurrent, true);
+  assert.match(nc.error, /不是側邊欄目前的對話/);
+  assert.match(C.submitInputRefusal({ isCurrent: true, inputText: "  \n ", busy: false }).error, /輸入框是空的/);
+  assert.match(C.submitInputRefusal({ isCurrent: true, inputText: undefined, busy: false }).error, /輸入框是空的/);
+  assert.match(C.submitInputRefusal({ isCurrent: true, inputText: "x", busy: true }).error, /正在送出/);
+});
+
+test("toInputSubmitText: 已送出, or why not", () => {
+  assert.equal(C.toInputSubmitText({ ok: true }), "已送出");
+  assert.equal(C.toInputSubmitText({ ok: true, elsewhere: true }), "已送出（在另一個視窗）");
+  assert.equal(C.toInputSubmitText({ ok: false, error: "輸入框是空的，沒送出" }), "沒送出：輸入框是空的，沒送出");
+  assert.equal(C.toInputSubmitText(undefined), "沒送出：側邊欄沒有回應");
+});
+
+test("acceptFrameMessage: armedKey carries a key and its flags only, never from a compare tab", () => {
+  const m = { type: "armedKey", nonce: "n1", ...key("Enter") };
+  assert.ok(ok(m));
+  assert.ok(ok({ ...m, key: "mousedown" }));
+  assert.equal(ok({ ...m, key: "x".repeat(33) }), null);
+  assert.equal(ok({ ...m, shiftKey: "no" }), null);
+  assert.equal(ok({ ...m, keyCode: 1.5 }), null);
+  const { isComposing, ...noIme } = m;
+  assert.equal(ok(noIme), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: m }, { frameWindow, nonce: "n1", readOnly: true }), null);
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { ...m, nonce: "other" } }, { frameWindow, nonce: "n1" }), null);
+});

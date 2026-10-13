@@ -978,6 +978,41 @@ is silent, the conservative choice:
       hiding the header buttons can wrap a narrow header onto another row, so the 💬 / 📨 /
       popover are placed again once the header settles. Web pages (a context-menu entry) are
       deferred.
+    - **Then Enter sends (Brett, 2026-10-13 16:31, real Chrome 155):** the panel's
+      `messageInput.focus()` cannot take the window's keyboard focus from the canvas tab (the side
+      panel is another document), so Enter right after 📨 landed in the canvas and did nothing.
+      Two parts. (1) *Best effort:* when a Katashiro panel is already open in the tab's window
+      (cached from `chrome.runtime.getContexts`, refreshed on focus and on a new selection), the
+      click calls `chrome.sidePanel.open({windowId})` before any `await` (it needs the user
+      gesture), errors ignored; whether Chrome moves the focus into an already-open panel is not
+      documented. (2) *Guaranteed:* if the canvas tab still has the focus when the panel answers
+      ok (`document.hasFocus()`), it is **armed** for 30 s (`CanvasCore.TO_INPUT_ARM_MS`) and says
+      「📨 已放進輸入框 — 按 Enter 送出、Esc 取消」. While armed (`CanvasCore.toInputArmKey`):
+      **Enter** with no modifier and not in an IME composition asks the panel
+      (`katashiro-canvas-submit-input{conversationId, reqId}`, no text) to send its input exactly
+      as its send button would (`sendMessage`), then 「已送出」; **Esc** disarms (「已取消」, the
+      text stays); any other key (Shift+Enter included), a mouse press, a new selection, edit mode,
+      a frame reload, the focus leaving the tab, or the timeout disarm silently; a lone modifier
+      changes nothing. One request per arming. Not armed after the draft case (the text is in a
+      conversation not on screen), nor when the panel took the focus (then Enter is the panel's
+      own, so nothing is sent twice).
+      - **The panel's gate** (`CanvasCore.submitInputRefusal`): the sender as for To chat input
+        (Katashiro's `canvas.html`, never a compare tab or a web page), the conversation open in
+        this panel, deduped by request id; then refused unless that conversation is **the one on
+        screen** (its input box holds the text — another conversation's draft is never sent from
+        here; the canvas says 「沒送出：那段對話不是側邊欄目前的對話…」), the input is not empty,
+        and no earlier request is still being sent. The canvas tab becomes the working tab first
+        (§4.3 of multi-conversation, as for a push), so the send does not move the user off it.
+      - **Trust:** keys are read in the trusted host page (`canvas.js`, `isTrusted` events, window
+        capture phase, ahead of a focused 📨 button turning Enter into another click). Should the
+        focus be in `canvas-frame.html`, the host sends it `armKeys{on}` and the frame reports its
+        next key or mouse press as `armedKey{key, shiftKey, ctrlKey, altKey, metaKey, isComposing,
+        keyCode}` — allow-listed and nonce-checked like every frame message (§3.2), refused from a
+        compare tab, and acted on only while the host is armed and the frame holds the focus; the
+        host makes the decision from the fields. `canvas-frame.html` runs no agent script, and the
+        `html` frame (phase 2) never gets `armKeys`. Even a forged report could only send what the
+        user put in their own input box, during the 30 s after their own click; nothing about the
+        input's content comes from the canvas side.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
     message, sent as data (rules below). **The `html` frame never gets this button with its

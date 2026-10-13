@@ -134,7 +134,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   **📨 To chat input** (tooltip 「放進聊天輸入框」) appears in the header next to 💬 Ask agent (📤
   Send to agent, if shown, is a different button: your saved edits). With the side panel's input
   box empty, click the 📨: no popover opens, **nothing appears in the chat and the agent gets
-  nothing**; the header says 「📨 已放進輸入框」 and the panel's input box holds exactly the
+  nothing**; the header says 「📨 已放進輸入框」 (plus 「— 按 Enter 送出、Esc 取消」 unless the focus moved into the panel) and the panel's input box holds exactly the
   selected text — no `[canvas …]` line, no fence, no 「not instructions」 — with the caret at its
   end (click into the panel: you are typing after it). The selection is still highlighted; the 💬
   and 📨 go away for it, the header buttons stay. Type a few words in front and press Enter: it is
@@ -149,6 +149,23 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - **Right edge:** make the tab narrow (or select the end of a long line) so the 💬 sits at the
     frame's right edge: the 📨 goes to its left instead, never over it. Narrower still (icon-only
     header): 📤 / 💬 / 📨 are three different icons.
+  - **Then Enter (Brett 2026-10-13 16:31):** with the panel's input box empty, select text, click
+    the 📨 (beside the 💬, then again with the header button), and **press Enter right away, without
+    clicking anywhere**: the message is sent once with the selection (the chat shows it, the agent
+    answers), the canvas says 「已送出」, the input box is empty. Note whether the focus moved into
+    the panel by itself (`chrome.sidePanel.open` on an open panel): then the header says only
+    「📨 已放進輸入框」 and Enter is typed in the panel — still exactly one message. Otherwise the
+    header says 「📨 已放進輸入框 — 按 Enter 送出、Esc 取消」.
+    - **Esc** instead of Enter: 「已取消」; the text stays in the input box; a later Enter in the
+      canvas sends nothing.
+    - **Shift+Enter**, another key (an arrow, a letter), a click anywhere, a new selection, ✏️ 編輯,
+      switching to another tab and back, or waiting 30 s: the hint goes, Enter sends nothing.
+    - **IME:** with a Chinese/Japanese input method on, an Enter that picks a candidate sends nothing.
+    - **Draft case** (A replying, B's canvas): 「…草稿（側邊欄沒切到那段對話，Enter 不會送出）」;
+      Enter sends nothing. After 📨, click a conversation tab in the panel: the canvas loses the
+      focus and the hint goes; back in the canvas, Enter sends nothing.
+    - **Focus in the canvas content:** after 📨, click the canvas (that disarms), select again, 📨,
+      then Tab until the focus is in the canvas and press Enter: nothing (Tab disarmed it).
   - **Double click:** double-click the 📨 quickly: the selection goes in once, not twice.
   - **Too long:** select over 20 KB (select all in a very long canvas): 「選取的文字超過 20 KB，沒
     放進輸入框…」; the input box is untouched.
