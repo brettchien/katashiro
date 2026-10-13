@@ -571,6 +571,14 @@
     return out;
   }
 
+  // Multi-conversation P1b §4.3: a canvas tab a canvas tool put in front of the user (the host
+  // answers with its `tabId`) becomes the calling conversation's working tab, like a page tool's tab —
+  // else the next send would switch the user back to the last page the agent touched (Q6).
+  function noteCanvasTabUsed(ctx, r) {
+    if (!r || !Number.isInteger(r.tabId) || typeof ctx.onTabUsed !== "function") return;
+    try { ctx.onTabUsed(r.tabId); } catch (_) { /* host bookkeeping only */ }
+  }
+
   // canvas_open: the title and the content's size — never the document itself (it can be 2 MB),
   // and never image base64.
   function redactCanvasOpen(args) {
@@ -2882,7 +2890,12 @@
         }
         let opened = "";
         if (typeof c.onWrite === "function") {
-          try { opened = (await c.onWrite(res, { beside: args.beside || null })) || ""; } catch (_) { /* the canvas is saved either way */ }
+          // A note, or { note, tabId } when the canvas was shown to the user (beside) — §4.3.
+          try {
+            const w = await c.onWrite(res, { beside: args.beside || null });
+            opened = (typeof w === "string" ? w : w && w.note) || "";
+            noteCanvasTabUsed(ctx, w);
+          } catch (_) { /* the canvas is saved either way */ }
         }
         let text = `${res.created ? "created" : "updated"} canvas "${res.title}" — id ${res.id}, version ${res.version}${opened ? ` (${opened})` : ""}`;
         // markdown: the editor normalizes it (§3.5) and the STORED text is the normalized one. Wait
@@ -3100,6 +3113,7 @@
         if (meta.kind !== "slides") return errText(`canvas_goto: canvas "${meta.title}" is ${meta.kind}, not slides`);
         if (typeof c.gotoSlide !== "function") return errText("canvas_goto: not available in this host");
         const r = await c.gotoSlide(meta.id, args.slide);
+        noteCanvasTabUsed(ctx, r);
         if (!r || !r.ok) return errText(`canvas_goto: ${(r && r.error) || "failed"}`);
         return okText(`showing slide ${r.index} of ${r.total} of "${meta.title}"${r.index !== args.slide ? ` (asked for ${args.slide}; the deck has ${r.total})` : ""}`);
       }
@@ -3160,6 +3174,7 @@
         if (hasFind) req.find = anchor; else req.heading = anchor;
         let r;
         try { r = await c.highlight(meta.id, req); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+        noteCanvasTabUsed(ctx, r);                     // only when it took the front (not deferred)
         if (!r || !r.ok) {
           if (lastCanvasHighlight.get(meta.id) === mine) { if (last) lastCanvasHighlight.set(meta.id, last); else lastCanvasHighlight.delete(meta.id); }
           return errText(`canvas_highlight: ${(r && r.error) || "failed"}`);
@@ -3227,6 +3242,7 @@
           let r;
           try { r = await c.compare(meta.id, args.compare); }
           catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+          noteCanvasTabUsed(ctx, r);
           if (!r || !r.ok) {
             const why = `canvas_view: ${args.compare ? "cannot compare" : "cannot end the compare of"} "${meta.title}": ${(r && r.error) || "failed"}`;
             return out.length ? errText(`${out.join("\n")}\n${why}`) : errText(why);

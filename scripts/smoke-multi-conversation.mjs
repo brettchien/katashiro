@@ -26,7 +26,8 @@
 //   - P1b (ADR §4), on a small model of tabs and groups: new_tab joins the conversation's group
 //     (titled after it) and becomes the working tab; set_title (sanitised; never over a user name);
 //     Q4 b order (a card asked after a queued message stays open); Q6 (send brings the working tab
-//     forward); Q5 (collapse the left conversation's group, never with the active tab in it); Q12
+//     forward; a canvas the agent highlights, or a canvas the user pushes from, becomes the working
+//     tab, a canvas opened in the background does not); Q5 (collapse the left conversation's group, never with the active tab in it); Q12
 //     (❓ + notification, whose click switches back); per-conversation drafts; archive closes the
 //     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
 //     已封存 vs "that window's panel is closed"; reopen and a browser restart bring the tabs back
@@ -122,7 +123,8 @@ const STUB = String.raw`
       id: "stub", lastError: undefined, onMessage,
       getURL: (p) => location.origin + "/" + p,
       getManifest: () => ({ version: "0.0.0-smoke" }),
-      sendMessage: async (msg) => { window.__messages.push(msg); return undefined; },
+      // A canvas tab answers canvas_highlight (§4.3 working-tab check); nothing else is answered.
+      sendMessage: async (msg) => { window.__messages.push(msg); return msg && msg.type === "katashiro-canvas-highlight" ? { ok: true, tag: "h1", text: "A" } : undefined; },
       reload() {},
     },
     storage: { local: area("local"), sync: area("sync", { agents: [{ name: "Orca", url: "ws://fake/acp" }], activeAgentUrl: "ws://fake/acp", actMode: true }), session: area("session", (() => {
@@ -650,6 +652,44 @@ try {
   check(!model.tabs.find((t) => t.id === userTab.id).groupId || model.tabs.find((t) => t.id === userTab.id).groupId === -1, "a tab the user opened is never grouped", null);
   await send(q, "now look");
   await until(q, (id) => window.__tm().tabs.find((t) => t.id === id).active, "Q6: the working tab is activated at the send", agentTab.id);
+  await turnIdle();
+
+  // §4.3 (fix 2026-10-13): a canvas the agent puts in front becomes the working tab, so the next send
+  // stays on it instead of jumping back to the last page the agent touched; a background open does not.
+  await q.evaluate(() => { window.__acp.hold = true; window.__acp.connectOnPrompt = true; window.__acp.conn = null; });
+  await send(q, "show me the deck");
+  await until(q, () => !!window.__acp.conn, "§4.3: A's tunnel for the canvas tools");
+  r = await tool("katashiro.canvas_open", { title: "Deck", kind: "slides", content: "# A\n---\nb" });
+  check(r.result && !r.result.isError, "canvas_open works", r);
+  const deckId = r.result && (/id (cv_[0-9a-f]+)/.exec(r.result.content[0].text) || [])[1];
+  model = await tm();
+  const deckTab = model.tabs.find((t) => t.url.endsWith(`id=${deckId}`));
+  check(deckTab && !deckTab.active, "a new canvas opens in a background tab", deckTab);
+  let stW = (await storage(q))[`conv:${convA}`];
+  check(stW.workingTab && stW.workingTab.id === agentTab.id, "…and does not take the working tab", stW.workingTab);
+  r = await tool("katashiro.canvas_highlight", { id: deckId, heading: "A" });
+  check(r.result && !r.result.isError, "canvas_highlight works", r);
+  await until(q, (a) => { const c = JSON.parse(localStorage.getItem("ls:conv:" + a[0])); return c.workingTab && c.workingTab.id === a[1]; }, "§4.3: canvas_highlight makes the canvas tab the working tab", [convA, deckTab && deckTab.id]);
+  await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
+  await turnIdle();
+  await q.evaluate((id) => window.chrome.tabs.update(id, { active: true }), agentTab.id);   // the user looks back at the page
+  await send(q, "and now?");
+  await until(q, (id) => window.__tm().tabs.find((t) => t.id === id).active, "§4.3: the send brings the canvas forward, not the old page", deckTab && deckTab.id);
+  await turnIdle();
+  // A push from a canvas tab (the stub's sender is tab 99) makes that tab the working tab.
+  await q.evaluate((u) => { const m = window.__tm(); m.tabs.push({ id: 99, windowId: 5, url: u, active: false, groupId: -1, splitViewId: -1, pinned: false, index: 98, lastAccessed: 1 }); window.__tmSave(m); }, `${origin}/canvas.html?id=${deckId}`);
+  r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=" + m.id), { type: "katashiro-canvas-push", conversationId: convA, id: deckId, text: "from the deck", note: "", reqId: "pw1" });
+  check(r && r.ok, "a push from a canvas tab is posted", r);
+  await until(q, (a) => { const c = JSON.parse(localStorage.getItem("ls:conv:" + a)); return c.workingTab && c.workingTab.id === 99; }, "§4.3: a push makes the pushing canvas tab the working tab", convA);
+  await turnIdle();
+  // Put things back as the rest of the run expects: the agent's page is the working tab again.
+  await q.evaluate(() => { const m = window.__tm(); m.tabs = m.tabs.filter((t) => t.id !== 99); window.__tmSave(m); });
+  await q.evaluate(() => { window.__acp.hold = true; window.__acp.connectOnPrompt = true; window.__acp.conn = null; });
+  await send(q, "back to the page");
+  await until(q, () => !!window.__acp.conn, "A's tunnel for switch_tab");
+  await tool("katashiro.switch_tab", { url: "https://agent.example/a" });
+  await until(q, (a) => { const c = JSON.parse(localStorage.getItem("ls:conv:" + a[0])); return c.workingTab && c.workingTab.id === a[1]; }, "switch_tab: the agent's page is the working tab again", [convA, agentTab.id]);
+  await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
   await turnIdle();
 
   // Draft: typed text stays with its conversation.
