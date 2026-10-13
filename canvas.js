@@ -392,7 +392,8 @@
     const textKind = !!current && CanvasCore.textKind(current.meta.kind);
     const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect, where: m.where } : null;
     if (armed && !(sel && sel.text === armed.text && sel.seq === armed.seq)) disarm();    // a new selection
-    if (sel) refreshPanelHere();                  // for the 📨's sidePanel.open (needs it at the click)
+    // For the 📨's sidePanel.open (needs it at the click); at most once a second while dragging.
+    if (sel && Date.now() - panelHereAt >= 1000) refreshPanelHere();
     askDispatch({ type: "selection", sel });
   }
   // Opened by the 💬 or the header button: captures the selection, version and title now.
@@ -469,7 +470,11 @@
     // r.draft: the panel did not switch to this conversation, so the text is in its draft. Else,
     // while this tab still has the keyboard focus (the side panel did not take it), Enter here sends.
     const after = CanvasCore.toInputAfter(r, { focused: document.hasFocus() });
-    if (after.arm) arm(sel, after.text); else flash(after.text);
+    if (after.arm) { arm(sel, after.text); return; }
+    flash(after.text);
+    // Not armed: a 📨 left with the focus would turn the next Enter into another click.
+    sendSelBtn.blur();
+    sendPill.blur();
   }
 
   // --- To chat input, then Enter (§3.7, Brett 2026-10-13 16:31) ----------------------------------
@@ -487,7 +492,9 @@
   //     as armedKey{} under the nonce, and acted on only while armed and the frame has the focus.
   let myWindowId = null;
   let panelHere = false;              // a Katashiro side panel is open in this tab's window (last seen)
+  let panelHereAt = 0;                // when refreshPanelHere last started
   async function refreshPanelHere() {
+    panelHereAt = Date.now();
     try {
       const me = await chrome.tabs.getCurrent();
       if (!me || me.windowId == null) return;

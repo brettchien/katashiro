@@ -383,10 +383,11 @@ try {
   await until(() => /草稿/.test(document.getElementById("canvas-notice").textContent), "已放進…草稿");
   s = await state();
   check(s.toInput === beforeIn + 9 && s.pushes === before && /那段對話的草稿/.test(s.notice), "the draft case says so; still nothing pushed", s);
-  await page.evaluate(() => document.activeElement && document.activeElement.blur());   // (Enter on a focused button clicks it)
+  check(await page.evaluate(() => document.activeElement !== document.getElementById("canvas-send-sel")), "not armed: the 📨 gave up the focus", null);
   await page.keyboard.press("Enter");
   await sleep(200);
-  check((await state()).submits === sub0 + 3, "the draft case is not armed: Enter sends nothing", await state());
+  s = await state();
+  check(s.submits === sub0 + 3 && s.toInput === beforeIn + 9, "the draft case is not armed: Enter sends nothing, nor clicks the 📨 again", s);
   // A refusal says so; nothing stays disabled.
   await page.evaluate(() => { window.__inputAnswer = { ok: false, error: "這段對話已封存，先從總覽重新打開" }; });
   await page.click("#canvas-send-sel");

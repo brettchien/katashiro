@@ -805,7 +805,8 @@
    * The side panel's check before it sends its input for a canvas's Enter. → null (send) or
    * { error, notCurrent? }. isCurrent: the canvas's conversation is the one on screen (its input
    * box is the one that holds the text); busy: a request is already being sent, or a pasted image
-   * is still being encoded.
+   * is still being encoded. Empty means no text, even with staged images (the panel's own send
+   * would send those): a canvas Enter only follows a 📨, which always puts text in.
    */
   function submitInputRefusal({ isCurrent, inputText, busy }) {
     if (!isCurrent) return { error: "那段對話不是側邊欄目前的對話，沒送出（文字留在它的輸入框）", notCurrent: true };

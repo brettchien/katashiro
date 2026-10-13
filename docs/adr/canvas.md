@@ -995,7 +995,8 @@ is silent, the conservative choice:
       a frame reload, the focus leaving the tab, or the timeout disarm silently; a lone modifier
       changes nothing. One request per arming. Not armed after the draft case (the text is in a
       conversation not on screen), nor when the panel took the focus (then Enter is the panel's
-      own, so nothing is sent twice).
+      own, so nothing is sent twice). When not armed the 📨 gives up the focus, so an Enter
+      there is not another click.
       - **The panel's gate** (`CanvasCore.submitInputRefusal`): the sender as for To chat input
         (Katashiro's `canvas.html`, never a compare tab or a web page), the conversation open in
         this panel, deduped by request id; then refused unless that conversation is **the one on

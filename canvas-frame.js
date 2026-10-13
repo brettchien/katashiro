@@ -904,7 +904,7 @@
   // from the page while armed. Capture phase, on window: ahead of everything in the frame.
   let armedKeys = false;
   function reportArmed(e, key) {
-    if (!armedKeys) return;
+    if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) !== "disarm") e.preventDefault();
     armedKeys = false;                    // one report; the host disarms or re-arms
