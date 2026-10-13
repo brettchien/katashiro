@@ -317,6 +317,9 @@ test("planGroupSwitch (Q5): activate outside the old group first, collapse the o
   // the active tab is outside: nothing to activate; groups that are gone are skipped
   const calm = tabs.map((t) => ({ ...t, active: t.id === 4 }));
   assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10, 77] }), { activate: null, collapse: [10], expand: 20 });
+  // P2 Q8: a replying conversation's group is not collapsed, but the user is still moved off it
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10, 30], workingTabId: 4, keepExpanded: [10] }), { activate: 4, collapse: [], expand: 20 });
+  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10], keepExpanded: [20] }), { activate: null, collapse: [10], expand: 20 });
   // every tab is in a group being collapsed: collapse nothing
   const all = [web(1, "https://old.example/", { groupId: 10, active: true })];
   assert.deepEqual(T.planGroupSwitch({ tabs: all, groupId: null, otherGroupIds: [10] }), { activate: null, collapse: [], expand: null });

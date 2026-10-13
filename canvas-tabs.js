@@ -311,10 +311,12 @@
    * groups. If the active tab sits in one of those, activate first: the working tab when it is in
    * this window and not in another conversation's group, else the new group's most recently used
    * tab, else the most recently used tab in no conversation's group. With nothing to activate, no
-   * group is collapsed (Chrome has to put the focus somewhere).
+   * group is collapsed (Chrome has to put the focus somewhere). `keepExpanded` = groups of other
+   * conversations still replying (P2 Q8, §5.2): the user is still moved off them, but they are not
+   * collapsed — Chrome freezes a collapsed group's pages.
    * → { activate: tabId | null, collapse: [groupId], expand: groupId | null }
    */
-  function planGroupSwitch({ tabs, groupId, otherGroupIds, workingTabId }) {
+  function planGroupSwitch({ tabs, groupId, otherGroupIds, workingTabId, keepExpanded = [] }) {
     const list = tabs || [];
     const exists = (g) => list.some((t) => t && t.groupId === g);
     const others = [...new Set(otherGroupIds || [])].filter((g) => g != null && g !== TAB_GROUP_NONE && g !== groupId && exists(g));
@@ -333,7 +335,7 @@
         activate = pick.id;
       }
     }
-    return { activate, collapse: others, expand };
+    return { activate, collapse: others.filter((g) => !keepExpanded.includes(g)), expand };
   }
 
   /**

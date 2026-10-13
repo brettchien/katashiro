@@ -84,7 +84,7 @@ discussion):
 | Q2 | MVP | One conversation open in two windows? | Forbidden: Web Lock, and say which window has it (16:31) |
 | Q3 | MVP | After a browser restart | Back to the last conversation (16:31) |
 | Q4 | MVP | Where is the conversation list? | Only a tab strip at the top of the panel, at most 3 conversations (16:30) |
-| Q5 | P1b | Other conversations' tab groups on switch | Collapse them (16:32) |
+| Q5 | P1b | Other conversations' tab groups on switch | Collapse them (16:32); **changed by Q8 (§5.2):** a replying conversation's group stays expanded, and a background conversation's tools expand its group |
 | Q6 | P1b | Sending while the active tab is not the working tab | Switch to the working tab, only at the moment the user sends, never mid-turn (16:32) |
 | Q7 | P2 | Background concurrency | 3, from Q4; the pool is shared, so pool exhausted must be handled |
 | Q8 | P2 | A background conversation touches the tab the user is on | Error; the agent uses a tab of its own group (16:33) |
@@ -424,6 +424,9 @@ still run only in the current conversation (§3.5); P2 lifts that.
   have nowhere to put the focus). Best effort: a Chrome refusal ("tabs cannot be edited right now"
   while the user drags) leaves the groups as they are.
 - The rule is a pure plan (`CanvasTabs.planGroupSwitch`); the panel only makes the calls.
+- **Changed by Q8 (P2, §5.2):** a conversation still replying is moved off as above but its group
+  is **not** collapsed (`keepExpanded`), and a background conversation's tab and page tools expand
+  its group — Chrome freezes a collapsed group's pages. The user sees such a group open by itself.
 
 ### 4.3 Working tab (Q6)
 
@@ -612,7 +615,7 @@ page tools act on its own working tab without bringing it forward.
   No working tab in the group → an error that says to open one with `new_tab` or pick one with
   `switch_tab`. The check runs before the tool; the user may step onto the tab in between (TOCTOU).
   Accepted: the window is one tool call, and the next call is checked again.
-- **A group a background conversation works in is expanded, never collapsed.** Chrome freezes the
+- **A group a background conversation works in is expanded, never collapsed — a change to Q5 (§4.2).** Chrome freezes the
   pages of a collapsed group (`CreateFreezingVote(kCollapsedGroup)` per tab, then performance
   manager's freezing policy), and a frozen page runs no timers, SPA updates or injected scripts, so
   `wait_for`, `click` or even `read_dom` could stall (review #144, Jellyfish). So: the tab check

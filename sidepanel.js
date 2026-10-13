@@ -4067,13 +4067,13 @@ function applyGroupSwitch() {
     const groupId = await storedCanvasGroupId(cur);
     const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
     // A conversation replying in the background keeps its group expanded: a collapsed group is frozen (Q8, §5.2).
-    const replying = await CanvasTabs.otherGroupIds([...convs.keys()].filter(convReplying), cur, storedCanvasGroupId);
+    const keepExpanded = await CanvasTabs.otherGroupIds([...convs.keys()].filter(convReplying), cur, storedCanvasGroupId);
     const conv = convs.get(cur);
     const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
-    const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });
+    const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null, keepExpanded });
     if (cur !== conversationId) return;                  // switched again meanwhile: the next run decides
     if (plan.activate != null) await chrome.tabs.update(plan.activate, { active: true });
-    for (const g of plan.collapse.filter((x) => !replying.includes(x))) { try { await chrome.tabGroups.update(g, { collapsed: true }); } catch (_) { /* gone, or Chrome busy */ } }
+    for (const g of plan.collapse) { try { await chrome.tabGroups.update(g, { collapsed: true }); } catch (_) { /* gone, or Chrome busy */ } }
     if (plan.expand != null) { try { await chrome.tabGroups.update(plan.expand, { collapsed: false }); } catch (_) { /* gone */ } }
   });
   groupSwitchChain = run.catch(() => {});
