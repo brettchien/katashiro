@@ -3821,3 +3821,19 @@ test("new_tab: still loading → waits for onUpdated status complete (not the 8 
   assert.ok(ms >= 90 && ms < 2000, `took ${ms} ms`);
   assert.equal(listeners.size, 0);
 });
+
+// A tab still reporting the previous page's "complete" while a navigation is pending must not end
+// the wait early (navigate / reload / history call waitForComplete after the update resolves).
+test("new_tab: complete but with a pendingUrl → still waits for onUpdated", async () => {
+  const { chrome } = mockChrome({ tabsList: [{ id: 99, windowId: 7, url: "https://next/" }], scriptResult: { ok: true, text: "snap" } });
+  const listeners = new Set();
+  chrome.tabs.onUpdated = { addListener: (f) => listeners.add(f), removeListener: (f) => listeners.delete(f) };
+  chrome.tabs.get = async (id) => ({ id, status: "complete", pendingUrl: "https://next/" });
+  setTimeout(() => { for (const f of [...listeners]) f(99, { status: "complete" }); }, 100);
+  const t0 = Date.now();
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.new_tab", arguments: { url: "https://next/" } }, { chrome, crypto: mockCrypto(), actMode: true });
+  assert.notEqual(res.isError, true, JSON.stringify(res));
+  const ms = Date.now() - t0;
+  assert.ok(ms >= 90 && ms < 2000, `took ${ms} ms`);
+  assert.equal(listeners.size, 0);
+});
