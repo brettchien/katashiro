@@ -356,8 +356,8 @@ class Conn {
       // P1b (ADR §4.3): the tab this conversation's agent acted on becomes its working tab; a tab it
       // opened (new_tab) also joins the conversation's tab group (§4.1).
       // Returns the promise: new_tab / switch_tab await it, so a background conversation's next page
-      // tool finds the tab already in its group and recorded as its working tab.
-      onTabUsed: (tabId, o) => noteWorkingTab(st.convId, tabId, o).catch(() => {}),
+      // tool finds the tab already in its group and recorded as its working tab; false = it is not.
+      onTabUsed: (tabId, o) => noteWorkingTab(st.convId, tabId, o).catch(() => false),
       workingTab: async () => { const t = await resolveWorkingTab(st.convId); return t ? t.id : null; },
       // P1b §4.6: set_title names the calling conversation; a user title always wins.
       setTitle: (title) => setAgentTitle(st.convId, title),
@@ -3921,20 +3921,37 @@ async function forgetCanvasGroupId(conv) {
   try { await chrome.storage.session.remove(canvasGroupKey(conv)); } catch (_) { /* memory only */ }
 }
 
-// §4.3: the agent of conversation `convId` acted on `tabId` (opened it, with o.opened).
+// §4.3: the agent of conversation `convId` acted on `tabId` (opened it, with o.opened). → false when
+// the tab could not be recorded (or, opened, could not join the group), else true.
 async function noteWorkingTab(convId, tabId, { opened = false } = {}) {
   const conv = convs.get(convId);
-  if (!conv || !Number.isInteger(tabId)) return;
+  if (!conv || !Number.isInteger(tabId)) return false;
   const tab = await getTab(tabId);
-  if (!tab) return;
-  // §4.1: an agent-opened tab joins the conversation's group (a tab the user opened never does). A
-  // conversation not on screen keeps its group collapsed (Q5) — the new tab is not active (Q8).
+  if (!tab) return false;
+  // §4.1: an agent-opened tab joins the conversation's group (a tab the user opened never does).
+  // A conversation not on screen works in that group, so the group is expanded, not collapsed:
+  // Chrome freezes the pages of a collapsed group (Q8, §5.2).
+  let grouped = true;
   if (opened) {
     const gid = await canvasTabQueue(() => addToCanvasGroup(tab, convId), convId).catch(() => null);
-    if (gid != null && convId !== conversationId && !tab.active) { try { await chrome.tabGroups.update(gid, { collapsed: true }); } catch (_) { /* cosmetic */ } }
+    grouped = gid != null;
+    if (grouped && convId !== conversationId) await expandGroup(gid);
   }
   conv.workingTab = { id: tab.id, url: tab.url || tab.pendingUrl || "", at: Date.now() };
   saveConv(conv);
+  return grouped;
+}
+
+// Q8 (§5.2): Chrome freezes the pages of a collapsed tab group (a freezing vote per tab), and a
+// frozen page runs no timers or scripts, so a background conversation's page tools would stall.
+// Expanding its group lifts that; it moves no tab and activates nothing. Q5 collapses it again at
+// the next conversation switch.
+async function expandGroup(gid) {
+  if (gid == null || !canGroupTabs()) return;
+  try {
+    const g = await chrome.tabGroups.get(gid);
+    if (g && g.collapsed) await chrome.tabGroups.update(gid, { collapsed: false });
+  } catch (_) { /* gone: the tab check already decided */ }
 }
 
 // §4.3: the working tab, re-validated (same id + origin, else the exact URL), or null.
@@ -3949,17 +3966,18 @@ async function resolveWorkingTab(convId) {
 // P2 Q8 (§5): the tab a conversation NOT on screen may act on — the one it names (switch_tab,
 // close_tab), else its working tab — checked by ConvCore.backgroundTabRefusal: in its own group,
 // not a tab the user is on, no write while the user is on one of its group's tabs. → { tab } | { error }.
+// "The user is on" = the active tab of EVERY window: an unfocused window on another screen is seen too.
+// The tab the agent may act on gets its group expanded (expandGroup: a collapsed group is frozen).
 async function backgroundTabFor(convId, { tabId = null, write = false } = {}) {
   const named = tabId != null;
   const tab = named ? await getTab(tabId) : await resolveWorkingTab(convId);
   const groupId = await liveGroupId(convId);
   const userTabs = [];
-  try {
-    if (typeof panelWindowId === "number") userTabs.push(...await chrome.tabs.query({ active: true, windowId: panelWindowId }));
-    userTabs.push(...await chrome.tabs.query({ active: true, lastFocusedWindow: true }));
-  } catch (_) { /* no tab API: nothing known to be in front */ }
+  try { userTabs.push(...await chrome.tabs.query({ active: true })); } catch (_) { /* no tab API: nothing known to be in front */ }
   const error = ConvCore.backgroundTabRefusal({ tab, groupId, userTabs, write, named });
-  return error ? { error } : { tab };
+  if (error) return { error };
+  await expandGroup(groupId);
+  return { tab };
 }
 
 // Q6 (§4.3): the user pressed send. If the conversation has a working tab in this window and it is
@@ -4048,12 +4066,14 @@ function applyGroupSwitch() {
     const tabs = await chrome.tabs.query({ windowId: panelWindowId });
     const groupId = await storedCanvasGroupId(cur);
     const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
+    // A conversation replying in the background keeps its group expanded: a collapsed group is frozen (Q8, §5.2).
+    const replying = await CanvasTabs.otherGroupIds([...convs.keys()].filter(convReplying), cur, storedCanvasGroupId);
     const conv = convs.get(cur);
     const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
     const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });
     if (cur !== conversationId) return;                  // switched again meanwhile: the next run decides
     if (plan.activate != null) await chrome.tabs.update(plan.activate, { active: true });
-    for (const g of plan.collapse) { try { await chrome.tabGroups.update(g, { collapsed: true }); } catch (_) { /* gone, or Chrome busy */ } }
+    for (const g of plan.collapse.filter((x) => !replying.includes(x))) { try { await chrome.tabGroups.update(g, { collapsed: true }); } catch (_) { /* gone, or Chrome busy */ } }
     if (plan.expand != null) { try { await chrome.tabGroups.update(plan.expand, { collapsed: false }); } catch (_) { /* gone */ } }
   });
   groupSwitchChain = run.catch(() => {});

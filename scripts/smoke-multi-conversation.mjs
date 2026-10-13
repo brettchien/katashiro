@@ -793,18 +793,22 @@ try {
   const notes = await q.evaluate(() => window.__notes);
   check(notes.length === 1 && notes[0].id.startsWith("katashiro-notify:5:conv:" + convA + ":"), "Q12: a notification names A", notes);
   // P2 Q8: A is in the background. Its page tools act on its working tab (agent.example/a, in A's
-  // collapsed group) without bringing it forward; screenshot is refused; the user's own tab is never
-  // its to touch; new_tab opens in the background, in A's group, as its new working tab.
+  // group, collapsed by Q5) without bringing it forward, and expand that group (Chrome freezes a
+  // collapsed group's pages); screenshot is refused; the user's own tab is never its to touch;
+  // new_tab opens in the background, in A's group, as its new working tab.
   {
     model = await tm();
+    check(model.groups[gA].collapsed === true, "Q8: (setup) A's group starts collapsed", model.groups[gA]);
     const aTab = model.tabs.find((x) => x.url === "https://agent.example/a");
     const userTab = model.tabs.find((x) => x.active && x.windowId === 5);
     await q.evaluate(() => { window.__scripted = []; });
     r = await tool("katashiro.get_text", {});
     check(r.result && !r.result.isError && /PAGE https:\/\/agent\.example\/a/.test(r.result.content[0].text), "Q8: a background page tool reads ITS working tab", r);
     model = await tm();
-    check(model.tabs.find((x) => x.id === userTab.id).active && !model.tabs.find((x) => x.id === aTab.id).active && model.groups[gA].collapsed === true,
-      "Q8: …without activating it or expanding its group", model.tabs.filter((x) => x.active));
+    check(model.tabs.find((x) => x.id === userTab.id).active && !model.tabs.find((x) => x.id === aTab.id).active,
+      "Q8: …without activating it", model.tabs.filter((x) => x.active));
+    check(model.groups[gA].collapsed === false, "Q8: …and its group is expanded (a collapsed group is frozen)", model.groups[gA]);
+    await q.evaluate((g) => { const m = window.__tm(); m.groups[g].collapsed = true; window.__tmSave(m); }, gA);
     r = await tool("katashiro.screenshot", {});
     check(r.result && r.result.isError && /in the background in Katashiro/.test(r.result.content[0].text), "Q8: screenshot is refused in the background", r);
     // The user steps onto A's tab (without switching the panel): A may not touch it, nor write in its group.
@@ -814,13 +818,18 @@ try {
     check(r.result && r.result.isError && /the user is looking at that tab/.test(r.result.content[0].text), "Q8: never the tab the user is on", r);
     check((await q.evaluate(() => window.__scripted)).length === 0, "Q8: …nothing was injected into it", await q.evaluate(() => window.__scripted));
     await q.evaluate((id) => { const m = window.__tm(); m.tabs.forEach((x) => { if (x.windowId === 5) x.active = x.id === id; }); window.__tmSave(m); }, userTab.id);
-    // new_tab from the background: not active, in A's group (still collapsed), A's new working tab.
+    // The user is on a tab of A's group in ANOTHER window (not the panel's, not focused): still seen.
+    await q.evaluate((g) => { const m = window.__tm(); m.tabs.push({ id: 9001, windowId: 9, url: "https://agent.example/other-window", active: true, groupId: g, splitViewId: -1, pinned: false, index: m.tabs.length, lastAccessed: ++m.clock }); window.__tmSave(m); }, gA);
+    r = await tool("katashiro.navigate", { url: "https://agent.example/x" });
+    check(r.result && r.result.isError && /looking at one of your conversation's tabs/.test(r.result.content[0].text), "Q8: the active tab of every window counts as the user's", r);
+    await q.evaluate(() => { const m = window.__tm(); m.tabs = m.tabs.filter((x) => x.id !== 9001); window.__tmSave(m); });
+    // new_tab from the background: not active, in A's group (expanded), A's new working tab.
     r = await tool("katashiro.new_tab", { url: "https://agent.example/b", active: true });
     check(r.result && !r.result.isError && /your working tab/.test(r.result.content[0].text), "Q8: new_tab from the background says where it went", r);
     model = await tm();
     const bTab = model.tabs.find((x) => x.url === "https://agent.example/b");
-    check(bTab && !bTab.active && bTab.groupId === gA && model.groups[gA].collapsed === true && model.tabs.find((x) => x.id === userTab.id).active,
-      "Q8: …opened in the background, in A's collapsed group; the user stays where they were", { bTab, g: model.groups[gA] });
+    check(bTab && !bTab.active && bTab.groupId === gA && model.groups[gA].collapsed === false && model.tabs.find((x) => x.id === userTab.id).active,
+      "Q8: …opened in the background, in A's group, which is expanded; the user stays where they were", { bTab, g: model.groups[gA] });
     await q.evaluate(() => { window.__scripted = []; });
     r = await tool("katashiro.get_text", {});
     check(r.result && !r.result.isError && /agent\.example\/b/.test(r.result.content[0].text), "Q8: the next page tool acts on the new tab", r);

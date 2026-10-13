@@ -195,7 +195,7 @@
 
   /**
    * P2 Q8 (§5): may a conversation that is NOT on screen act on `tab`? It must be a tab of its own
-   * group, not a tab the user is on (the active tab of the panel's window or of the focused window),
+   * group, not a tab the user is on (the active tab of any window),
    * and — for a write — the user must not be on one of its group's tabs at all (they are looking at
    * this conversation's work). → null (yes) or the text the agent reads.
    * named: the agent named this tab (switch_tab / close_tab); else it is the working tab.

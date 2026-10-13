@@ -1411,14 +1411,18 @@
         // Multi-conversation P1b (§4.1, §4.3): the panel puts a tab the agent opened in the calling
         // conversation's tab group and makes it the working tab. Awaited, so the next page tool of a
         // background conversation finds it; cosmetic for the tool otherwise: never fails it.
-        if (typeof ctx.onTabUsed === "function") { try { await ctx.onTabUsed(tab.id, { opened: true }); } catch (_) { /* host bookkeeping only */ } }
+        // The host answers false when the tab did not make it into the group: then it is not a tab a
+        // background conversation may act on, and the label says so.
+        let grouped = true;
+        if (typeof ctx.onTabUsed === "function") { try { grouped = (await ctx.onTabUsed(tab.id, { opened: true })) !== false; } catch (_) { /* host bookkeeping only */ } }
+        const orphan = background && !grouped;
         // Report the index in the same enumeration `tabs` / `switch_tab` use, so the three agree.
         const all = await ctx.chrome.tabs.query({});
         const index = all.findIndex((t) => t.id === tab.id);
-        const label = `opened new tab [${index}]${makeActive ? " (now active)" : background ? " (background — your conversation is not on screen; it is your working tab)" : " (background)"} — ${url || "(new tab page)"}`;
+        const label = `opened new tab [${index}]${makeActive ? " (now active)" : orphan ? " (background — but it could not join your conversation's tab group, so page tools cannot act on it while your conversation is not on screen)" : background ? " (background — your conversation is not on screen; it is your working tab)" : " (background)"} — ${url || "(new tab page)"}`;
         // Snapshot only where the agent's next action lands: the tab it switched to, or — for a
         // conversation not on screen — its new working tab. A blank or chrome:// tab has none.
-        if ((makeActive || background) && url && pageOrigin(url)) {
+        if ((makeActive || (background && !orphan)) && url && pageOrigin(url)) {
           await waitForComplete(ctx.chrome, tab.id);
           return okText(`${label}\n\n${await snapshotAfter(ctx.chrome, tab.id)}`);
         }
@@ -3614,6 +3618,8 @@
     // tab the user is on, and no write while the user is on one of its group's tabs.
     let tab;
     if (typeof deps.backgroundTab === "function") {
+      // Second line behind refuse (review #144): nothing that captures the screen runs from the background.
+      if (tool.ownCanvas || BACKGROUND_PAGE_REFUSED.has(name)) return errText(BACKGROUND_REFUSAL);
       const r = await deps.backgroundTab({ write: !!tool.write });
       if (!r || r.error) return errText((r && r.error) || "no tab of your own to act on");
       tab = r.tab;

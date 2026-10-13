@@ -605,18 +605,30 @@ page tools act on its own working tab without bringing it forward.
   tab, through injected scripts that need no focus. The host checks the tab first
   (`backgroundTabFor` → `ConvCore.backgroundTabRefusal`):
   - it must be in the conversation's own tab group (a tab dragged out is the user's again, §4.1);
-  - it must not be a tab the user is on (the active tab of the panel's window, or of the last
-    focused window);
+  - it must not be a tab the user is on: the active tab of **every** window (an unfocused window on
+    another screen is still seen; review #144);
   - a **write** is refused while the user is on any tab of that group (they are looking at this
     conversation's work); reading still works.
   No working tab in the group → an error that says to open one with `new_tab` or pick one with
-  `switch_tab`.
+  `switch_tab`. The check runs before the tool; the user may step onto the tab in between (TOCTOU).
+  Accepted: the window is one tool call, and the next call is checked again.
+- **A group a background conversation works in is expanded, never collapsed.** Chrome freezes the
+  pages of a collapsed group (`CreateFreezingVote(kCollapsedGroup)` per tab, then performance
+  manager's freezing policy), and a frozen page runs no timers, SPA updates or injected scripts, so
+  `wait_for`, `click` or even `read_dom` could stall (review #144, Jellyfish). So: the tab check
+  expands the group of the tab it allows (`expandGroup`: no tab moves, nothing is activated);
+  `new_tab` expands the group it joined; and Q5's collapse on a conversation switch skips the
+  groups of conversations still replying. A group collapsed while idle is expanded again by that
+  conversation's next page or tab tool. Real-Chrome check: collapse a group, let it freeze, then run
+  `snapshot` / `click` / `navigate` / `wait_for` on one of its tabs from the background.
 - **`screenshot` is refused**: `captureVisibleTab` captures only the tab in front, so it would have to
-  take the user's screen.
+  take the user's screen. `callBrowserTool` also refuses it (and any `ownCanvas` tool) whenever the
+  host passes `backgroundTab`, a second line behind `refuse`.
 - **Tab tools in the background:**
-  - `new_tab` always opens in the background (even with `active: true`), joins the group, which
-    stays collapsed (Q5), and becomes the working tab; the host bookkeeping is awaited, so the next
-    page tool finds it.
+  - `new_tab` always opens in the background (even with `active: true`), joins the group (expanded,
+    above) and becomes the working tab; the host bookkeeping is awaited, so the next page tool finds
+    it. If the tab could not join the group, the result says page tools cannot act on it (and no
+    snapshot is taken).
   - `switch_tab` **selects** one of the group's tabs as the working tab: nothing is activated or
     focused.
   - `close_tab` closes one of the group's tabs, named by `index` or `url` (never "the active tab"),

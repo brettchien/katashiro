@@ -3772,3 +3772,24 @@ test("tools/call: a refuse FUNCTION decides per tool (name, raw args); refused c
   const all = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.tabs", arguments: {} }, { ...d, refuse: "closed" });
   assert.equal(all.content[0].text, "closed");
 });
+
+test("Q8: background new_tab that could not join the group says so and snapshots nothing (review #144)", async () => {
+  const { chrome, calls } = mockChrome({ tabsList: [{ id: 99, windowId: 7, url: "https://n/" }] });
+  const d = { chrome, crypto: mockCrypto(), actMode: true, backgroundTab: async () => ({ tab: { id: 99 } }), onTabUsed: async () => false };
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.new_tab", arguments: { url: "https://n/" } }, d);
+  assert.notEqual(res.isError, true, JSON.stringify(res));
+  assert.match(res.content[0].text, /could not join your conversation's tab group, so page tools cannot act on it/);
+  assert.doesNotMatch(res.content[0].text, /it is your working tab/);
+  assert.equal(calls.executeScript.length, 0, "no snapshot of a tab it may not act on");
+});
+
+test("Q8: callBrowserTool refuses screenshot from the background even without refuse (second line, review #144)", async () => {
+  const { chrome, calls } = mockChrome();
+  let asked = 0;
+  const d = { chrome, crypto: mockCrypto(), actMode: true, backgroundTab: async () => { asked++; return { tab: { id: 5, url: "https://mine/" } }; } };
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.screenshot", arguments: {} }, d);
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /in the background in Katashiro/);
+  assert.equal(asked, 0, "the host was not even asked for a tab");
+  assert.equal((calls.captureVisibleTab || []).length, 0);
+});
