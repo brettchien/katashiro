@@ -11,9 +11,13 @@ Before the manual checks below, the automated ones (CI runs both on every PR and
 ```bash
 npm test                                   # unit tests (node --test), no Chrome needed
 npm ci && npm run chrome && npm run smoke  # the puppeteer smokes in a pinned headless Chrome
+npm run chrome:full && npm run e2e         # T2 E2E: the real extension + side panel against a fake gateway
 ```
 
 Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [README → Run the tests](README.md#run-the-tests).
+The E2E cases, how they work and their limits: [e2e/README.md](e2e/README.md). Manual items below
+marked **(E2E: …)** are covered there in real Chrome against a fake gateway; with a real agent they
+are still worth a look after a gateway change.
 
 ## Prerequisites
 
@@ -277,7 +281,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - **Turn guard:** while the agent replies, clicking another tab, ＋ or × on the current tab
     shows 「回覆中不能切換——等回完或先按 ⏹ 停止」; after ⏹ it works. Stop a turn in A, switch to
     B at once: nothing from A's late output appears in B (DevTools console: "dropped a session/update").
-  - **3 open across windows:** with 3 tabs in window 1, ＋ shows the picker (a neutral card, not an
+  - **3 open across windows:** (E2E: the replying one disabled, and window 2's pick of it refused
+    with 回覆中不能封存 — `p2-background-turns.mjs`) with 3 tabs in window 1, ＋ shows the picker (a neutral card, not an
     agent's) listing the 3; a replying one is disabled; 取消 opens nothing. In window 2, open the
     panel: the picker lists window 1's conversations as （另一個視窗）; 取消 leaves 前往「…」 buttons
     that focus window 1; picking one archives it in window 1 (its tab goes away there) and window 2
@@ -338,19 +343,21 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     openab boot id, proposal A).
 - **Multi-conversation P1b (ADR multi-conversation §4).** The headless smoke above covers the
   rules on a model of tabs and groups; in Chrome (155+ for Split View), with act mode on:
-  - **Group per conversation:** ask the agent to open a page with `new_tab` (background): it joins
+  - **Group per conversation:** (E2E: `p2-tab-groups.mjs`, `working-tab-canvas.mjs`) ask the agent to open a page with `new_tab` (background): it joins
     the conversation's group, named after the conversation, next to its canvases. Open a tab
     yourself and have the agent read it: it is not pulled into the group. Drag a group tab out:
     archive later does not close it. A canvas shown beside a page (`beside: "current"`) still
     follows the canvas Split View rules (both sides' group state stays consistent).
-  - **Q5:** with A's group tab active, ＋ or switch to B: a tab outside A's group becomes active
+  - **Q5:** (E2E: `p2-tab-groups.mjs` — moved to the new conversation's working tab, no group
+    collapses; a group collapsed by hand is expanded by a background tool, not yet by a switch) with A's group tab active, ＋ or switch to B: a tab outside A's group becomes active
     (B's working tab, else B's last-used group tab, else your last-used ungrouped tab). A's group
     stays expanded; B's group is expanded (collapse it by hand first to see it reopen). No group
     collapses on any switch; only × (archive) closes a group's tabs.
-  - **Q6:** after the agent worked on a tab, click another tab, type and send: the working tab comes
+  - **Q6:** (E2E: `working-tab-canvas.mjs` — canvas_highlight / canvas_goto, then send) after the agent worked on a tab, click another tab, type and send: the working tab comes
     to the front at that moment, never while the agent is replying. `switch_tab({tab: "working"})`
     activates it too. Answering an ask card or pushing from a canvas does not switch tabs.
-  - **Q12:** while an ask card waits in A, switch to B: A's tab shows ❓ and an OS notification
+  - **Q12:** (E2E: ❓ and the notification created — `p2-background-turns.mjs`; its click is not
+    covered) while an ask card waits in A, switch to B: A's tab shows ❓ and an OS notification
     「Katashiro：有問題等你回答」 appears; clicking it focuses the window and switches to A; once the
     card is answered or closes, the ❓ goes.
   - **Drafts:** type half a message and paste an image in A, switch to B (empty composer), back to
