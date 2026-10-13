@@ -200,6 +200,14 @@ const STUB = String.raw`
       },
     },
     sidePanel: { open: async (o) => { window.__sidePanelOpened.push(o); } },
+    // Page tools (P2 Q8): which tab a script was injected into; the page answers with its URL.
+    scripting: {
+      executeScript: async (inj) => {
+        (window.__scripted = window.__scripted || []).push(inj.target.tabId);
+        const t = tm().tabs.find((x) => x.id === inj.target.tabId);
+        return [{ frameId: 0, result: { ok: true, text: "PAGE " + (t ? t.url : "?") } }];
+      },
+    },
     notifications: {
       onClicked: notifyClicked,
       create: async (id, o) => { window.__notes.push({ id, ...o }); return id; },
@@ -546,7 +554,7 @@ try {
   const lateNav = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.navigate", { url: "https://example.com/" }));
   await until(p1, (id) => !!window.__acp.responses[id], "the background navigate is answered", lateNav);
   const lateNavRes = await p1.evaluate((id) => window.__acp.responses[id], lateNav);
-  check(lateNavRes.result && lateNavRes.result.isError && /in the background in Katashiro/.test(lateNavRes.result.content[0].text), "P2: a tab tool from a conversation not on screen is refused", lateNavRes);
+  check(lateNavRes.result && lateNavRes.result.isError && /not on screen in Katashiro/.test(lateNavRes.result.content[0].text), "Q8: a page tool from a conversation not on screen needs a tab of its own group", lateNavRes);
   check(await p1.evaluate(() => window.__askCard.classList.contains("pending")), "its ask card stays pending (clock paused) while hidden", null);
 
   // Third conversation → 3 open; ＋ again → the picker.
@@ -784,6 +792,50 @@ try {
   check(marks[0][0] && marks[0][1] === "❓" && !marks[1][0], "Q12: A's tab shows ❓", marks);
   const notes = await q.evaluate(() => window.__notes);
   check(notes.length === 1 && notes[0].id.startsWith("katashiro-notify:5:conv:" + convA + ":"), "Q12: a notification names A", notes);
+  // P2 Q8: A is in the background. Its page tools act on its working tab (agent.example/a, in A's
+  // collapsed group) without bringing it forward; screenshot is refused; the user's own tab is never
+  // its to touch; new_tab opens in the background, in A's group, as its new working tab.
+  {
+    model = await tm();
+    const aTab = model.tabs.find((x) => x.url === "https://agent.example/a");
+    const userTab = model.tabs.find((x) => x.active && x.windowId === 5);
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && !r.result.isError && /PAGE https:\/\/agent\.example\/a/.test(r.result.content[0].text), "Q8: a background page tool reads ITS working tab", r);
+    model = await tm();
+    check(model.tabs.find((x) => x.id === userTab.id).active && !model.tabs.find((x) => x.id === aTab.id).active && model.groups[gA].collapsed === true,
+      "Q8: …without activating it or expanding its group", model.tabs.filter((x) => x.active));
+    r = await tool("katashiro.screenshot", {});
+    check(r.result && r.result.isError && /in the background in Katashiro/.test(r.result.content[0].text), "Q8: screenshot is refused in the background", r);
+    // The user steps onto A's tab (without switching the panel): A may not touch it, nor write in its group.
+    await q.evaluate((id) => { const m = window.__tm(); m.tabs.forEach((x) => { if (x.windowId === 5) x.active = x.id === id; }); window.__tmSave(m); }, aTab.id);
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && r.result.isError && /the user is looking at that tab/.test(r.result.content[0].text), "Q8: never the tab the user is on", r);
+    check((await q.evaluate(() => window.__scripted)).length === 0, "Q8: …nothing was injected into it", await q.evaluate(() => window.__scripted));
+    await q.evaluate((id) => { const m = window.__tm(); m.tabs.forEach((x) => { if (x.windowId === 5) x.active = x.id === id; }); window.__tmSave(m); }, userTab.id);
+    // new_tab from the background: not active, in A's group (still collapsed), A's new working tab.
+    r = await tool("katashiro.new_tab", { url: "https://agent.example/b", active: true });
+    check(r.result && !r.result.isError && /your working tab/.test(r.result.content[0].text), "Q8: new_tab from the background says where it went", r);
+    model = await tm();
+    const bTab = model.tabs.find((x) => x.url === "https://agent.example/b");
+    check(bTab && !bTab.active && bTab.groupId === gA && model.groups[gA].collapsed === true && model.tabs.find((x) => x.id === userTab.id).active,
+      "Q8: …opened in the background, in A's collapsed group; the user stays where they were", { bTab, g: model.groups[gA] });
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && !r.result.isError && /agent\.example\/b/.test(r.result.content[0].text), "Q8: the next page tool acts on the new tab", r);
+    // switch_tab back to the first tab: selected, not activated.
+    r = await tool("katashiro.switch_tab", { url: "agent.example/a" });
+    model = await tm();
+    check(r.result && !r.result.isError && /not brought to the front/.test(r.result.content[0].text) && !model.tabs.find((x) => x.id === aTab.id).active,
+      "Q8: background switch_tab selects without activating", r);
+    // close_tab of the user's own tab is refused; of its own tab, done.
+    const list = await q.evaluate(() => chrome.tabs.query({}));
+    r = await tool("katashiro.close_tab", { index: list.findIndex((x) => x.id === userTab.id) });
+    check(r.result && r.result.isError && (await tm()).tabs.some((x) => x.id === userTab.id), "Q8: close_tab never closes the user's tab from the background", r);
+    r = await tool("katashiro.close_tab", { url: "agent.example/b" });
+    check(r.result && !r.result.isError && !(await tm()).tabs.some((x) => x.id === bTab.id), "Q8: close_tab closes one of its own tabs", r);
+  }
   await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for B"; i.dispatchEvent(new Event("input")); });
   // The notification click goes back to A, with its draft.
   await q.evaluate((id) => window.__notifyClick(id), notes[0].id);

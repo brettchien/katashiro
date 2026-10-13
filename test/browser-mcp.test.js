@@ -3669,20 +3669,86 @@ test("P1b: set_title goes to the host and reports its verdict; not gated by act 
 
 // --- multi-conversation P2 §5: a conversation not on screen ----------------------------------------
 
-test("backgroundRefusal: only tools that touch no tab the user sees, and bring nothing to the front", () => {
-  for (const n of BrowserMcp.BACKGROUND_TOOLS) assert.ok(BrowserMcp.TOOLS[n], `${n} is a real tool`);
-  for (const n of ["katashiro.chat_history", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.ask_user", "katashiro.notify"]) {
+test("backgroundRefusal (Q8): page tools allowed except screenshot; only the listed tab/canvas tools; nothing that shows", () => {
+  for (const n of BrowserMcp.BACKGROUND_SESSION_TOOLS) assert.ok(BrowserMcp.TOOLS[n] && BrowserMcp.TOOLS[n].sessionScope, `${n} is a real session-scope tool`);
+  // Page tools (they run on the conversation's working tab, checked by the host).
+  for (const n of ["katashiro.read_dom", "katashiro.snapshot", "katashiro.click", "katashiro.type", "katashiro.navigate", "katashiro.get_text", "katashiro.highlight"]) {
+    assert.equal(BrowserMcp.backgroundRefusal(n, {}), null, n);
+  }
+  // Session tools that touch nothing the user sees, and the background forms of the tab tools.
+  for (const n of ["katashiro.chat_history", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.ask_user", "katashiro.notify",
+    "katashiro.tabs", "katashiro.tab_groups", "katashiro.new_tab", "katashiro.switch_tab", "katashiro.close_tab"]) {
     assert.equal(BrowserMcp.backgroundRefusal(n, {}), null, n);
   }
   assert.equal(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { title: "x" }), null);
-  for (const n of ["katashiro.navigate", "katashiro.click", "katashiro.screenshot", "katashiro.new_tab", "katashiro.switch_tab",
-    "katashiro.canvas_goto", "katashiro.canvas_highlight", "katashiro.canvas_view", "katashiro.canvas_gallery", "katashiro.highlight"]) {
+  // Refused: screenshot (Chrome captures only the tab in front), tab moves, canvas tools that show.
+  for (const n of ["katashiro.screenshot", "katashiro.reopen_tab", "katashiro.tab_update", "katashiro.group_tabs", "katashiro.split_tabs",
+    "katashiro.canvas_goto", "katashiro.canvas_highlight", "katashiro.canvas_view", "katashiro.canvas_gallery"]) {
     assert.match(BrowserMcp.backgroundRefusal(n, {}), /in the background in Katashiro/, n);
   }
-  // canvas_open beside shows the canvas next to the user's page: refused in the background.
   assert.match(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { beside: "current" }), /in the background/);
-  // The refusal names what is still available, so the agent can carry on.
-  assert.match(BrowserMcp.backgroundRefusal("katashiro.navigate", {}), /chat_history.*canvas_open/);
+  assert.match(BrowserMcp.backgroundRefusal("katashiro.screenshot", {}), /new_tab.*switch_tab/);
+  assert.equal(BrowserMcp.backgroundRefusal("katashiro.no_such_tool", {}), null, "unknown tools fail later with their own error");
+});
+
+test("Q8: a page tool from a background conversation runs on the host's tab, never the active one, and activates nothing", async () => {
+  const { chrome, calls } = mockChrome({ scriptResult: { ok: true, text: "hi" } });
+  const asked = [];
+  const d = { chrome, crypto: mockCrypto(), actMode: true,
+    backgroundTab: async (o) => { asked.push(o); return { tab: { id: 314, windowId: 7, url: "https://mine/", groupId: 5 } }; } };
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: { selector: "#x" } }, d);
+  assert.notEqual(res.isError, true, JSON.stringify(res));
+  assert.equal(calls.executeScript[0].target.tabId, 314);
+  assert.ok(!calls.query.some((q) => q.active), "the active tab was never looked up");
+  assert.equal(calls.tabsUpdate.length, 0);
+  assert.deepEqual(asked, [{ write: false }]);
+  // A write asks with write: true, and the host's refusal reaches the agent as an error.
+  const d2 = { ...d, backgroundTab: async (o) => (o.write ? { error: "the user is looking at one of your conversation's tabs right now" } : { tab: { id: 314, url: "https://mine/" } }) };
+  const w = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.navigate", arguments: { url: "https://x/" } }, d2);
+  assert.equal(w.isError, true);
+  assert.match(w.content[0].text, /looking at one of your conversation/);
+});
+
+test("Q8: background new_tab opens in the background, awaits the host, and snapshots the new working tab", async () => {
+  const { chrome, calls } = mockChrome({ tabsList: [{ id: 99, windowId: 7, url: "https://n/" }] });
+  const used = [];
+  let settled = false;
+  const d = { chrome, crypto: mockCrypto(), actMode: true,
+    backgroundTab: async () => ({ tab: { id: 99 } }),
+    onTabUsed: (id, o) => new Promise((r) => setTimeout(() => { used.push([id, o]); settled = true; r(); }, 5)) };
+  const res = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.new_tab", arguments: { url: "https://n/", active: true } }, d);
+  assert.equal(calls.tabsCreate[0].active, false, "never active from the background, even when asked");
+  assert.ok(settled, "the host bookkeeping finished before the tool returned");
+  assert.deepEqual(used, [[99, { opened: true }]]);
+  assert.match(res.content[0].text, /background — your conversation is not on screen; it is your working tab/);
+});
+
+test("Q8: background switch_tab selects (no activation, no focus); close_tab needs a name and the host's yes", async () => {
+  const list = [{ id: 1, windowId: 7, url: "https://user/", title: "U" }, { id: 2, windowId: 7, url: "https://mine/", title: "M" }];
+  const { chrome, calls } = mockChrome({ tabsList: list });
+  const checks = [];
+  const used = [];
+  const d = { chrome, crypto: mockCrypto(), actMode: true, onTabUsed: async (id) => { used.push(id); },
+    backgroundTab: async (o) => { checks.push(o); return o.tabId === 2 ? { tab: list[1] } : { error: "not in your tab group" }; } };
+  let r = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.switch_tab", arguments: { url: "mine" } }, d);
+  assert.notEqual(r.isError, true, JSON.stringify(r));
+  assert.match(r.content[0].text, /selected tab \[1\] as your working tab \(not brought to the front/);
+  assert.equal(calls.tabsUpdate.length, 0);
+  assert.equal(calls.windowsUpdate.length, 0);
+  assert.deepEqual(used, [2]);
+  r = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.switch_tab", arguments: { url: "user" } }, d);
+  assert.equal(r.isError, true);
+  assert.match(r.content[0].text, /not in your tab group/);
+  // close_tab: no identifier → refused; someone else's tab → refused; its own → closed.
+  r = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.close_tab", arguments: {} }, d);
+  assert.match(r.content[0].text, /name the tab to close/);
+  r = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.close_tab", arguments: { index: 0 } }, d);
+  assert.equal(r.isError, true);
+  assert.deepEqual(calls.tabsRemove, []);
+  r = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.close_tab", arguments: { index: 1 } }, d);
+  assert.notEqual(r.isError, true, JSON.stringify(r));
+  assert.deepEqual(calls.tabsRemove, [2]);
+  assert.deepEqual(checks.filter((c) => c.write), [{ tabId: 1, write: true }, { tabId: 2, write: true }]);
 });
 
 test("tools/call: a refuse FUNCTION decides per tool (name, raw args); refused calls run nothing and show no pill", async () => {

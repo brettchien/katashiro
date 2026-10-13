@@ -589,11 +589,42 @@ conversation's own tabs to it (Q8).
 - **Reconnect:** the handshake resumes the conversation on screen and every other one with prompts
   queued, so a background turn a dropped socket re-queued is re-sent there too.
 - **Tools, until part 2:** a conversation not on screen may call the tools that touch no tab the user
-  sees and bring nothing to the front (`BrowserMcp.BACKGROUND_TOOLS`: `client_info`, `chat_history`,
+  sees and bring nothing to the front (part 1's `BACKGROUND_TOOLS`: `client_info`, `chat_history`,
   `set_title`, `notify`, `ask_user`, `show_image`, `tabs`, `tab_groups`, `canvas_open` without
   `beside`, `canvas_read`, `canvas_patch`, `canvas_delete`, `canvas_list`). Every other tool is refused
   with a text that lists those. This replaces §3.9's "every call refused when not on screen".
+  Superseded by part 2 (§5.2).
 - **Agent relays** (ambient mode) stay within the conversation the reply was in.
+
+### 5.2 Implementation, part 2: Q8 (2026-10-13)
+
+Brett 2026-10-13 12:02 TPE: **a background conversation's screenshot is always refused**; its other
+page tools act on its own working tab without bringing it forward.
+
+- **Page tools** of a conversation not on screen run on its **working tab** (§4.3), not on the active
+  tab, through injected scripts that need no focus. The host checks the tab first
+  (`backgroundTabFor` → `ConvCore.backgroundTabRefusal`):
+  - it must be in the conversation's own tab group (a tab dragged out is the user's again, §4.1);
+  - it must not be a tab the user is on (the active tab of the panel's window, or of the last
+    focused window);
+  - a **write** is refused while the user is on any tab of that group (they are looking at this
+    conversation's work); reading still works.
+  No working tab in the group → an error that says to open one with `new_tab` or pick one with
+  `switch_tab`.
+- **`screenshot` is refused**: `captureVisibleTab` captures only the tab in front, so it would have to
+  take the user's screen.
+- **Tab tools in the background:**
+  - `new_tab` always opens in the background (even with `active: true`), joins the group, which
+    stays collapsed (Q5), and becomes the working tab; the host bookkeeping is awaited, so the next
+    page tool finds it.
+  - `switch_tab` **selects** one of the group's tabs as the working tab: nothing is activated or
+    focused.
+  - `close_tab` closes one of the group's tabs, named by `index` or `url` (never "the active tab"),
+    never the user's.
+  - `tabs` and `tab_groups` list. `reopen_tab`, `tab_update`, groups and splits are refused.
+- Still refused: canvas tools that show a canvas (`canvas_goto`, `canvas_highlight`, `canvas_view`,
+  `canvas_gallery`, `canvas_open` with `beside`). `BrowserMcp.backgroundRefusal` holds the
+  per-tool rule; the per-tab rule is the host's.
 
 ## 6. P3 — the connection outside the panel (Q10 open)
 

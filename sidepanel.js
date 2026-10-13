@@ -327,9 +327,11 @@ class Conn {
       chrome,
       crypto,
       send: (obj) => this.socketSend(obj),
-      // P2 §5: a conversation not on screen may still use the tools that touch no browser tab the
-      // user is looking at (BrowserMcp.backgroundRefusal); the rest are refused. Read at dispatch time.
+      // P2 §5 (Q8): a conversation not on screen works in its own tab group: the tools that would show
+      // something or take the user's tab are refused (BrowserMcp.backgroundRefusal), and page tools
+      // act on its working tab, checked by backgroundTabFor. Both read at dispatch time.
       refuse: (name, args) => (st.convId === conversationId ? null : BrowserMcp.backgroundRefusal(name, args)),
+      backgroundTab: st.convId === conversationId ? undefined : (o) => backgroundTabFor(st.convId, o),
       // Per-tool activity signal for the chat transcript: name + outcome + MASKED args/summary/ms
       // (browser-mcp.js applies each tool's redact hook; raw args never reach the UI).
       onToolCall: (info) => this.renderToolActivity(info, st),
@@ -353,7 +355,9 @@ class Conn {
       askUser: (args) => this.askUser(args, st),
       // P1b (ADR §4.3): the tab this conversation's agent acted on becomes its working tab; a tab it
       // opened (new_tab) also joins the conversation's tab group (§4.1).
-      onTabUsed: (tabId, o) => { noteWorkingTab(st.convId, tabId, o).catch(() => {}); },
+      // Returns the promise: new_tab / switch_tab await it, so a background conversation's next page
+      // tool finds the tab already in its group and recorded as its working tab.
+      onTabUsed: (tabId, o) => noteWorkingTab(st.convId, tabId, o).catch(() => {}),
       workingTab: async () => { const t = await resolveWorkingTab(st.convId); return t ? t.id : null; },
       // P1b §4.6: set_title names the calling conversation; a user title always wins.
       setTitle: (title) => setAgentTitle(st.convId, title),
@@ -3923,8 +3927,12 @@ async function noteWorkingTab(convId, tabId, { opened = false } = {}) {
   if (!conv || !Number.isInteger(tabId)) return;
   const tab = await getTab(tabId);
   if (!tab) return;
-  // §4.1: an agent-opened tab joins the conversation's group (a tab the user opened never does).
-  if (opened) await canvasTabQueue(() => addToCanvasGroup(tab, convId), convId).catch(() => {});
+  // §4.1: an agent-opened tab joins the conversation's group (a tab the user opened never does). A
+  // conversation not on screen keeps its group collapsed (Q5) — the new tab is not active (Q8).
+  if (opened) {
+    const gid = await canvasTabQueue(() => addToCanvasGroup(tab, convId), convId).catch(() => null);
+    if (gid != null && convId !== conversationId && !tab.active) { try { await chrome.tabGroups.update(gid, { collapsed: true }); } catch (_) { /* cosmetic */ } }
+  }
   conv.workingTab = { id: tab.id, url: tab.url || tab.pendingUrl || "", at: Date.now() };
   saveConv(conv);
 }
@@ -3936,6 +3944,22 @@ async function resolveWorkingTab(convId) {
   let tabs = [];
   try { tabs = await chrome.tabs.query({}); } catch (_) { return null; }
   return CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs });
+}
+
+// P2 Q8 (§5): the tab a conversation NOT on screen may act on — the one it names (switch_tab,
+// close_tab), else its working tab — checked by ConvCore.backgroundTabRefusal: in its own group,
+// not a tab the user is on, no write while the user is on one of its group's tabs. → { tab } | { error }.
+async function backgroundTabFor(convId, { tabId = null, write = false } = {}) {
+  const named = tabId != null;
+  const tab = named ? await getTab(tabId) : await resolveWorkingTab(convId);
+  const groupId = await liveGroupId(convId);
+  const userTabs = [];
+  try {
+    if (typeof panelWindowId === "number") userTabs.push(...await chrome.tabs.query({ active: true, windowId: panelWindowId }));
+    userTabs.push(...await chrome.tabs.query({ active: true, lastFocusedWindow: true }));
+  } catch (_) { /* no tab API: nothing known to be in front */ }
+  const error = ConvCore.backgroundTabRefusal({ tab, groupId, userTabs, write, named });
+  return error ? { error } : { tab };
 }
 
 // Q6 (§4.3): the user pressed send. If the conversation has a working tab in this window and it is
