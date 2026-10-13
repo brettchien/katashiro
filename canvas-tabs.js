@@ -306,34 +306,31 @@
   }
 
   /**
-   * Q5 (§4.2): the panel switches conversation. `tabs` = the panel's window's tabs; `groupId` = the
-   * new conversation's group (null if none here); `otherGroupIds` = the other open conversations'
-   * groups. If the active tab sits in one of those, activate first: the working tab when it is in
-   * this window and not in another conversation's group, else the new group's most recently used
-   * tab, else the most recently used tab in no conversation's group. With nothing to activate, no
-   * group is collapsed (Chrome has to put the focus somewhere).
-   * → { activate: tabId | null, collapse: [groupId], expand: groupId | null }
+   * Q5 (§4.2): the panel switches conversation. No group is collapsed: a conversation's group stays
+   * while the conversation is in the panel's tab strip (archive closes it, §4.5). `tabs` = the
+   * panel's window's tabs; `groupId` = the new conversation's group (null if none here) — expanded,
+   * in case the user collapsed it by hand; `otherGroupIds` = the other open conversations' groups.
+   * → { activate: tabId | null (see switchActivate), expand: groupId | null }
    */
   function planGroupSwitch({ tabs, groupId, otherGroupIds, workingTabId }) {
     const list = tabs || [];
-    const exists = (g) => list.some((t) => t && t.groupId === g);
-    const others = [...new Set(otherGroupIds || [])].filter((g) => g != null && g !== TAB_GROUP_NONE && g !== groupId && exists(g));
-    const expand = groupId != null && groupId !== TAB_GROUP_NONE && exists(groupId) ? groupId : null;
+    const expand = groupId != null && groupId !== TAB_GROUP_NONE && list.some((t) => t && t.groupId === groupId) ? groupId : null;
+    return { activate: switchActivate(list, groupId, otherGroupIds, workingTabId, expand), expand };
+  }
+
+  // planGroupSwitch's activate step: if the active tab sits in another open conversation's group,
+  // move to the working tab when it is in this window and in no other conversation's group, else
+  // the new group's most recently used tab, else the most recently used tab in no conversation's
+  // group, else nowhere (null).
+  function switchActivate(list, groupId, otherGroupIds, workingTabId, expand) {
+    const others = [...new Set(otherGroupIds || [])].filter((g) => g != null && g !== TAB_GROUP_NONE && g !== groupId);
     const active = list.find((t) => t && t.active);
-    let activate = null;
-    if (active && others.includes(groupOf(active))) {
-      const outside = (t) => t && !others.includes(groupOf(t));
-      const working = list.find((t) => t && t.id === workingTabId);
-      if (working && outside(working)) activate = working.id;
-      else {
-        const inNew = expand != null ? mostRecent(list.filter((t) => t && t.groupId === expand)) : null;
-        const free = mostRecent(list.filter((t) => t && groupOf(t) === TAB_GROUP_NONE));
-        const pick = inNew || free;
-        if (!pick) return { activate: null, collapse: [], expand };
-        activate = pick.id;
-      }
-    }
-    return { activate, collapse: others, expand };
+    if (!active || !others.includes(groupOf(active))) return null;
+    const working = list.find((t) => t && t.id === workingTabId);
+    if (working && !others.includes(groupOf(working))) return working.id;
+    const inNew = expand != null ? mostRecent(list.filter((t) => t && t.groupId === expand)) : null;
+    const pick = inNew || mostRecent(list.filter((t) => t && groupOf(t) === TAB_GROUP_NONE));
+    return pick ? pick.id : null;
   }
 
   /**

@@ -44,6 +44,12 @@
   // P2 §5: switching and ＋ no longer wait for a reply (it continues in the background); archiving does.
   const ARCHIVE_BLOCKED_TEXT = "回覆中不能封存——等回完或先按 ⏹ 停止";
   // §5: the broker pool (shared with Discord threads and usercron) had no free session for the turn.
+  // P2 Q8: what a background conversation's agent reads when a tab is not its to use (English, like
+  // every tool result).
+  const BG_NO_TAB_TEXT = "your conversation is not on screen in Katashiro, so page tools act on your working tab — and it has none in your tab group (or it was closed or moved out). Open one with new_tab (it opens in the background, in your group) or pick one of your group's tabs with switch_tab";
+  const BG_NOT_OWN_TEXT = "your conversation is not on screen in Katashiro: you may only use tabs of your own tab group — that tab is not in it. Open one with new_tab";
+  const BG_USER_ON_TAB_TEXT = "the user is looking at that tab right now, and your conversation is not on screen: leave it to them. Use another tab of your group, or open one with new_tab";
+  const BG_USER_IN_GROUP_TEXT = "the user is looking at one of your conversation's tabs right now: no changes to its pages until they switch back to your conversation or leave that tab. Reading still works";
   const POOL_EXHAUSTED_TEXT = "agent 那邊同時進行的對話已滿（和 Discord、排程共用）——等其他回覆結束再按重試";
   const OPEN_ELSEWHERE_TEXT = "這段對話開在另一個視窗";
   const ARCHIVED_PUSH_TEXT = "這段對話已封存，先從總覽重新打開";
@@ -185,6 +191,22 @@
     if (replying) return { kind: "replying", icon: "⏳", label: "回覆中" };
     if (unread && !current) return { kind: "unread", icon: "●", label: "有新回覆" };
     return { kind: null, icon: null, label: null };
+  }
+
+  /**
+   * P2 Q8 (§5): may a conversation that is NOT on screen act on `tab`? It must be a tab of its own
+   * group, not a tab the user is on (the active tab of any window),
+   * and — for a write — the user must not be on one of its group's tabs at all (they are looking at
+   * this conversation's work). → null (yes) or the text the agent reads.
+   * named: the agent named this tab (switch_tab / close_tab); else it is the working tab.
+   */
+  function backgroundTabRefusal({ tab, groupId, userTabs = [], write = false, named = false } = {}) {
+    if (!tab) return named ? "that tab is gone — call tabs for the current list" : BG_NO_TAB_TEXT;
+    if (groupId == null || tab.groupId !== groupId) return named ? BG_NOT_OWN_TEXT : BG_NO_TAB_TEXT;
+    const users = (Array.isArray(userTabs) ? userTabs : []).filter(Boolean);
+    if (users.some((u) => u.id === tab.id)) return BG_USER_ON_TAB_TEXT;
+    if (write && users.some((u) => u.groupId === groupId)) return BG_USER_IN_GROUP_TEXT;
+    return null;
   }
 
   /** §5: what a failed session/prompt says. "pool exhausted" is never retried automatically. */
@@ -813,7 +835,8 @@
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
-    archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, needsReconnectHint, withReconnectHint,
+    archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, backgroundTabRefusal,
+    BG_NO_TAB_TEXT, BG_NOT_OWN_TEXT, BG_USER_ON_TAB_TEXT, BG_USER_IN_GROUP_TEXT, needsReconnectHint, withReconnectHint,
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,

@@ -1384,7 +1384,8 @@
         "Open a new browser tab and, by default, switch to it so subsequent tools act on it. Pass a " +
         "`url` to load a page; omit it for a blank New Tab page. Set `active: false` to open it in the " +
         "background without stealing focus. Returns the new tab's index plus — when it switched to a " +
-        "scriptable http(s) page — the post-open snapshot. Gated by act mode.",
+        "scriptable http(s) page — the post-open snapshot. When your conversation is not on screen in " +
+        "Katashiro it always opens in the background, in your tab group, as your working tab. Gated by act mode.",
       write: true,
       sessionScope: true,
       inputSchema: {
@@ -1399,21 +1400,29 @@
       secrets: secretUrl,
       /** @param {{ url?: string, active?: boolean }} args */
       async call(args, ctx) {
-        const makeActive = args.active !== false;               // default true
+        // Multi-conversation P2 (Q8): a conversation not on screen never takes the user's screen —
+        // its new tab opens in the background (in its group, as its working tab).
+        const background = typeof ctx.backgroundTab === "function";
+        const makeActive = args.active !== false && !background;   // default true
         const url = (args.url != null && String(args.url).trim() !== "") ? String(args.url).trim() : null;
         const created = { active: makeActive };
         if (url) created.url = url;
         const tab = await ctx.chrome.tabs.create(created);
         // Multi-conversation P1b (§4.1, §4.3): the panel puts a tab the agent opened in the calling
-        // conversation's tab group and makes it the working tab. Cosmetic for the tool: never fails it.
-        if (typeof ctx.onTabUsed === "function") { try { ctx.onTabUsed(tab.id, { opened: true }); } catch (_) { /* host bookkeeping only */ } }
+        // conversation's tab group and makes it the working tab. Awaited, so the next page tool of a
+        // background conversation finds it; cosmetic for the tool otherwise: never fails it.
+        // The host answers false when the tab did not make it into the group: then it is not a tab a
+        // background conversation may act on, and the label says so.
+        let grouped = true;
+        if (typeof ctx.onTabUsed === "function") { try { grouped = (await ctx.onTabUsed(tab.id, { opened: true })) !== false; } catch (_) { /* host bookkeeping only */ } }
+        const orphan = background && !grouped;
         // Report the index in the same enumeration `tabs` / `switch_tab` use, so the three agree.
         const all = await ctx.chrome.tabs.query({});
         const index = all.findIndex((t) => t.id === tab.id);
-        const label = `opened new tab [${index}]${makeActive ? " (now active)" : " (background)"} — ${url || "(new tab page)"}`;
-        // Snapshot only when we actually switched to a scriptable page — that's where the agent's
-        // next action lands. A background tab, blank tab, or chrome:// URL carries no snapshot.
-        if (makeActive && url && pageOrigin(url)) {
+        const label = `opened new tab [${index}]${makeActive ? " (now active)" : orphan ? " (background — but it could not join your conversation's tab group, so page tools cannot act on it while your conversation is not on screen)" : background ? " (background — your conversation is not on screen; it is your working tab)" : " (background)"} — ${url || "(new tab page)"}`;
+        // Snapshot only where the agent's next action lands: the tab it switched to, or — for a
+        // conversation not on screen — its new working tab. A blank or chrome:// tab has none.
+        if ((makeActive || (background && !orphan)) && url && pageOrigin(url)) {
           await waitForComplete(ctx.chrome, tab.id);
           return okText(`${label}\n\n${await snapshotAfter(ctx.chrome, tab.id)}`);
         }
@@ -1428,7 +1437,8 @@
         "substring — more stable than an index, which shifts as tabs open and close), or with " +
         "`tab: \"working\"` for this conversation's working tab (the last tab you acted on here). Focuses the tab " +
         "and its window; returns the now-active tab plus, for a scriptable http(s) page, its snapshot. " +
-        "Gated by act mode.",
+        "When your conversation is not on screen in Katashiro it only selects one of your tab group's " +
+        "tabs as your working tab (page tools then act there) and brings nothing forward. Gated by act mode.",
       write: true,
       sessionScope: true,
       inputSchema: {
@@ -1462,6 +1472,17 @@
           target = all[args.index];
         } else {
           return errText("switch_tab needs an `index` (from tabs), a `url` substring or `tab: \"working\"` to identify the tab");
+        }
+        // Multi-conversation P2 (Q8): a conversation not on screen only SELECTS one of its own
+        // group's tabs as its working tab — nothing is activated or focused.
+        if (typeof ctx.backgroundTab === "function") {
+          const r = await ctx.backgroundTab({ tabId: target.id, write: false });
+          if (!r || r.error) return errText((r && r.error) || "not one of your tabs");
+          if (typeof ctx.onTabUsed === "function") { try { await ctx.onTabUsed(target.id); } catch (_) { /* host bookkeeping only */ } }
+          const i = all.findIndex((t) => t.id === target.id);
+          const sel = `selected tab [${i}] as your working tab (not brought to the front: your conversation is not on screen) — ${target.title || "(untitled)"} — ${target.url || ""}`;
+          if (pageOrigin(target.url)) return okText(`${sel}\n\n${await snapshotAfter(ctx.chrome, target.id)}`);
+          return okText(sel);
         }
         await ctx.chrome.tabs.update(target.id, { active: true });
         if (typeof ctx.onTabUsed === "function") { try { ctx.onTabUsed(target.id); } catch (_) { /* host bookkeeping only */ } }
@@ -1508,6 +1529,8 @@
             return errText(`tab index ${args.index} is out of range (0..${all.length - 1}) — call tabs for the current list`);
           }
           target = all[args.index];
+        } else if (typeof ctx.backgroundTab === "function") {
+          return errText("your conversation is not on screen: name the tab to close by `index` or `url` (one of your group's tabs)");
         } else {
           // No identifier: the active tab — same lookup the page-scoped tools use.
           const [active] = await ctx.chrome.tabs.query({ active: true, lastFocusedWindow: true });
@@ -1520,6 +1543,11 @@
         if (all.filter((t) => t.windowId === target.windowId).length <= 1) {
           return errText("refusing to close the last tab in its window — that would close the window " +
             "(and the side panel if it is open there)");
+        }
+        // P2 (Q8): in the background, only one of its own group's tabs, never the one the user is on.
+        if (typeof ctx.backgroundTab === "function") {
+          const r = await ctx.backgroundTab({ tabId: target.id, write: true });
+          if (!r || r.error) return errText((r && r.error) || "not one of your tabs");
         }
         const idx = all.findIndex((t) => t.id === target.id);
         await ctx.chrome.tabs.remove(target.id);
@@ -3528,28 +3556,40 @@
     return out;
   }
 
-  // Multi-conversation P2 §5 (first part): what a conversation NOT on screen may still call — the
-  // tools that touch no browser tab the user is looking at and bring nothing to the front. Page
-  // and tab tools, and canvas tools that show a canvas, wait until it is on screen again (Q8 adds
-  // tab-scoped access later). canvas_open opens a new canvas in a background tab; with
-  // `beside` it would show it, so that form is refused too.
-  const BACKGROUND_TOOLS = new Set([
+  // Multi-conversation P2 §5 (Q8): a conversation NOT on screen acts only on tabs of its own tab
+  // group, never on the tab the user is on, and brings nothing to the front.
+  // - Page tools run on its working tab (the host resolves and checks it: deps.backgroundTab), not
+  //   on the active tab, and without activating it. screenshot is refused: Chrome captures only the
+  //   tab in front (captureVisibleTab), so it would have to take the user's screen (Brett 2026-10-13).
+  // - Tab tools: tabs / tab_groups list; new_tab opens in the background (in its group);
+  //   switch_tab selects one of its group's tabs as the working tab without activating it;
+  //   close_tab closes one of its group's tabs, named by index or url. The rest wait.
+  // - Canvas tools that show a canvas (goto, highlight, view, gallery, open beside) wait.
+  const BACKGROUND_SESSION_TOOLS = new Set([
     "katashiro.client_info", "katashiro.chat_history", "katashiro.set_title", "katashiro.notify",
-    "katashiro.ask_user", "katashiro.show_image", "katashiro.tabs", "katashiro.tab_groups",
+    "katashiro.ask_user", "katashiro.show_image",
+    "katashiro.tabs", "katashiro.tab_groups", "katashiro.new_tab", "katashiro.switch_tab", "katashiro.close_tab",
     "katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_delete",
     "katashiro.canvas_list",
   ]);
+  const BACKGROUND_PAGE_REFUSED = new Set(["katashiro.screenshot"]);
   const BACKGROUND_REFUSAL =
-    "this conversation is in the background in Katashiro (the user is looking at another one): " +
-    "tools that act on a browser tab or bring something to the front are not available until the " +
-    "user switches back to it. Available now: " +
-    [...BACKGROUND_TOOLS].map((n) => n.replace(/^katashiro\./, "")).join(", ") +
-    " (canvas_open without beside). Finish what you can, or say what you need in your reply.";
-  /** → null (allowed) or the refusal text for a tool call from a conversation not on screen. */
-  function backgroundRefusal(name, args) {
-    if (!BACKGROUND_TOOLS.has(name)) return BACKGROUND_REFUSAL;
-    if (name === "katashiro.canvas_open" && args && args.beside != null) return BACKGROUND_REFUSAL;
-    return null;
+    "this conversation is in the background in Katashiro (the user is looking at another one), so " +
+    "this tool is not available until the user switches back to it: it would show something to the " +
+    "user or take the tab they are looking at. In the background you work on your own tab group: " +
+    "page tools (read_dom, snapshot, click, type, navigate, …) act on your working tab without " +
+    "bringing it forward — open one with new_tab or pick one of your group's tabs with switch_tab. " +
+    "Not available here: screenshot, tab moves/groups/splits, and canvas tools that show a canvas.";
+  /** Is `name` callable by a conversation not on screen at all? → null (yes) or the refusal text. */
+  function backgroundRefusal(name, args, tools) {
+    const tool = (tools || TOOLS)[name];
+    if (!tool) return null;                              // unknown tools fail later with their own error
+    if (tool.sessionScope) {
+      if (!BACKGROUND_SESSION_TOOLS.has(name)) return BACKGROUND_REFUSAL;
+      if (name === "katashiro.canvas_open" && args && args.beside != null) return BACKGROUND_REFUSAL;
+      return null;
+    }
+    return BACKGROUND_PAGE_REFUSED.has(name) ? BACKGROUND_REFUSAL : null;
   }
 
   async function callBrowserTool(name, args, deps, tools) {
@@ -3569,12 +3609,23 @@
     // chrome:// or blank active tab must not block "open a new tab". They resolve their own targets.
     if (tool.sessionScope) {
       // chatHistory / windowId come from the side panel (its transcript and the window it lives in).
-      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, askUser: deps.askUser, canvas: deps.canvas, onTabUsed: deps.onTabUsed, workingTab: deps.workingTab, setTitle: deps.setTitle };
+      const ctx = { chrome, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, chatHistory: deps.chatHistory, clientInfo: deps.clientInfo, windowId: deps.windowId, now: deps.now, images: deps.images || looseImages, showImage: deps.showImage, askUser: deps.askUser, canvas: deps.canvas, onTabUsed: deps.onTabUsed, workingTab: deps.workingTab, setTitle: deps.setTitle, backgroundTab: deps.backgroundTab };
       return await tool.call(args, ctx);
     }
     // Then the tab — every surviving tool needs it, and resolving it up front keeps the
-    // "no active browser tab" diagnosis ahead of any per-tool failure.
-    const tab = await activeTab(chrome);
+    // "no active browser tab" diagnosis ahead of any per-tool failure. A conversation not on screen
+    // (P2 Q8) works on its own working tab instead, which the host checks: in its group, not the
+    // tab the user is on, and no write while the user is on one of its group's tabs.
+    let tab;
+    if (typeof deps.backgroundTab === "function") {
+      // Second line behind refuse (review #144): nothing that captures the screen runs from the background.
+      if (tool.ownCanvas || BACKGROUND_PAGE_REFUSED.has(name)) return errText(BACKGROUND_REFUSAL);
+      const r = await deps.backgroundTab({ write: !!tool.write });
+      if (!r || r.error) return errText((r && r.error) || "no tab of your own to act on");
+      tab = r.tab;
+    } else {
+      tab = await activeTab(chrome);
+    }
     // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).
     // One exception: a tool marked ownCanvas (screenshot) may look at Katashiro's OWN canvas tab
@@ -3818,5 +3869,5 @@
     }
   }
 
-  return { localStamp, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, BACKGROUND_TOOLS, backgroundRefusal, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
+  return { localStamp, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, BACKGROUND_SESSION_TOOLS, BACKGROUND_PAGE_REFUSED, backgroundRefusal, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });

@@ -742,3 +742,23 @@ test("deleteConversation: a recheck reason refuses it under the lock, nothing to
   });
   assert.deepEqual(r, { ok: true, canvases: 2, known: true });
 });
+
+test("backgroundTabRefusal (P2 Q8): own group only, never the user's tab, no writes while the user is in the group", () => {
+  const mine = { id: 10, groupId: 5 };
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: [{ id: 1, groupId: -1 }] }), null);
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: [{ id: 1, groupId: -1 }], write: true }), null);
+  // No working tab, or no group: open one.
+  assert.equal(C.backgroundTabRefusal({ tab: null, groupId: 5 }), C.BG_NO_TAB_TEXT);
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: null }), C.BG_NO_TAB_TEXT);
+  assert.equal(C.backgroundTabRefusal({ tab: { id: 10, groupId: 6 }, groupId: 5 }), C.BG_NO_TAB_TEXT, "working tab dragged out of the group");
+  // A tab the agent named that is not in its group.
+  assert.equal(C.backgroundTabRefusal({ tab: { id: 11, groupId: -1 }, groupId: 5, named: true }), C.BG_NOT_OWN_TEXT);
+  assert.match(C.backgroundTabRefusal({ tab: null, groupId: 5, named: true }), /gone/);
+  // The user is on it.
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: [mine] }), C.BG_USER_ON_TAB_TEXT);
+  // The user is on another tab of the group: reading yes, writing no.
+  const userInGroup = [{ id: 12, groupId: 5 }];
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: userInGroup }), null);
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: userInGroup, write: true }), C.BG_USER_IN_GROUP_TEXT);
+  assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: [null, undefined] }), null);
+});

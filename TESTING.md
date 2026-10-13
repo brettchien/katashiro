@@ -316,8 +316,9 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     archive later does not close it. A canvas shown beside a page (`beside: "current"`) still
     follows the canvas Split View rules (both sides' group state stays consistent).
   - **Q5:** with A's group tab active, ＋ or switch to B: a tab outside A's group becomes active
-    first (B's working tab, else B's last-used group tab, else your last-used ungrouped tab), then
-    A's group collapses and B's expands. Nothing flickers into a collapsed group.
+    (B's working tab, else B's last-used group tab, else your last-used ungrouped tab). A's group
+    stays expanded; B's group is expanded (collapse it by hand first to see it reopen). No group
+    collapses on any switch; only × (archive) closes a group's tabs.
   - **Q6:** after the agent worked on a tab, click another tab, type and send: the working tab comes
     to the front at that moment, never while the agent is replying. `switch_tab({tab: "working"})`
     activates it too. Answering an ask card or pushing from a canvas does not switch tabs.

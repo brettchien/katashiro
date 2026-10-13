@@ -27,7 +27,8 @@
 //     (titled after it) and becomes the working tab; set_title (sanitised; never over a user name);
 //     Q4 b order (a card asked after a queued message stays open); Q6 (send brings the working tab
 //     forward; a canvas the agent highlights, or a canvas the user pushes from, becomes the working
-//     tab, a canvas opened in the background does not); Q5 (collapse the left conversation's group, never with the active tab in it); Q12
+//     tab, a canvas opened in the background does not); Q5 (no group collapses on a switch; the user is moved off the left conversation's group; a
+//     group collapsed by hand is expanded when its conversation comes back on screen); Q12
 //     (❓ + notification, whose click switches back); per-conversation drafts; archive closes the
 //     group's tabs but keeps a canvas tab that does not confirm it is clean; push refusals say
 //     已封存 vs "that window's panel is closed"; a canvas's 📨 To chat input (canvas §3.7) fills the
@@ -110,7 +111,7 @@ const STUB = String.raw`
   const fireT = (e, ...a) => { for (const l of tabsEv[e].ls) try { l(...a); } catch (x) { console.error(x); } };
   const notifyClicked = ev();
   window.__removed = [];
-  window.__collapsedActive = [];
+  window.__collapses = [];   // every tabGroups.update({collapsed: true}): only archive may do it
   window.__notes = [];
   window.__notifyClick = (id) => { for (const l of notifyClicked.ls) l(id); };
   // A tab the USER opens (not through Katashiro): active in this window.
@@ -192,14 +193,21 @@ const STUB = String.raw`
       update: async (id, u) => {
         const m = tm();
         if (!m.groups[id]) throw new Error("No group with id: " + id);
-        // Chrome cannot keep the active tab in a collapsed group: the plan must have moved it first.
-        if (u.collapsed && m.tabs.some((t) => t.groupId === id && t.active)) window.__collapsedActive.push(id);
+        if (u.collapsed) window.__collapses.push(id);
         Object.assign(m.groups[id], u);
         tmSave(m);
         return { ...m.groups[id] };
       },
     },
     sidePanel: { open: async (o) => { window.__sidePanelOpened.push(o); } },
+    // Page tools (P2 Q8): which tab a script was injected into; the page answers with its URL.
+    scripting: {
+      executeScript: async (inj) => {
+        (window.__scripted = window.__scripted || []).push(inj.target.tabId);
+        const t = tm().tabs.find((x) => x.id === inj.target.tabId);
+        return [{ frameId: 0, result: { ok: true, text: "PAGE " + (t ? t.url : "?") } }];
+      },
+    },
     notifications: {
       onClicked: notifyClicked,
       create: async (id, o) => { window.__notes.push({ id, ...o }); return id; },
@@ -546,7 +554,7 @@ try {
   const lateNav = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.navigate", { url: "https://example.com/" }));
   await until(p1, (id) => !!window.__acp.responses[id], "the background navigate is answered", lateNav);
   const lateNavRes = await p1.evaluate((id) => window.__acp.responses[id], lateNav);
-  check(lateNavRes.result && lateNavRes.result.isError && /in the background in Katashiro/.test(lateNavRes.result.content[0].text), "P2: a tab tool from a conversation not on screen is refused", lateNavRes);
+  check(lateNavRes.result && lateNavRes.result.isError && /not on screen in Katashiro/.test(lateNavRes.result.content[0].text), "Q8: a page tool from a conversation not on screen needs a tab of its own group", lateNavRes);
   check(await p1.evaluate(() => window.__askCard.classList.contains("pending")), "its ask card stays pending (clock paused) while hidden", null);
 
   // Third conversation → 3 open; ＋ again → the picker.
@@ -772,25 +780,87 @@ try {
   await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
   await turnIdle();
   await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for A"; i.dispatchEvent(new Event("input")); });
-  // ＋ → B: Q5 collapses A's group (activating a tab outside it first), Q12 marks A and notifies.
+  // ＋ → B: Q5 leaves A's group expanded (Brett 2026-10-13 16:01) but moves the user off it; Q12
+  // marks A and notifies.
   await q.click(".conv-tab-new");
   await until(q, () => document.querySelectorAll(".conv-tab").length === 2, "P1b: conversation B");
-  await until(q, (g) => window.__tm().groups[g].collapsed === true, "Q5: A's group collapses on the switch", gA);
+  await until(q, (g) => !window.__tm().tabs.find((t) => t.active && t.windowId === 5 && t.groupId === g), "Q5: the active tab moves outside A's group", gA);
   model = await tm();
-  check(!model.tabs.find((t) => t.active && t.windowId === 5 && t.groupId === gA), "Q5: the active tab is outside the collapsed group", model.tabs.filter((t) => t.active));
-  check((await q.evaluate(() => window.__collapsedActive)).length === 0, "Q5: never collapses a group holding the active tab", null);
+  check(model.groups[gA].collapsed === false, "Q5: A's group stays expanded on the switch", model.groups[gA]);
+  check((await q.evaluate(() => window.__collapses)).length === 0, "Q5: no group is collapsed on a switch", await q.evaluate(() => window.__collapses));
   check(await q.evaluate(() => document.getElementById("message-input").value) === "", "draft: B starts with an empty composer", null);
   const marks = await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).map((t) => [t.classList.contains("mark-waiting"), (t.querySelector(".conv-tab-mark") || {}).textContent]));
   check(marks[0][0] && marks[0][1] === "❓" && !marks[1][0], "Q12: A's tab shows ❓", marks);
   const notes = await q.evaluate(() => window.__notes);
   check(notes.length === 1 && notes[0].id.startsWith("katashiro-notify:5:conv:" + convA + ":"), "Q12: a notification names A", notes);
+  // P2 Q8: A is in the background. Its page tools act on its working tab (agent.example/a, in A's
+  // group) without bringing it forward; if the user collapsed that group by hand, they expand it
+  // (Chrome freezes a collapsed group's pages); screenshot is refused; the user's own tab is never its to touch;
+  // new_tab opens in the background, in A's group, as its new working tab.
+  {
+    model = await tm();
+    // The user collapses A's group by hand (Katashiro never does, Q5).
+    await q.evaluate((g) => { const m = window.__tm(); m.groups[g].collapsed = true; window.__tmSave(m); }, gA);
+    model = await tm();
+    const aTab = model.tabs.find((x) => x.url === "https://agent.example/a");
+    const userTab = model.tabs.find((x) => x.active && x.windowId === 5);
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && !r.result.isError && /PAGE https:\/\/agent\.example\/a/.test(r.result.content[0].text), "Q8: a background page tool reads ITS working tab", r);
+    model = await tm();
+    check(model.tabs.find((x) => x.id === userTab.id).active && !model.tabs.find((x) => x.id === aTab.id).active,
+      "Q8: …without activating it", model.tabs.filter((x) => x.active));
+    check(model.groups[gA].collapsed === false, "Q8: …and its group, collapsed by hand, is expanded (a collapsed group is frozen)", model.groups[gA]);
+    await q.evaluate((g) => { const m = window.__tm(); m.groups[g].collapsed = true; window.__tmSave(m); }, gA);
+    r = await tool("katashiro.screenshot", {});
+    check(r.result && r.result.isError && /in the background in Katashiro/.test(r.result.content[0].text), "Q8: screenshot is refused in the background", r);
+    // The user steps onto A's tab (without switching the panel): A may not touch it, nor write in its group.
+    await q.evaluate((id) => { const m = window.__tm(); m.tabs.forEach((x) => { if (x.windowId === 5) x.active = x.id === id; }); window.__tmSave(m); }, aTab.id);
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && r.result.isError && /the user is looking at that tab/.test(r.result.content[0].text), "Q8: never the tab the user is on", r);
+    check((await q.evaluate(() => window.__scripted)).length === 0, "Q8: …nothing was injected into it", await q.evaluate(() => window.__scripted));
+    await q.evaluate((id) => { const m = window.__tm(); m.tabs.forEach((x) => { if (x.windowId === 5) x.active = x.id === id; }); window.__tmSave(m); }, userTab.id);
+    // The user is on a tab of A's group in ANOTHER window (not the panel's, not focused): still seen.
+    await q.evaluate((g) => { const m = window.__tm(); m.tabs.push({ id: 9001, windowId: 9, url: "https://agent.example/other-window", active: true, groupId: g, splitViewId: -1, pinned: false, index: m.tabs.length, lastAccessed: ++m.clock }); window.__tmSave(m); }, gA);
+    r = await tool("katashiro.navigate", { url: "https://agent.example/x" });
+    check(r.result && r.result.isError && /looking at one of your conversation's tabs/.test(r.result.content[0].text), "Q8: the active tab of every window counts as the user's", r);
+    await q.evaluate(() => { const m = window.__tm(); m.tabs = m.tabs.filter((x) => x.id !== 9001); window.__tmSave(m); });
+    // new_tab from the background: not active, in A's group (expanded), A's new working tab.
+    r = await tool("katashiro.new_tab", { url: "https://agent.example/b", active: true });
+    check(r.result && !r.result.isError && /your working tab/.test(r.result.content[0].text), "Q8: new_tab from the background says where it went", r);
+    model = await tm();
+    const bTab = model.tabs.find((x) => x.url === "https://agent.example/b");
+    check(bTab && !bTab.active && bTab.groupId === gA && model.groups[gA].collapsed === false && model.tabs.find((x) => x.id === userTab.id).active,
+      "Q8: …opened in the background, in A's group, which is expanded; the user stays where they were", { bTab, g: model.groups[gA] });
+    await q.evaluate(() => { window.__scripted = []; });
+    r = await tool("katashiro.get_text", {});
+    check(r.result && !r.result.isError && /agent\.example\/b/.test(r.result.content[0].text), "Q8: the next page tool acts on the new tab", r);
+    // switch_tab back to the first tab: selected, not activated.
+    r = await tool("katashiro.switch_tab", { url: "agent.example/a" });
+    model = await tm();
+    check(r.result && !r.result.isError && /not brought to the front/.test(r.result.content[0].text) && !model.tabs.find((x) => x.id === aTab.id).active,
+      "Q8: background switch_tab selects without activating", r);
+    // close_tab of the user's own tab is refused; of its own tab, done.
+    const list = await q.evaluate(() => chrome.tabs.query({}));
+    r = await tool("katashiro.close_tab", { index: list.findIndex((x) => x.id === userTab.id) });
+    check(r.result && r.result.isError && (await tm()).tabs.some((x) => x.id === userTab.id), "Q8: close_tab never closes the user's tab from the background", r);
+    r = await tool("katashiro.close_tab", { url: "agent.example/b" });
+    check(r.result && !r.result.isError && !(await tm()).tabs.some((x) => x.id === bTab.id), "Q8: close_tab closes one of its own tabs", r);
+  }
   await q.evaluate(() => { const i = document.getElementById("message-input"); i.value = "draft for B"; i.dispatchEvent(new Event("input")); });
-  // The notification click goes back to A, with its draft.
+  // The notification click goes back to A, with its draft; A's group, collapsed by hand meanwhile,
+  // is expanded on the switch (Q5), and still no group is collapsed by a switch.
+  await q.evaluate((g) => { const m = window.__tm(); m.groups[g].collapsed = true; window.__tmSave(m); }, gA);
   await q.evaluate((id) => window.__notifyClick(id), notes[0].id);
   await until(q, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "Topic A by agent", "Q12: the notification click switches to A");
   check(await q.evaluate(() => document.getElementById("message-input").value) === "draft for A", "draft: A's draft is back", await q.evaluate(() => document.getElementById("message-input").value));
-  await until(q, (g) => window.__tm().groups[g].collapsed === false, "Q5: A's group expands again", gA);
+  await until(q, (g) => window.__tm().groups[g].collapsed === false, "Q5: A's group, collapsed by hand, expands when A is back", gA);
   await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
+  await until(q, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent !== "Topic A by agent", "Q5: back to B");
+  await new Promise((res) => setTimeout(res, 200));
+  check((await tm()).groups[gA].collapsed === false && (await q.evaluate(() => window.__collapses)).length === 0,
+    "Q5: switching to B again leaves A's group expanded", { g: (await tm()).groups[gA], c: await q.evaluate(() => window.__collapses) });
   check(await q.evaluate(() => document.getElementById("message-input").value) === "draft for B", "draft: B's draft is back", null);
 
   // To chat input (canvas §3.7, Brett 2026-10-13 01:12): a canvas's 📨 puts the selected text into
