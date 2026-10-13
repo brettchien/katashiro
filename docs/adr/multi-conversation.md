@@ -581,6 +581,11 @@ conversation's own tabs to it (Q8).
   (not only on leaving, §4.7). An ask card's clock counts visible time (Q1); a 🔒 card keeps its
   wall-clock 2 minutes.
 - **Pool exhausted** is said as such (`ConvCore.promptFailureText`) with 重試, never retried by itself.
+  openab does not fail `session/prompt` on a full pool: `dispatch.rs` sends `⚠️ ` +
+  `format_user_error(e)` (`error_display.rs`: "**Service Busy**\nAll agent sessions are in use…") as
+  chat text and the turn ends `end_turn`. A reply that is exactly that line
+  (`ConvCore.isPoolBusyReply`) is taken as the refusal: not recorded, not relayed, the host line stays
+  pending, error notification if in the background (review: Jellyfish, #143).
 - **Reconnect:** the handshake resumes the conversation on screen and every other one with prompts
   queued, so a background turn a dropped socket re-queued is re-sent there too.
 - **Tools, until part 2:** a conversation not on screen may call the tools that touch no tab the user

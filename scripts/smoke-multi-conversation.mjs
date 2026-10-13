@@ -264,6 +264,11 @@ const STUB = String.raw`
       }
       if (m.method === "session/prompt") {
         const sid = m.params.sessionId;
+        // openab on a full pool: dispatch.rs sends "⚠️ " + format_user_error(e) as chat text, then end_turn.
+        if (acp.poolBusy) {
+          this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "⚠️ **Service Busy**\nAll agent sessions are in use, please try again shortly." } } } });
+          return this.reply(m.id, { stopReason: "end_turn" });
+        }
         if (acp.lateUpdateFor) this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: acp.lateUpdateFor, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LATE CHUNK FROM ANOTHER SESSION" } } } });
         this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply in " + sid } } } });
         if (acp.askOnPrompt) { acp.askOnPrompt = false; this.emit({ jsonrpc: "2.0", id: 9001, method: "mcp/connect", params: { acpId: acp.servers[sid] } }); }
@@ -462,6 +467,18 @@ try {
   await p1.evaluate(() => { window.__acp.hold = false; });
   await p1.evaluate(() => document.querySelectorAll(".conv-tab")[1].click());
   await until(p1, () => document.getElementById("stop-btn").hidden, "stopped");
+  // §5: a full pool (openab's Service Busy chat line, review #143) is an error bubble with 重試 —
+  // not an agent reply: nothing recorded as received; 重試 sends the same prompt again.
+  await p1.evaluate(() => { window.__acp.poolBusy = true; });
+  await send(p1, "while the pool is full");
+  await until(p1, () => !!Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden)?.querySelector(".error-bubble .retry-btn"), "the pool-full error bubble");
+  const busyText = await visibleText(p1);
+  check(busyText.includes("同時進行的對話已滿") && !busyText.includes("Service Busy"), "§5: a full pool says so plainly, not as a reply", busyText.slice(-160));
+  const busyConv = Object.values(await storage(p1)).find((v) => v && Array.isArray(v.messages) && v.messages.some((m) => /while the pool is full/.test(m.text)));
+  check(busyConv && !busyConv.messages.some((m) => m.kind === "received" && /Service Busy/.test(m.text)), "§5: …and is not recorded as the agent's reply", busyConv && busyConv.messages.slice(-2));
+  await p1.evaluate(() => { window.__acp.poolBusy = false; Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelector(".error-bubble .retry-btn").click(); });
+  await until(p1, () => window.__acp.log.filter((m) => m.method === "session/prompt" && m.params.prompt[0].text.includes("while the pool is full")).length === 2, "§5: 重試 after a full pool");
+  await until(p1, () => document.getElementById("stop-btn").hidden, "the retried turn done");
 
   // Switch back: no second resume on the same socket; its list (and messages) are back.
   await p1.evaluate(() => document.querySelectorAll(".conv-tab")[0].click());

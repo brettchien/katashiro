@@ -736,7 +736,9 @@ class Conn {
     if (!st) return;
     st.promptQueue.push(text);
     if (images && images.length) st.pendingImages.push(...images);
-    this.flushQueue(st);
+    // openSession, not flushQueue: a background conversation not yet resumed on this socket (e.g. a
+    // relay after a reconnect) is opened first; one that is ready just flushes (review: Jellyfish, #143).
+    this.openSession(st);
   }
 
   // Send the next queued turn if this session is idle and ready.
@@ -788,11 +790,24 @@ class Conn {
       idleMs: RoomCore.TURN_IDLE_TIMEOUT_MS, maxMs: RoomCore.TURN_MAX_TIMEOUT_MS,
     }))
       .then((res) => {
+        const replyText = st.stream ? st.stream.text : "";
+        if (ConvCore.isPoolBusyReply(replyText)) {
+          // §5: the pool was full — openab says so as a chat line, not an error (ConvCore.isPoolBusyReply).
+          // The turn never started: no record, no relay, the host line stays pending; error bubble + 重試.
+          st.turnActive = false;
+          updateStopButton();
+          renderConvTabs();
+          st.stream.text = "";                           // drop the line: finalize removes the empty row
+          this.finalizeStream(undefined, st);
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryLast(st)));
+          if (st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
+          this.flushQueue(st);
+          return;
+        }
         if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
         st.turnActive = false;
         updateStopButton();
         renderConvTabs();
-        const replyText = st.stream ? st.stream.text : "";
         this.finalizeStream(res && res.stopReason, st);  // stopReason "cancelled" ⇒ partial reply kept
         this.inState(st, () => relayAgentReply(this, replyText, st.convId)); // fan it out, within its conversation
         // Q9 (§5): a turn that finished where the user is not → ● on its tab (recordMessage) and a

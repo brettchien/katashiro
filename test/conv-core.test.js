@@ -118,6 +118,16 @@ test("promptFailureText: pool exhausted is said plainly (never auto-retried); an
   assert.equal(C.promptFailureText(undefined), "回合失敗：");
 });
 
+test("isPoolBusyReply: openab's full-pool chat line (dispatch.rs ⚠️ + error_display.rs), and only that", () => {
+  assert.equal(C.isPoolBusyReply("⚠️ **Service Busy**\nAll agent sessions are in use, please try again shortly."), true);
+  assert.equal(C.isPoolBusyReply("⚠️ **Service Busy**\nAll agent sessions are in use, please try again shortly.\n"), true);
+  assert.equal(C.isPoolBusyReply("**Service Busy**\nAll agent sessions are in use, please try again shortly."), false);
+  assert.equal(C.isPoolBusyReply("openab says:\n⚠️ **Service Busy**\nAll agent sessions are in use, please try again shortly."), false);
+  assert.equal(C.isPoolBusyReply("⚠️ **Service Busy**\nAll agent sessions are in use.\n\nAnd here is more of my reply"), false);
+  assert.equal(C.isPoolBusyReply(""), false);
+  assert.equal(C.isPoolBusyReply(undefined), false);
+});
+
 test("U2: the host line goes first, only when the conversation had messages before this prompt", () => {
   assert.equal(C.needsReconnectHint({ messageCount: 0, queuedCount: 0 }), false);
   assert.equal(C.needsReconnectHint({ messageCount: 1, queuedCount: 1 }), false);   // a new conversation's first message

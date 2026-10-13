@@ -194,6 +194,16 @@
   }
 
   /**
+   * §5: openab never fails session/prompt on a full pool — dispatch.rs (dispatch_batch) turns the
+   * error into a chat line, "⚠️ " + format_user_error(e) (error_display.rs: "pool exhausted" →
+   * "**Service Busy**\nAll agent sessions are in use…"), and the turn ends end_turn. A reply that is
+   * exactly that line is the pool refusal, not an agent reply (review: Jellyfish, #143).
+   */
+  function isPoolBusyReply(text) {
+    return /^\s*⚠️\s*\*\*Service Busy\*\*\s*\n\s*All agent sessions are in use\b[^\n]*\s*$/.test(String(text == null ? "" : text));
+  }
+
+  /**
    * §3.5 U2: does the first prompt after a session/resume or session/new carry the host line? Only
    * for a conversation that has messages from BEFORE this prompt: a brand-new conversation's first
    * message is already recorded when its session/new finishes, and is the queued prompt itself.
@@ -803,7 +813,7 @@
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
-    archiveBlocked, promptFailureText, tabMark, needsReconnectHint, withReconnectHint,
+    archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, needsReconnectHint, withReconnectHint,
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,
