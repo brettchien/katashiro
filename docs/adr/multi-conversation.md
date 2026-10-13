@@ -70,7 +70,7 @@ Katashiro becomes a **multi-conversation** client in phases. Each phase ships on
 | Phase | Scope | Not yet |
 |---|---|---|
 | **MVP (P1a)** | storage migration (`history:<windowId>` → `conv:<id>` + `window:<windowId>`); a **tab strip** at the top of the panel, **at most 3 open conversations**; ＋ new, × **archive** (never delete), rename (auto + manual); archived conversations listed in a new **對話** section of the 🗂️ gallery to reopen; switching resumes the session, U2 (`chat_history`) as fallback; **no switching while a turn is running**; one window per conversation (Web Lock); browser restart → last conversation; `ask_user` / 🔒 cards bound to their conversation (§3) | background turns, agent tabs in the group, working tab |
-| **P1b** | one Chrome tab group per conversation: its canvases **and the tabs the agent opened**; collapse the other groups on switch; working tab, and switching to it when the user sends (Q6); a card waiting in another conversation → tab-strip mark + notification (Q12); a conversation that comes back reopens its group's tabs; archive closes them; agent `set_title`; a composer draft per conversation; the P1a leftovers (§4) | background turns |
+| **P1b** | one Chrome tab group per conversation: its canvases **and the tabs the agent opened**; groups stay expanded on switch (Q5, revised 2026-10-13); working tab, and switching to it when the user sends (Q6); a card waiting in another conversation → tab-strip mark + notification (Q12); a conversation that comes back reopens its group's tabs; archive closes them; agent `set_title`; a composer draft per conversation; the P1a leftovers (§4) | background turns |
 | **P2** | background turns: one session state per conversation on the same connection; ⏳ / ● / ❓ on the tab strip; completion notification (Q9); background writes only on the conversation's own tabs (Q8); pool exhausted handled (§5) | panel closed |
 | **P3** | the connection leaves the side panel (offscreen document); **Q10 open**, decided after P2 is tried (§6) | — |
 | **P4** | mirror folder rename by per-file `move()` (#101); upstream `session/close`; ~~deleting a conversation~~ (built ahead, §7.1); several agents per conversation (§7) | — |
@@ -84,7 +84,7 @@ discussion):
 | Q2 | MVP | One conversation open in two windows? | Forbidden: Web Lock, and say which window has it (16:31) |
 | Q3 | MVP | After a browser restart | Back to the last conversation (16:31) |
 | Q4 | MVP | Where is the conversation list? | Only a tab strip at the top of the panel, at most 3 conversations (16:30) |
-| Q5 | P1b | Other conversations' tab groups on switch | Collapse them (16:32); **changed by Q8 (§5.2):** a replying conversation's group stays expanded, and a background conversation's tools expand its group |
+| Q5 | P1b | Other conversations' tab groups on switch | **Not collapsed:** a conversation's group stays as long as the conversation is in the panel's tab strip; archive closes it (§4.5). Brett 2026-10-13 16:01 TPE (replaces "collapse on switch", 16:32 of 10-12) |
 | Q6 | P1b | Sending while the active tab is not the working tab | Switch to the working tab, only at the moment the user sends, never mid-turn (16:32) |
 | Q7 | P2 | Background concurrency | 3, from Q4; the pool is shared, so pool exhausted must be handled |
 | Q8 | P2 | A background conversation touches the tab the user is on | Error; the agent uses a tab of its own group (16:33) |
@@ -387,7 +387,7 @@ Where the MVP had to read this section one way, it took the safer reading:
 
 ### 3.12 Not in the MVP
 
-Background turns; agent-opened tabs in the conversation's group; collapsing groups on switch; the
+Background turns; agent-opened tabs in the conversation's group; group handling on switch; the
 working tab; marks and notifications for other conversations; agent `set_title`; per-conversation
 drafts; reopening and closing a group's tabs (all P1b, §4); mirror folder names; deleting a
 conversation (§7.1); search over conversation content.
@@ -414,19 +414,22 @@ still run only in the current conversation (§3.5); P2 lifts that.
   (the canvas §3.1 rules, which #90 learned the hard way): a tab in a split is never grouped or
   ungrouped on its own.
 
-### 4.2 Collapse on switch (Q5)
+### 4.2 Groups on switch (Q5)
 
-- On a switch, in the panel's window: if the active tab is in a group of another open conversation,
-  first activate a tab outside it — the new conversation's working tab (§4.3) if it is in this
-  window, else its group's most recently used tab, else the most recently used tab in no
-  conversation's group (canvas §3.1); then collapse the other open conversations' groups and expand
-  the new one's. If every tab of the window is in those groups, nothing is collapsed (Chrome would
-  have nowhere to put the focus). Best effort: a Chrome refusal ("tabs cannot be edited right now"
-  while the user drags) leaves the groups as they are.
-- The rule is a pure plan (`CanvasTabs.planGroupSwitch`); the panel only makes the calls.
-- **Changed by Q8 (P2, §5.2):** a conversation still replying is moved off as above but its group
-  is **not** collapsed (`keepExpanded`), and a background conversation's tab and page tools expand
-  its group — Chrome freezes a collapsed group's pages. The user sees such a group open by itself.
+- **No group is collapsed on a switch** (Brett 2026-10-13 16:01 TPE, replacing "collapse the
+  others", 16:32 of 10-12): a conversation's group stays, expanded, as long as the conversation is
+  in the panel's tab strip; only archive closes it (§4.5). The user may still collapse a group by
+  hand; Katashiro leaves that as it is, except for the safeguard of §5.2.
+- On a switch, in the panel's window, the new conversation's group is expanded (the user may have
+  collapsed it by hand).
+- **Activate step:** if the active tab is in a group of another open conversation, a tab outside it
+  is activated — the new conversation's working tab (§4.3) if it is in this window, else its group's
+  most recently used tab, else the most recently used tab in no conversation's group (canvas §3.1),
+  else nothing. (Under review by Brett; kept as a separate step, `switchActivate`, so it can be
+  dropped on its own.)
+- Best effort: a Chrome refusal ("tabs cannot be edited right now" while the user drags) leaves the
+  tabs and groups as they are. The rule is a pure plan (`CanvasTabs.planGroupSwitch`); the panel
+  only makes the calls.
 
 ### 4.3 Working tab (Q6)
 
@@ -470,8 +473,8 @@ still run only in the current conversation (§3.5); P2 lifts that.
   has it open) is adopted into the group instead of opened twice: not pinned, not in a split, not in
   another open conversation's group. If all adopted tabs sit in one group (Chrome's restored copy of
   this group), that group is reused. A conversation whose group still exists (a panel reload, a plain
-  switch) is not "coming back" and opens nothing. Then §4.2 collapses the groups that are not
-  current.
+  switch) is not "coming back" and opens nothing. Then §4.2 runs for the current conversation (its
+  group expanded; no group collapsed).
 - A group whose tabs the user closed one by one ends with an empty list, so nothing comes back.
 
 ### 4.5 Archive closes the group's tabs (Brett 2026-10-12 18:31)
@@ -615,14 +618,14 @@ page tools act on its own working tab without bringing it forward.
   No working tab in the group → an error that says to open one with `new_tab` or pick one with
   `switch_tab`. The check runs before the tool; the user may step onto the tab in between (TOCTOU).
   Accepted: the window is one tool call, and the next call is checked again.
-- **A group a background conversation works in is expanded, never collapsed — a change to Q5 (§4.2).** Chrome freezes the
-  pages of a collapsed group (`CreateFreezingVote(kCollapsedGroup)` per tab, then performance
-  manager's freezing policy), and a frozen page runs no timers, SPA updates or injected scripts, so
-  `wait_for`, `click` or even `read_dom` could stall (review #144, Jellyfish). So: the tab check
-  expands the group of the tab it allows (`expandGroup`: no tab moves, nothing is activated);
-  `new_tab` expands the group it joined; and Q5's collapse on a conversation switch skips the
-  groups of conversations still replying. A group collapsed while idle is expanded again by that
-  conversation's next page or tab tool. Real-Chrome check: collapse a group, let it freeze, then run
+- **Safeguard for a group the user collapsed by hand.** Katashiro never collapses a conversation's
+  group (Q5, §4.2), but the user can. Chrome freezes the pages of a collapsed group
+  (`CreateFreezingVote(kCollapsedGroup)` per tab, then performance manager's freezing policy), and a
+  frozen page runs no timers, SPA updates or injected scripts, so `wait_for`, `click` or even
+  `read_dom` could stall (review #144, Jellyfish). So a background conversation's tab and page tools
+  expand its group before acting: the tab check expands the group of the tab it allows
+  (`expandGroup`: no tab moves, nothing is activated), and `new_tab` expands the group it joined.
+  The user sees such a group open by itself. Real-Chrome check: collapse a group, let it freeze, then run
   `snapshot` / `click` / `navigate` / `wait_for` on one of its tabs from the background.
 - **`screenshot` is refused**: `captureVisibleTab` captures only the tab in front, so it would have to
   take the user's screen. `callBrowserTool` also refuses it (and any `ownCanvas` tool) whenever the

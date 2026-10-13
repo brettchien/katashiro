@@ -299,30 +299,33 @@ test("pickWorkingTab: same id + same origin, else the exact URL (ids are reused 
   assert.equal(T.pickWorkingTab({ saved: { id: 1 }, tabs }), null);
 });
 
-test("planGroupSwitch (Q5): activate outside the old group first, collapse the others, expand the new one", () => {
+test("planGroupSwitch (Q5): never collapses a group; expands the new one; activate step moves off another conversation's group", () => {
   const tabs = [
     web(1, "https://old.example/", { groupId: 10, active: true, lastAccessed: 50 }),
     web(2, "https://new.example/", { groupId: 20, lastAccessed: 10 }),
     web(3, "https://new2.example/", { groupId: 20, lastAccessed: 30 }),
     web(4, "https://free.example/", { lastAccessed: 40 }),
   ];
-  // the working tab wins when it is outside the groups being collapsed
-  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 4 }), { activate: 4, collapse: [10], expand: 20 });
+  // the result has no collapse list: the other groups stay as they are
+  assert.deepEqual(Object.keys(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10] })).sort(), ["activate", "expand"]);
+  // the working tab wins when it is outside the other conversations' groups
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 4 }), { activate: 4, expand: 20 });
   // no working tab: the new group's most recently used tab
-  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10] }), { activate: 3, collapse: [10], expand: 20 });
-  // a working tab inside a group being collapsed does not count
-  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 1 }), { activate: 3, collapse: [10], expand: 20 });
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10] }), { activate: 3, expand: 20 });
+  // a working tab inside another conversation's group does not count
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10], workingTabId: 1 }), { activate: 3, expand: 20 });
   // no group for the new conversation: the most recently used free tab
-  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: null, otherGroupIds: [10, 20] }), { activate: 4, collapse: [10, 20], expand: null });
-  // the active tab is outside: nothing to activate; groups that are gone are skipped
+  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: null, otherGroupIds: [10, 20] }), { activate: 4, expand: null });
+  // the active tab is outside the other groups: nothing to activate; a gone group is not expanded
   const calm = tabs.map((t) => ({ ...t, active: t.id === 4 }));
-  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10, 77] }), { activate: null, collapse: [10], expand: 20 });
-  // P2 Q8: a replying conversation's group is not collapsed, but the user is still moved off it
-  assert.deepEqual(T.planGroupSwitch({ tabs, groupId: 20, otherGroupIds: [10, 30], workingTabId: 4, keepExpanded: [10] }), { activate: 4, collapse: [], expand: 20 });
-  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10], keepExpanded: [20] }), { activate: null, collapse: [10], expand: 20 });
-  // every tab is in a group being collapsed: collapse nothing
+  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 20, otherGroupIds: [10, 77] }), { activate: null, expand: 20 });
+  assert.deepEqual(T.planGroupSwitch({ tabs: calm, groupId: 77, otherGroupIds: [10] }), { activate: null, expand: null });
+  // the active tab is in the new conversation's own group: stays
+  const own = tabs.map((t) => ({ ...t, active: t.id === 2 }));
+  assert.deepEqual(T.planGroupSwitch({ tabs: own, groupId: 20, otherGroupIds: [10] }), { activate: null, expand: 20 });
+  // every tab is in another conversation's group: nowhere to go
   const all = [web(1, "https://old.example/", { groupId: 10, active: true })];
-  assert.deepEqual(T.planGroupSwitch({ tabs: all, groupId: null, otherGroupIds: [10] }), { activate: null, collapse: [], expand: null });
+  assert.deepEqual(T.planGroupSwitch({ tabs: all, groupId: null, otherGroupIds: [10] }), { activate: null, expand: null });
 });
 
 test("planArchiveClose: close the group's tabs, keep dirty canvases, never empty the window", () => {

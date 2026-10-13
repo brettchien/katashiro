@@ -127,10 +127,11 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 - If the user drags a canvas tab out of the group or deletes the group, Katashiro does not fight
   it: the next `canvas_open` in that conversation recreates the group, and stray canvas tabs are
   found again by URL (ignoring compare tabs, `view=agent`, §3.10).
-- With multi-conversation, switching conversation collapses the old conversation's group and
-  expands the new one's. **Not in phase 1** (§6 Q5): per-conversation group titles and
-  collapse-on-switch wait for multi-conversation ([multi-conversation](./multi-conversation.md):
-  group titles in its MVP §3.3, collapse in P1b §4, where the group also takes the agent's own tabs).
+- With multi-conversation, each conversation has its own group. **Not in phase 1** (§6 Q5):
+  per-conversation group titles and switch handling wait for multi-conversation
+  ([multi-conversation](./multi-conversation.md): group titles in its MVP §3.3, switch handling in
+  P1b §4.2, where the group also takes the agent's own tabs). Collapse-on-switch, planned here, was
+  dropped there (Brett 2026-10-13): groups stay expanded until the conversation is archived.
 - **Full width (Brett, 2026-10-10).** The canvas uses the whole tab: no centered fixed-width
   column like GitHub's file view. Documents fill the viewport with modest side padding (~24 px);
   tables and code blocks take all the width they need, and slides scale to the tab. The host
@@ -164,9 +165,9 @@ the rule below, not yet done:
 - **Duplicate tabs of one canvas** (the user duplicated the tab): both editors save with their
   `baseVersion`, so the later save gets the conflict view (§3.5). The card focuses the most
   recently used tab of that canvas, never a compare tab (`view=agent`, §3.10).
-- **Collapsing on conversation switch:** activate a tab outside the old group first (the new
-  group's tab, or the web page), then collapse; Chrome will not collapse a group holding the
-  active tab.
+- **Conversation switch:** groups are not collapsed (multi-conversation §4.2, Brett 2026-10-13);
+  if the active tab is in the old conversation's group, a tab outside it is activated (the new
+  group's tab, or the web page).
 
 ### 3.2 Isolation — host page plus sandboxed frames
 
@@ -1388,7 +1389,8 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
 5. ~~**Order:** canvas phase 1 before multi-conversation, or after?~~ **Decided (Brett,
    2026-10-10):** canvas phase 1 first. Storage is keyed by `conversationId` from day one (§3.6); until
    multi-conversation lands the tab group is titled "Canvas", and group titles and collapse-on-switch
-   (§3.1) are added with multi-conversation.
+   (§3.1) are added with multi-conversation. (Collapse-on-switch was later dropped: multi-conversation
+   §4.2, Brett 2026-10-13.)
 6. ~~**Persistence beyond the Chrome profile?**~~ **Decided (Brett, 2026-10-10):** optional local
    folder mirror (§3.6), not a cloud sync.
 7. ~~**Versions:** full history, latest + agent's last write, or none?~~ **Decided (Brett,
