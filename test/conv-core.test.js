@@ -99,14 +99,23 @@ test("shouldWriteIndexTime: at most every 5 s", () => {
   assert.equal(C.shouldWriteIndexTime(1000, 6000), true);
 });
 
-test("switchBlocked: a running turn, or prompts queued on a live connection, hold the conversation", () => {
-  assert.equal(C.switchBlocked([]), null);
-  assert.equal(C.switchBlocked([{ turnActive: false, queued: 0, online: true }]), null);
-  assert.equal(C.switchBlocked([{ turnActive: true, queued: 0, online: true }]), C.SWITCH_BLOCKED_TEXT);
-  assert.equal(C.switchBlocked([{ turnActive: false, queued: 2, online: true }]), C.SWITCH_BLOCKED_TEXT);
-  // Queued for a reconnect: the user is not trapped; the queue flushes when it is current again.
-  assert.equal(C.switchBlocked([{ turnActive: false, queued: 2, online: false }]), null);
-  assert.equal(C.SWITCH_BLOCKED_TEXT, "回覆中不能切換——等回完或先按 ⏹ 停止");
+test("archiveBlocked: a running turn, or prompts queued on a live connection, hold the conversation (P2: switching never does)", () => {
+  assert.equal(C.archiveBlocked([]), null);
+  assert.equal(C.archiveBlocked([{ turnActive: false, queued: 0, online: true }]), null);
+  assert.equal(C.archiveBlocked([{ turnActive: true, queued: 0, online: true }]), C.ARCHIVE_BLOCKED_TEXT);
+  assert.equal(C.archiveBlocked([{ turnActive: false, queued: 2, online: true }]), C.ARCHIVE_BLOCKED_TEXT);
+  // Queued for a reconnect: not held; the queue resends once the socket is back.
+  assert.equal(C.archiveBlocked([{ turnActive: false, queued: 2, online: false }]), null);
+  assert.equal(C.archiveBlocked([null, { turnActive: true, queued: 0, online: true }]), C.ARCHIVE_BLOCKED_TEXT);
+  assert.equal(C.ARCHIVE_BLOCKED_TEXT, "回覆中不能封存——等回完或先按 ⏹ 停止");
+  assert.equal(C.switchBlocked, undefined);
+});
+
+test("promptFailureText: pool exhausted is said plainly (never auto-retried); anything else as before", () => {
+  assert.equal(C.promptFailureText("pool exhausted: all sessions busy"), `回合沒有開始：${C.POOL_EXHAUSTED_TEXT}`);
+  assert.equal(C.promptFailureText("Pool is exhausted"), `回合沒有開始：${C.POOL_EXHAUSTED_TEXT}`);
+  assert.equal(C.promptFailureText("boom"), "回合失敗：boom");
+  assert.equal(C.promptFailureText(undefined), "回合失敗：");
 });
 
 test("U2: the host line goes first, only when the conversation had messages before this prompt", () => {

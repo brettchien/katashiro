@@ -3666,3 +3666,43 @@ test("P1b: set_title goes to the host and reports its verdict; not gated by act 
   assert.match((await call(d, "katashiro.set_title", { title: "x" })).content[0].text, /not available in this host/);
   assert.deepEqual(seen, [" Market research ", "mine"]);
 });
+
+// --- multi-conversation P2 §5: a conversation not on screen ----------------------------------------
+
+test("backgroundRefusal: only tools that touch no tab the user sees, and bring nothing to the front", () => {
+  for (const n of BrowserMcp.BACKGROUND_TOOLS) assert.ok(BrowserMcp.TOOLS[n], `${n} is a real tool`);
+  for (const n of ["katashiro.chat_history", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.ask_user", "katashiro.notify"]) {
+    assert.equal(BrowserMcp.backgroundRefusal(n, {}), null, n);
+  }
+  assert.equal(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { title: "x" }), null);
+  for (const n of ["katashiro.navigate", "katashiro.click", "katashiro.screenshot", "katashiro.new_tab", "katashiro.switch_tab",
+    "katashiro.canvas_goto", "katashiro.canvas_highlight", "katashiro.canvas_view", "katashiro.canvas_gallery", "katashiro.highlight"]) {
+    assert.match(BrowserMcp.backgroundRefusal(n, {}), /in the background in Katashiro/, n);
+  }
+  // canvas_open beside shows the canvas next to the user's page: refused in the background.
+  assert.match(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { beside: "current" }), /in the background/);
+  // The refusal names what is still available, so the agent can carry on.
+  assert.match(BrowserMcp.backgroundRefusal("katashiro.navigate", {}), /chat_history.*canvas_open/);
+});
+
+test("tools/call: a refuse FUNCTION decides per tool (name, raw args); refused calls run nothing and show no pill", async () => {
+  const seen = [];
+  const pills = [];
+  const { chrome } = mockChrome();
+  const d = {
+    chrome, crypto: mockCrypto(), actMode: true,
+    refuse: (name, args) => { seen.push([name, args]); return name === "katashiro.tabs" ? null : "nope: background"; },
+    onToolCall: (i) => pills.push(i),
+  };
+  const refused = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.get_text", arguments: { selector: "#x" } }, d);
+  assert.equal(refused.isError, true);
+  assert.equal(refused.content[0].text, "nope: background");
+  assert.deepEqual(seen[0], ["katashiro.get_text", { selector: "#x" }]);
+  assert.equal(pills.length, 0);
+  const ok = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.tabs", arguments: {} }, d);
+  assert.notEqual(ok.isError, true);
+  assert.ok(pills.length > 0, "an allowed call shows its pill as usual");
+  // A string still refuses every call (unchanged).
+  const all = await BrowserMcp.handleMcpMessage("tools/call", { name: "katashiro.tabs", arguments: {} }, { ...d, refuse: "closed" });
+  assert.equal(all.content[0].text, "closed");
+});
