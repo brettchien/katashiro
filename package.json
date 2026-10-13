@@ -1,7 +1,7 @@
 {
   "name": "katashiro-dev",
   "private": true,
-  "description": "Dev tooling only (tests and puppeteer smokes). The extension itself has no dependencies and never loads anything from node_modules.",
+  "description": "Dev tooling only (tests, puppeteer smokes, E2E). The extension itself has no dependencies and never loads anything from node_modules.",
   "engines": {
     "node": ">=22.12.0"
   },
@@ -11,10 +11,13 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "chrome": "npx --no-install @puppeteer/browsers install chrome-headless-shell@$npm_package_config_chromeVersion --path .cache/chrome",
-    "smoke": "node scripts/run-smokes.mjs"
+    "chrome:full": "npx --no-install @puppeteer/browsers install chrome@$npm_package_config_chromeVersion --path .cache/chrome",
+    "smoke": "node scripts/run-smokes.mjs",
+    "e2e": "node e2e/run.mjs"
   },
   "devDependencies": {
     "@puppeteer/browsers": "3.2.4",
-    "puppeteer-core": "25.13.0"
+    "puppeteer-core": "25.13.0",
+    "ws": "8.22.0"
   }
 }
