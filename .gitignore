@@ -3,3 +3,7 @@
 # committed, so an unpacked dev load shows "dev" unless you stamp it yourself.
 build-info.json
 scripts/vendor-build/node_modules/
+
+# Dev tooling (package.json): npm deps and the pinned headless Chrome for the smokes.
+node_modules/
+.cache/

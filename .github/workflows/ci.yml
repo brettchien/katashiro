@@ -1,7 +1,7 @@
 name: ci
 
-# Run the unit tests on every PR and on pushes to main, so a regression is caught before
-# merge — not first at release time (release.yml runs the same tests only on a tag push).
+# Run the unit tests and the puppeteer smokes on every PR and on pushes to main, so a regression is
+# caught before merge — not first at release time (release.yml runs the unit tests only on a tag push).
 
 on:
   pull_request:
@@ -38,3 +38,36 @@ jobs:
 
       - name: Test
         run: node --test test/*.test.js
+
+  # The puppeteer smokes (scripts/smoke-*.mjs): the real side panel, canvas and gallery pages in a
+  # headless Chrome, with chrome.* stubbed. Chrome is pinned in package.json (config.chromeVersion).
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Chrome version
+        id: chrome
+        run: echo "version=$(node -p "require('./package.json').config.chromeVersion")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache headless Chrome
+        uses: actions/cache@v4
+        with:
+          path: .cache/chrome
+          key: chrome-headless-shell-${{ runner.os }}-${{ steps.chrome.outputs.version }}
+
+      # A no-op when the cache restored it.
+      - name: Install headless Chrome
+        run: npm run chrome
+
+      - name: Smoke
+        run: npm run smoke

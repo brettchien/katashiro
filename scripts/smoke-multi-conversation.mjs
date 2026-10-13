@@ -3,8 +3,10 @@
 // in the real sidepanel.html + sidepanel.js, with a fake ACP agent behind window.WebSocket. Needs a
 // Chrome, so it is not part of `node --test`:
 //
-//   CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppeteer-core \
-//     node scripts/smoke-multi-conversation.mjs
+//   npm ci && npm run chrome     # once
+//   node scripts/smoke-multi-conversation.mjs      # or `npm run smoke` for all of them
+//
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
 //
 // The pages are served over http with a stub of the chrome.* APIs: chrome.storage.local lives in
 // localStorage (one key per item), so several pages ("windows", ?win=N) share it, see each other's
@@ -43,11 +45,10 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { launch } from "./smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CHROME = process.env.CHROME || "/tmp/pptr/chrome-headless-shell/linux-155.0.8059.39/chrome-headless-shell-linux64/chrome-headless-shell";
-const PPTR = process.env.PUPPETEER_CORE || "/usr/local/share/mise/installs/npm-mermaid-js-mermaid-cli/12.0.0/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer-core";
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
 
 // The chrome.* surface the side panel and the gallery touch. Storage is localStorage ("ls:" + key,
@@ -313,9 +314,7 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-const pkg = JSON.parse(fs.readFileSync(path.join(PPTR, "package.json"), "utf8"));
-const puppeteer = (await import(pathToFileURL(path.join(PPTR, pkg.exports["."].import)).href)).default;
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox"] });
+const browser = await launch();
 const failures = [];
 const fail = (msg) => { failures.push(msg); console.log(`FAIL ${msg}`); };
 const ok = (msg) => console.log(`ok   ${msg}`);
