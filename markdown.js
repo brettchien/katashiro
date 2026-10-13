@@ -88,7 +88,8 @@
   // CommonMark default, left as is on purpose (agent text is wrapped markdown).
   const md = buildMd({});
   // The user's own messages: what they typed with Shift+Enter keeps its line breaks (soft break →
-  // <br>). Fenced/indented code, lists and quotes are unaffected by `breaks`.
+  // <br>). Block structure is unaffected by `breaks`: only a soft break inside inline text
+  // (a paragraph, list item or quote) becomes <br>; fenced/indented code is untouched.
   const mdUser = buildMd({ breaks: true });
 
   // Pinned, no-relax sanitizer config (ADR §3.2). This is where the defense is most easily
