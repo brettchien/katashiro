@@ -133,16 +133,10 @@ export async function openSidePanel(ctx, page) {
   // background.js sets openPanelOnActionClick when its service worker starts; a click before that
   // lands does nothing.
   await until(page, () => chrome.sidePanel.getPanelBehavior().then((b) => b.openPanelOnActionClick), "openPanelOnActionClick set by background.js");
-  // On a loaded machine (a CI runner) a click can still be lost: click again if no panel opened.
-  let target = null;
-  for (let attempt = 1; !target; attempt++) {
-    await ctx.cdp.send("Extensions.triggerAction", { id: ctx.extId, targetId: tab.targetId });
-    target = await ctx.browser.waitForTarget((t) => t.url().endsWith("/sidepanel.html") && !before.has(t), { timeout: 5000 }).catch((e) => {
-      if (attempt >= 3) throw new Error(`the side panel did not open after ${attempt} toolbar clicks: ${e.message}`);
-      ctx.log(`  [harness] no side panel 5 s after toolbar click ${attempt}; clicking again`);
-      return null;
-    });
-  }
+  await ctx.cdp.send("Extensions.triggerAction", { id: ctx.extId, targetId: tab.targetId });
+  const target = await ctx.browser.waitForTarget((t) => t.url().endsWith("/sidepanel.html") && !before.has(t), { timeout: 10000 }).catch((e) => {
+    throw new Error(`the side panel did not open after the toolbar click: ${e.message}`);
+  });
   const panel = await target.asPage();
   panel.__errors = [];
   panel.on("pageerror", (e) => { panel.__errors.push(e.message); ctx.log(`  [panel error] ${e.message}`); });
@@ -192,7 +186,7 @@ export async function newConversation(ctx, panel) {
   const n = (await strip(panel)).length;
   const sessions = ctx.gw.methods("session/new").length;
   // Not panel.click(): the strip is re-rendered as sessions settle, which can detach a handle.
-  await panel.evaluate(() => document.querySelector(".conv-tab-new").click());
+  await panel.evaluate(() => document.querySelector(".conv-tab-new")?.click());
   await until(panel, (k) => document.querySelectorAll(".conv-tab").length === k + 1, "a new tab in the strip", n);
   await until(null, () => ctx.gw.methods("session/new").length > sessions, "session/new for the new conversation");
   await until(panel, () => !!document.querySelector(".conv-tab.current"), "it is current");
