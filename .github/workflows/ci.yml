@@ -71,3 +71,50 @@ jobs:
 
       - name: Smoke
         run: npm run smoke
+
+  # T2 E2E (e2e/): the REAL extension loaded in full Chrome for Testing (new headless), its real
+  # side panel, tab groups, runtime messaging and notifications, against a fake ACP gateway
+  # (e2e/fake-gateway.mjs). Same pinned Chrome version as the smokes, but the full build.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Chrome version
+        id: chrome
+        run: echo "version=$(node -p "require('./package.json').config.chromeVersion")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Chrome for Testing
+        uses: actions/cache@v4
+        with:
+          path: .cache/chrome
+          key: chrome-full-${{ runner.os }}-${{ steps.chrome.outputs.version }}
+
+      # A no-op when the cache restored it.
+      - name: Install Chrome for Testing
+        run: npm run chrome:full
+
+      # ubuntu-latest ships Google Chrome, so its shared libraries are normally all there. If one
+      # is missing, let @puppeteer/browsers install the system packages (needs root).
+      - name: Chrome system libraries
+        run: |
+          set -euo pipefail
+          exe=$(node -e "const b=require('@puppeteer/browsers');console.log(b.computeExecutablePath({browser:b.Browser.CHROME,buildId:'${{ steps.chrome.outputs.version }}',cacheDir:'.cache/chrome'}))")
+          missing=$(ldd "$exe" | grep 'not found' || true)
+          if [ -n "$missing" ]; then
+            echo "$missing"
+            sudo env "PATH=$PATH" npx --no-install @puppeteer/browsers install "chrome@${{ steps.chrome.outputs.version }}" --path .cache/chrome --install-deps
+          fi
+          "$exe" --version
+
+      - name: E2E
+        run: npm run e2e

@@ -256,9 +256,12 @@ npm test                      # = node --test test/*.test.js — no install, no 
 npm ci && npm run chrome      # once: puppeteer-core, and chrome-headless-shell (pinned in package.json) into .cache/chrome
 npm run smoke                 # every scripts/smoke-*.mjs in a real headless Chrome, with a summary
 npm run smoke -- mermaid      # only the named ones; or run one directly: node scripts/smoke-mermaid.mjs
+
+npm run chrome:full           # once: full Chrome for Testing (same version) — the smokes' headless shell cannot load extensions
+npm run e2e                   # T2 E2E: the real extension and side panel against a fake ACP gateway (e2e/README.md)
 ```
 
-CI (`.github/workflows/ci.yml`) runs both on every PR and push to `main`. The smokes find
+CI (`.github/workflows/ci.yml`) runs all three on every PR and push to `main`. The smokes find
 puppeteer-core and Chrome through `scripts/smoke-env.mjs`; `CHROME=/path/to/chrome-headless-shell`
 and `PUPPETEER_CORE=/path/to/node_modules/puppeteer-core` override them.
 
