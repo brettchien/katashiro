@@ -7,7 +7,9 @@ commit convention this repo follows.
 ## Local development
 
 Katashiro is a zero-build, vanilla-JS Chrome Extension (Manifest V3) — no
-bundler, no `node_modules`.
+bundler, and the extension loads nothing from `node_modules`. `package.json` holds
+dev tooling only (puppeteer-core for the headless smokes); see
+[README → Run the tests](README.md#run-the-tests).
 
 1. Clone the repo.
 2. Open `chrome://extensions/` and enable **Developer mode**.
@@ -94,5 +96,7 @@ chore: bump manifest version to 1.1.0
 - The PR title should itself be a Conventional Commit line.
 - Describe what changed and how you verified it (which page / agent you tested against).
 - Ensure the extension loads without console errors before requesting review.
-- CI (`.github/workflows/ci.yml`) syntax-checks every runtime script and runs
-  `node --test test/*.test.js` on each PR; run the same locally before pushing.
+- CI (`.github/workflows/ci.yml`) syntax-checks every runtime script, runs
+  `node --test test/*.test.js`, and runs the puppeteer smokes (`npm run smoke`) on
+  each PR; run the same locally before pushing (`npm test`, and
+  `npm ci && npm run chrome && npm run smoke`).

@@ -4,6 +4,17 @@ Katashiro is the **extension (client) side** of MCP-over-ACP browser control. Th
 server side is deployed (Falcon) and the full loop is e2e-proven with a mock browser — loading
 katashiro in Chrome replaces the mock with a real browser so the agent operates your live tab.
 
+## Automated tests
+
+Before the manual checks below, the automated ones (CI runs both on every PR and push to `main`):
+
+```bash
+npm test                                   # unit tests (node --test), no Chrome needed
+npm ci && npm run chrome && npm run smoke  # the puppeteer smokes in a pinned headless Chrome
+```
+
+Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [README → Run the tests](README.md#run-the-tests).
+
 ## Prerequisites
 
 - An OpenAB agent with the browser-control build + `cursor-agent --approve-mcps`.
@@ -250,7 +261,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   shows the conversation's title. 🗑 asks first, then the canvas's open
   tab closes and the row disappears; an agent write elsewhere updates the list live.
 - **Multi-conversation (ADR multi-conversation, MVP §3).** Headless first:
-  `CHROME=… node scripts/smoke-multi-conversation.mjs` drives the real side panel and gallery with
+  `node scripts/smoke-multi-conversation.mjs` (setup: see [Automated tests](#automated-tests)) drives the real side panel and gallery with
   stubbed `chrome.*` and a fake agent (migration, tab strip, sessions, U2 line, picker, Web Lock,
   archive, gallery reopen). In Chrome, with a real agent:
   - **Upgrade:** load this build over an older one that has chats in two windows (and one closed

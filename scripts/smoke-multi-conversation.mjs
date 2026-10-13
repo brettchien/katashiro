@@ -3,8 +3,10 @@
 // in the real sidepanel.html + sidepanel.js, with a fake ACP agent behind window.WebSocket. Needs a
 // Chrome, so it is not part of `node --test`:
 //
-//   CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppeteer-core \
-//     node scripts/smoke-multi-conversation.mjs
+//   npm ci && npm run chrome     # once
+//   node scripts/smoke-multi-conversation.mjs      # or `npm run smoke` for all of them
+//
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
 //
 // The pages are served over http with a stub of the chrome.* APIs: chrome.storage.local lives in
 // localStorage (one key per item), so several pages ("windows", ?win=N) share it, see each other's
@@ -43,11 +45,10 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { launch } from "./smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CHROME = process.env.CHROME || "/tmp/pptr/chrome-headless-shell/linux-155.0.8059.39/chrome-headless-shell-linux64/chrome-headless-shell";
-const PPTR = process.env.PUPPETEER_CORE || "/usr/local/share/mise/installs/npm-mermaid-js-mermaid-cli/12.0.0/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer-core";
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
 
 // The chrome.* surface the side panel and the gallery touch. Storage is localStorage ("ls:" + key,
@@ -313,9 +314,7 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-const pkg = JSON.parse(fs.readFileSync(path.join(PPTR, "package.json"), "utf8"));
-const puppeteer = (await import(pathToFileURL(path.join(PPTR, pkg.exports["."].import)).href)).default;
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox"] });
+const browser = await launch();
 const failures = [];
 const fail = (msg) => { failures.push(msg); console.log(`FAIL ${msg}`); };
 const ok = (msg) => console.log(`ok   ${msg}`);
@@ -699,7 +698,10 @@ try {
   const turnIdle = () => until(q, () => document.getElementById("stop-btn").hidden, "turn idle");
   const tool = async (name, args) => {
     const id = await q.evaluate((n, a) => window.__acp.callTool(window.__acp.conn, n, a), name, args);
-    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id);
+    // 20 s, not until's default 8 s: new_tab for a conversation in the background waits for the
+    // new tab to finish loading (browser-mcp.js waitForComplete, bounded at 8 s) and this stub never
+    // reports status "complete", so that call takes the full 8 s; an 8 s wait here raced it.
+    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id, 20000);
     return q.evaluate((i) => window.__acp.responses[i], id);
   };
   const tm = () => q.evaluate(() => window.__tm());
@@ -1069,7 +1071,11 @@ try {
     // Refused while another page (a panel) holds the conversation's Web Lock; names its window.
     const holder = await browser.newPage();
     await holder.goto(`${origin}/manifest.json`);
-    await holder.evaluate((id) => { navigator.locks.request(`conv:${id}`, () => new Promise((r) => { window.__release = r; })); }, DH);
+    // Wait until the lock is GRANTED, not just requested: request() is async across pages, and a
+    // delete tried before the grant lands found the lock free and deleted the held conversation.
+    await holder.evaluate((id) => new Promise((granted) => {
+      navigator.locks.request(`conv:${id}`, () => { granted(); return new Promise((r) => { window.__release = r; }); });
+    }), DH);
     await gd.evaluate(() => { window.__confirmAnswer = true; });
     await rowBtn("Held elsewhere");
     await until(gd, () => document.getElementById("canvas-notice").textContent.includes("先在那裡封存再刪除"), "delete: refused while another window holds the conversation");

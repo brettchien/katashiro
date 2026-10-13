@@ -4,8 +4,10 @@
 // kept v22's 「圖表有錯誤」). Real canvas.html + canvas.js with the real sandboxed frame. Needs a
 // Chrome, so it is not part of `node --test`:
 //
-//   CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppeteer-core \
-//     node scripts/smoke-diagram-notice.mjs
+//   npm ci && npm run chrome     # once
+//   node scripts/smoke-diagram-notice.mjs      # or `npm run smoke` for all of them
+//
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
 //
 // canvas.html is served over http with a stub of the chrome.* APIs it uses (storage whose writes
 // fire onChanged like Chrome's, runtime.sendMessage recording the push). Checks:
@@ -17,11 +19,10 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { launch } from "./smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const CHROME = process.env.CHROME || "/tmp/pptr/chrome-headless-shell/linux-155.0.8059.39/chrome-headless-shell-linux64/chrome-headless-shell";
-const PPTR = process.env.PUPPETEER_CORE || "/usr/local/share/mise/installs/npm-mermaid-js-mermaid-cli/12.0.0/lib/node_modules/@mermaid-js/mermaid-cli/node_modules/puppeteer-core";
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
@@ -80,9 +81,7 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${server.address().port}`;
 
-const pkg = JSON.parse(fs.readFileSync(path.join(PPTR, "package.json"), "utf8"));
-const puppeteer = (await import(pathToFileURL(path.join(PPTR, pkg.exports["."].import)).href)).default;
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox"] });
+const browser = await launch();
 const failures = [];
 const fail = (msg) => { failures.push(msg); console.log(`FAIL ${msg}`); };
 const ok = (msg) => console.log(`ok   ${msg}`);

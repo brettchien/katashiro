@@ -247,25 +247,33 @@ Then `chrome://extensions/` → **Developer mode** → **Load unpacked** → sel
 
 ### Run the tests
 
-```bash
-node --test test/*.test.js   # no Chrome required (chrome.*/crypto/socket are mocked)
-```
-
-The mermaid smoke test (ADR canvas §2) renders diagrams in the real canvas frame under the sandbox
-CSP and fails on any CSP violation outside its allow-list. It needs Chrome and `puppeteer-core`, so
-it is separate from `node --test`:
+The extension has no dependencies; `package.json` is dev tooling only (it never ships, and nothing
+the extension loads comes from `node_modules`).
 
 ```bash
-CHROME=/path/to/chrome-headless-shell PUPPETEER_CORE=/path/to/node_modules/puppeteer-core \
-  node scripts/smoke-mermaid.mjs [/tmp/mermaid.png]   # also writes a screenshot of the fixture
+npm test                      # = node --test test/*.test.js — no install, no Chrome (chrome.*/crypto/socket are mocked)
+
+npm ci && npm run chrome      # once: puppeteer-core, and chrome-headless-shell (pinned in package.json) into .cache/chrome
+npm run smoke                 # every scripts/smoke-*.mjs in a real headless Chrome, with a summary
+npm run smoke -- mermaid      # only the named ones; or run one directly: node scripts/smoke-mermaid.mjs
 ```
 
-`scripts/smoke-glow-ranges.mjs` (same variables) checks `canvas_patch`'s exact-range glow (ADR
+CI (`.github/workflows/ci.yml`) runs both on every PR and push to `main`. The smokes find
+puppeteer-core and Chrome through `scripts/smoke-env.mjs`; `CHROME=/path/to/chrome-headless-shell`
+and `PUPPETEER_CORE=/path/to/node_modules/puppeteer-core` override them.
+
+What they check: `scripts/smoke-mermaid.mjs` (ADR canvas §2) renders diagrams in the real canvas
+frame under the sandbox CSP and fails on any CSP violation outside its allow-list (it also writes a
+screenshot of the fixture, to its first argument or `/tmp/ks11-mermaid.png`);
+`scripts/smoke-glow-ranges.mjs` checks `canvas_patch`'s exact-range glow (ADR
 canvas §3.10) in the real canvas frame, and `scripts/smoke-editor-undo.mjs` the edit-mode ↶ 復原 /
 ↷ 重做 (ADR canvas §3.5: the editor's own history, focus kept in the editor).
 `scripts/smoke-ask-selection.mjs` checks the frame's `selection{rect}` (where the 💬 goes, re-sent on
 scroll, dropped out of view) and `scripts/smoke-ask-popover.mjs` the Ask agent popover in the real
-`canvas.html` with stubbed `chrome.*` APIs (ADR canvas §3.7).
+`canvas.html` with stubbed `chrome.*` APIs (ADR canvas §3.7). `scripts/smoke-diagram-notice.mjs`
+checks that a diagram error notice in the canvas header belongs to the render it came from, and
+`scripts/smoke-multi-conversation.mjs` the multi-conversation side panel and gallery (see
+[TESTING.md](TESTING.md)).
 
 ## 🧩 Agent skills
 
