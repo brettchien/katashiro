@@ -262,7 +262,7 @@ npm run e2e                   # T2 E2E: the real extension and side panel agains
 ```
 
 CI (`.github/workflows/ci.yml`) runs all three on every PR and push to `main`. The smokes find
-puppeteer-core and Chrome through `scripts/smoke-env.mjs`; `CHROME=/path/to/chrome-headless-shell`
+puppeteer-core and Chrome through `scripts/lib/smoke-env.mjs`; `CHROME=/path/to/chrome-headless-shell`
 and `PUPPETEER_CORE=/path/to/node_modules/puppeteer-core` override them.
 
 What they check: `scripts/smoke-mermaid.mjs` (ADR canvas §2) renders diagrams in the real canvas

@@ -6,7 +6,7 @@
 //   npm ci && npm run chrome     # once
 //   node scripts/smoke-ask-selection.mjs      # or `npm run smoke` for all of them
 //
-// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/lib/smoke-env.mjs.)
 //
 // Same harness as smoke-editor-undo.mjs. The host page offsets the iframe (as canvas.html's header
 // does) and places a 💬-sized box with CanvasCore.askPlace, and a 📨-sized one beside it with
@@ -24,7 +24,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./smoke-env.mjs";
+import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

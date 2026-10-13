@@ -5,7 +5,7 @@
 //   npm ci && npm run chrome     # once
 //   node scripts/smoke-glow-ranges.mjs      # or `npm run smoke` for all of them
 //
-// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/lib/smoke-env.mjs.)
 //
 // Same harness as smoke-mermaid.mjs (a local server serves the repo, canvas-frame.html gets the
 // manifest's sandbox CSP). Each case renders v1, then v2 with glowPrev + glowRanges as canvas.js
@@ -20,7 +20,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./smoke-env.mjs";
+import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = (await import("node:module")).createRequire(import.meta.url);

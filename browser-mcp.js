@@ -183,6 +183,12 @@
       const onUpd = (id, info) => { if (id === tabId && info.status === "complete") finish(); };
       try { chrome.tabs.onUpdated.addListener(onUpd); } catch { return finish(); }
       setTimeout(finish, timeoutMs);
+      // The load may already be over (a light page often finishes before the listener is on): ask
+      // once, AFTER adding the listener, so a "complete" in between is not missed either way. A tab
+      // that is gone has nothing left to wait for.
+      Promise.resolve()
+        .then(() => chrome.tabs.get(tabId))
+        .then((t) => { if (!t || t.status === "complete") finish(); }, () => finish());
     });
   }
 

@@ -1,4 +1,4 @@
-// smoke-env.mjs — where the puppeteer smokes (scripts/smoke-*.mjs) get puppeteer-core and Chrome.
+// lib/smoke-env.mjs — where the puppeteer smokes (scripts/smoke-*.mjs) get puppeteer-core and Chrome.
 //
 //   npm ci && npm run chrome     # puppeteer-core into node_modules/, the pinned headless shell into .cache/chrome
 //   node scripts/smoke-x.mjs     # or `npm run smoke` for all of them
@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 export const CHROME_VERSION = pkg.config.chromeVersion;
 const CACHE_DIR = path.join(ROOT, ".cache", "chrome");

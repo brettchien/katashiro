@@ -6,7 +6,7 @@
 //   npm ci && npm run chrome     # once
 //   node scripts/smoke-mermaid.mjs [screenshot.png]      # or `npm run smoke` for all of them
 //
-// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/lib/smoke-env.mjs.)
 //
 // How it is faithful: a local HTTP server serves the repo, and canvas-frame.html with the manifest's
 // `content_security_policy.sandbox` as a CSP header (read from manifest.json, so it cannot drift; its
@@ -30,7 +30,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./smoke-env.mjs";
+import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SHOT = process.argv[2] || "/tmp/ks11-mermaid.png";

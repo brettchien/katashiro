@@ -6,7 +6,7 @@
 //   npm ci && npm run chrome     # once
 //   node scripts/smoke-multi-conversation.mjs      # or `npm run smoke` for all of them
 //
-// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/lib/smoke-env.mjs.)
 //
 // The pages are served over http with a stub of the chrome.* APIs: chrome.storage.local lives in
 // localStorage (one key per item), so several pages ("windows", ?win=N) share it, see each other's
@@ -46,7 +46,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./smoke-env.mjs";
+import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
@@ -148,7 +148,8 @@ const STUB = String.raw`
       query: async (q = {}) => tm().tabs.filter((t) => (q.windowId == null || t.windowId === q.windowId) && (q.groupId == null || t.groupId === q.groupId) && (q.active == null || t.active === q.active)).map((t) => ({ ...t })),
       create: async (o) => {
         const m = tm();
-        const t = { id: ++m.next, windowId: o.windowId ?? WIN, url: o.url || "chrome://newtab/", active: o.active !== false, groupId: -1, splitViewId: -1, pinned: false, index: m.tabs.length, lastAccessed: ++m.clock };
+        // status "complete" at once: nothing loads here (browser-mcp.js waitForComplete asks tabs.get).
+        const t = { id: ++m.next, windowId: o.windowId ?? WIN, url: o.url || "chrome://newtab/", status: "complete", active: o.active !== false, groupId: -1, splitViewId: -1, pinned: false, index: m.tabs.length, lastAccessed: ++m.clock };
         if (t.active) m.tabs.forEach((x) => { if (x.windowId === t.windowId) x.active = false; });
         m.tabs.push(t);
         tmSave(m);
@@ -698,10 +699,7 @@ try {
   const turnIdle = () => until(q, () => document.getElementById("stop-btn").hidden, "turn idle");
   const tool = async (name, args) => {
     const id = await q.evaluate((n, a) => window.__acp.callTool(window.__acp.conn, n, a), name, args);
-    // 20 s, not until's default 8 s: new_tab for a conversation in the background waits for the
-    // new tab to finish loading (browser-mcp.js waitForComplete, bounded at 8 s) and this stub never
-    // reports status "complete", so that call takes the full 8 s; an 8 s wait here raced it.
-    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id, 20000);
+    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id);
     return q.evaluate((i) => window.__acp.responses[i], id);
   };
   const tm = () => q.evaluate(() => window.__tm());
