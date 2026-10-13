@@ -1629,9 +1629,11 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .conv-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .conv-tab-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.conv-tab-mark { flex: none; font-size: 11px; }   /* Q12: a card waiting in this conversation */
+.conv-tab-mark { flex: none; font-size: 11px; }   /* P2 §5: ❓ card waiting, ⏳ replying, ● new reply */
 .conv-tab-mark[hidden] { display: none; }
-.conv-tab.waiting { color: var(--text-primary); }
+.conv-tab.mark-waiting,
+.conv-tab.mark-unread { color: var(--text-primary); }
+.conv-tab.mark-unread .conv-tab-mark { color: var(--accent); font-size: 9px; }
 .conv-tab-time { flex: none; font-size: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .conv-tab-close,
 .conv-tab-new {
@@ -1646,6 +1648,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .conv-tab-close { padding: 2px 5px; font-size: 13px; }
 .conv-tab-close:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
 .conv-tab.busy .conv-tab-close { opacity: 0.35; }
+.conv-tab.mark-replying .conv-tab-close { opacity: 1; font-size: 11px; }   /* ⏹ stops that conversation */
 .conv-tab-new { padding: 4px 10px; font-size: 14px; align-self: center; }
 .conv-tab-new:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
 .conv-tab-rename {

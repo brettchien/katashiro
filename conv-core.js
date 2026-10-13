@@ -41,7 +41,10 @@
   const ID_RE = /^c_[0-9a-f]{12}$/;
 
   // The texts the panel shows for the rules below (Traditional Chinese, Taiwan).
-  const SWITCH_BLOCKED_TEXT = "回覆中不能切換——等回完或先按 ⏹ 停止";
+  // P2 §5: switching and ＋ no longer wait for a reply (it continues in the background); archiving does.
+  const ARCHIVE_BLOCKED_TEXT = "回覆中不能封存——等回完或先按 ⏹ 停止";
+  // §5: the broker pool (shared with Discord threads and usercron) had no free session for the turn.
+  const POOL_EXHAUSTED_TEXT = "agent 那邊同時進行的對話已滿（和 Discord、排程共用）——等其他回覆結束再按重試";
   const OPEN_ELSEWHERE_TEXT = "這段對話開在另一個視窗";
   const ARCHIVED_PUSH_TEXT = "這段對話已封存，先從總覽重新打開";
   // P1b §4.8: a push for a conversation open in another live window whose panel is closed.
@@ -158,17 +161,46 @@
   }
 
   /**
-   * §3.5: may the current conversation be left (switch, ＋, × on it)? Not while its turn runs or it
-   * has prompts queued on a live connection. A queue waiting for a reconnect does not hold the user
-   * there: it is flushed when the conversation is current again.
+   * §3.4 + P2 §5: may a conversation be archived (×, the picker)? Not while its turn runs or it has
+   * prompts queued on a live connection (they would be sent to a session nobody shows). A queue
+   * waiting for a reconnect does not hold it. Switching away is never blocked since P2.
    * states: [{ turnActive, queued, online }] — one per agent → the refusal text, or null.
    */
-  function switchBlocked(states) {
+  function archiveBlocked(states) {
     for (const s of Array.isArray(states) ? states : []) {
       if (!s) continue;
-      if (s.turnActive || (s.queued > 0 && s.online)) return SWITCH_BLOCKED_TEXT;
+      if (s.turnActive || (s.queued > 0 && s.online)) return ARCHIVE_BLOCKED_TEXT;
     }
     return null;
+  }
+
+  /**
+   * P2 §5: the one mark a tab-strip tab shows. A card waiting for the user (❓, Q12) outranks a
+   * reply in progress (⏳), which outranks something new that arrived while it was not on screen
+   * (●, Q9). The conversation on screen shows only ⏳ (its cards and replies are in front of the user).
+   * → { kind, icon, label } (all null: no mark).
+   */
+  function tabMark({ current = false, replying = false, waiting = false, unread = false } = {}) {
+    if (waiting && !current) return { kind: "waiting", icon: "❓", label: "有問題等你回答" };
+    if (replying) return { kind: "replying", icon: "⏳", label: "回覆中" };
+    if (unread && !current) return { kind: "unread", icon: "●", label: "有新回覆" };
+    return { kind: null, icon: null, label: null };
+  }
+
+  /** §5: what a failed session/prompt says. "pool exhausted" is never retried automatically. */
+  function promptFailureText(err) {
+    const e = String(err == null ? "" : err);
+    return /pool[ _-]?(is )?exhausted/i.test(e) ? `回合沒有開始：${POOL_EXHAUSTED_TEXT}` : `回合失敗：${e}`;
+  }
+
+  /**
+   * §5: openab never fails session/prompt on a full pool — dispatch.rs (dispatch_batch) turns the
+   * error into a chat line, "⚠️ " + format_user_error(e) (error_display.rs: "pool exhausted" →
+   * "**Service Busy**\nAll agent sessions are in use…"), and the turn ends end_turn. A reply that is
+   * exactly that line is the pool refusal, not an agent reply (review: Jellyfish, #143).
+   */
+  function isPoolBusyReply(text) {
+    return /^\s*⚠️\s*\*\*Service Busy\*\*\s*\n\s*All agent sessions are in use\b[^\n]*\s*$/.test(String(text == null ? "" : text));
   }
 
   /**
@@ -777,11 +809,11 @@
     DELETED_TEXT, DELETE_OPEN_TEXT, DELETE_CHANGED_TEXT, DELETE_MISSING_TEXT, CONV_BUSY_TEXT,
     planDelete, deleteSnapshot, deleteRecheck, pendingDeletions, reopenRefusal, deleteConfirmText, canvasOps,
     LOCK_MIGRATE, LOCK_WINDOWS, LOCK_INDEX, ID_RE,
-    SWITCH_BLOCKED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
+    ARCHIVE_BLOCKED_TEXT, POOL_EXHAUSTED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
-    switchBlocked, needsReconnectHint, withReconnectHint,
+    archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, needsReconnectHint, withReconnectHint,
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,

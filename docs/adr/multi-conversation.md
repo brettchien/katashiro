@@ -554,7 +554,46 @@ still run only in the current conversation (§3.5); P2 lifts that.
 - Limits that still apply: one tool call ≤ 170 s (tunnel), 180 s agent idle ceiling, turn idle 10 min,
   turn cap 35 min. The panel must stay open: closing it ends every background turn (P3).
 - Before starting: a two-session test client that streams on both sessions at once and calls tools
-  on both tunnels (the code read in §1.2 is not a live test).
+  on both tunnels (the code read in §1.2 is not a live test). Done: #135 / #137, run against the live
+  gateway 2026-10-13 00:08 TPE, all pass.
+
+### 5.1 Implementation, part 1 (2026-10-13)
+
+P2 ships in two PRs. The first makes turns run in the background; the second opens a background
+conversation's own tabs to it (Q8).
+
+- **Rendering follows the session.** `session/update` goes to the state its `sessionId` names; the
+  bubble, tool pills, cards, images and the final record go to that conversation's list and
+  `conv:<id>.messages`, shown or not (`inConv` / `outList` / `targetConv` in `sidepanel.js`; a list
+  never shown is built hidden from its records on first write). An update for a conversation with no
+  turn running is dropped and logged (a stopped turn's agent may keep going, §1.2): no bubble that no
+  turn would finalize.
+- **Switching and ＋ are never refused.** Archiving still is while that conversation replies or has
+  prompts queued on a live connection (`ConvCore.archiveBlocked`, `回覆中不能封存——…`). A canvas push
+  and 📨 To chat input always switch.
+- **Tab strip:** one mark per tab, `ConvCore.tabMark`: ❓ a card waiting (not on screen) > ⏳ replying
+  > ● something arrived while it was not on screen (cleared when shown). While a conversation replies
+  its × is ⏹ and stops only its turn (`session/cancel` for that session). The stop button under the
+  input follows the conversation on screen.
+- **Q9:** a background turn that finishes (or fails) raises a notification, same id scheme as Q12, so
+  the click focuses the window and switches to it. A turn the user stopped raises none.
+- **Cards** asked in a background turn go into that turn in its list: ❓ and a notification at once
+  (not only on leaving, §4.7). An ask card's clock counts visible time (Q1); a 🔒 card keeps its
+  wall-clock 2 minutes.
+- **Pool exhausted** is said as such (`ConvCore.promptFailureText`) with 重試, never retried by itself.
+  openab does not fail `session/prompt` on a full pool: `dispatch.rs` sends `⚠️ ` +
+  `format_user_error(e)` (`error_display.rs`: "**Service Busy**\nAll agent sessions are in use…") as
+  chat text and the turn ends `end_turn`. A reply that is exactly that line
+  (`ConvCore.isPoolBusyReply`) is taken as the refusal: not recorded, not relayed, the host line stays
+  pending, error notification if in the background (review: Jellyfish, #143).
+- **Reconnect:** the handshake resumes the conversation on screen and every other one with prompts
+  queued, so a background turn a dropped socket re-queued is re-sent there too.
+- **Tools, until part 2:** a conversation not on screen may call the tools that touch no tab the user
+  sees and bring nothing to the front (`BrowserMcp.BACKGROUND_TOOLS`: `client_info`, `chat_history`,
+  `set_title`, `notify`, `ask_user`, `show_image`, `tabs`, `tab_groups`, `canvas_open` without
+  `beside`, `canvas_read`, `canvas_patch`, `canvas_delete`, `canvas_list`). Every other tool is refused
+  with a text that lists those. This replaces §3.9's "every call refused when not on screen".
+- **Agent relays** (ambient mode) stay within the conversation the reply was in.
 
 ## 6. P3 — the connection outside the panel (Q10 open)
 

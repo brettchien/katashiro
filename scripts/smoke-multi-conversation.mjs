@@ -213,6 +213,16 @@ const STUB = String.raw`
   const acp = window.__acp = { log: [], hold: false, held: [], sessions: 0, lateUpdateFor: null, servers: {}, responses: {}, askOnPrompt: false, conn: null, nextId: 9100 };
   // The agent side of a browser tunnel: connect to a session's declared server, call a tool on it.
   acp.release = () => { for (const h of acp.held.splice(0)) acp.ws.reply(h.id, { stopReason: "end_turn" }); };
+  // P2: a turn finishing in a conversation not on screen — one session's held prompts only.
+  acp.releaseSession = (sid, text) => {
+    const keep = [];
+    for (const h of acp.held.splice(0)) {
+      if (h.params.sessionId !== sid) { keep.push(h); continue; }
+      if (text) acp.ws.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      acp.ws.reply(h.id, { stopReason: "end_turn" });
+    }
+    acp.held.push(...keep);
+  };
   acp.callTool = (connectionId, name, args) => {
     const id = acp.nextId++;
     acp.ws.emit({ jsonrpc: "2.0", id, method: "mcp/message", params: { connectionId, method: "tools/call", params: { name, arguments: args } } });
@@ -246,11 +256,19 @@ const STUB = String.raw`
       if (m.method === "session/resume") return this.reply(m.id, {});
       if (m.method === "katashiro/ping") return this.emit({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "nope" } });
       if (m.method === "session/cancel") {
-        for (const h of acp.held.splice(0)) this.reply(h.id, { stopReason: "cancelled" });
+        acp.log.cancels = (acp.log.cancels || 0) + 1;
+        const keep = [];
+        for (const h of acp.held.splice(0)) { if (h.params.sessionId === m.params.sessionId) this.reply(h.id, { stopReason: "cancelled" }); else keep.push(h); }
+        acp.held.push(...keep);
         return undefined;
       }
       if (m.method === "session/prompt") {
         const sid = m.params.sessionId;
+        // openab on a full pool: dispatch.rs sends "⚠️ " + format_user_error(e) as chat text, then end_turn.
+        if (acp.poolBusy) {
+          this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "⚠️ **Service Busy**\nAll agent sessions are in use, please try again shortly." } } } });
+          return this.reply(m.id, { stopReason: "end_turn" });
+        }
         if (acp.lateUpdateFor) this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: acp.lateUpdateFor, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "LATE CHUNK FROM ANOTHER SESSION" } } } });
         this.emit({ jsonrpc: "2.0", method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "reply in " + sid } } } });
         if (acp.askOnPrompt) { acp.askOnPrompt = false; this.emit({ jsonrpc: "2.0", id: 9001, method: "mcp/connect", params: { acpId: acp.servers[sid] } }); }
@@ -404,18 +422,63 @@ try {
   check(news[0].params.mcpServers[0].id !== resume.params.mcpServers[0].id, "each conversation declares its own MCP server", [news[0].params.mcpServers, resume.params.mcpServers]);
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "Second topic about tabs", "auto title");
 
-  // No switching while a turn runs; a late update of another session is dropped.
+  // P2 (§5): switching while a turn runs — the turn continues in the background and its reply lands
+  // in its own (hidden) list: ⏳ + ⏹ on its tab while it runs, then ● and a notification (Q9). A late
+  // update for a conversation with no turn running is dropped.
+  const markOf = (page, i) => page.evaluate((k) => { const x = document.querySelectorAll(".conv-tab")[k]; return x ? [(x.querySelector(".conv-tab-mark") || {}).textContent || "", x.querySelector(".conv-tab-close").textContent] : null; }, i);
   await until(p1, () => document.getElementById("stop-btn").hidden, "third turn done");
-  await p1.evaluate((sid) => { window.__acp.hold = true; window.__acp.lateUpdateFor = sid; }, "sess_old1");
+  await p1.evaluate((sid) => { window.__acp.hold = true; window.__acp.lateUpdateFor = sid; window.__notes.length = 0; }, "sess_old1");
   await send(p1, "long one");
   await until(p1, () => !document.getElementById("stop-btn").hidden, "a running turn");
   await p1.evaluate(() => document.querySelectorAll(".conv-tab")[0].click());
   t = await tabs(p1);
-  check(t[1].current, "switching is refused while the turn runs", t);
-  check((await visibleText(p1)).includes("回覆中不能切換"), "…and says why", null);
-  check(!(await visibleText(p1)).includes("LATE CHUNK"), "a session/update for another session is dropped", null);
-  await p1.evaluate(() => { window.__acp.hold = false; window.__acp.lateUpdateFor = null; document.getElementById("stop-btn").click(); });
+  check(t[0].current, "P2: switching works while the turn runs", t);
+  check(await p1.evaluate(() => document.getElementById("stop-btn").hidden), "P2: the stop button follows the conversation on screen (idle here)", null);
+  let mk = await markOf(p1, 1);
+  check(mk && mk[0] === "⏳" && mk[1] === "⏹", "P2: the replying tab shows ⏳, and ⏹ instead of ×", mk);
+  check(!(await visibleText(p1)).includes("LATE CHUNK"), "a session/update for a conversation with no turn running is dropped", null);
+  check(await p1.evaluate(() => !Array.from(document.querySelectorAll(".conv-messages")).some((l) => l.textContent.includes("LATE CHUNK"))), "…in no list at all", null);
+  await p1.evaluate(() => { window.__acp.lateUpdateFor = null; window.__acp.hold = false; window.__acp.releaseSession("sess_1", " BACKGROUND DONE"); });
+  await until(p1, () => { const x = document.querySelectorAll(".conv-tab")[1]; return x && (x.querySelector(".conv-tab-mark") || {}).textContent === "●"; }, "P2: ● once the background turn finished");
+  mk = await markOf(p1, 1);
+  check(mk[1] === "×", "P2: × is back once it finished", mk);
+  check(!(await visibleText(p1)).includes("BACKGROUND DONE"), "P2: the background reply is not in the list on screen", null);
+  const bg = await p1.evaluate(() => { const l = Array.from(document.querySelectorAll(".conv-messages")).find((e) => e.hidden && e.textContent.includes("long one")); return l ? l.textContent : ""; });
+  check(bg.includes("BACKGROUND DONE"), "P2: …it is in its own conversation's list", bg.slice(-120));
+  let notesP2 = await p1.evaluate(() => window.__notes);
+  check(notesP2.length === 1 && /回覆完了/.test(notesP2[0].title) && /:conv:c_[0-9a-f]{12}:/.test(notesP2[0].id), "Q9: a notification for the finished background turn", notesP2);
+  const st2 = await storage(p1);
+  const conv2Id = Object.keys(st2).map((k) => k.slice(5)).find((id) => /^c_/.test(id) && (st2["conv:" + id].messages || []).some((m) => /long one/.test(m.text)));
+  check(conv2Id && (st2["conv:" + conv2Id].messages || []).some((m) => m.kind === "received" && /BACKGROUND DONE/.test(m.text)), "P2: the background reply is recorded in its conversation", conv2Id);
+  check(notesP2[0] && notesP2[0].id.includes(":conv:" + conv2Id + ":"), "Q9: …naming that conversation", notesP2[0] && notesP2[0].id);
+  // ⏹ on a background tab stops only that conversation's turn.
+  await p1.evaluate(() => { window.__acp.hold = true; });
+  await p1.evaluate(() => document.querySelectorAll(".conv-tab")[1].click());
+  check(!(await p1.evaluate(() => document.querySelectorAll(".conv-tab")[1].querySelector(".conv-tab-mark").textContent)), "P2: ● goes once the conversation is shown", null);
+  check((await visibleText(p1)).includes("BACKGROUND DONE"), "P2: the background reply is there when switched to", null);
+  await send(p1, "stop me from the strip");
+  await until(p1, () => !document.getElementById("stop-btn").hidden, "a second running turn");
+  await p1.evaluate(() => document.querySelectorAll(".conv-tab")[0].click());
+  await until(p1, () => { const x = document.querySelectorAll(".conv-tab")[1]; return x && x.querySelector(".conv-tab-close").textContent === "⏹"; }, "⏹ on the background tab");
+  await p1.evaluate(() => { window.__notes.length = 0; document.querySelectorAll(".conv-tab")[1].querySelector(".conv-tab-close").click(); });
+  await until(p1, () => { const x = document.querySelectorAll(".conv-tab")[1]; return x && x.querySelector(".conv-tab-close").textContent === "×"; }, "P2: ⏹ stopped the background turn");
+  check(await p1.evaluate(() => document.querySelectorAll(".conv-tab").length) === 2, "P2: ⏹ did not archive it", null);
+  check((await p1.evaluate(() => window.__notes)).length === 0, "Q9: a turn the user stopped raises no notification", await p1.evaluate(() => window.__notes));
+  await p1.evaluate(() => { window.__acp.hold = false; });
+  await p1.evaluate(() => document.querySelectorAll(".conv-tab")[1].click());
   await until(p1, () => document.getElementById("stop-btn").hidden, "stopped");
+  // §5: a full pool (openab's Service Busy chat line, review #143) is an error bubble with 重試 —
+  // not an agent reply: nothing recorded as received; 重試 sends the same prompt again.
+  await p1.evaluate(() => { window.__acp.poolBusy = true; });
+  await send(p1, "while the pool is full");
+  await until(p1, () => !!Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden)?.querySelector(".error-bubble .retry-btn"), "the pool-full error bubble");
+  const busyText = await visibleText(p1);
+  check(busyText.includes("同時進行的對話已滿") && !busyText.includes("Service Busy"), "§5: a full pool says so plainly, not as a reply", busyText.slice(-160));
+  const busyConv = Object.values(await storage(p1)).find((v) => v && Array.isArray(v.messages) && v.messages.some((m) => /while the pool is full/.test(m.text)));
+  check(busyConv && !busyConv.messages.some((m) => m.kind === "received" && /Service Busy/.test(m.text)), "§5: …and is not recorded as the agent's reply", busyConv && busyConv.messages.slice(-2));
+  await p1.evaluate(() => { window.__acp.poolBusy = false; Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelector(".error-bubble .retry-btn").click(); });
+  await until(p1, () => window.__acp.log.filter((m) => m.method === "session/prompt" && m.params.prompt[0].text.includes("while the pool is full")).length === 2, "§5: 重試 after a full pool");
+  await until(p1, () => document.getElementById("stop-btn").hidden, "the retried turn done");
 
   // Switch back: no second resume on the same socket; its list (and messages) are back.
   await p1.evaluate(() => document.querySelectorAll(".conv-tab")[0].click());
@@ -473,10 +536,17 @@ try {
     "E: client_info lists the drop", ciText);
   await p1.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => t.textContent.startsWith("My name")).click());
   await until(p1, () => document.querySelector(".conv-tab.current .conv-tab-title").textContent === "My name", "switched to conversation 1");
+  // P2 §5: a conversation not on screen keeps the tools that touch no tab the user sees…
   const late = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.chat_history", {}));
   await until(p1, (id) => !!window.__acp.responses[id], "the late tool call is answered", late);
   const lateRes = await p1.evaluate((id) => window.__acp.responses[id], late);
-  check(lateRes.result && lateRes.result.isError && /not on screen/.test(lateRes.result.content[0].text), "a tool call from a conversation not on screen is refused", lateRes);
+  check(lateRes.result && !lateRes.result.isError && /ask me something/.test(lateRes.result.content[0].text) && !/hello again/.test(lateRes.result.content[0].text),
+    "P2: chat_history from a conversation not on screen works, and reads ITS messages", lateRes);
+  // …and is refused the rest (Q8 later opens its own group's tabs).
+  const lateNav = await p1.evaluate(() => window.__acp.callTool(window.__acp.conn, "katashiro.navigate", { url: "https://example.com/" }));
+  await until(p1, (id) => !!window.__acp.responses[id], "the background navigate is answered", lateNav);
+  const lateNavRes = await p1.evaluate((id) => window.__acp.responses[id], lateNav);
+  check(lateNavRes.result && lateNavRes.result.isError && /in the background in Katashiro/.test(lateNavRes.result.content[0].text), "P2: a tab tool from a conversation not on screen is refused", lateNavRes);
   check(await p1.evaluate(() => window.__askCard.classList.contains("pending")), "its ask card stays pending (clock paused) while hidden", null);
 
   // Third conversation → 3 open; ＋ again → the picker.
@@ -710,7 +780,7 @@ try {
   check(!model.tabs.find((t) => t.active && t.windowId === 5 && t.groupId === gA), "Q5: the active tab is outside the collapsed group", model.tabs.filter((t) => t.active));
   check((await q.evaluate(() => window.__collapsedActive)).length === 0, "Q5: never collapses a group holding the active tab", null);
   check(await q.evaluate(() => document.getElementById("message-input").value) === "", "draft: B starts with an empty composer", null);
-  const marks = await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).map((t) => [t.classList.contains("waiting"), (t.querySelector(".conv-tab-mark") || {}).textContent]));
+  const marks = await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).map((t) => [t.classList.contains("mark-waiting"), (t.querySelector(".conv-tab-mark") || {}).textContent]));
   check(marks[0][0] && marks[0][1] === "❓" && !marks[1][0], "Q12: A's tab shows ❓", marks);
   const notes = await q.evaluate(() => window.__notes);
   check(notes.length === 1 && notes[0].id.startsWith("katashiro-notify:5:conv:" + convA + ":"), "Q12: a notification names A", notes);
@@ -759,20 +829,19 @@ try {
     c = await composer();
     check(r && r.ok && !r.draft && c.value === "draft for A\nFrom A's canvas." && c.focused, "to input: A's canvas switches the panel to A, appended to A's draft", { r, c });
     check(await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-title").textContent) === "Topic A by agent", "to input: A is current", null);
-    // While A is replying the panel cannot switch: B's canvas goes into B's draft; A's input untouched.
+    // P2: while A is replying the panel still switches — B's canvas brings B, after B's own draft;
+    // A keeps replying in the background.
     await q.evaluate(() => { window.__acp.hold = true; });
     await send(q, "busy in A");
     await until(q, () => !document.getElementById("stop-btn").hidden, "A replying");
     r = await toInput(convB, "While A replies.", "ti6");
     c = await composer();
-    check(r && r.ok && r.draft === true && c.value === "" && await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-title").textContent) === "Topic A by agent",
-      "to input: while A replies, no switch — into B's draft, A's input untouched", { r, c });
+    check(r && r.ok && !r.draft && c.value === "draft for B\nWhile A replies." && await q.evaluate(() => document.querySelector(".conv-tab.current .conv-tab-title").textContent) !== "Topic A by agent",
+      "to input: while A replies, P2 still switches to B — the text after B's draft", { r, c });
+    check(await q.evaluate(() => !!document.querySelector(".conv-tab.mark-replying")), "to input: A is still replying behind (⏳)", null);
     await q.evaluate(() => { window.__acp.hold = false; window.__acp.release(); });
-    await turnIdle();
+    await until(q, () => !document.querySelector(".conv-tab.mark-replying"), "A done in the background");
     check(await prompts() === p0 + 1, "to input: nothing was sent to the agent (only the message typed in A)", { p0, now: await prompts() });
-    await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());
-    c = await composer();
-    check(c.value === "draft for B\nWhile A replies.", "to input: B's draft has it, after B's own draft", c);
     await setInput("draft for B");
   }
   await q.evaluate(() => Array.from(document.querySelectorAll(".conv-tab")).find((t) => !t.classList.contains("current")).click());

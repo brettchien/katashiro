@@ -236,14 +236,15 @@ class Conn {
     return null;
   }
 
-  // Views of the current state, for the roster, the stop button and the rendering methods below.
+  // Views of the current state, for the roster. The rendering methods below take the state they
+  // render for (P2 §5: any open conversation may be running a turn), never "the current one".
   get acpSessionId() { const s = this.cur; return s ? s.acpSessionId : null; }
   // Ready = the socket is initialized and the conversation on screen has its session on it.
   get acpReady() { const s = this.cur; return this.initialized && (!s || (s.readyGen === this.socketGen && !!s.acpSessionId)); }
+  // Any of its conversations replying (heartbeat, disconnect diagnostics, reload warning).
   get turnActive() { for (const s of this.states.values()) if (s.turnActive) return true; return false; }
-  get stream() { const s = this.cur; return s ? s.stream : null; }
-  set stream(v) { const s = this.cur; if (s) s.stream = v; }
-  get skippedToolCalls() { const s = this.cur; return s ? s.skippedToolCalls : null; }
+  /** Render into a state's own conversation, on screen or not (P2 §5). */
+  inState(st, fn) { return inConv(st ? convs.get(st.convId) : null, fn); }
   // Attached = a tunnel is open to the CURRENT conversation's browser server.
   get browserAttached() {
     const s = this.cur;
@@ -326,12 +327,12 @@ class Conn {
       chrome,
       crypto,
       send: (obj) => this.socketSend(obj),
-      // MVP §3.9: tool calls from a conversation that is not on screen are refused (a turn the user
-      // stopped whose agent kept going, or a facade call outside a turn). Read at dispatch time.
-      refuse: st.convId === conversationId ? null : "this conversation is not on screen in Katashiro",
+      // P2 §5: a conversation not on screen may still use the tools that touch no browser tab the
+      // user is looking at (BrowserMcp.backgroundRefusal); the rest are refused. Read at dispatch time.
+      refuse: (name, args) => (st.convId === conversationId ? null : BrowserMcp.backgroundRefusal(name, args)),
       // Per-tool activity signal for the chat transcript: name + outcome + MASKED args/summary/ms
       // (browser-mcp.js applies each tool's redact hook; raw args never reach the UI).
-      onToolCall: (info) => this.renderToolActivity(info),
+      onToolCall: (info) => this.renderToolActivity(info, st),
       // Read at dispatch time, not captured at connect time, so flipping the toggle applies to
       // the very next tool call — no reconnect, no stale consent.
       actMode,
@@ -346,8 +347,8 @@ class Conn {
       // with the window so the click handler below focuses the right one.
       chatHistory: () => { const c = convs.get(st.convId); return c ? c.messages : []; },
       clientInfo: clientInfoSnapshot,
-      // show_image renders into THIS agent's current turn (or as its own message between turns).
-      showImage: (img) => this.showImage(img),
+      // show_image renders into THIS conversation's turn (or as its own message between turns).
+      showImage: (img) => this.showImage(img, st),
       // ask_user shows its card in THIS agent's turn, and the answer comes back to THIS session only.
       askUser: (args) => this.askUser(args, st),
       // P1b (ADR §4.3): the tab this conversation's agent acted on becomes its working tab; a tab it
@@ -378,10 +379,10 @@ class Conn {
               ...(open ? ["這個畫布正開在分頁中：分頁裡未儲存的修改會遺失（編輯中的文字通常會留在畫面上，可先複製）。"] : []),
               "這個動作無法復原。",
             ],
-          }, { conn: this, notAskedNote: `${this.name} 的回合已結束，刪除畫布的要求未執行（沒有詢問你）。` });
+          }, { conn: this, st, notAskedNote: `${this.name} 的回合已結束，刪除畫布的要求未執行（沒有詢問你）。` });
         },
         // Storage full on this agent's canvas_open / canvas_patch: ask in this agent's turn (#80).
-        confirmEvict: (info) => confirmEvictCard(info, this),
+        confirmEvict: (info) => confirmEvictCard(info, this, st),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
         // canvas_view / canvas_gallery (§3.11): the agent's equivalents of the user's display switches.
@@ -599,8 +600,11 @@ class Conn {
         this.alive = true;
         this.startHeartbeat();
         updateRoster();
-        const st = this.cur;
-        return st ? this.openSession(st) : undefined;
+        // The conversation on screen, and every other one with prompts waiting (P2 §5: a turn a
+        // dropped socket re-queued in the background resends there too). Others resume on switch.
+        const cur = this.cur;
+        for (const st of this.states.values()) if (st !== cur && st.promptQueue.length) this.openSession(st);
+        return cur ? this.openSession(cur) : undefined;
       })
       .catch((err) => {
         if (gen === this.socketGen) appendSystemMessage(`${this.name} ACP 握手失敗：` + err);
@@ -705,21 +709,23 @@ class Conn {
       return;
     }
 
-    // Streaming agent reply — only the conversation on screen's (§3.5). A turn the user stopped
-    // in another conversation whose agent kept going (§1.2) must not append its late chunks and
-    // tool calls here; MVP drops and logs them, P2 routes them to their own state.
+    // Streaming agent reply, routed by sessionId to its own conversation (P2 §5), on screen or not.
+    // A frame with no sessionId goes to the conversation on screen (MVP rule, §3.11); one for a
+    // session no open conversation has (archived meanwhile) is dropped and logged.
     if (msg.method === "session/update" && msg.params && msg.params.update) {
-      const cur = this.cur;
       const sid = msg.params.sessionId;
-      if (!cur || (sid && sid !== cur.acpSessionId)) {
-        console.info(`ACP[${this.name}]: dropped a session/update for ${sid || "?"} (not the conversation on screen)`);
+      const st = sid ? this.stateBySession(sid) : this.cur;
+      // Only into a turn in flight: a turn the user stopped whose agent kept going (§1.2) must not
+      // grow a bubble that no turn will ever finalize.
+      if (!st || !st.turnActive) {
+        console.info(`ACP[${this.name}]: dropped a session/update for ${sid || "?"} (${st ? "no turn running in that conversation" : "no open conversation has it"})`);
         return;
       }
       const u = msg.params.update;
       if (u.sessionUpdate === "agent_message_chunk" && u.content) {
-        this.appendToStream(u.content.text || "");
+        this.appendToStream(u.content.text || "", st);
       } else if (u.sessionUpdate === "tool_call" || u.sessionUpdate === "tool_call_update") {
-        this.renderAgentToolCall(u);                     // the agent's own tools (Bash, Edit, …)
+        this.renderAgentToolCall(u, st);                 // the agent's own tools (Bash, Edit, …)
       }
     }
   }
@@ -730,15 +736,17 @@ class Conn {
     if (!st) return;
     st.promptQueue.push(text);
     if (images && images.length) st.pendingImages.push(...images);
-    this.flushQueue(st);
+    // openSession, not flushQueue: a background conversation not yet resumed on this socket (e.g. a
+    // relay after a reconnect) is opened first; one that is ready just flushes (review: Jellyfish, #143).
+    this.openSession(st);
   }
 
   // Send the next queued turn if this session is idle and ready.
   flushQueue(st = this.cur) {
     if (!st || st.turnActive || st.promptQueue.length === 0) return;
-    // MVP: only the conversation on screen runs a turn; another one's queue waits until it is
-    // current again (P2 lifts this).
-    if (st.convId !== conversationId) return;
+    // P2 (§5): any open conversation runs its turn, on screen or not. Concurrency is the open count
+    // (at most 3, Q7); one turn per conversation, so -32001 Session busy cannot happen.
+    if (this.states.get(st.convId) !== st) return;       // archived meanwhile
     if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized && st.readyGen === this.socketGen && st.acpSessionId)) return;
 
     // Batch delivery: drain the WHOLE backlog and send it as one turn, not one-per-round. If the
@@ -751,7 +759,7 @@ class Conn {
     let images = [];
     if (st.pendingImages.length && !this.canImage) {
       const n = st.pendingImages.splice(0).length;
-      appendSystemMessage(`${this.name} 不支援圖片，${text ? "只送出文字" : "這則沒有送出"}（${n} 張圖片未送出）。`);
+      this.inState(st, () => appendSystemMessage(`${this.name} 不支援圖片，${text ? "只送出文字" : "這則沒有送出"}（${n} 張圖片未送出）。`));
     } else {
       // Batched backlog may hold several messages' images: send what fits one frame's budget and
       // leave the rest (plus an empty prompt to carry them) for the next turn.
@@ -767,7 +775,7 @@ class Conn {
     st.skippedToolCalls = new Set();                     // katashiro tool calls seen this turn
     updateStopButton();
     renderConvTabs();
-    this.startStream();
+    this.startStream(st);
 
     // U2 host line (§3.5): first, at flush time only — never stored, never in the retry copy.
     const hinted = st.hintPending;
@@ -782,13 +790,29 @@ class Conn {
       idleMs: RoomCore.TURN_IDLE_TIMEOUT_MS, maxMs: RoomCore.TURN_MAX_TIMEOUT_MS,
     }))
       .then((res) => {
+        const replyText = st.stream ? st.stream.text : "";
+        if (ConvCore.isPoolBusyReply(replyText)) {
+          // §5: the pool was full — openab says so as a chat line, not an error (ConvCore.isPoolBusyReply).
+          // The turn never started: no record, no relay, the host line stays pending; error bubble + 重試.
+          st.turnActive = false;
+          updateStopButton();
+          renderConvTabs();
+          st.stream.text = "";                           // drop the line: finalize removes the empty row
+          this.finalizeStream(undefined, st);
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryLast(st)));
+          if (st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
+          this.flushQueue(st);
+          return;
+        }
         if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
         st.turnActive = false;
         updateStopButton();
         renderConvTabs();
-        const replyText = st.stream ? st.stream.text : "";
         this.finalizeStream(res && res.stopReason, st);  // stopReason "cancelled" ⇒ partial reply kept
-        relayAgentReply(this, replyText); // fan this agent's reply out to the room
+        this.inState(st, () => relayAgentReply(this, replyText, st.convId)); // fan it out, within its conversation
+        // Q9 (§5): a turn that finished where the user is not → ● on its tab (recordMessage) and a
+        // notification. A stopped turn is the user's own doing: no notification.
+        if (st.convId !== conversationId && this.states.get(st.convId) === st && !(res && res.stopReason === "cancelled")) notifyTurnDone(st.convId, this.name);
         this.flushQueue(st);
       })
       .catch((err) => {
@@ -820,11 +844,15 @@ class Conn {
           const why = /\(max\)/.test(String(err))
             ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
             : `回合 ${RoomCore.TURN_IDLE_TIMEOUT_MS / 60000} 分鐘沒有任何動靜`;
-          appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast(st));
+          this.inState(st, () => appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast(st)));
         } else {
           this.finalizeStream("error", st);              // render any partial reply, then a distinct
-          appendErrorMessage(this.name, "回合失敗：" + String(err), () => this.retryLast(st)); // error bubble
+          // §5: the pool is shared with Discord and usercron; "pool exhausted" is said plainly and
+          // never retried automatically — 重試 is the user's call.
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryLast(st))); // error bubble
         }
+        // Q9: a background turn that ended badly is said too (a requeued one has not ended).
+        if (action !== "requeue" && st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
         this.flushQueue(st);
       });
   }
@@ -832,9 +860,10 @@ class Conn {
   // Stop the in-flight turn: session/cancel is a one-way NOTIFICATION (no id). The gateway fires
   // the prompt's cancel signal, which resolves our session/prompt request with stopReason
   // "cancelled" — so the normal .then path finalizes the (partial) reply; nothing to settle here.
-  cancelTurn() {
+  // `convId`: only that conversation's turn (the tab strip's ⏹, P2 §5); none = every turn.
+  cancelTurn(convId = null) {
     for (const st of this.states.values()) {
-      if (!st.turnActive || !st.acpSessionId) continue;
+      if (!st.turnActive || !st.acpSessionId || (convId && st.convId !== convId)) continue;
       this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
     }
   }
@@ -847,8 +876,8 @@ class Conn {
     // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
     // alongside the active one (review: Orca, the C2 race).
     if (this.agent.url !== activeAgentUrl) return;
-    // Its conversation must be the one on screen (and still open): a turn runs only there.
-    if (!st || st !== this.cur) return;
+    // Its conversation must still be open (P2: on screen or not — the button is in its own list).
+    if (!st || this.states.get(st.convId) !== st) return;
     if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
     st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
     st.pendingImages.push(...st.lastImages);
@@ -915,8 +944,9 @@ class Conn {
   }
 
   // --- Streaming bubble (per conn — agents stream concurrently) --------------
-  startStream() {
-    this.stream = { bubble: null, text: "" };
+  startStream(st) {
+    if (!st) return;
+    st.stream = { bubble: null, text: "" };
     // Built entirely with createElement (no innerHTML) so the whole row is off the XSS-review
     // surface; name/avatar/time are set via textContent.
     const msgDiv = document.createElement("div");
@@ -943,10 +973,9 @@ class Conn {
     contentEl.append(nameEl, bubble, ts);
 
     msgDiv.append(avatar, contentEl);
-    chatList.appendChild(msgDiv);
-    this.stream.bubble = bubble;
-    this.stream.contentEl = contentEl;   // anchor for the tool-activity strip (inserted above bubble)
-    maybeScroll();
+    st.stream.bubble = bubble;
+    st.stream.contentEl = contentEl;     // anchor for the tool-activity strip (inserted above bubble)
+    this.inState(st, () => { outList().appendChild(msgDiv); maybeScroll(); });
   }
 
   // Append a compact browser-tool activity marker to the current turn: verb + ⏳/✓/✗. It lets
@@ -954,9 +983,9 @@ class Conn {
   // sequence — distinct from the agent's reply bubble, never confused for text. Details stay out
   // of the strip: hover shows the command + outcome + duration, click expands the full (masked)
   // arguments and a result excerpt underneath. `info.args` is already masked by browser-mcp.js.
-  renderToolActivity(info) {
-    if (!info || !info.name || !this.turnActive) return;   // only annotate an in-flight agent turn
-    const s = this.ensureToolStrip();
+  renderToolActivity(info, st) {
+    if (!info || !info.name || !st || !st.turnActive) return;   // only annotate an in-flight agent turn
+    const s = this.ensureToolStrip(st);
     const verb = info.name.replace(/^[^.]*\./, "");        // drop the "katashiro." provider prefix
     let pill;
     if (info.phase === "start") {
@@ -977,16 +1006,17 @@ class Conn {
     pill.toolInfo = { ...info, verb };
     pill.title = toolTooltip(pill.toolInfo);               // property, not markup
     if (s.toolDetailPill === pill) renderToolDetail(s, pill); // refresh an open expander on settle
-    maybeScroll();
+    this.inState(st, maybeScroll);
   }
 
   // The current turn's tool-activity strip (above the reply bubble), created on first use.
   // katashiro.show_image: decode first (a non-image rejects, so the tool reports it), then show it
   // inside the in-flight turn — between the tool strip and the reply bubble — or, between turns,
   // as a standalone message from this agent. Memory-only like pasted images; history gets a marker.
-  async showImage({ dataUrl, caption }) {
+  async showImage({ dataUrl, caption }, st = this.cur) {
+    if (!st) throw Object.assign(new Error("this conversation was closed in Katashiro"), { code: "cap" });
     // Memory cap (#60): shown images live in the DOM as data: URLs (≤ 5 MB each, ×4/3 as base64).
-    if (this.turnActive && this.stream && (this.stream.imageCount || 0) >= SHOW_IMAGE_PER_TURN) {
+    if (st.turnActive && st.stream && (st.stream.imageCount || 0) >= SHOW_IMAGE_PER_TURN) {
       throw Object.assign(new Error(`at most ${SHOW_IMAGE_PER_TURN} images per reply`), { code: "cap" });
     }
     if (shownImageChars + dataUrl.length > SHOW_IMAGE_SESSION_CHARS) {
@@ -1022,19 +1052,21 @@ class Conn {
       cap.textContent = caption;                         // textContent: agent-supplied text
       fig.appendChild(cap);
     }
-    if (this.turnActive) {
-      if (!this.stream || !this.stream.bubble) this.startStream();
-      const s = this.stream;
+    if (st.turnActive) {
+      if (!st.stream || !st.stream.bubble) this.startStream(st);
+      const s = st.stream;
       s.contentEl.insertBefore(fig, s.bubble);
       s.imageCount = (s.imageCount || 0) + 1;
-      maybeScroll();
-    } else {
+      this.inState(st, maybeScroll);
+    } else if (this.states.get(st.convId) === st) {
       // Between turns: its own message (so history keeps the "image not saved" marker), rendered
       // like the in-turn figure (#60): click to open, caption as text — not markdown.
-      appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src], historyCaption: caption });
-      const row = chatList.lastElementChild;
-      const placed = row && row.querySelector(".bubble-image");
-      if (placed) placed.replaceWith(fig);
+      this.inState(st, () => {
+        appendMessage({ senderId: this.id, senderName: this.name, text: "", images: [src], historyCaption: caption });
+        const row = outList().lastElementChild;
+        const placed = row && row.querySelector(".bubble-image");
+        if (placed) placed.replaceWith(fig);
+      });
     }
     shownImageChars += src.length;
     return { width: im.naturalWidth, height: im.naturalHeight };
@@ -1047,7 +1079,7 @@ class Conn {
   askUser(args, st = this.cur) {
     const can = AskCore.canAsk({ turnActive: !!(st && st.turnActive), pending: st ? pendingAsksOf(this, st.convId) : 0 });
     if (can.reason === "turn") {
-      appendSystemMessage(`${this.name} 的回合已結束，它的提問沒有顯示。`);
+      this.inState(st, () => appendSystemMessage(`${this.name} 的回合已結束，它的提問沒有顯示。`));
       throw Object.assign(new Error("your turn had ended (the user stopped it) before the question could be shown; ask in your next reply instead"), { code: "turn" });
     }
     if (can.reason === "cap") {
@@ -1065,16 +1097,19 @@ class Conn {
   async onCanvasWrite({ id, version, created, title }, { beside = null } = {}, st = this.cur) {
     const conv = st ? st.convId : conversationId;
     const card = canvasCard({ id, version, title, conv });
-    if (this.turnActive) {
-      if (!this.stream || !this.stream.bubble) this.startStream();
-      this.stream.contentEl.insertBefore(card, this.stream.bubble);
+    if (st && st.turnActive) {
+      if (!st.stream || !st.stream.bubble) this.startStream(st);
+      st.stream.contentEl.insertBefore(card, st.stream.bubble);
+      this.inState(st, maybeScroll);
     } else {
-      const row = document.createElement("div");
-      row.className = "message system";
-      row.appendChild(card);
-      chatList.appendChild(row);
+      this.inState(st, () => {
+        const row = document.createElement("div");
+        row.className = "message system";
+        row.appendChild(card);
+        outList().appendChild(row);
+        maybeScroll();
+      });
     }
-    maybeScroll();
     canvasTabQueue(sweepCanvasRestores, conv).catch(() => {});
     if (beside === "current") {
       // Shown to the user (Split View, or in front): the conversation's working tab (multi-conversation
@@ -1088,9 +1123,9 @@ class Conn {
     return "opened in a background tab";
   }
 
-  ensureToolStrip() {
-    if (!this.stream || !this.stream.bubble) this.startStream();
-    const s = this.stream;
+  ensureToolStrip(st) {
+    if (!st.stream || !st.stream.bubble) this.startStream(st);
+    const s = st.stream;
     if (!s.toolStrip) {
       s.toolStrip = document.createElement("div");
       s.toolStrip.className = "tool-activity";
@@ -1105,20 +1140,20 @@ class Conn {
   // `tool_call_update`. One pill per toolCallId: the first event usually carries a placeholder
   // title ("Terminal") that a later update refines ("cargo test"), so updates rewrite the same
   // pill. Titles arrive already masked by the gateway; here they are only truncated for layout.
-  renderAgentToolCall(update) {
-    if (!this.turnActive) return;                        // only annotate an in-flight agent turn
-    const known = this.stream && this.stream.agentToolPills;
+  renderAgentToolCall(update, st) {
+    if (!st || !st.turnActive) return;                   // only annotate an in-flight agent turn
+    const known = st.stream && st.stream.agentToolPills;
     const prev = (known && update && known.get(update.toolCallId)) || null;
     if (prev && AgentTools.isBrowserToolCall(update)) {
       // A placeholder title refined into a katashiro tool name: the browser pill covers it.
       prev.el.remove();
       known.delete(update.toolCallId);
-      if (this.skippedToolCalls) this.skippedToolCalls.add(update.toolCallId);
+      if (st.skippedToolCalls) st.skippedToolCalls.add(update.toolCallId);
       return;
     }
-    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update, this.skippedToolCalls);
+    const next = AgentTools.applyToolCallUpdate(prev && prev.info, update, st.skippedToolCalls);
     if (!next) return;                                   // not ours / unknown id with nothing to show
-    const s = this.ensureToolStrip();
+    const s = this.ensureToolStrip(st);
     let entry = s.agentToolPills.get(next.id);
     if (!entry) {
       entry = { el: document.createElement("span"), info: null };
@@ -1129,19 +1164,24 @@ class Conn {
     entry.el.className = `tool-pill agent-tool ${next.state}`;
     entry.el.textContent = `${next.label} ${next.icon}`;
     entry.el.title = next.title;                         // property, not markup
-    maybeScroll();
+    this.inState(st, maybeScroll);
   }
 
-  appendToStream(chunk) {
-    if (!chunk) return;                                  // keep dots until real text arrives
-    if (!this.stream || !this.stream.bubble) this.startStream();
-    if (this.stream.text === "") this.stream.bubble.classList.remove("typing");
-    this.stream.text += chunk;
-    this.stream.bubble.textContent = this.stream.text;   // textContent: no HTML injection
-    maybeScroll();
+  appendToStream(chunk, st) {
+    if (!chunk || !st) return;                           // keep dots until real text arrives
+    if (!st.stream || !st.stream.bubble) this.startStream(st);
+    if (st.stream.text === "") st.stream.bubble.classList.remove("typing");
+    st.stream.text += chunk;
+    st.stream.bubble.textContent = st.stream.text;       // textContent: no HTML injection
+    this.inState(st, maybeScroll);
   }
 
+  // Ends a turn's bubble, rendering into ITS conversation (P2: on screen or not).
   finalizeStream(stopReason, st = this.cur) {
+    this.inState(st, () => this.finalizeStreamHere(stopReason, st));
+  }
+
+  finalizeStreamHere(stopReason, st) {
     const s = st ? st.stream : null;
     if (st) st.stream = null; // reset first: a render throw must not orphan stream state onto the next turn
     // A confirm card still waiting in this turn declines: the turn ended (stop, timeout, error,
@@ -1187,7 +1227,7 @@ class Conn {
     // The row showed the time streaming STARTED; the id, quotes and chat_history use doneAt (#62).
     const tsEl = s.contentEl && s.contentEl.querySelector(":scope > .timestamp");
     if (tsEl) tsEl.textContent = formatTime(doneAt);
-    const firstId = RoomCore.messageId(conversationId, doneAt);
+    const firstId = RoomCore.messageId(st.convId, doneAt);
     if (row && s.contentEl) {
       row.dataset.msgId = firstId;
       attachReplyButton(s.contentEl, { id: firstId, senderName: this.name, timestamp: doneAt, text: first.text });
@@ -1592,6 +1632,7 @@ function makeConv(id, data) {
     groupTabs: Array.isArray(d.groupTabs) ? d.groupTabs.filter((u) => typeof u === "string") : [],
     draft: null,                          // §4.8: the composer's text + staged attachments while not current (memory only)
     listEl: null,                         // its message list, built the first time it is shown (§3.5)
+    unread: false,                        // P2 §5: ● — something arrived while it was not on screen
     scrollTop: 0, stick: true,            // scroll position while hidden
     indexTimeAt: 0, indexTimeValue: 0,    // the last lastMessageAt written to conv:index, and when
   };
@@ -1674,10 +1715,11 @@ function maybeAutoTitle(conv, text) {
 // Append a record to the current conversation's persisted scrollback (skipped while restoring).
 // System/status notices are deliberately NOT recorded — they are regenerated on each (re)connect.
 function recordMessage(rec) {
-  if (restoring || !currentConv) return;
-  const conv = currentConv;
+  const conv = targetConv();                             // P2: a background turn records into its own
+  if (restoring || !conv) return;
   conv.messages.push(rec);
   if (conv.messages.length > HISTORY_CAP) conv.messages.splice(0, conv.messages.length - HISTORY_CAP);
+  if (conv !== currentConv && !conv.unread) { conv.unread = true; renderConvTabs(); }   // P2 §5: ● until it is shown
   saveConv(conv);
   noteActivity(conv, rec.timestamp);
 }
@@ -1784,6 +1826,38 @@ lobbyList.className = "conv-messages conv-lobby";
 messagesList.appendChild(lobbyList);
 let chatList = lobbyList;                 // where rows are appended: the current conversation's list
 
+// P2 (multi-conversation §5): a turn runs in any open conversation, so what it renders and records
+// goes to ITS conversation, on screen or not. `scopeConv` names that conversation for the duration of
+// a synchronous render (inConv); null = the conversation on screen. Every append/record path reads
+// it through outList() / targetConv(), never `chatList` / `currentConv` directly.
+let scopeConv = null;
+function targetConv() { return scopeConv || currentConv; }
+function targetConvId() { const c = targetConv(); return c ? c.id : conversationId; }
+function outList() { return scopeConv ? ensureListEl(scopeConv) : chatList; }
+function inConv(conv, fn) {
+  const prev = scopeConv;
+  scopeConv = conv && conv !== currentConv && convs.has(conv.id) ? conv : null;
+  try { return fn(); } finally { scopeConv = prev; }
+}
+
+// A conversation's message list, built (hidden) and filled from its records the first time it is
+// needed: when it is first shown, or when a background turn first writes into it.
+function ensureListEl(conv) {
+  if (conv.listEl) return conv.listEl;
+  conv.listEl = document.createElement("div");
+  conv.listEl.className = "conv-messages";
+  conv.listEl.hidden = true;
+  messagesList.appendChild(conv.listEl);
+  conv.stick = true;
+  if (conv.messages.length) {
+    const prev = scopeConv;
+    scopeConv = conv;                                    // the records are already in conv.messages,
+    restoring = true;                                    // so "↩ time" markers resolve
+    try { conv.messages.slice().forEach(replayMessage); } finally { restoring = false; scopeConv = prev; }
+  }
+  return conv.listEl;
+}
+
 function hideCurrentList() {
   if (currentConv && currentConv.listEl) {
     currentConv.scrollTop = messagesList.scrollTop;
@@ -1813,20 +1887,9 @@ function showConversation(id) {
     windowRec = { ...windowRec, current: id };
     writeWindowRec();
   }
-  if (!conv.listEl) {
-    conv.listEl = document.createElement("div");
-    conv.listEl.className = "conv-messages";
-    messagesList.appendChild(conv.listEl);
-    chatList = conv.listEl;
-    if (conv.messages.length) {
-      restoring = true;                                  // the records are already in conv.messages,
-      try { conv.messages.slice().forEach(replayMessage); } finally { restoring = false; }   // so "↩ time" markers resolve
-    }
-    conv.stick = true;
-  } else {
-    chatList = conv.listEl;
-    chatList.hidden = false;
-  }
+  chatList = ensureListEl(conv);
+  chatList.hidden = false;
+  if (conv.unread) { conv.unread = false; renderConvTabs(); }   // P2 §5: ● goes once it is on screen
   stickToBottom = conv.stick !== false;
   if (stickToBottom) scrollToBottom(); else messagesList.scrollTop = conv.scrollTop;
   // A reply chip quotes a message of the conversation it was set in.
@@ -1890,21 +1953,23 @@ function activateSessions() {
   });
 }
 
-// §3.5: may conversation `id` be left (switch, ＋, × on it)? → the refusal text, or null.
-// Queued prompts only flush for the conversation on screen, so for any other only a running turn
-// counts — otherwise its × and picker entry would say 回覆中 with nothing replying.
-function convSwitchBlock(id = conversationId) {
+// §3.4 + P2 §5: may conversation `id` be archived (×, the picker)? → the refusal text, or null.
+// Since P2 every open conversation flushes its own queue, so queued prompts count for any of them.
+// Switching and ＋ are never blocked: the turn continues in the background.
+function convArchiveBlock(id = conversationId) {
   if (!id) return null;
-  return ConvCore.switchBlocked(room.map((c) => {
+  return ConvCore.archiveBlocked(room.map((c) => {
     const st = c.states.get(id);
-    return st && { turnActive: st.turnActive, queued: id === conversationId ? st.promptQueue.length : 0, online: !!(c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized) };
+    return st && { turnActive: st.turnActive, queued: st.promptQueue.length, online: !!(c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized) };
   }));
+}
+// Is conversation `id` replying (any agent)? The tab strip's ⏳ (P2 §5).
+function convReplying(id) {
+  return room.some((c) => { const st = c.states.get(id); return !!(st && st.turnActive); });
 }
 
 function switchConversation(id) {
   if (id === conversationId || !convs.has(id)) return true;
-  const blocked = convSwitchBlock();
-  if (blocked) { appendSystemMessage(blocked); return false; }
   if (currentConv) writeIndexTime(currentConv);          // §3.2: always on switch
   const prev = conversationId;
   showConversation(id);
@@ -1915,8 +1980,6 @@ function switchConversation(id) {
 
 // ＋ (§3.3): a new, empty conversation, switched to. With 3 open in any window, first the picker.
 async function newConversation() {
-  const blocked = convSwitchBlock();
-  if (blocked) { appendSystemMessage(blocked); return false; }
   const r = await withWindowsLock(async () => {
     const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
     windows[String(panelWindowId)] = windowRec;
@@ -1948,7 +2011,7 @@ async function newConversation() {
 async function archiveConversation(id) {
   const conv = convs.get(id);
   if (!conv) return { ok: false, error: "這段對話沒有開在這個側邊欄" };
-  const blocked = convSwitchBlock(id);
+  const blocked = convArchiveBlock(id);
   if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
   const wasCurrent = id === conversationId;
   // P1b §4.4–4.5: the group's tab list is final before its tabs close (they come back on reopen).
@@ -1987,8 +2050,6 @@ async function archiveConversation(id) {
 // record if it is in one, clear archivedAt, add it to this window and switch to it.
 async function reopenConversation(id) {
   if (convs.has(id)) { switchConversation(id); return { ok: true }; }
-  const blocked = convSwitchBlock();
-  if (blocked) { appendSystemMessage(blocked); return { ok: false, error: blocked }; }
   const r = await withWindowsLock(async () => {
     const [windows, live, index] = await Promise.all([convStore.readWindows(), liveWindowIds(), convStore.readIndex()]);
     // §7.1: deleted (or being deleted) — never recreated as an empty conversation by a stale gallery tab.
@@ -2122,7 +2183,7 @@ async function showArchivePicker(then) {
   const buttons = [];
   for (const id of ids) {
     const mine = convs.has(id);
-    const busy = mine && !!convSwitchBlock(id);
+    const busy = mine && !!convArchiveBlock(id);
     const b = document.createElement("button");
     b.type = "button";
     b.className = "conv-picker-option";
@@ -2231,19 +2292,23 @@ function renderConvTabs() {
   const tabs = windowRec.open.filter((id) => convs.has(id)).map((id) => {
     const e = convIndex[id];
     const title = ConvCore.displayTitle(e, id);
-    const busy = !!convSwitchBlock(id);
-    const waiting = id !== conversationId && hasWaitingCard(id);   // Q12 (§4.7)
+    const current = id === conversationId;
+    const replying = convReplying(id);
+    const busy = replying || !!convArchiveBlock(id);
+    const waiting = !current && hasWaitingCard(id);       // Q12 (§4.7)
+    // P2 §5: ❓ a card waiting > ⏳ replying > ● something new arrived while it was not on screen.
+    const m = ConvCore.tabMark({ current, replying, waiting, unread: !!(convs.get(id) || {}).unread });
     const tab = document.createElement("div");
-    tab.className = `conv-tab${id === conversationId ? " current" : ""}${busy ? " busy" : ""}${waiting ? " waiting" : ""}`;
+    tab.className = `conv-tab${current ? " current" : ""}${busy ? " busy" : ""}${m.kind ? ` mark-${m.kind}` : ""}`;
     tab.setAttribute("role", "tab");
-    tab.setAttribute("aria-selected", id === conversationId ? "true" : "false");
+    tab.setAttribute("aria-selected", current ? "true" : "false");
     tab.tabIndex = 0;
-    tab.title = `${title}${waiting ? "\n❓ 有問題等你回答" : ""}\n（雙擊改名）`;
+    tab.title = `${title}${m.label ? `\n${m.icon} ${m.label}` : ""}\n（雙擊改名）`;
     const mark = document.createElement("span");
     mark.className = "conv-tab-mark";
-    mark.setAttribute("aria-label", "有問題等你回答");
-    if (waiting) mark.textContent = "❓";
-    mark.hidden = !waiting;
+    mark.setAttribute("aria-label", m.label || "");
+    mark.textContent = m.icon || "";
+    mark.hidden = !m.icon;
     const name = document.createElement("span");
     name.className = "conv-tab-title";
     name.textContent = title;                             // textContent: a title is user/agent text
@@ -2253,9 +2318,14 @@ function renderConvTabs() {
     const x = document.createElement("button");
     x.type = "button";
     x.className = "conv-tab-close";
-    x.textContent = "×";
-    x.title = busy ? "回覆中不能封存" : "封存這段對話（可從 🗂️ 總覽重新打開）";
-    x.addEventListener("click", (ev) => { ev.stopPropagation(); archiveConversation(id); });
+    // While it replies, × becomes ⏹: stop that conversation's turn (P2 §5); archiving waits for it.
+    x.textContent = replying ? "⏹" : "×";
+    x.title = replying ? "停止這段對話的回覆" : (busy ? "回覆中不能封存" : "封存這段對話（可從 🗂️ 總覽重新打開）");
+    x.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (replying) room.forEach((c) => c.cancelTurn(id));
+      else archiveConversation(id);
+    });
     tab.append(mark, name, time, x);
     tab.addEventListener("click", () => switchConversation(id));
     tab.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); switchConversation(id); } });
@@ -3103,7 +3173,7 @@ messageInput.addEventListener("keydown", (e) => {
 sendBtn.addEventListener("click", sendMessage);
 
 // Stop every in-flight turn (each conn sends its own session/cancel).
-if (stopBtn) stopBtn.addEventListener("click", () => room.forEach((c) => c.cancelTurn()));
+if (stopBtn) stopBtn.addEventListener("click", () => { if (conversationId) room.forEach((c) => c.cancelTurn(conversationId)); });
 
 // Panel closing: best-effort cancel any in-flight turn so the gateway stops the agent-core turn
 // instead of leaving it running to completion (whose reply is then dropped as stale). This is the
@@ -3238,11 +3308,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
   const active = connById(activeAgentUrl);
   if (!active || !active.initialized) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
-  if (cid !== conversationId) {
-    const blocked = convSwitchBlock();
-    if (blocked) { sendResponse({ ok: false, error: blocked }); return false; }
-    switchConversation(cid);
-  }
+  if (cid !== conversationId) switchConversation(cid);   // P2: never blocked, a running reply continues behind
   seenPushIds.add(msg.reqId);
   // @mentions come from the user's note only, never from the diff / error text inside the fence.
   const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
@@ -3259,7 +3325,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // as their own message (so it is the user's words by design, unlike a push's fenced data). Same gate
 // and refusals as a push (Katashiro's canvas.html, the conversation open in THIS panel, deduped by
 // request id); no agent has to be connected. An open but not current conversation is switched to,
-// as for a push; while the current one is replying (no switch) the text goes into that
+// as for a push (P2: never blocked); should it still not be current, the text goes into that
 // conversation's draft instead (`draft: true`). A draft is kept: the text goes after it on a new
 // line (CanvasCore.inputWithSelection). Capped at the frame's selection cap (refused over it).
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -3277,7 +3343,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
   seenPushIds.add(msg.reqId);
   const conv = convs.get(cid);
-  if (cid !== conversationId && !convSwitchBlock()) switchConversation(cid);
+  if (cid !== conversationId) switchConversation(cid);
   const elsewhere = !!sender.tab && sender.tab.windowId !== panelWindowId;
   if (conv !== currentConv) {
     if (!conv.draft) conv.draft = { text: "", images: [], files: [] };
@@ -3297,7 +3363,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 // Relay an agent's finalized reply into the room so OTHER agents can see + respond to it — the
 // "talk to each other like a Discord thread" mechanic. Wrapped with attribution, routed per
 // mode, and bounded by the loop guard (surfaces a system line once when the cascade is paused).
-function relayAgentReply(originConn, text) {
+// `convId`: the conversation the reply was in — a relay goes to the other agents' sessions of that
+// same conversation (P2 §5: it may not be the one on screen).
+function relayAgentReply(originConn, text, convId = conversationId) {
   if (!text || !text.trim()) return;
   const guard = loopGuard.onAgentRelay();
   if (!guard.allowed) {
@@ -3314,7 +3382,7 @@ function relayAgentReply(originConn, text) {
   const wrapped = RoomCore.wrapRelay(originConn.name, text);
   targets.forEach((id) => {
     const c = connById(id);
-    if (c) c.enqueue(wrapped);
+    if (c && convs.has(convId)) c.enqueue(wrapped, [], c.stateFor(convId));
   });
 }
 
@@ -3425,7 +3493,7 @@ const canvasStore = CanvasStore.createCanvasStore({
   confirmEvict: (info) => confirmEvictCard(info, null),
 });
 
-function confirmEvictCard({ evict }, conn) {
+function confirmEvictCard({ evict }, conn, st = null) {
   return confirmCard({
     title: "畫布儲存空間已滿",
     lines: [
@@ -3433,7 +3501,7 @@ function confirmEvictCard({ evict }, conn) {
       ...evict.slice(0, 10).map((e) => `• ${e.title}`),
       ...(evict.length > 10 ? [`…還有 ${evict.length - 10} 個`] : []),
     ],
-  }, { conn, notAskedNote: conn ? `${conn.name} 的回合已結束，清出畫布儲存空間的要求未執行（沒有詢問你）。` : "" });
+  }, { conn, st, notAskedNote: conn ? `${conn.name} 的回合已結束，清出畫布儲存空間的要求未執行（沒有詢問你）。` : "" });
 }
 
 // --- canvas folder mirror (ADR §3.6; decisions and file writes in canvas-mirror.js) -----------
@@ -4259,9 +4327,12 @@ function confirmCard(spec, opts) {
 }
 
 /** confirmCard, resolving { ok, state } (state: allowed / denied / timeout / cancelled / ended / skipped). */
-function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
-  if (!ConfirmCore.shouldAsk({ forAgent: !!conn, turnActive: !!(conn && conn.turnActive) })) {
-    if (notAskedNote) appendSystemMessage(notAskedNote);
+// `st`: the asking conversation's session state (P2 §5: the card goes into ITS turn, on screen or not);
+// without one, the conversation on screen's state of `conn`.
+function confirmOutcome(spec, { conn = null, st = null, notAskedNote = "" } = {}) {
+  if (conn && !st) st = conn.cur;
+  if (!ConfirmCore.shouldAsk({ forAgent: !!conn, turnActive: !!(st && st.turnActive) })) {
+    if (notAskedNote) inConv(st ? convs.get(st.convId) : null, () => appendSystemMessage(notAskedNote));
     return Promise.resolve(ConfirmCore.NOT_ASKED);
   }
   const s = ConfirmCore.normalizeSpec(spec);
@@ -4305,11 +4376,12 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
   result.hidden = true;
   card.append(hint, actions, result);
 
-  // Asked in a turn: the card sits in that turn and declines when it ends (finalizeStream). Turns
-  // run only in the conversation on screen (MVP), so the card is always on screen (§3.8).
-  if (conn && conn.turnActive && (!conn.stream || !conn.stream.bubble)) conn.startStream();
-  const turn = conn && conn.turnActive ? conn.stream : null;
-  const askedIn = conversationId;
+  // Asked in a turn: the card sits in that turn and declines when it ends (finalizeStream). P2 §5:
+  // the turn may be in a conversation not on screen — ❓ on its tab and a notification (Q12); its
+  // 2-minute clock is wall-clock (a 🔒 card holds the agent's tool call open, ≤ 170 s per call).
+  if (conn && st && st.turnActive && (!st.stream || !st.stream.bubble)) conn.startStream(st);
+  const turn = conn && st && st.turnActive ? st.stream : null;
+  const askedIn = st ? st.convId : conversationId;
 
   // The card stays in the chat with the outcome; the buttons go, so a late click cannot act.
   const decision = ConfirmCore.createDecision({
@@ -4330,15 +4402,18 @@ function confirmOutcome(spec, { conn = null, notAskedNote = "" } = {}) {
   allow.addEventListener("click", () => decision.allow());
   deny.addEventListener("click", () => decision.deny());
 
-  if (turn) {
-    turn.contentEl.insertBefore(card, turn.bubble);
-  } else {
-    const row = document.createElement("div");
-    row.className = "message system";
-    row.appendChild(card);
-    chatList.appendChild(row);
-  }
-  maybeScroll();
+  inConv(convs.get(askedIn), () => {
+    if (turn) {
+      turn.contentEl.insertBefore(card, turn.bubble);
+    } else {
+      const row = document.createElement("div");
+      row.className = "message system";
+      row.appendChild(card);
+      outList().appendChild(row);
+    }
+    maybeScroll();
+  });
+  if (askedIn !== conversationId && convs.has(askedIn)) { renderConvTabs(); notifyWaitingCard(askedIn); }
   return decision.outcome;
 }
 
@@ -4496,13 +4571,16 @@ function askCard(spec, conn, st = conn.cur) {
     conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)), [], entry.state);
   };
 
-  // Asked in the turn (AskCore.canAsk guarantees one): the card sits in it, above the reply.
-  if (!conn.stream || !conn.stream.bubble) conn.startStream();
-  const turn = conn.stream;
+  // Asked in the turn (AskCore.canAsk guarantees one): the card sits in it, above the reply. P2 §5:
+  // that turn may be in a conversation not on screen — its clock waits (visible time only, Q1),
+  // and ❓ on its tab plus a notification tell the user (Q12).
+  if (!st.stream || !st.stream.bubble) conn.startStream(st);
+  const turn = st.stream;
   turn.asked = true;                                     // finalizeStream keeps the row for the card
   turn.contentEl.insertBefore(card, turn.bubble);
   entry.ask.setVisible(askVisible(entry));
-  maybeScroll();
+  conn.inState(st, maybeScroll);
+  if (entry.conversationId !== conversationId) { renderConvTabs(); notifyWaitingCard(entry.conversationId); }
   return id;
 }
 
@@ -4535,6 +4613,22 @@ function notifyWaitingCard(id) {
     const p = chrome.notifications.create(nid, { type: "basic", iconUrl: "icon128.png", title: "Katashiro：有問題等你回答", message: `「${title}」裡有一張卡片還沒回答。點這裡回到那段對話。` });
     if (p && typeof p.catch === "function") p.catch(() => {});
   } catch (_) { /* notifications off: the ❓ on the tab still shows it */ }
+}
+
+// Q9 (multi-conversation §5): a turn that finished in a conversation not on screen. Same id scheme
+// as notifyWaitingCard, so the click focuses this window and switches to that conversation.
+function notifyTurnDone(id, agentName, failed = false) {
+  if (!chrome.notifications || typeof chrome.notifications.create !== "function" || panelWindowId == null) return;
+  const title = ConvCore.displayTitle(convIndex[id], id);
+  const nid = `${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:conv:${id}:${Date.now()}-${++waitingNotifySeq}`;
+  try {
+    const p = chrome.notifications.create(nid, {
+      type: "basic", iconUrl: "icon128.png",
+      title: failed ? "Katashiro：背景對話的回覆失敗了" : "Katashiro：背景對話回覆完了",
+      message: `「${title}」：${agentName} ${failed ? "這一輪沒有完成" : "回覆完了"}。點這裡回到那段對話。`,
+    });
+    if (p && typeof p.catch === "function") p.catch(() => {});
+  } catch (_) { /* notifications off: the ● on the tab still shows it */ }
 }
 
 // Message ids are <conversationId>:<ms>; never hand out the same ms twice in this panel (#62).
@@ -4654,8 +4748,9 @@ function attachReplyButton(contentEl, target) {
 // The recorded message an ISO stamp names, as a reply target: exactly that millisecond when the
 // stamp has one (headers carry ms, #62 follow-up), else the second rule (RoomCore.findByStamp).
 function findMessageByTime(stamp) {
-  const m = RoomCore.findByStamp(historyMessages, stamp);
-  return m ? { id: m.id || RoomCore.messageId(conversationId, m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text } : null;
+  const conv = targetConv();                             // P2: the conversation being rendered into
+  const m = RoomCore.findByStamp(conv ? conv.messages : historyMessages, stamp);
+  return m ? { id: m.id || RoomCore.messageId(targetConvId(), m.timestamp), senderName: m.senderName, timestamp: m.timestamp, text: m.text } : null;
 }
 
 // The quote target for an agent's "↩ <time>" marker: the matched message, or a placeholder that
@@ -4710,7 +4805,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
-  const id = RoomCore.messageId(conversationId, timestamp);
+  const id = RoomCore.messageId(targetConvId(), timestamp);
   msgDiv.dataset.msgId = id;
 
   if (!isMe) {
@@ -4768,7 +4863,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   attachReplyButton(content, { id, senderName, timestamp, text: quoteText });
 
   msgDiv.appendChild(content);
-  chatList.appendChild(msgDiv);
+  outList().appendChild(msgDiv);
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
     replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
@@ -4777,14 +4872,14 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.
-  if (isMe) scrollToBottom(); else maybeScroll();
+  if (isMe && !scopeConv) scrollToBottom(); else maybeScroll();
 }
 
 // System notices carry handshake error strings (remote-reachable) — same XSS sink, same
 // fix: textContent, never innerHTML. `conv` (optional): the conversation the notice is about —
 // one whose list is not built yet (never shown) gets none; they are not recorded anyway.
 function appendSystemMessage(text, conv) {
-  const list = conv ? conv.listEl : chatList;
+  const list = conv ? conv.listEl : outList();
   if (!list) return null;
   const msgDiv = document.createElement("div");
   msgDiv.className = "message system";
@@ -4853,17 +4948,15 @@ function appendErrorMessage(senderName, text, onRetry) {
   }
   content.appendChild(bubble);
   msgDiv.appendChild(content);
-  chatList.appendChild(msgDiv);
+  outList().appendChild(msgDiv);
   recordMessage({ kind: "error", senderName, text, timestamp: Date.now() });
   maybeScroll();
 }
 
-// The stop button is shown whenever ANY agent has a turn in flight; clicking it cancels them all.
-function anyTurnActive() {
-  return room.some((c) => c.turnActive);
-}
+// The stop button is shown while the conversation ON SCREEN is replying and stops only its turn
+// (P2 §5); a conversation replying in the background is stopped from its tab (⏹).
 function updateStopButton() {
-  if (stopBtn) stopBtn.hidden = !anyTurnActive();
+  if (stopBtn) stopBtn.hidden = !(conversationId && convReplying(conversationId));
 }
 
 function scrollToBottom() {
@@ -4882,6 +4975,7 @@ function isNearBottom() {
 // flag only flips when the user actually scrolls, so streaming stays glued to the bottom.
 let stickToBottom = true;
 function maybeScroll() {
+  if (scopeConv) return;                                 // P2: rendering into a hidden conversation
   if (stickToBottom) scrollToBottom();
   else if (jumpLatestBtn) jumpLatestBtn.hidden = false;
 }

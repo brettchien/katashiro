@@ -3528,6 +3528,30 @@
     return out;
   }
 
+  // Multi-conversation P2 §5 (first part): what a conversation NOT on screen may still call — the
+  // tools that touch no browser tab the user is looking at and bring nothing to the front. Page
+  // and tab tools, and canvas tools that show a canvas, wait until it is on screen again (Q8 adds
+  // tab-scoped access later). canvas_open opens a new canvas in a background tab; with
+  // `beside` it would show it, so that form is refused too.
+  const BACKGROUND_TOOLS = new Set([
+    "katashiro.client_info", "katashiro.chat_history", "katashiro.set_title", "katashiro.notify",
+    "katashiro.ask_user", "katashiro.show_image", "katashiro.tabs", "katashiro.tab_groups",
+    "katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_delete",
+    "katashiro.canvas_list",
+  ]);
+  const BACKGROUND_REFUSAL =
+    "this conversation is in the background in Katashiro (the user is looking at another one): " +
+    "tools that act on a browser tab or bring something to the front are not available until the " +
+    "user switches back to it. Available now: " +
+    [...BACKGROUND_TOOLS].map((n) => n.replace(/^katashiro\./, "")).join(", ") +
+    " (canvas_open without beside). Finish what you can, or say what you need in your reply.";
+  /** → null (allowed) or the refusal text for a tool call from a conversation not on screen. */
+  function backgroundRefusal(name, args) {
+    if (!BACKGROUND_TOOLS.has(name)) return BACKGROUND_REFUSAL;
+    if (name === "katashiro.canvas_open" && args && args.beside != null) return BACKGROUND_REFUSAL;
+    return null;
+  }
+
   async function callBrowserTool(name, args, deps, tools) {
     const registry = tools || TOOLS;
     const chrome = deps.chrome;
@@ -3627,10 +3651,11 @@
             // capability exists. Refusing at call time is the honest place to enforce it.
             return { tools: listing };
           case "tools/call": {
-            // The host may refuse every call on this instance (multi-conversation §3.9: a
-            // conversation that is not on screen). Refused before anything runs or is shown: no
-            // activity pill, since the turn on screen belongs to another conversation.
-            if (deps.refuse) return { content: [{ type: "text", text: String(deps.refuse) }], isError: true };
+            // The host may refuse a call (multi-conversation: a conversation not on screen, P2 §5):
+            // a string refuses every call, a function decides per tool (name, raw arguments).
+            // Refused before anything runs or is shown: no activity pill.
+            const refusal = typeof deps.refuse === "function" ? deps.refuse(params.name, params.arguments || {}) : deps.refuse;
+            if (refusal) return { content: [{ type: "text", text: String(refusal) }], isError: true };
             // Tool-execution failures (no active tab, restricted page like chrome://, missing
             // host permission, injected-script error) become MCP isError results — not protocol
             // errors — so the agent sees the failure and can adapt.
@@ -3793,5 +3818,5 @@
     }
   }
 
-  return { localStamp, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
+  return { localStamp, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, BACKGROUND_TOOLS, backgroundRefusal, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });
