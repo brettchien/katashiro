@@ -698,7 +698,10 @@ try {
   const turnIdle = () => until(q, () => document.getElementById("stop-btn").hidden, "turn idle");
   const tool = async (name, args) => {
     const id = await q.evaluate((n, a) => window.__acp.callTool(window.__acp.conn, n, a), name, args);
-    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id);
+    // 20 s, not until's default 8 s: new_tab for a conversation in the background waits for the
+    // new tab to finish loading (browser-mcp.js waitForComplete, bounded at 8 s) and this stub never
+    // reports status "complete", so that call takes the full 8 s; an 8 s wait here raced it.
+    await until(q, (i) => !!window.__acp.responses[i], `${name} answered`, id, 20000);
     return q.evaluate((i) => window.__acp.responses[i], id);
   };
   const tm = () => q.evaluate(() => window.__tm());
@@ -1068,7 +1071,11 @@ try {
     // Refused while another page (a panel) holds the conversation's Web Lock; names its window.
     const holder = await browser.newPage();
     await holder.goto(`${origin}/manifest.json`);
-    await holder.evaluate((id) => { navigator.locks.request(`conv:${id}`, () => new Promise((r) => { window.__release = r; })); }, DH);
+    // Wait until the lock is GRANTED, not just requested: request() is async across pages, and a
+    // delete tried before the grant lands found the lock free and deleted the held conversation.
+    await holder.evaluate((id) => new Promise((granted) => {
+      navigator.locks.request(`conv:${id}`, () => { granted(); return new Promise((r) => { window.__release = r; }); });
+    }), DH);
     await gd.evaluate(() => { window.__confirmAnswer = true; });
     await rowBtn("Held elsewhere");
     await until(gd, () => document.getElementById("canvas-notice").textContent.includes("先在那裡封存再刪除"), "delete: refused while another window holds the conversation");
