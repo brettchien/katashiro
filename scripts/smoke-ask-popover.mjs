@@ -6,7 +6,7 @@
 //   npm ci && npm run chrome     # once
 //   node scripts/smoke-ask-popover.mjs      # or `npm run smoke` for all of them
 //
-// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/smoke-env.mjs.)
+// (CHROME / PUPPETEER_CORE override the Chrome and puppeteer-core it uses: see scripts/lib/smoke-env.mjs.)
 //
 // canvas.html is served over http with a stub of the chrome.* APIs it uses (storage with one
 // markdown canvas, runtime.sendMessage recording the push and answering like the side panel).
@@ -38,7 +38,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { launch } from "./smoke-env.mjs";
+import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

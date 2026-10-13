@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // run-smokes.mjs — run every puppeteer smoke (scripts/smoke-*.mjs) one after another, print a
 // summary, exit non-zero if any failed. `npm run smoke`; `npm run smoke -- mermaid ask-popover` runs
-// only the named ones. Setup and the CHROME / PUPPETEER_CORE overrides: scripts/smoke-env.mjs.
+// only the named ones. Setup and the CHROME / PUPPETEER_CORE overrides: scripts/lib/smoke-env.mjs.
+//
+// Naming rule: every scripts/smoke-<name>.mjs IS a smoke and runs here. Code the smokes share
+// (helpers, setup) goes in scripts/lib/, never as scripts/smoke-*.mjs.
 //
 // Sequential on purpose: each smoke starts its own Chrome, and several timing-sensitive checks (a
 // tool call answered within its bound, a Web Lock held across pages) are what we test, so a loaded
@@ -13,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const all = fs.readdirSync(DIR)
-  .filter((f) => /^smoke-.+\.mjs$/.test(f) && f !== "smoke-env.mjs")
+  .filter((f) => /^smoke-.+\.mjs$/.test(f))
   .sort();
 const wanted = process.argv.slice(2).map((a) => a.replace(/^smoke-/, "").replace(/\.mjs$/, ""));
 const unknown = wanted.filter((w) => !all.includes(`smoke-${w}.mjs`));
