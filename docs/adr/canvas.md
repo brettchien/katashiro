@@ -107,7 +107,7 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
 - The panel is ~400 px wide. Slides and documents need the full tab width.
 - **One Chrome tab per canvas, gathered in a native tab group per conversation** (title = the
   conversation title, or "Canvas" until multi-conversation lands; fixed color: blue), in the panel's
-  window. Canvases stay together and out of the user's page tabs; the group collapses to one chip.
+  window. Canvases stay together and out of the user's page tabs; the group can be collapsed to one chip.
   This needs no tab UI of our own: drag, pin, close and Split View are Chrome's.
 - The chat gets a **card** in the agent's turn, `📄 <title> · v<N> — Open`. Clicking it focuses that
   canvas's tab, or reopens it in the group if it was closed. A tab shows one canvas, always its latest
