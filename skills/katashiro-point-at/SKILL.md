@@ -77,11 +77,17 @@ For canvases (documents and slides the agent rendered; see the canvas ADR,
 `{id, find | heading, label, durationMs}`. It scrolls the canvas to the block and glows it.
 `find` matches the block's **rendered text** (what the user sees, not the markdown source), at
 most 500 characters, and must match exactly one block; `heading` matches a heading's rendered
-text exactly. No match or several matches is an error. You cannot inject CSS into a canvas: the
-effects are fixed (outline and background only), and you only give a text anchor. `durationMs` is
+text exactly. No match or several matches is an error. The effects are fixed (outline and
+background only), and you only give a text anchor. `durationMs` is
 capped at 10 s and calls are rate-limited; it is refused on `html` canvases; while the user is
 editing, it does not scroll but asks the user ("Agent wants to show you a section"). Available
 once canvas phase 1 ships; check with `search_capabilities`.
+
+To emphasise several parts of a canvas at once, use `katashiro.canvas_inject_css` with `{id, css}`
+— `inject_css` for canvases (page tools, `inject_css` included, cannot run on a canvas tab). Same
+rules: nothing that fetches, no CSS escapes, emphasise don't alter, and `{id, clear: true}` when
+done. Rendered markdown is plain HTML (`h1`–`h6`, `p`, `li`, `table`/`tr`/`td`, `pre`); slides are
+reveal.js `section`s; diagrams are `figure.ks-mermaid > svg`. It is refused while the user edits.
 
 After you write a new canvas version the changed blocks glow on their own, so you don't need to
 highlight your own edits. Use `canvas_highlight` to point at something specific while you explain.

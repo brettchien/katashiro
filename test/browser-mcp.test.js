@@ -220,6 +220,7 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.canvas_delete",
     "katashiro.canvas_goto",
     "katashiro.canvas_highlight",
+    "katashiro.canvas_inject_css",
     "katashiro.canvas_view",
     "katashiro.canvas_gallery",
     "katashiro.canvas_list",
@@ -3178,7 +3179,8 @@ test("DOM tools stay refused on the canvas and gallery tabs (only screenshot is 
     for (const tool of ["katashiro.snapshot", "katashiro.click"]) {
       const res = await callTool(d, tool, tool === "katashiro.click" ? { selector: "button" } : {});
       assert.equal(res.isError, true, `${tool} on ${url}`);
-      assert.match(res.content[0].text, /no grantable web origin/);
+      assert.match(res.content[0].text, /Katashiro's own canvas .*canvas_read.*screenshot.*canvas_highlight.*canvas_inject_css/);
+      assert.doesNotMatch(res.content[0].text, /no grantable web origin/);
     }
   }
   assert.deepEqual(Object.entries(BrowserMcp.TOOLS).filter(([, t]) => t.ownCanvas).map(([n]) => n), ["katashiro.screenshot"]);
@@ -3446,6 +3448,42 @@ test("katashiro.canvas_highlight: one text anchor, bounded label and duration, m
   assert.match((await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "x" })).content[0].text, /not available/);
 });
 
+test("katashiro.canvas_inject_css: inject_css's sheet rules, any canvas kind, clear needs no css", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d, { conversationId: "c_css" });
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "# A\n\ntext" });
+  const calls = [];
+  d.canvas.injectCss = async (id, req) => { calls.push([id, req]); return { ok: true, sheets: req.clear ? 0 : calls.length, tabId: 77 }; };
+  const used = [];
+  d.onTabUsed = (id) => used.push(id);
+  const ok = await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "h1 { color: red !important }" });
+  assert.equal(ok.isError, undefined, JSON.stringify(ok));
+  assert.match(ok.content[0].text, /^injected 28 chars of CSS into "Doc" \(1 sheet now; /);
+  assert.deepEqual(calls[0], ["cv_000000000001", { css: "h1 { color: red !important }" }]);
+  assert.deepEqual(used, [77]);                                  // the tab it put in front is the working tab
+  for (const [args, re] of [
+    [{ id: "cv_000000000001" }, /needs `css`/],
+    [{ id: "cv_000000000001", css: "  " }, /needs `css`/],
+    [{ id: "cv_000000000001", css: "x".repeat(20001) }, /20001 chars; capped at 20000/],
+    [{ id: "cv_000000000001", css: "td { background: url(https://x/?a) }" }, /"url\(" — refused/],
+    [{ id: "cv_000000000001", css: "@import 'x';" }, /"@import"/],
+    [{ id: "cv_000000000001", css: "p { content: '\\75' }" }, /refused/],
+    [{ id: "cv_000000000009", css: "p {}" }, /cv_000000000009/],
+  ]) {
+    const r = await callTool(d, "katashiro.canvas_inject_css", args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.content[0].text, re);
+  }
+  assert.equal(calls.length, 1);                                 // none of those reached the canvas tab
+  const cleared = await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", clear: true });
+  assert.equal(cleared.content[0].text, 'removed the injected stylesheets from "Doc"');
+  assert.deepEqual(calls[1], ["cv_000000000001", { clear: true }]);
+  d.canvas.injectCss = async () => ({ ok: false, error: "the user is editing this canvas; try again when they are done" });
+  assert.match((await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "p {}" })).content[0].text, /^canvas_inject_css: the user is editing/);
+  delete d.canvas.injectCss;
+  assert.match((await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "p {}" })).content[0].text, /not available/);
+});
+
 // --- canvas_patch (§3.5) -------------------------------------------------------------------------
 
 test("katashiro.canvas_patch applies find/replace edits as an agent write: card, version, normalization wait", async () => {
@@ -3683,7 +3721,7 @@ test("backgroundRefusal (Q8): page tools allowed except screenshot; only the lis
   assert.equal(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { title: "x" }), null);
   // Refused: screenshot (Chrome captures only the tab in front), tab moves, canvas tools that show.
   for (const n of ["katashiro.screenshot", "katashiro.reopen_tab", "katashiro.tab_update", "katashiro.group_tabs", "katashiro.split_tabs",
-    "katashiro.canvas_goto", "katashiro.canvas_highlight", "katashiro.canvas_view", "katashiro.canvas_gallery"]) {
+    "katashiro.canvas_goto", "katashiro.canvas_highlight", "katashiro.canvas_inject_css", "katashiro.canvas_view", "katashiro.canvas_gallery"]) {
     assert.match(BrowserMcp.backgroundRefusal(n, {}), /in the background in Katashiro/, n);
   }
   assert.match(BrowserMcp.backgroundRefusal("katashiro.canvas_open", { beside: "current" }), /in the background/);

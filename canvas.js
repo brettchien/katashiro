@@ -1111,6 +1111,7 @@
     switch (m.type) {
       case "ready":
         frameReady = true;
+        if (agentSheets.length) toFrame({ type: "css", sheets: agentSheets });
         sendRender();
         updateButtons();
         break;
@@ -1239,6 +1240,7 @@
       return false;
     }
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
+    if (msg && msg.type === "katashiro-canvas-css" && msg.id === canvasId) { onCssRequest(msg, sendResponse); return false; }
     if (msg && msg.type === "katashiro-canvas-compare-start" && msg.id === canvasId) {
       // Only the tab the panel picked: two tabs of one canvas must not both open a compare.
       if (myTabId == null || msg.tabId !== myTabId) return false;
@@ -1304,6 +1306,28 @@
       },
     });
   }
+  // canvas_inject_css, from the side panel like highlight (browser-mcp checked the sheet). This tab
+  // keeps the sheets and the frame gets all of them on every change and on every (re)mount; a
+  // reload of the tab drops them. Refused while the user edits; clear always works.
+  const CSS_SHEETS_MAX = 10;
+  const CSS_SHEET_MAX = 20000;
+  let agentSheets = [];
+  function onCssRequest(msg, sendResponse) {
+    if (msg.clear === true) {
+      agentSheets = [];
+      toFrame({ type: "css", sheets: [] });
+      sendResponse({ ok: true, sheets: 0 });
+      return;
+    }
+    if (typeof msg.css !== "string" || !msg.css.trim() || msg.css.length > CSS_SHEET_MAX) { sendResponse({ ok: false, error: "css must be 1–20000 chars" }); return; }
+    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return; }
+    if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return; }
+    if (agentSheets.length >= CSS_SHEETS_MAX) { sendResponse({ ok: false, error: `${CSS_SHEETS_MAX} stylesheets are already applied; clear them first` }); return; }
+    agentSheets = [...agentSheets, msg.css];
+    toFrame({ type: "css", sheets: agentSheets });
+    sendResponse({ ok: true, sheets: agentSheets.length });
+  }
+
   function onHighlightRequest(msg, sendResponse) {
     const hasFind = typeof msg.find === "string", hasHeading = typeof msg.heading === "string";
     if (hasFind === hasHeading) { sendResponse({ ok: false, error: "give exactly one of find / heading" }); return false; }

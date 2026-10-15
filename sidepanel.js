@@ -389,6 +389,7 @@ class Conn {
         confirmEvict: (info) => confirmEvictCard(info, this, st),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
         highlight: (id, req) => highlightCanvasBlock(id, req),
+        injectCss: (id, req) => injectCanvasCss(id, req),
         // canvas_view / canvas_gallery (§3.11): the agent's equivalents of the user's display switches.
         setShowChanges: (on) => setCanvasShowChanges(on),
         compare: (id, on) => (on ? startCanvasCompare(id) : endCanvasCompare(id)),
@@ -3741,6 +3742,25 @@ async function highlightCanvasBlock(id, req) {
       await chrome.windows.update(tab.windowId, { focused: true });
       front = tab;
     } catch (_) { /* highlighted either way */ }
+  }
+  return front && r ? { ...r, tabId: front.id } : r;
+}
+
+// canvas_inject_css: every open tab of the canvas takes the sheet (each listens; the first answer
+// is the result), like canvas_highlight an open tab comes to the front only once it applied it, and
+// a canvas not open is opened in front. `clear` never opens or moves a tab: no tab, no sheets.
+async function injectCanvasCss(id, req) {
+  const existing = await findCanvasTab(id);
+  if (req.clear && !existing) return { ok: true, sheets: 0 };
+  let front = existing ? null : await openCanvasTab(id, { active: true });
+  const r = await askCanvasTab({ type: "katashiro-canvas-css", id, ...req });
+  if (existing && !req.clear && r && r.ok) {
+    try {
+      const tab = (await findCanvasTab(id)) || existing;
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      front = tab;
+    } catch (_) { /* applied either way */ }
   }
   return front && r ? { ...r, tabId: front.id } : r;
 }

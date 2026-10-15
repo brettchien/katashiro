@@ -7,6 +7,7 @@
 //  in:  editCmd{cmd: "undo" | "redo"}       (the editor's own history: the edit-mode ↶ / ↷, §3.5)
 //  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
+//  in:  css{sheets}                          (canvas_inject_css: the agent's sheets, all of them; [] clears)
 //  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, seq, truncated?, rect?, where?}, selectionRect{seq, rect?} (Ask agent, §3.7; rect places the host's 💬,
@@ -86,6 +87,7 @@
     }
     const state = { crepe, version, baseline: editorText(crepe), dirty: false, undo: null };
     editing = state;
+    syncAgentCss();
     crepe.on((listener) => listener.markdownUpdated((_ctx, md) => {
       if (editing !== state) return;
       const dirty = CanvasCore.cleanEditorMarkdown(md) !== state.baseline;
@@ -197,7 +199,22 @@
     editorRoot.replaceChildren();
     editorRoot.hidden = true;
     doc.hidden = false;
+    syncAgentCss();
   }
+
+  // canvas_inject_css: the agent's sheets in one <style> of our own (style-src 'unsafe-inline';
+  // nothing in them can fetch: connect-src / img-src / font-src stay closed). Off while the user
+  // edits, so the editor always looks like itself.
+  let agentCss = null;
+  function setAgentCss(sheets) {
+    const text = Array.isArray(sheets) ? sheets.filter((s) => typeof s === "string").join("\n") : "";
+    if (!text) { if (agentCss) agentCss.remove(); agentCss = null; return; }
+    if (!agentCss) { agentCss = document.createElement("style"); agentCss.id = "ks-agent-css"; }
+    agentCss.textContent = text;
+    document.head.appendChild(agentCss);          // last, so it wins ties with the canvas's own CSS
+    syncAgentCss();
+  }
+  function syncAgentCss() { if (agentCss) agentCss.disabled = !!editing; }
   // Crepe's popups that close on Esc themselves (vendored crepe): the slash menu and the link editor.
   // The selection toolbar and the link preview have no Esc handler, so they must not hold Esc back.
   const EDITOR_POPUPS = [".milkdown-slash-menu", ".milkdown-link-edit"].map((c) => `${c}[data-show="true"]`).join(", ");
@@ -973,6 +990,7 @@
       return;
     }
     if (m.type === "leaveEdit") { stopEdit(); return; }
+    if (m.type === "css") { setAgentCss(m.sheets); return; }
     if (m.type === "highlight") { if (Number.isInteger(m.reqId)) highlight(m); return; }
     if (m.type === "glow") {
       // Compare started, or 顯示變更 (§3.10): glow the blocks that differ from `against`.
