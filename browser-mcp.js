@@ -231,6 +231,13 @@
     "this page has no grantable web origin (it's a chrome://, about:, Web Store, PDF, or file:// " +
     "page), so katashiro can neither read nor act on it. Ask the user to switch to a normal " +
     "http(s) web page.";
+  // The same refusal on Katashiro's own canvas / gallery tab, which is none of those: it names the
+  // tools that do work there, so the agent does not ask the user to switch away from its canvas.
+  const OWN_CANVAS_PAGE_TOOL =
+    "this is Katashiro's own canvas (or canvas gallery) tab — an extension page, so page tools " +
+    "(read_dom, snapshot, get_text, click, type, inject_css, …) cannot run on it. Use the canvas " +
+    "tools instead: canvas_read for its content, screenshot to see how it looks, canvas_highlight " +
+    "to point at a block, canvas_inject_css to style it, canvas_goto for a slide.";
 
   // --- Tab management (tabs / tab_groups / group_tabs / ungroup_tabs / update_tab_group /
   // tab_update / reopen_tab) -------------------------------------------------------------------
@@ -353,6 +360,9 @@
   // fetching function past a plain-text check.
   const CSS_MAX = 20000;
   const CSS_FORBIDDEN = /url\s*\(|src\s*\(|image\s*\(|image-set\s*\(|cross-fade\s*\(|element\s*\(|@import|@font-face|@namespace|\\/i;
+  // canvas_inject_css: the same sheet rules, applied inside the canvas's sandboxed frame; at most
+  // this many sheets stay on one canvas tab (canvas.js CSS_SHEETS_MAX) until a clear.
+  const CANVAS_CSS_SHEETS_MAX = 10;
 
   // chat_history: the panel keeps at most 200 messages (HISTORY_CAP in sidepanel.js), so that is
   // also the most one call can return; the per-message cap keeps a pasted log from flooding a turn.
@@ -3223,6 +3233,61 @@
       }
     },
 
+    // canvas_inject_css: inject_css for a canvas tab, which page tools cannot script (an extension
+    // page). Panel → canvas tab by runtime messaging, like canvas_highlight; the tab keeps the sheets
+    // and hands them to its sandboxed frame (style-src 'unsafe-inline', connect-src 'none'), again
+    // whenever the frame is remounted. Never stored: gone when the tab reloads or closes.
+    "katashiro.canvas_inject_css": {
+      description:
+        "Apply a CSS stylesheet to a CANVAS as it is shown in its tab — inject_css for canvases, which " +
+        "page tools cannot touch: e.g. glow or colour several parts at once while you walk the user " +
+        "through it, enlarge text, tint table columns. Emphasise; never hide or fake content, and clear " +
+        "it when done. Visual only: it changes no canvas content, applies to every open tab of that " +
+        "canvas (a canvas not open is opened in front), and is gone when the tab reloads. Several calls " +
+        "add up (at most " + CANVAS_CSS_SHEETS_MAX + " sheets); `clear: true` removes them all. Refused " +
+        "while the user is editing the canvas (clear always works). Same rules as inject_css: ≤ " + CSS_MAX +
+        " chars; sheets that fetch anything (`url()`, `@import`, `image-set()`, `@font-face`, …) and CSS " +
+        "escapes (`\\`) are refused. Rendered markdown is plain HTML (h1–h6, p, li, table/tr/td, pre, " +
+        "blockquote); slides are reveal.js sections; diagrams are figure.ks-mermaid > svg.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id" },
+          css: { type: "string", description: `the stylesheet text (max ${CSS_MAX} chars)` },
+          clear: { type: "boolean", description: "remove every stylesheet injected into this canvas's tabs" }
+        },
+        required: ["id"]
+      },
+      redact: redactDefault,
+      /** @param {{ id: string, css?: string, clear?: boolean }} args */
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
+        let req;
+        if (args.clear) req = { clear: true };
+        else {
+          const css = args.css == null ? "" : String(args.css);
+          if (!css.trim()) return errText("canvas_inject_css needs `css` (or `clear: true`)");
+          if (css.length > CSS_MAX) return errText(`canvas_inject_css: css is ${css.length} chars; capped at ${CSS_MAX}`);
+          const bad = CSS_FORBIDDEN.exec(css);
+          if (bad) return errText(`canvas_inject_css: css contains ${JSON.stringify(bad[0])} — refused, like inject_css: nothing that fetches (url/src/image/image-set/@import/@font-face) and no CSS escapes`);
+          req = { css };
+        }
+        let meta;
+        try { meta = await c.store.read({ conversationId: c.conversationId(), id: args.id }); }
+        catch (e) { return errText(`canvas_inject_css: ${(e && e.message) || e}`); }
+        if (typeof c.injectCss !== "function") return errText("canvas_inject_css: not available in this host");
+        let r;
+        try { r = await c.injectCss(meta.id, req); } catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+        noteCanvasTabUsed(ctx, r);
+        if (!r || !r.ok) return errText(`canvas_inject_css: ${(r && r.error) || "failed"}`);
+        const n = Number.isInteger(r.sheets) ? r.sheets : 0;
+        if (req.clear) return okText(`removed the injected stylesheets from "${meta.title}"`);
+        return okText(`injected ${req.css.length} chars of CSS into "${meta.title}" (${n} sheet${n === 1 ? "" : "s"} now; canvas_inject_css with clear: true to undo; screenshot to see it)`);
+      }
+    },
+
     // canvas_view / canvas_gallery (§3.11, Brett 2026-10-12): every display switch the user can turn
     // on in a canvas tab gets an agent equivalent, with the button's preconditions and path. Never
     // arbitrary clicking: canvas tabs are extension pages the page tools cannot touch, on purpose.
@@ -3641,7 +3706,10 @@
     // (canvas.html, ADR canvas) or canvas gallery (canvas-gallery.html, §3.11), so the agent can
     // check what it rendered or opened. Never another extension's
     // page, never any other page of ours; DOM tools stay refused there (no script can be injected).
-    if (!pageOrigin(tab.url) && !(tool.ownCanvas && isOwnCanvasTab(chrome, tab))) return errText(ORIGIN_UNSUPPORTED);
+    if (!pageOrigin(tab.url)) {
+      const ownCanvas = isOwnCanvasTab(chrome, tab);
+      if (!(tool.ownCanvas && ownCanvas)) return errText(ownCanvas ? OWN_CANVAS_PAGE_TOOL : ORIGIN_UNSUPPORTED);
+    }
     // Thread the Jev evaluator + token into ctx so semantic tools (e.g. click_text) can ground.
     const ctx = { chrome, tab, jev: resolveJev(deps), jevToken: deps.jevToken, screenshot: normalizeScreenshotConfig(deps.screenshot), reencodeImage: deps.reencodeImage, images: deps.images || looseImages };
     const result = await tool.call(args, ctx);
