@@ -1,6 +1,6 @@
 ---
 name: katashiro-point-at
-description: Point the user at something in the browser while you explain it — glow an element on the page they are looking at (katashiro.highlight), emphasise several parts at once with temporary CSS (katashiro.inject_css), or glow a block in a Katashiro canvas (katashiro.canvas_highlight). Use when you are chatting through Katashiro and say "this button", "this paragraph", "here", or walk the user through a page or document. Keywords — highlight, point at, show me where, glow, emphasise, 指給我看, 標出來, 哪裡, katashiro highlight.
+description: Point the user at something in the browser while you explain it — glow an element on the page they are looking at (katashiro.highlight), emphasise several parts at once with temporary CSS (katashiro.inject_css), glow a block in a Katashiro canvas (katashiro.canvas_highlight), or emphasise several parts of a canvas with temporary CSS (katashiro.canvas_inject_css). Use when you are chatting through Katashiro and say "this button", "this paragraph", "here", or walk the user through a page, document or canvas. Keywords — highlight, point at, show me where, glow, emphasise, mark up the canvas, colour these rows, 指給我看, 標出來, 畫布標記, 哪裡, katashiro highlight.
 ---
 
 # katashiro-point-at
