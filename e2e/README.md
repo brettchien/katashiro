@@ -67,6 +67,7 @@ real ones.
 | | background page tool | #144 / Q8: a group collapsed by hand is expanded by a background `get_text`, which reads the working tab without activating anything; background `screenshot` refused |
 | `working-tab-canvas.mjs` | canvas tools and the working tab | #141 / Q6: `canvas_highlight` / `canvas_goto` (answered by the real canvas tab) make it the working tab; the next send brings it forward |
 | `canvas-inject-css.mjs` | canvas_inject_css | the sheet reaches the real canvas tab's sandboxed frame, two sheets add up, they survive a re-render, `url()` is refused, `clear` removes them; `read_dom` on a canvas tab names the canvas tools |
+| `user-image-open.mjs` | a pasted image | the image reaches the prompt; its chat thumbnail (zoom-in cursor) opens it full size in a new tab, on every click |
 | `reload-tab-group.mjs` | **xfail (#139)** | after an extension reload, a conversation's next tab must join its existing group: today a second group with the same title is made |
 
 ## Adding a case

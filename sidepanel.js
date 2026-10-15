@@ -4941,6 +4941,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
       im.className = "bubble-image";
       im.src = src;                                     // our own FileReader data URL
       im.alt = "image";
+      // Full size in a new tab, like show_image (raster only: paste and drop take PNG/JPEG/GIF/WebP).
+      im.addEventListener("click", () => openImageTab(src));
       bubble.appendChild(im);
     }
   }
