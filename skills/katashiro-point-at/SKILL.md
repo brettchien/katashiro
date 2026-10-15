@@ -69,6 +69,10 @@ keep emphasis while the user scrolls.
     the user.
 - Never hide content the user needs, and never restyle a page to look like something it is not
   (fake banners, fake buttons). Emphasise; don't alter.
+- **Not for canvases.** `inject_css` never reaches a canvas tab (a `chrome-extension://` page):
+  in the conversation on screen it is refused there; in a background conversation it acts on your
+  **working tab** — some web page, not the canvas the user is looking at. For canvases use
+  `katashiro.canvas_inject_css` (§4).
 
 ## 3. A part of a Katashiro canvas → `katashiro.canvas_highlight`
 
@@ -80,17 +84,46 @@ most 500 characters, and must match exactly one block; `heading` matches a headi
 text exactly. No match or several matches is an error. The effects are fixed (outline and
 background only), and you only give a text anchor. `durationMs` is
 capped at 10 s and calls are rate-limited; it is refused on `html` canvases; while the user is
-editing, it does not scroll but asks the user ("Agent wants to show you a section"). Available
-once canvas phase 1 ships; check with `search_capabilities`.
-
-To emphasise several parts of a canvas at once, use `katashiro.canvas_inject_css` with `{id, css}`
-— `inject_css` for canvases (page tools, `inject_css` included, cannot run on a canvas tab). Same
-rules: nothing that fetches, no CSS escapes, emphasise don't alter, and `{id, clear: true}` when
-done. Rendered markdown is plain HTML (`h1`–`h6`, `p`, `li`, `table`/`tr`/`td`, `pre`); slides are
-reveal.js `section`s; diagrams are `figure.ks-mermaid > svg`. It is refused while the user edits.
+editing, it does not scroll but asks the user ("Agent wants to show you a section").
+For several blocks at once, or an emphasis that stays while you talk, use §4.
 
 After you write a new canvas version the changed blocks glow on their own, so you don't need to
 highlight your own edits. Use `canvas_highlight` to point at something specific while you explain.
+
+## 4. Several parts of a canvas, or a lasting emphasis → `katashiro.canvas_inject_css`
+
+`inject_css` for canvases. `{id, css}` applies a stylesheet to every open tab of that canvas
+(a canvas not open is opened in front). Visual only: the canvas content never changes, and the
+sheets are gone when the tab reloads. Up to 10 sheets add up; `{id, clear: true}` removes them
+all. Refused while the user is editing (`clear` always works). Same refusals as `inject_css`
+(nothing that fetches, no CSS escapes). Not available from a background conversation.
+
+Rendered markdown is flat HTML — `h1`–`h6`, `p`, `ul`/`ol`/`li`, `pre`, `table`/`tr`/`td`,
+`blockquote` as siblings under one parent — so a "section" is a heading plus the siblings after it,
+up to the next heading of that level:
+
+```css
+/* frame the 2nd h2 section (heading + its blocks) in blue */
+h2:nth-of-type(2),
+h2:nth-of-type(2) ~ *:not(h2:nth-of-type(3)):not(h2:nth-of-type(3) ~ *) {
+  background: rgba(59, 130, 246, 0.12) !important;
+  border-left: 6px solid #3b82f6 !important;
+  padding-left: 12px !important;
+}
+/* tint the 3rd column of every table */
+td:nth-child(3), th:nth-child(3) { background: rgba(245, 158, 11, 0.18) !important; }
+```
+
+- You cannot `read_dom` a canvas. Write selectors from the markdown you wrote (heading order,
+  table columns; `katashiro.canvas_read` if unsure), then check the result with
+  `katashiro.screenshot` of the canvas tab.
+- Siblings render as separate tinted blocks with small gaps, not one continuous box. That is fine.
+- Slides: target reveal.js `section`s (`.slides > section:nth-child(2)`); diagrams:
+  `figure.ks-mermaid > svg`.
+- Colors, outlines, backgrounds and opacity only. **No `::before` / `::after` `content`**: text
+  that is not in the canvas is faking content, even as a label — say it in your reply, or use
+  `canvas_highlight`'s `label`.
+- Tell the user it is temporary; `clear` when you are done or they move on.
 
 ## Etiquette
 
