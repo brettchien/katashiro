@@ -861,6 +861,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   border-radius: 8px;
   margin-top: 4px;
   display: block;
+  cursor: zoom-in;                                     /* click → full size in a new tab */
 }
 
 /* Image-only message (pasted image, no text): drop the bubble's padding and fill so the image is

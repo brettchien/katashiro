@@ -13,7 +13,7 @@
 // code run. A test drives it per session:
 //
 //   gw.hold = true                      prompts stay open until the test ends them
-//   await gw.waitPrompt(m => …)         the next (or a matching) session/prompt → { id, sessionId, text, userText }
+//   await gw.waitPrompt(m => …)         the next (or a matching) session/prompt → { id, sessionId, text, userText, images }
 //   gw.chunk(sid, "text")               stream a chunk into that session's turn
 //   gw.endTurn(sid, "end_turn")         answer that session's open prompt(s)
 //   gw.poolBusy = true                  answer prompts with openab's exact "Service Busy" chat line
@@ -84,7 +84,7 @@ export class FakeGateway {
     const p = m.params || {};
     switch (m.method) {
       case "initialize":
-        return this.reply(ws, m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: false } } });
+        return this.reply(ws, m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
       case "session/new": {
         const sid = `sess_${this.nextSession++}`;
         this.sessions.set(sid, { ws, acpId: p.mcpServers && p.mcpServers[0] && p.mcpServers[0].id, connectionId: null });
@@ -108,7 +108,8 @@ export class FakeGateway {
         const text = (p.prompt || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
         // userText: what the user typed, without Katashiro's "[<time> user]" header line (and host lines).
         const userText = text.split("\n").filter((l) => !/^\[.*\]$/.test(l.trim())).join("\n").trim();
-        const t = { id: m.id, sessionId: p.sessionId, text, userText, ws, at: Date.now(), done: false };
+        const images = (p.prompt || []).filter((b) => b.type === "image").length;
+        const t = { id: m.id, sessionId: p.sessionId, text, userText, images, ws, at: Date.now(), done: false };
         this.prompts.push(t);
         if (this.poolBusy) {
           this.chunk(p.sessionId, POOL_BUSY_TEXT);
