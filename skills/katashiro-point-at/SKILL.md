@@ -119,7 +119,7 @@ td:nth-child(3), th:nth-child(3) { background: rgba(245, 158, 11, 0.18) !importa
   `katashiro.screenshot` of the canvas tab.
 - Siblings render as separate tinted blocks with small gaps, not one continuous box. That is fine.
 - Slides: target reveal.js `section`s (`.slides > section:nth-child(2)`); diagrams:
-  `figure.ks-mermaid > svg`.
+  `figure.ks-mermaid > .ks-mermaid-svg > svg`.
 - Colors, outlines, backgrounds and opacity only. **No `::before` / `::after` `content`**: text
   that is not in the canvas is faking content, even as a label — say it in your reply, or use
   `canvas_highlight`'s `label`.
