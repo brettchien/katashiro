@@ -298,4 +298,49 @@ export default [
       t.check(!(await p3.evaluate(() => !!document.querySelector("#picker-dock .agent-picker"))), "…and shows no picker");
     },
   },
+  {
+    name: "another window's Settings edits are followed live: an added agent, a URL edit (rebinds), a removal",
+    async run(ctx, t) {
+      const { gw: gwX, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      await h.sessionOf(ctx, "Alpha");
+      const url2 = h.controlUrl(ctx);
+      await ctx.control.evaluate((u) => chrome.windows.create({ url: u, type: "normal" }), url2);
+      const ctl2 = await (await ctx.browser.waitForTarget((x) => x.url() === url2)).asPage();
+      await h.until(ctl2, () => document.readyState === "complete", "window 2's control page");
+      const p2 = await h.openSidePanel(ctx, ctl2);
+      await h.until(p2, () => !!document.querySelector(".conv-tab.current"), "window 2 has a conversation (one agent: opened at once)");
+      await h.until(p2, () => /已連線至 Fake/.test(document.body.innerText), "window 2 connected to Fake");
+      const gwY = await new FakeGateway({ prefix: "y_" }).start();
+      const gwZ = await new FakeGateway({ prefix: "z_" }).start();
+      try {
+        // Added in window 1 → window 2's roster has it, no reload.
+        await addAgent(panel, "Other", gwY.url);
+        await h.until(p2, () => Array.from(document.querySelectorAll("#roster .roster-name")).some((e) => e.textContent === "Other"), "window 2 shows the added agent");
+        t.check((await chips(p2)).join() === "Fake*,Other~", "window 2: a chip per agent, the new one 未使用", await chips(p2));
+        // URL edited in window 1 → window 2's conversation follows it to the new URL.
+        await openSettings(panel);
+        await panel.evaluate((u) => { const i = document.querySelector(".agent-url-input"); i.value = u; i.dispatchEvent(new Event("change")); }, gwZ.url);
+        await closeSettings(panel);
+        await h.until(null, () => gwZ.methods("session/new").length >= 2, "both windows' conversations open a session on the new URL", undefined, 15000);
+        await h.until(null, () => socketsOf(gwX) === 0, "nobody is left on the old URL", undefined, 15000);
+        t.ok("window 2 followed the URL edit (session/new on the new URL, old URL disconnected)");
+        const id2 = await p2.evaluate(() => document.querySelector(".conv-tab.current")?.dataset?.convId || null);
+        const idx = await indexOf(ctx);
+        t.check(Object.values(idx).every((e) => e.agentUrl !== gwX.url), "no conversation is bound to the old URL any more", Object.values(idx).map((e) => e.agentUrl));
+        await h.send(p2, "from window two");
+        await h.until(null, () => gwZ.prompts.some((p) => /from window two/.test(p.userText)), "window 2's message reaches the new URL");
+        t.check(!gwX.prompts.some((p) => /from window two/.test(p.userText)), "…not the old one", id2);
+        // Removed in window 1 → gone from window 2's roster.
+        await openSettings(panel);
+        await panel.evaluate((u) => Array.from(document.querySelectorAll(".agent-row")).find((r) => r.querySelector(".agent-url-input").value === u).querySelector(".agent-delete").click(), gwY.url);
+        await closeSettings(panel);
+        await h.until(p2, () => !Array.from(document.querySelectorAll("#roster .roster-name")).some((e) => e.textContent === "Other"), "window 2 drops the removed agent");
+        t.ok("window 2 followed the removal");
+      } finally {
+        await gwY.stop();
+        await gwZ.stop();
+      }
+    },
+  },
 ];

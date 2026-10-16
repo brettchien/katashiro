@@ -298,5 +298,12 @@ items I1–I10 (canvas cv_ad6f6f9310df). Decisions (Brett 22:24–22:38 TPE) and
   resend, not a duplicate) and the chat says the reply was cut, under the part that had arrived.
   Not fixed here: the gateway delivering a finished reply to a connection that is gone (an openab
   change — buffer per session and replay on `session/resume` — if this recurs).
-- Still to come: I9 (other windows' / devices' agent edits followed
-  live, with I10).
+- **I9 — another window's or device's agents edits followed live** (Brett 22:37), **with I10**: past
+  the defaults stage, a synced change to `agents` (storage.onChanged) is applied without a reload —
+  only the agents list, the rest of the config stays. The panel ignores lists it wrote itself
+  (`recentAgentWrites`, so an echo of an older write in a burst is never applied). URL edits
+  (same position + same name, §2.6) rebind this panel's conversations in memory as well, so it never
+  writes the old URL back (I10, the #157 review's F4). A Conn whose URL, token and browser access
+  are unchanged stays (a rename applies in place, its turns are untouched); a removed or retargeted
+  one is disconnected (cards close as `disconnected`), a new one is added unconnected, then
+  `syncConnections`. Settings re-renders unless the user is typing in the agent list.
