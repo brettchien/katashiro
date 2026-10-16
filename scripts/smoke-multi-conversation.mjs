@@ -631,6 +631,9 @@ try {
   const rows = await g.evaluate(() => Array.from(document.querySelectorAll("#conv-list .conv-row")).map((r) => r.innerText));
   check(rows.some((r) => r.includes("Second topic about tabs")), "the archived conversation is listed by title", rows);
   check(!rows.some((r) => r.includes("My name")), "a conversation open in a live window is not listed", rows);
+  // agent-per-conversation §7 I2: each row names its conversation's agent (the sync config's Orca).
+  const agentCells = await g.evaluate(() => Array.from(document.querySelectorAll("#conv-list .conv-row .conv-agent")).map((c) => c.textContent));
+  check(agentCells.length === rows.length && agentCells.every((x) => x === "Orca"), "each conversation row names its agent (Orca)", agentCells);
   await g.evaluate(() => { const s = document.getElementById("gallery-search"); s.value = "second"; s.dispatchEvent(new Event("input")); });
   await sleep(400);
   const filtered = await g.evaluate(() => Array.from(document.querySelectorAll("#conv-list .conv-row")).map((r) => r.innerText));

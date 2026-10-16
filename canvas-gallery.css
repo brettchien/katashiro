@@ -98,7 +98,7 @@
 .conv-list { list-style: none; margin: 0 0 8px; padding: 0; }
 .conv-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px 84px 120px auto auto;
+  grid-template-columns: minmax(0, 1fr) 96px 72px 84px 120px auto auto;
   gap: 10px;
   align-items: center;
   padding: 6px 10px;
@@ -108,3 +108,6 @@
 .conv-row:hover { background: rgba(255, 255, 255, 0.04); }
 .conv-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conv-reopen, .conv-delete { white-space: nowrap; }
+/* The conversation's agent (agent-per-conversation §7 I2). */
+.conv-agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent, #7aa2f7); }
+.conv-agent.missing { color: var(--muted); font-style: italic; }

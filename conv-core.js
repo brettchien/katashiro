@@ -358,7 +358,10 @@
    * Other orphan records older than keepMs are pruned and their ids archived.
    * → { adopt: windowId | null, take: [ids], current, archive: [ids], prune: [windowIds] }
    */
-  function planAdoption({ ownWindowId, windows, liveIds, index, now, keepMs = ORPHAN_KEEP_MS, maxOpen = MAX_OPEN }) {
+  // skip (agent-per-conversation §7 I3): ids of empty conversations (no messages, no canvases). They
+  // are never adopted and take no slot: a record holding only those is not chosen, and the adopted
+  // record's go to `archive` (archiving deletes an empty conversation).
+  function planAdoption({ ownWindowId, windows, liveIds, index, now, keepMs = ORPHAN_KEEP_MS, maxOpen = MAX_OPEN, skip = new Set() }) {
     const own = String(ownWindowId);
     const idx = index || {};
     const lastAt = (id) => Number((idx[id] && idx[id].lastMessageAt) || 0);
@@ -368,7 +371,7 @@
     const free0 = Math.max(0, maxOpen - liveOpenIds(windows, liveIds, own).size);
     if (!windows[own] && free0 > 0) {
       for (const w of orphans) {
-        if (!openOf(windows[w]).length) continue;
+        if (!openOf(windows[w]).some((id) => !skip.has(id))) continue;
         if (adopt === null || usedAt(w) > usedAt(adopt)) adopt = w;
       }
     }
@@ -378,12 +381,13 @@
     if (adopt !== null) {
       const rec = windows[adopt];
       const ids = openOf(rec);
-      const cur = ids.includes(rec.current) ? rec.current : null;
+      const cur = ids.includes(rec.current) && !skip.has(rec.current) ? rec.current : null;
       const ordered = [...(cur ? [cur] : []), ...ids.filter((x) => x !== cur).sort((a, b) => lastAt(b) - lastAt(a))];
       const busy = liveOpenIds(windows, liveIds, own);
       let free = Math.max(0, maxOpen - busy.size);
       for (const id of ordered) {
         if (busy.has(id)) continue;                      // already open in a live window: theirs
+        if (skip.has(id)) { archive.push(id); continue; }   // empty: nothing to come back to
         if (free > 0) { take.push(id); free--; } else archive.push(id);
       }
       // Tab order as it was in the adopted record.
@@ -524,16 +528,22 @@
    * newest lastMessageAt first, filtered by title (the gallery's search box: all terms must match).
    * → [{ id, title, time, at, canvases, archived }]
    */
-  function galleryRows({ index, openLive, canvasCounts, query, now }) {
+  // agentNames (agent-per-conversation §7 I2): { [url]: name } of the configured agents. Each row
+  // names its conversation's agent (null: not in the list any more — removed), and the search
+  // matches that name as well as the title.
+  function galleryRows({ index, openLive, canvasCounts, query, now, agentNames = {} }) {
     const terms = normalize(query).split(/\s+/).filter(Boolean);
     const rows = [];
     for (const [id, e] of Object.entries(index || {})) {
       if (!isConvId(id) || !e || openLive.has(id)) continue;
       if (e.deletingAt != null) continue;              // §7.1: being deleted (finished on the next start)
       const title = displayTitle(e, id);
-      if (terms.length && !terms.every((t) => normalize(title).includes(t))) continue;
+      const agentUrl = typeof e.agentUrl === "string" ? e.agentUrl : null;
+      const agent = agentUrl && Object.prototype.hasOwnProperty.call(agentNames || {}, agentUrl) ? String(agentNames[agentUrl] || "Agent") : null;
+      const hay = normalize(`${title} ${agent || ""}`);
+      if (terms.length && !terms.every((t) => hay.includes(t))) continue;
       const at = Number(e.lastMessageAt || e.createdAt || 0);
-      rows.push({ id, title, at, time: tabTime(at, now), canvases: Number((canvasCounts && canvasCounts[id]) || 0), archived: e.archivedAt != null });
+      rows.push({ id, title, agentUrl, agent, at, time: tabTime(at, now), canvases: Number((canvasCounts && canvasCounts[id]) || 0), archived: e.archivedAt != null });
     }
     return rows.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
   }
