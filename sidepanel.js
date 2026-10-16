@@ -806,7 +806,8 @@ class Conn {
     // U2 host line (§3.5): first, at flush time only — never stored, never in the retry copy.
     const hinted = st.hintPending;
     const resent = st.resendPending;                     // §7 I8: innermost, right above the message
-    const sent = hinted ? ConvCore.withReconnectHint(resent ? ConvCore.withResendHint(text) : text) : (resent ? ConvCore.withResendHint(text) : text);
+    let sent = resent ? ConvCore.withResendHint(text) : text;
+    if (hinted) sent = ConvCore.withReconnectHint(sent);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
     this.acpRequest("session/prompt", {
@@ -874,6 +875,7 @@ class Conn {
           // auto-re-send into a live session: cancel the stale turn and let the USER re-issue via the
           // retry button. No reconnect either — the socket + tunnel are fine.
           if (hinted) st.hintPending = false;            // the prompt was received
+          if (resent) st.resendPending = false;
           if (st.acpSessionId) this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
           this.finalizeStream(undefined, st);
           const why = /\(max\)/.test(String(err))
