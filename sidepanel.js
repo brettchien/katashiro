@@ -3535,6 +3535,10 @@ function postUserText(text, images, replyTo, files) {
   // flushes once it is back). One not wanted must never pile up prompts in its queue (review: Orca).
   const c = connOfConv(conversationId);
   if (!c || !c.enabled) return [];
+  // §7 I8 (review #160 nit 1): a resend flag left by a failed resend (error, not retried) is the
+  // user's past, not this new message: only a requeued prompt still waiting keeps it.
+  const st = c.stateFor(conversationId);
+  if (st && st.resendPending && !st.turnActive && !st.promptQueue.length) st.resendPending = false;
   c.enqueue(framed, images);
   return [c];
 }
