@@ -114,18 +114,19 @@
   // --- 對話 (multi-conversation §3.4) ----------------------------------------------------------------
   async function readConversations() {
     try {
-      const got = await CanvasStore.getMatching(chrome.storage.local, (k) => k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX));
+      const got = await CanvasStore.getMatching(chrome.storage.local, (k) => k === ConvCore.INDEX_KEY || k === ConvCore.AGENTS_SEEN_KEY || k.startsWith(ConvCore.WINDOW_PREFIX));
       const windows = {};
       for (const [k, v] of Object.entries(got)) if (k.startsWith(ConvCore.WINDOW_PREFIX)) windows[k.slice(ConvCore.WINDOW_PREFIX.length)] = v;
       let live = new Set();
       try { live = new Set((await chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES })).map((w) => String(w.id))); } catch (_) { /* none known */ }
       convIndex = got[ConvCore.INDEX_KEY] || {};
       openLive = ConvCore.liveOpenIds(windows, live);
+      // The agents this device's panel last bound against (ConvCore.AGENTS_SEEN_KEY, storage.local:
+      // written by every reconcile), not storage.sync — the panel may run on a local copy (sync
+      // empty, or a write over quota), and then sync names nothing (review #159).
       agentNames = {};
-      try {
-        const { agents } = await chrome.storage.sync.get("agents");
-        for (const a of Array.isArray(agents) ? agents : []) if (a && typeof a.url === "string" && !(a.url in agentNames)) agentNames[a.url] = a.name || "Agent";
-      } catch (_) { /* names unknown: every row says agent 已移除 only if it has a URL we cannot name */ }
+      const seen = got[ConvCore.AGENTS_SEEN_KEY];
+      for (const a of Array.isArray(seen) ? seen : []) if (a && typeof a.url === "string" && !(a.url in agentNames)) agentNames[a.url] = a.name || "Agent";
     } catch (_) {
       convIndex = {};
       openLive = new Set();
@@ -380,8 +381,8 @@
   // Metas change on every write, delete and mirror bookkeeping; one re-read per burst.
   let reloadTimer = 0;
   chrome.storage.onChanged.addListener((changes, area) => {
-    const agentsChanged = area === "sync" && "agents" in changes;   // §7 I2: the rows name the agents
-    if (!agentsChanged && (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX)))) return;
+    // §7 I2: the rows name the agents (ConvCore.AGENTS_SEEN_KEY).
+    if (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k === ConvCore.AGENTS_SEEN_KEY || k.startsWith(ConvCore.WINDOW_PREFIX))) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(reload, 150);
   });

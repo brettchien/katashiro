@@ -168,6 +168,7 @@ class SessionState {
     this.readyGen = -1;                                  // the socket generation it was resumed / created on
     this.opening = null;                                 // the in-flight session/resume | session/new
     this.hintPending = false;                            // U2 (§3.5): the next accepted prompt carries the host line
+    this.resendPending = false;                          // §7 I8: the next prompt is a resend after a mid-turn drop
     this.promptQueue = [];
     this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
@@ -804,7 +805,9 @@ class Conn {
 
     // U2 host line (§3.5): first, at flush time only — never stored, never in the retry copy.
     const hinted = st.hintPending;
-    const sent = hinted ? ConvCore.withReconnectHint(text) : text;
+    const resent = st.resendPending;                     // §7 I8: innermost, right above the message
+    let sent = resent ? ConvCore.withResendHint(text) : text;
+    if (hinted) sent = ConvCore.withReconnectHint(sent);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
     this.acpRequest("session/prompt", {
@@ -830,6 +833,7 @@ class Conn {
           return;
         }
         if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
+        if (resent) st.resendPending = false;
         st.turnActive = false;
         updateStopButton();
         renderConvTabs();
@@ -847,13 +851,21 @@ class Conn {
         const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
         if (action === "requeue") {
           // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
-          // that rejects the in-flight turn with "connection closed"). The prompt almost certainly
-          // never landed, so re-queue it — the onclose-scheduled reconnect flushes it on a fresh
-          // session (ADR R3). Safe: a dead socket means the agent never received this turn. The
-          // host line is not re-queued: the flag still stands, so the resend carries it again.
+          // that rejects the in-flight turn with "connection closed"). Re-queue it — the
+          // onclose-scheduled reconnect flushes it (ADR R3). The prompt may well have LANDED: on
+          // 2026-10-16 22:20:57 TPE the socket dropped 4 s after the gateway took it, the agent
+          // answered into the dead connection, and the resend read as a duplicate. So the resend
+          // carries RESEND_HINT (answer again in full), and the chat says what happened, under
+          // whatever part of the reply had arrived (§7 I8). The host line is not re-queued: the
+          // flag still stands, so the resend carries it again.
+          const partial = !!(st.stream && st.stream.text);
           st.promptQueue.unshift(text);
           st.pendingImages.unshift(...images);           // the images never landed either
+          st.resendPending = true;
           this.finalizeStream(undefined, st);
+          this.inState(st, () => appendSystemMessage(partial
+            ? `連線中斷：${this.name} 上面的回覆不完整，重新連線後會重送你的訊息，請它重新回答。`
+            : `連線中斷：${this.name} 的回覆沒有送到，重新連線後會重送你的訊息，請它重新回答。`));
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
           // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer
@@ -863,6 +875,7 @@ class Conn {
           // auto-re-send into a live session: cancel the stale turn and let the USER re-issue via the
           // retry button. No reconnect either — the socket + tunnel are fine.
           if (hinted) st.hintPending = false;            // the prompt was received
+          if (resent) st.resendPending = false;
           if (st.acpSessionId) this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
           this.finalizeStream(undefined, st);
           const why = /\(max\)/.test(String(err))
@@ -1882,10 +1895,11 @@ async function loadConversations() {
     // those records and are archived (= deleted) too, so none lingers as a "closed window" row.
     const leftEmpty = [];
     const emptyWrites = {};
+    const liveNow = ConvCore.liveOpenIds(windows, live);   // never one open in a live window (as plan.archive; review #159)
     if (skip.size) {
       for (const [w, rec] of Object.entries(windows)) {
         if (w === wid || live.has(String(w)) || w === plan.adopt || plan.prune.includes(w)) continue;
-        const ids = (Array.isArray(rec && rec.open) ? rec.open : []).filter((id) => skip.has(id));
+        const ids = (Array.isArray(rec && rec.open) ? rec.open : []).filter((id) => skip.has(id) && !liveNow.has(id));
         if (!ids.length) continue;
         leftEmpty.push(...ids);
         emptyWrites[ConvCore.windowKey(w)] = { ...ids.reduce((r, id) => ConvCore.withClosed(r, id), rec), savedAt: rec.savedAt || 0 };

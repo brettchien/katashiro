@@ -290,5 +290,13 @@ items I1–I10 (canvas cv_ad6f6f9310df). Decisions (Brett 22:24–22:38 TPE) and
 - **I1 — a chip per agent** (Brett 22:17 / 22:37): §2.5 revised above; the picker says 未使用 too.
 - **I2 — the gallery names each conversation's agent** (Brett 22:22): a column in 🗂️ 對話 with the
   agent's name (`agent 已移除` when its URL is no longer configured); the search matches it too.
-- Still to come: I8 (a turn cut by a dropped socket), I9 (other windows' / devices' agent edits followed
+- **I8 — a turn cut by a dropped socket** (2026-10-16 22:20:57 TPE, found in the test): the socket
+  dropped (1006) 4 s after the gateway took the prompt. The gateway logged no disconnect; the agent
+  finished its reply 14 s later and it went to the dead connection, while Katashiro's requeued
+  resend (`promptFailureAction` → requeue, which assumed "never landed") waited 8 s behind it and was
+  answered as a duplicate. Now the resend carries `ConvCore.RESEND_HINT` (answer again in full: a
+  resend, not a duplicate) and the chat says the reply was cut, under the part that had arrived.
+  Not fixed here: the gateway delivering a finished reply to a connection that is gone (an openab
+  change — buffer per session and replay on `session/resume` — if this recurs).
+- Still to come: I9 (other windows' / devices' agent edits followed
   live, with I10).
