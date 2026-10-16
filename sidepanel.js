@@ -1893,10 +1893,11 @@ async function loadConversations() {
     // those records and are archived (= deleted) too, so none lingers as a "closed window" row.
     const leftEmpty = [];
     const emptyWrites = {};
+    const liveNow = ConvCore.liveOpenIds(windows, live);   // never one open in a live window (as plan.archive; review #159)
     if (skip.size) {
       for (const [w, rec] of Object.entries(windows)) {
         if (w === wid || live.has(String(w)) || w === plan.adopt || plan.prune.includes(w)) continue;
-        const ids = (Array.isArray(rec && rec.open) ? rec.open : []).filter((id) => skip.has(id));
+        const ids = (Array.isArray(rec && rec.open) ? rec.open : []).filter((id) => skip.has(id) && !liveNow.has(id));
         if (!ids.length) continue;
         leftEmpty.push(...ids);
         emptyWrites[ConvCore.windowKey(w)] = { ...ids.reduce((r, id) => ConvCore.withClosed(r, id), rec), savedAt: rec.savedAt || 0 };
