@@ -1560,7 +1560,12 @@ if (chrome.notifications && chrome.notifications.onClicked) {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "sync" || !CONFIG_KEYS.some((k) => k in changes)) return;
   chrome.storage.sync.get(CONFIG_KEYS, (remote) => {
-    if (!RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults, userEdited, remote })) return;
+    if (!RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults, userEdited, remote })) {
+      // agent-per-conversation §7 I9: past the defaults stage only the agents list is followed live
+      // (another window's or device's Settings edit) — the rest of the config stays as it is here.
+      if ("agents" in changes) followRemoteAgents(changes.agents.newValue);
+      return;
+    }
     runningOnDefaults = false;
     applyConfig(remote);
     noteDedupedAgents();
@@ -1587,8 +1592,61 @@ chrome.storage.onChanged.addListener((changes, area) => {
   });
 });
 
+// agent-per-conversation §7 I9: the agents lists this panel wrote recently. storage.onChanged
+// brings every write back to the panel that made it too, and a burst of edits can bring an older
+// one back after a newer one: never follow those.
+const recentAgentWrites = new Map();                     // JSON of the list → when it was written
+function noteAgentsWrite() {
+  const now = Date.now();
+  for (const [k, at] of recentAgentWrites) if (now - at > 30000) recentAgentWrites.delete(k);
+  recentAgentWrites.set(JSON.stringify(agents), now);
+}
+
+// §7 I9 (Brett 2026-10-16 22:37): another window or device changed the agents list — follow it
+// without a reload. URL edits rebind this panel's conversations in memory too (I10: so it never
+// writes the old URL back); a Conn stays when its URL, token and browser access are unchanged
+// (renames apply in place; its running turns are untouched); a removed or retargeted one is
+// disconnected (its cards close), a new one is added unconnected; then the usual sync.
+let followChain = Promise.resolve();
+function followRemoteAgents(nextRaw) {
+  followChain = followChain.then(() => followRemoteAgentsNow(nextRaw)).catch((e) => console.warn("katashiro: following a synced agents list failed:", e));
+  return followChain;
+}
+async function followRemoteAgentsNow(nextRaw) {
+  if (!Array.isArray(nextRaw) || !nextRaw.length) return;
+  const json = JSON.stringify(nextRaw);
+  if (recentAgentWrites.has(json) || json === JSON.stringify(agents)) return;   // our own write
+  const next = RoomCore.dedupeAgents(nextRaw).agents;
+  if (!next.length) return;
+  const edits = ConvCore.agentUrlEdits(agents, next);
+  agents = next;
+  const keep = new Map();
+  for (const c of room) {
+    const a = next.find((x) => x.url === c.agent.url);
+    if (a && (a.token || "") === (c.agent.token || "") && (a.browserAccess !== false) === (c.agent.browserAccess !== false)) {
+      c.agent = a;                                       // same socket; a new name shows on the next render
+      keep.set(a.url, c);
+    } else c.disconnect();
+  }
+  room.length = 0;
+  for (const a of next) {
+    let c = keep.get(a.url);
+    if (!c) { c = new Conn(a); c.enabled = false; }
+    room.push(c);
+  }
+  // Rebound after the retargeted Conns are dropped (as a Settings URL edit here does): nothing they
+  // save or finalize while the rebind runs may put the old URL back.
+  for (const { from, to } of edits) await rebindConversations(from, to);
+  await reconcileAgents();                               // agents:seen = the list now followed
+  syncConnections();                                     // re-renders Settings when it is open
+  renderConvTabs();
+  updateSendEnabled();
+  if (convAgentMissing(conversationId)) noteAgentMissing(currentConv);
+}
+
 function persist() {
   userEdited = true;
+  noteAgentsWrite();
   runningOnDefaults = false;           // whatever is in memory now is intentional, not a placeholder
   // No activeAgentUrl (agent-per-conversation §2.1): not written, never deleted — sync.set merges.
   const cfg = { agents, roomConfig, actMode, jevToken, screenshotConfig, attachConfig };
@@ -3477,6 +3535,10 @@ function postUserText(text, images, replyTo, files) {
   // flushes once it is back). One not wanted must never pile up prompts in its queue (review: Orca).
   const c = connOfConv(conversationId);
   if (!c || !c.enabled) return [];
+  // §7 I8 (review #160 nit 1): a resend flag left by a failed resend (error, not retried) is the
+  // user's past, not this new message: only a requeued prompt still waiting keeps it.
+  const st = c.stateFor(conversationId);
+  if (st && st.resendPending && !st.turnActive && !st.promptQueue.length) st.resendPending = false;
   c.enqueue(framed, images);
   return [c];
 }

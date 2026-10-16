@@ -450,6 +450,10 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     network (DevTools → Network → Offline, then back Online within a few seconds). The chat says
     「連線中斷：… 的回覆…，重新連線後會重送你的訊息」 and the agent answers the resent message in full
     instead of calling it a duplicate.
+  - **Another window follows Settings (§7 I9):** two windows with side panels. In window 1 add an
+    agent: window 2's roster shows it (未使用) at once, and its ＋ lists it. Change the URL of an
+    agent window 2's conversation uses: that conversation reconnects to the new URL (已連線至 …).
+    Remove an agent: it leaves window 2's roster.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito
