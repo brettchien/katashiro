@@ -414,6 +414,31 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     canvases are removed, click 🗑 → 確定, close the tab at the breakpoint. A is not in 對話
     (`conv:index` entry has `deletingAt`); open the gallery again (or the panel, or restart Chrome):
     the rest is removed.
+- **An agent per conversation (ADR agent-per-conversation).** `npm run e2e -- agent-per-conversation`
+  covers two agents on two fake gateways (the picker, both streaming at once, the chip, archive
+  closing a socket, the migration, a URL edit, removing and re-adding an agent). In Chrome, with two
+  real agents in Settings (e.g. Orca and Falcon):
+  - **Upgrade:** load this build over the previous one with conversations open. They stay on the
+    agent that was 使用中 (one chip, that agent); `chrome.storage.sync.get("activeAgentUrl")` in the
+    panel's DevTools still has the old value (not deleted, §2.1).
+  - **The picker:** ＋ shows 「新對話要跟哪個 agent 聊？」 with both agents; the one no open
+    conversation uses says 未連線. Pick the other agent: the new conversation connects to it (已連線至
+    …) and the chip shows only that agent. Switching tabs switches the chip. With one agent in
+    Settings, ＋ opens a conversation at once (no picker).
+  - **At once:** ask something long in the Orca conversation, switch to the Falcon one and ask there:
+    both reply at the same time, each in its own conversation (⏳ on the background tab, ● when it
+    finishes). Each agent sees only its own conversation's messages.
+  - **Disconnect:** × the only conversation of one agent: that agent disconnects (Settings shows
+    已停用 and 沒有開著的對話); the other keeps replying. Reopen it from 🗂️: it reconnects and resumes
+    (已續接 …).
+  - **URL edit:** change an in-use agent's URL in Settings to another gateway: its conversations
+    say 已連線至 … on the new URL, and the first message carries the reconnect hint (the agent can read
+    `chat_history`). Archived conversations of that agent reopen on the new URL too.
+  - **Remove:** ✕ on an agent with conversations: the dialog says how many; 確定: its conversation
+    stays, says 「agent 已移除…」, the input is disabled and the chip says agent 已移除. ＋ add the same
+    URL back: the input works again and the conversation resumes.
+  - **Another device:** with Chrome sync on, edit the URL on device A (same position, same name);
+    reload the panel on device B: B's conversations of that agent follow the new URL.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito

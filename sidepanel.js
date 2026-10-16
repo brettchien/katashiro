@@ -19,9 +19,11 @@ let agents = [];
 // One live Conn per agent, kept index-parallel to `agents`.
 const room = [];
 
-// Single-active model (ADR single-active-agent): all agents are configured, but only THIS one is
-// connected / in chat at a time. Resolved from storage at startup; changed via setActiveAgent().
-let activeAgentUrl = null;
+// An agent per conversation (ADR agent-per-conversation): each conversation is bound to one agent
+// (conv.agentUrl), and the panel connects every agent an open conversation uses (syncConnections).
+// The single-active `activeAgentUrl` is only read, by the one-time migration (§2.2), and no longer
+// written (§2.1: it stays in storage.sync for builds from before this change).
+let legacyActiveAgentUrl = null;
 
 // Room routing config (mode + loop-guard cap). RoomCore owns the pure logic; we persist it.
 let roomConfig = RoomCore.defaultRoomConfig();
@@ -42,13 +44,29 @@ let attachConfig = Composer.normalizeAttachConfig(null);
 // per-agent: it answers "may this browser be written to at all", which the tab, not the agent,
 // is the subject of.
 let actMode = false;
-function roomMembers() {
-  // Single-active: only the active agent participates in routing (mention / broadcast / relay). A
-  // dormant agent must never be a target — an enqueued prompt would silently pile up in its
-  // promptQueue and flush when it is later activated (its Conn is reused) (review: Orca).
+function roomMembers(convId) {
+  // A conversation's only member is its own agent (agent-per-conversation §2.7): @OtherAgent routes
+  // nowhere new. A Conn that is not connected must never be a target — an enqueued prompt would
+  // silently pile up in its promptQueue (review: Orca).
+  const url = convAgentUrl(convId);
   return room
-    .filter((c) => c.agent.url === activeAgentUrl)
+    .filter((c) => c.enabled && c.agent.url === url)
     .map((c) => ({ id: c.id, name: c.name }));
+}
+// The agent conversation `id` is bound to (agent-per-conversation §2.1), as this panel loaded it.
+function convAgentUrl(id) {
+  const conv = id ? convs.get(id) : null;
+  return conv ? conv.agentUrl : null;
+}
+// The Conn of conversation `id`'s agent (null: none, or the agent was removed, §2.6).
+function connOfConv(id) {
+  const url = convAgentUrl(id);
+  return url ? room.find((c) => c.agent.url === url) || null : null;
+}
+// Is conversation `id` bound to an agent no longer in the agents list (§2.6: read-only)?
+function convAgentMissing(id) {
+  const url = convAgentUrl(id);
+  return !!id && convs.has(id) && !agents.some((a) => a.url === url);
 }
 function connById(id) {
   return room.find((c) => c.id === id) || null;
@@ -214,17 +232,25 @@ class Conn {
 
   get name() { return this.agent.name || "Agent"; }
 
-  /** The session state of a conversation, created (seeded from its saved session id) on first use. */
+  /**
+   * The session state of a conversation, created (seeded from its saved session id) on first use —
+   * only for a conversation bound to THIS agent (agent-per-conversation §2.7); null otherwise.
+   */
   stateFor(convId) {
     let st = this.states.get(convId);
     if (!st) {
       const conv = convs.get(convId);
-      st = new SessionState(convId, conv && conv.sessions ? conv.sessions[this.agent.url] : null);
+      if (!conv || conv.agentUrl !== this.agent.url) return null;
+      st = new SessionState(convId, conv.sessions ? conv.sessions[this.agent.url] : null);
       this.states.set(convId, st);
     }
     return st;
   }
-  /** The current conversation's state (null while the panel has none, §3.3). */
+  /**
+   * The on-screen conversation's state, if it is bound to this agent (null while the panel has none,
+   * §3.3, or it is another agent's: with several Conns connected, each must not take the on-screen
+   * conversation for its own — agent-per-conversation §2.7).
+   */
   get cur() { return conversationId && convs.has(conversationId) ? this.stateFor(conversationId) : null; }
   stateBySession(sessionId) {
     if (!sessionId) return null;
@@ -545,7 +571,7 @@ class Conn {
     }
   }
 
-  // Tear down permanently (no reconnect) — used on delete / retarget / another agent made active.
+  // Tear down permanently (no reconnect) — used on delete / retarget / its last open conversation archived.
   disconnect() {
     this.enabled = false;
     this.stopHeartbeat();
@@ -877,12 +903,11 @@ class Conn {
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
   retryLast(st = this.cur) {
-    // Single-active: a stale error bubble from a now-dormant agent still has a live 重試 button;
-    // clicking it must NOT `connect()` this dormant Conn — that would bring a second agent online
-    // alongside the active one (review: Orca, the C2 race).
-    if (this.agent.url !== activeAgentUrl) return;
-    // Its conversation must still be open (P2: on screen or not — the button is in its own list).
+    // Its conversation must still be open (P2: on screen or not — the button is in its own list) and
+    // bound to this agent. A stale error bubble of a Conn that is no longer wanted (its last
+    // conversation archived) must NOT `connect()` it (review: Orca, the C2 race; §2.7).
     if (!st || this.states.get(st.convId) !== st) return;
+    if (!this.enabled || convAgentUrl(st.convId) !== this.agent.url) return;
     if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
     st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
     st.pendingImages.push(...st.lastImages);
@@ -1271,39 +1296,38 @@ function buildRoom() {
     // Each conversation's saved session id seeds its state on first use (Conn.stateFor), so the
     // first handshake resumes (not session/new).
     const c = new Conn(a);
-    // Single-active (ADR single-active-agent): a dormant agent stays enabled:false so it renders
-    // 已停用 rather than "連線中…"; only the active one is connected by connectAll.
-    c.enabled = (a.url === activeAgentUrl);
+    // Not connected until an open conversation wants it (syncConnections): enabled:false renders
+    // 已停用 rather than "連線中…".
+    c.enabled = false;
     room.push(c);
   });
 }
 
-function connectAll() {
-  room.forEach((c) => { if (c.agent.url === activeAgentUrl) c.connect(); });
+// agent-per-conversation §2.3 (Q2): connect every agent an open conversation of this window uses,
+// and only those. Runs after start-up, ＋, archive, reopen and any change to the agents list. A
+// Conn already up is left alone (connect() would replace its socket); one no longer wanted is
+// disconnected, which closes its ask cards in every conversation (§2.8).
+function wantedAgents() {
+  const openUrls = windowRec.open.filter((id) => convs.has(id)).map((id) => convs.get(id).agentUrl);
+  return ConvCore.wantedAgentUrls(openUrls, agents.map((a) => a.url));
 }
-
-// Switch the single active agent: disconnect the current one, connect the chosen one, persist.
-function setActiveAgent(url) {
-  if (!url || url === activeAgentUrl || !agents.some((a) => a.url === url)) return;
-  activeAgentUrl = url;
-  persist();
+function syncConnections() {
+  const wanted = wantedAgents();
   room.forEach((c) => {
-    if (c.agent.url === url) c.connect();   // connect() flips enabled=true + handshakes
-    else c.disconnect();                    // disconnect() flips enabled=false → 已停用
+    if (wanted.has(c.agent.url)) { if (!c.enabled) c.connect(); }
+    else if (c.enabled) c.disconnect();
   });
   updateRoster();
   if (settingsView && settingsView.classList.contains("active")) renderAgentList();
 }
 
-// Replace a single conn in place (retarget on url/token change).
+// Replace a single conn in place (retarget on url/token change); connected again only if wanted.
 function reconnectConn(i) {
   if (i < 0 || i >= room.length) return;
   if (room[i]) room[i].disconnect();
   room[i] = new Conn(agents[i]);
-  // Single-active: only re-connect if this is the active agent; editing a dormant agent's url/token
-  // must not bring a second connection up.
-  if (agents[i].url === activeAgentUrl) room[i].connect();
-  else room[i].enabled = false;
+  room[i].enabled = false;
+  if (wantedAgents().has(agents[i].url)) room[i].connect();
 }
 
 // --- DOM refs ----------------------------------------------------------------
@@ -1470,7 +1494,7 @@ function applyConfig(r) {
   } else {
     agents = [{ ...DEFAULT_AGENT }];
   }
-  activeAgentUrl = RoomCore.resolveActiveUrl(agents, r.activeAgentUrl); // single-active
+  legacyActiveAgentUrl = typeof r.activeAgentUrl === "string" ? r.activeAgentUrl : null;   // migration only (§2.2)
   roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
   loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
   // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
@@ -1503,7 +1527,7 @@ loadConfig().then(async (r) => {
     // Folder mirror catch-up (§3.6): canvases saved while the folder was not connected.
     canvasMirror.syncAll().catch(() => {});
     buildRoom();
-    connectAll();
+    syncConnections();                                   // agent-per-conversation §2.3: the open conversations' agents
     updateRoster();
     markPanelReady();
     pickUpReopenRequest();
@@ -1533,7 +1557,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
     runningOnDefaults = false;
     applyConfig(remote);
     buildRoom();
-    connectAll();
+    // §2.6: a URL edit in the arriving list rebinds this device's conversations before connecting.
+    reconcileAgents().finally(() => { syncConnections(); renderConvTabs(); updateSendEnabled(); });
     updateRoster();
     if (settingsView && settingsView.classList.contains("active")) {
       renderRoomConfig();
@@ -1551,7 +1576,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 function persist() {
   userEdited = true;
   runningOnDefaults = false;           // whatever is in memory now is intentional, not a placeholder
-  const cfg = { agents, roomConfig, actMode, activeAgentUrl, jevToken, screenshotConfig, attachConfig };
+  // No activeAgentUrl (agent-per-conversation §2.1): not written, never deleted — sync.set merges.
+  const cfg = { agents, roomConfig, actMode, jevToken, screenshotConfig, attachConfig };
   chrome.storage.sync.set(cfg, () => {
     if (chrome.runtime.lastError) {
       // Sync quota exceeded (many agents / long tokens) — keep a local copy so nothing is lost.
@@ -1616,7 +1642,7 @@ const convStore = ConvCore.createConvStore({
 });
 const withWindowsLock = (fn) => navigator.locks.request(ConvCore.LOCK_WINDOWS, fn);
 const newConversationId = () => ConvCore.mintId(() => crypto.randomUUID());
-const freshIndexEntry = () => ({ title: null, titleSource: null, createdAt: Date.now(), lastMessageAt: null, archivedAt: null });
+const freshIndexEntry = (agentUrl = null) => ({ title: null, titleSource: null, createdAt: Date.now(), lastMessageAt: null, archivedAt: null, agentUrl });
 
 function currentWindow() {
   return new Promise((resolve) => {
@@ -1628,8 +1654,19 @@ function currentWindow() {
 
 function makeConv(id, data) {
   const d = data && typeof data === "object" ? data : {};
+  // agent-per-conversation §2.1: the index entry's agentUrl is the truth; a record that differs is
+  // written back (a rebind cut short), and one with neither is bound to the first agent (§2.2).
+  const bind = ConvCore.recordAgentUrl(convIndex[id], data, agents[0] && agents[0].url);
+  if (bind.writeIndex) {
+    convIndex[id] = { ...(convIndex[id] || freshIndexEntry()), agentUrl: bind.url };
+    patchIndex(id, () => ({ agentUrl: bind.url }));
+  }
+  if (bind.writeBack && data && typeof data === "object") {
+    chrome.storage.local.set({ [ConvCore.convKey(id)]: { ...data, agentUrl: bind.url } }).catch(() => { /* quota — next saveConv */ });
+  }
   return {
     id,
+    agentUrl: bind.url,                   // agent-per-conversation: its agent, for its whole life (§2.6 URL edit aside)
     messages: Array.isArray(d.messages) ? d.messages.slice(-HISTORY_CAP) : [],
     sessions: d.sessions && typeof d.sessions === "object" ? { ...d.sessions } : {},
     // P1b (ADR §4.3, §4.4): the last tab its agent acted on, and the URLs of its tab group's tabs.
@@ -1674,14 +1711,14 @@ function saveConv(conv = currentConv) {
     if (st.acpSessionId) conv.sessions[c.agent.url] = st.acpSessionId;
     else delete conv.sessions[c.agent.url];
   });
-  return chrome.storage.local.set({ [ConvCore.convKey(conv.id)]: { id: conv.id, sessions: conv.sessions, messages: conv.messages, workingTab: conv.workingTab, groupTabs: conv.groupTabs, savedAt: Date.now() } })
+  return chrome.storage.local.set({ [ConvCore.convKey(conv.id)]: { id: conv.id, agentUrl: conv.agentUrl, sessions: conv.sessions, messages: conv.messages, workingTab: conv.workingTab, groupTabs: conv.groupTabs, savedAt: Date.now() } })
     .catch(() => { /* quota — the on-screen chat is unaffected */ });
 }
 
 // Read-modify-write one index entry under conv:index; `patch(entry)` returns the fields to change.
 function patchIndex(id, patch) {
   return convStore.updateIndex((idx) => {
-    const e = idx[id] || freshIndexEntry();
+    const e = idx[id] || freshIndexEntry(convAgentUrl(id));
     idx[id] = { ...e, ...patch(e) };
     return idx;
   }).catch(() => {});
@@ -1752,6 +1789,29 @@ chrome.storage.onChanged.addListener((changes, area) => {
   renderConvTabs();
 });
 
+// §2.6: every conversation on `from` (stored, and this panel's open ones) rebound to `to`.
+async function rebindConversations(from, to) {
+  await convStore.rebindAgent(from, to);
+  for (const conv of convs.values()) if (conv.agentUrl === from) { conv.agentUrl = to; delete conv.sessions[from]; }
+  for (const [id, e] of Object.entries(convIndex)) if (e && e.agentUrl === from) convIndex[id] = { ...e, agentUrl: to };
+}
+
+// agent-per-conversation §2.6: rebind this device's conversations for every URL edit since the
+// agents list it last bound against (agents:seen) — a Settings edit here, or one synced from
+// another device — then remember the list. A failed rebind leaves agents:seen as it was, so the
+// next run finds the same edit again (rebinding is idempotent). → the edits applied.
+async function reconcileAgents() {
+  let seen = null;
+  try { seen = (await chrome.storage.local.get(ConvCore.AGENTS_SEEN_KEY))[ConvCore.AGENTS_SEEN_KEY]; } catch (_) { /* none */ }
+  const edits = Array.isArray(seen) ? ConvCore.agentUrlEdits(seen, agents) : [];
+  for (const { from, to } of edits) {
+    try { await rebindConversations(from, to); }
+    catch (e) { console.warn("katashiro: rebinding conversations to an edited agent URL failed (retried on the next load):", e); return []; }
+  }
+  try { await chrome.storage.local.set({ [ConvCore.AGENTS_SEEN_KEY]: agents.map((a) => ({ name: a.name || "", url: a.url })) }); } catch (_) { /* next run */ }
+  return edits;
+}
+
 // Load this window's conversations (§3.2, §3.6, §3.7). Runs BEFORE the room is built so each conn
 // seeds the sessions from conv:<id> (→ session/resume restores the same conversation) and the
 // restored messages sit above the reconnect notices.
@@ -1760,6 +1820,10 @@ async function loadConversations() {
   panelWindowId = win.id;
   // §3.2: AWAIT the migration (never ifAvailable), so a panel never builds from a half-migrated state.
   try { await convStore.migrate(); } catch (e) { console.warn("katashiro: conversation migration failed (retried on the next load):", e); }
+  // agent-per-conversation §2.2: bind every conversation without an agent to the old active one
+  // (activeAgentUrl is read, never deleted, §2.1); then §2.6: URL edits since this device last bound.
+  try { await convStore.migrateAgents(RoomCore.resolveActiveUrl(agents, legacyActiveAgentUrl)); } catch (e) { console.warn("katashiro: binding conversations to agents failed (retried on the next load):", e); }
+  await reconcileAgents();
   // §7.1: a delete cut short (gallery tab closed, browser quit) is finished here. Not awaited: its
   // conversation is in no window record any more, so nothing below depends on it.
   convStore.finishDeletions().catch((e) => console.warn("katashiro: finishing a conversation delete failed (retried on the next load):", e));
@@ -1779,14 +1843,17 @@ async function loadConversations() {
     for (const id of wanted.open) ((await holdConvLock(id)) ? open : elsewhere).push(id);
     let current = open.includes(wanted.current) ? wanted.current : (open[0] || null);
     let full = false;
+    let pick = false;
     if (!open.length) {
       windows[wid] = { open: [] };
-      // Nothing to open: a new conversation — unless 3 are open elsewhere (§3.3: the picker).
+      // Nothing to open: a new conversation — unless 3 are open elsewhere (§3.3: the picker), or
+      // there are several agents to choose from (agent-per-conversation §2.4: the agent picker).
       if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) full = true;
+      else if (agents.length > 1) pick = true;
       else {
         const id = newConversationId();
         if (await holdConvLock(id)) {
-          await convStore.updateIndex((idx) => { idx[id] = freshIndexEntry(); return idx; });
+          await convStore.updateIndex((idx) => { idx[id] = freshIndexEntry(agents[0].url); return idx; });
           open.push(id);
           current = id;
         }
@@ -1801,7 +1868,7 @@ async function loadConversations() {
     if (drop.length) await chrome.storage.local.remove(drop);
     // P1b §4.4: conversations adopted from an orphan record (a browser restart) are "coming back".
     const adopted = !own && plan.adopt !== null ? open.filter((id) => plan.take.includes(id)) : [];
-    return { elsewhere, full, adopted };
+    return { elsewhere, full, pick, adopted };
   });
   convIndex = await convStore.readIndex();
   const got = windowRec.open.length ? await chrome.storage.local.get(windowRec.open.map(ConvCore.convKey)) : {};
@@ -1810,7 +1877,8 @@ async function loadConversations() {
   else showLobby();
   renderConvTabs();
   for (const id of out.elsewhere) noticeOpenElsewhere(id);
-  if (out.full) showArchivePicker(() => newConversation());
+  if (out.full) startNewConversation();
+  else if (out.pick) showAgentPicker();
   if (out.adopted.length) {
     // §4.4: their group tabs come back (current first), then §4.2 expands the current one's group.
     const order = [windowRec.current, ...out.adopted.filter((id) => id !== windowRec.current)].filter((id) => out.adopted.includes(id));
@@ -1900,7 +1968,9 @@ function showConversation(id) {
   // A reply chip quotes a message of the conversation it was set in.
   if (replyTarget && !String(replyTarget.id || "").startsWith(`${id}:`)) setReplyTarget(null);
   if (switching) restoreDraft(conv);
+  if (convAgentMissing(id)) noteAgentMissing(conv); else conv.missingNoted = false;
   afterShow();
+  updateSendEnabled();
 }
 
 // P1b §4.8: the composer's draft (text + staged images and files) belongs to its conversation:
@@ -1950,11 +2020,11 @@ function showLobby() {
   afterShow();
 }
 
-// The active agent resumes (or creates) the current conversation's session if it has not been on
-// this socket yet; otherwise its queue is flushed (§3.5 steps).
+// The on-screen conversation's agent resumes (or creates) its session if it has not been on this
+// socket yet; otherwise its queue is flushed (§3.5 steps). Conn.cur is null for every other agent.
 function activateSessions() {
   room.forEach((c) => {
-    if (c.enabled && c.agent.url === activeAgentUrl && c.cur) c.openSession(c.cur);
+    if (c.enabled && c.cur) c.openSession(c.cur);
   });
 }
 
@@ -1983,27 +2053,39 @@ function switchConversation(id) {
   return true;
 }
 
-// ＋ (§3.3): a new, empty conversation, switched to. With 3 open in any window, first the picker.
-async function newConversation() {
+// ＋ (agent-per-conversation §2.4, Q3): with several agents, first the agent picker — every time;
+// one agent → straight on. Then newConversation (which asks what to archive when 3 are open).
+function startNewConversation() {
+  if (agents.length <= 1) return newConversation(agents[0] && agents[0].url);
+  if (!currentConv) showLobby();
+  showAgentPicker();
+  return Promise.resolve(false);
+}
+
+// ＋ (§3.3): a new, empty conversation bound to `agentUrl` (for its whole life, Q1), switched to.
+// With 3 open in any window, first the archive picker.
+async function newConversation(agentUrl) {
+  if (!agentUrl || !agents.some((a) => a.url === agentUrl)) return false;
   const r = await withWindowsLock(async () => {
     const [windows, live] = await Promise.all([convStore.readWindows(), liveWindowIds()]);
     windows[String(panelWindowId)] = windowRec;
     if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) return { full: true };
     const id = newConversationId();
     if (!(await holdConvLock(id))) return {};
-    const entry = freshIndexEntry();
+    const entry = freshIndexEntry(agentUrl);
     await convStore.updateIndex((idx) => { idx[id] = entry; return idx; });
     windowRec = ConvCore.withOpened(windowRec, id);
     await writeWindowRec();
     return { id, entry };
   });
-  if (r.full) { showArchivePicker(() => newConversation()); return false; }
+  if (r.full) { showArchivePicker(() => newConversation(agentUrl)); return false; }
   if (!r.id) return false;
   if (currentConv) writeIndexTime(currentConv);
   convIndex[r.id] = r.entry;
-  convs.set(r.id, makeConv(r.id, null));
+  convs.set(r.id, makeConv(r.id, { agentUrl }));
   const prev = conversationId;
   showConversation(r.id);
+  syncConnections();                                     // §2.3: its agent connects if it was not
   activateSessions();
   afterLeaving(prev);
   return true;
@@ -2038,11 +2120,12 @@ async function archiveConversation(id) {
   convs.delete(id);
   if (conv.listEl) conv.listEl.remove();
   await forgetCanvasGroupId(id);
+  syncConnections();                                     // §2.3: its agent's last open conversation → disconnect
   if (wasCurrent) {
     currentConv = null;
     conversationId = null;
     if (windowRec.current && convs.has(windowRec.current)) { showConversation(windowRec.current); activateSessions(); applyGroupSwitch(); }
-    else await newConversation();
+    else await startNewConversation();
   }
   renderConvTabs();
   // §4.5: close its group's tabs (no longer tracked: it left `convs` above). After the switch, so
@@ -2089,6 +2172,7 @@ async function reopenConversation(id) {
   convs.set(id, makeConv(id, got[ConvCore.convKey(id)]));
   const prev = conversationId;
   showConversation(id);
+  syncConnections();                                     // §2.3: its agent connects if it was not
   activateSessions();
   // §4.4: it comes back with its group's tabs; then §4.2 (and Q12 for the one left).
   restoreGroupTabs(id).catch((e) => console.warn("katashiro: reopening a conversation's tabs failed:", e)).then(() => afterLeaving(prev));
@@ -2221,11 +2305,57 @@ async function showArchivePicker(then) {
   maybeScroll();
 }
 
+// The agent picker (agent-per-conversation §2.4, Q3): which agent a new conversation is with — for
+// its whole life (Q1). A system card like the archive picker; one at a time. Each agent shows its
+// link state if this window is connected to it, 未連線 otherwise (not probed just for this). The
+// archive picker, if 3 are open, comes after the pick (newConversation).
+let agentPickerCard = null;
+function showAgentPicker() {
+  if (agentPickerCard) { agentPickerCard.scrollIntoView({ block: "nearest" }); return; }
+  const row = document.createElement("div");
+  agentPickerCard = row;
+  row.className = "message system";
+  const card = document.createElement("div");
+  card.className = "conv-picker agent-picker";
+  card.setAttribute("role", "group");
+  const head = document.createElement("div");
+  head.className = "conv-picker-head";
+  head.textContent = "新對話要跟哪個 agent 聊？";
+  const hint = document.createElement("div");
+  hint.className = "conv-picker-hint";
+  hint.textContent = "選了之後這段對話就固定是這個 agent；要跟別的 agent 聊就再開一段。";
+  const list = document.createElement("div");
+  list.className = "conv-picker-list";
+  const close = () => { row.remove(); agentPickerCard = null; };
+  agents.forEach((a) => {
+    const c = room.find((x) => x.agent.url === a.url);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "conv-picker-option";
+    b.textContent = `${a.name || "Agent"}（${c && c.enabled ? `🔌 ${connState(c).label}` : "未連線"}）`;
+    b.title = a.url;
+    b.addEventListener("click", () => { close(); newConversation(a.url); });
+    list.appendChild(b);
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "conv-picker-cancel";
+  cancel.textContent = "取消";
+  cancel.addEventListener("click", () => {
+    close();
+    if (!currentConv) appendSystemMessage("目前沒有開著的對話：按上方 ＋ 開一段新對話。");
+  });
+  card.append(head, hint, list, cancel);
+  row.appendChild(card);
+  chatList.appendChild(row);
+  maybeScroll();
+}
+
 // The panel has no conversation and the user cancelled the picker: say where the 3 are.
 function noticeAllOpenElsewhere(ids) {
   appendSystemActions(`已經有 ${ConvCore.MAX_OPEN} 段對話開在其他視窗。`, [
     ...ids.map((id) => ({ label: `前往「${ConvCore.displayTitle(convIndex[id], id)}」`, onClick: () => focusConversationWindow(id) })),
-    { label: "封存一段，開新對話", onClick: () => showArchivePicker(() => newConversation()) },
+    { label: "封存一段，開新對話", onClick: () => startNewConversation() },
   ]);
 }
 
@@ -2342,7 +2472,7 @@ function renderConvTabs() {
   plus.className = "conv-tab-new";
   plus.textContent = "＋";
   plus.title = `新對話（所有視窗合計最多 ${ConvCore.MAX_OPEN} 段）`;
-  plus.addEventListener("click", () => newConversation());
+  plus.addEventListener("click", () => startNewConversation());
   convTabsEl.replaceChildren(...tabs, plus);
 }
 setInterval(() => renderConvTabs(), 60 * 1000);          // "today" vs M/D
@@ -2421,40 +2551,37 @@ function renderSeg(kind, glyph, seg) {
   return el;
 }
 
+// agent-per-conversation §2.5 (Q4): one chip, the on-screen conversation's agent. No conversation
+// on screen → no chip; its agent removed → a chip that says so (§2.6).
 function updateRoster() {
-  const onlineCount = room.filter((c) => c.acpReady).length;
+  const c = connOfConv(conversationId);
+  const missing = convAgentMissing(conversationId);
   if (statusIndicator) {
-    statusIndicator.className = "status-indicator " + (onlineCount > 0 ? "online" : "offline");
+    statusIndicator.className = "status-indicator " + (c && c.acpReady ? "online" : "offline");
   }
   if (activeAgentLabel) {
-    activeAgentLabel.textContent = `${onlineCount}/${room.length} agents 上線`;
+    activeAgentLabel.textContent = !currentConv ? "沒有開著的對話" : missing ? "agent 已移除" : c ? `${c.name}：${connState(c).label}` : "";
   }
   if (!rosterEl) return;
   rosterEl.innerHTML = "";
-  room.forEach((c) => {
-    const isActive = c.agent.url === activeAgentUrl;
+  if (missing) {
+    const chip = document.createElement("div");
+    chip.className = "roster-chip dormant";
+    chip.title = `${convAgentUrl(conversationId)} 不在設定裡了：在設定加回同一個網址就能繼續這段對話`;
+    const nm = document.createElement("span");
+    nm.className = "roster-name";
+    nm.textContent = "agent 已移除";
+    chip.appendChild(nm);
+    rosterEl.appendChild(chip);
+  }
+  if (c) {
     const chip = document.createElement("div");
 
     const nm = document.createElement("span");
     nm.className = "roster-name";
     nm.textContent = c.name;                             // textContent: agent name is user config
 
-    // Dormant agent (single-active): a selector chip. Click activates it (radio) — the switch the
-    // user wants on the chips, not only in Settings.
-    if (!isActive) {
-      chip.className = "roster-chip dormant clickable";
-      chip.title = "點此設為使用中的 agent";
-      chip.appendChild(nm);
-      const hint = document.createElement("span");
-      hint.className = "roster-activate";
-      hint.textContent = "點此啟用";
-      chip.appendChild(hint);
-      chip.addEventListener("click", () => setActiveAgent(c.agent.url));
-      rosterEl.appendChild(chip);
-      return;
-    }
-
-    // Active agent — full three-segment status (🔌 link · 🚇 tunnel · 🌐 browser, ADR §8.2).
+    // Three-segment status (🔌 link · 🚇 tunnel · 🌐 browser, ADR §8.2).
     const s = RoomCore.roomStatus({
       acpReady: c.acpReady, alive: c.alive, lastFailure: c.lastFailure,
       enabled: c.enabled, online: c.online,
@@ -2481,7 +2608,7 @@ function updateRoster() {
     }
 
     rosterEl.appendChild(chip);
-  });
+  }
 
   // Keep the settings list's per-row status live too, when it's open.
   if (settingsView && settingsView.classList.contains("active")) updateAgentListStatus();
@@ -2734,16 +2861,18 @@ addAgentBtn.addEventListener("click", () => {
   const url = newAgentUrl.value.trim();
   const token = (newAgentToken?.value || "").trim();
   if (!name || !url) return;
+  if (agents.some((a) => a.url === url)) { appendSystemMessage(`已經有一個 agent 用這個網址：${url}`); return; }
   agents.push({ name, url, token });
-  // Single-active: a newly added agent stays dormant (selectable via its chip / the radio) unless it
-  // is the very first agent — then it becomes active. Never auto-connect it alongside the active one.
-  const makeActive = !activeAgentUrl;
-  if (makeActive) activeAgentUrl = url;
   persist();
+  reconcileAgents();                                     // agents:seen follows the list (an addition is no URL edit)
   const c = new Conn(agents[agents.length - 1]);
-  c.enabled = makeActive;
+  c.enabled = false;
   room.push(c);
-  if (makeActive) c.connect();
+  // Connected only if an open conversation is bound to its URL: one left read-only by removing an
+  // agent with this URL comes back (agent-per-conversation §2.6).
+  syncConnections();
+  renderConvTabs();
+  updateSendEnabled();
   newAgentName.value = "";
   newAgentUrl.value = "";
   if (newAgentToken) newAgentToken.value = "";
@@ -2756,12 +2885,20 @@ if (connectBtn) {
     const url = wsUrlInput.value.trim();
     if (!url) return;
     const name = (setupNameInput?.value || "").trim() || "OpenAB";   // setup now captures the name
+    const before = agents.map((a) => a.url);
     agents = [{ name, url }];
-    activeAgentUrl = url;                                             // the sole agent is active
     persist();
     switchView("chat");
     buildRoom();
-    connectAll();
+    // agent-per-conversation §2.4: the first-run setup binds the open conversations to the agent it
+    // configures (they were on the placeholder agent it replaces).
+    (async () => {
+      for (const from of before) if (from !== url) await convStore.rebindAgent(from, url).catch(() => {});
+      for (const conv of convs.values()) if (conv.agentUrl !== url) { delete conv.sessions[conv.agentUrl]; conv.agentUrl = url; }
+      await reconcileAgents();
+      syncConnections();
+      updateSendEnabled();
+    })();
     updateRoster();
   });
 }
@@ -2785,6 +2922,7 @@ function renderAgentList() {
       a.name = nm.value.trim() || a.name;
       nm.value = a.name;
       persist();
+      reconcileAgents();                                 // agents:seen gets the new name (§2.6 matches by name)
       updateRoster();
     });
 
@@ -2794,10 +2932,19 @@ function renderAgentList() {
     url.addEventListener("change", () => {
       const next = url.value.trim() || a.url;
       url.value = next;
-      if (next !== a.url) {
-        if (a.url === activeAgentUrl) activeAgentUrl = next;   // keep the active pointer on this agent
-        a.url = next; persist(); reconnectConn(i); updateRoster();
-      }
+      if (next === a.url) return;
+      if (agents.some((x) => x !== a && x.url === next)) { url.value = a.url; appendSystemMessage(`已經有一個 agent 用這個網址：${next}`); return; }
+      // agent-per-conversation §2.6: every conversation on the old URL (open or archived) is rebound
+      // to the new one before the agent reconnects there (its old Conn's cards close as disconnected).
+      const from = a.url;
+      a.url = next;
+      persist();
+      // Rebound here, not through agents:seen (a rename since then would make it look like a
+      // removal); reconcileAgents then only records the new list.
+      rebindConversations(from, next)
+        .catch((e) => console.warn("katashiro: rebinding conversations to an edited agent URL failed (retried on the next load):", e))
+        .then(() => reconcileAgents())
+        .finally(() => { reconnectConn(i); syncConnections(); renderConvTabs(); updateSendEnabled(); });
     });
 
     const tok = document.createElement("input");
@@ -2833,16 +2980,13 @@ function renderAgentList() {
     const actions = document.createElement("div");
     actions.className = "agent-actions";
 
-    // Single-active selector (ADR single-active-agent): "設為使用中" activates this agent (connects it,
-    // disconnects the others) — the radio, mirrored on the roster chips. Replaces the old per-agent
-    // connect/disconnect toggle, which doesn't fit a one-active-at-a-time model.
-    const activeBtn = document.createElement("button");
-    const isActive = a.url === activeAgentUrl;
-    activeBtn.className = "agent-active-toggle" + (isActive ? " on" : "");
-    activeBtn.textContent = isActive ? "● 使用中" : "設為使用中";
-    activeBtn.title = isActive ? "目前在聊天中使用的 agent" : "切為使用中（會斷開目前的 agent）";
-    activeBtn.disabled = isActive;
-    activeBtn.addEventListener("click", () => { setActiveAgent(a.url); });
+    // agent-per-conversation §2.5: how many of this window's open conversations use it (no "使用中"
+    // radio any more: a conversation picks its agent at ＋).
+    const uses = windowRec.open.filter((id) => convs.has(id) && convs.get(id).agentUrl === a.url).length;
+    const useEl = document.createElement("span");
+    useEl.className = "agent-uses" + (uses ? " on" : "");
+    useEl.textContent = uses ? `${uses} 段對話使用中` : "沒有開著的對話";
+    useEl.title = "這個視窗開著的對話裡，跟這個 agent 聊的有幾段";
 
     // Per-agent browser access control (on ⇒ declares the browser MCP tunnel for this agent).
     const brOn = a.browserAccess !== false;              // default on (backward compatible)
@@ -2868,7 +3012,7 @@ function renderAgentList() {
     del.textContent = "✕";
     del.addEventListener("click", () => deleteAgent(i));
 
-    actions.appendChild(activeBtn);
+    actions.appendChild(useEl);
     actions.appendChild(brToggle);
     actions.appendChild(del);
 
@@ -2891,18 +3035,25 @@ function updateAgentListStatus() {
   });
 }
 
+// agent-per-conversation §2.6: removing an agent leaves its conversations read-only (adding the same
+// URL back revives them), so a removal that touches any asks first.
 function deleteAgent(i) {
   if (i < 0 || i >= agents.length) return;
-  const wasActive = agents[i].url === activeAgentUrl;
+  const n = ConvCore.conversationsUsing(convIndex, agents[i].url);
+  if (n > 0 && !confirm(`${n} 段對話使用這個 agent，移除後無法再傳訊息（對話會保留，可以閱讀、封存或刪除；之後加回同一個網址就能繼續）。\n\n確定移除「${agents[i].name || "Agent"}」？`)) return;
   agents.splice(i, 1);
-  if (agents.length === 0) agents = [{ ...DEFAULT_AGENT }];
-  // If the active agent was deleted, pick a new one; otherwise keep it (still valid).
-  activeAgentUrl = RoomCore.resolveActiveUrl(agents, wasActive ? null : activeAgentUrl);
+  // Only this agent's Conn goes (its cards close as disconnected): the other agents' conversations
+  // may be replying right now, so the room is not rebuilt.
+  const [gone] = room.splice(i, 1);
+  if (gone) gone.disconnect();
+  if (agents.length === 0) { agents = [{ ...DEFAULT_AGENT }]; buildRoom(); }
   persist();
-  buildRoom();      // disconnects the old room, rebuilds index-parallel to `agents`
-  connectAll();     // connects only the active one
+  reconcileAgents();                                     // agents:seen follows the list (a removal is no URL edit)
+  syncConnections();
   renderAgentList();
-  updateRoster();
+  renderConvTabs();
+  updateSendEnabled();
+  if (convAgentMissing(conversationId)) noteAgentMissing(currentConv);
 }
 
 // --- Pasted-image staging ----------------------------------------------------
@@ -2916,8 +3067,19 @@ let stagedFiles = [];                                    // dropped text files: 
 let stagingChain = Promise.resolve();                    // serialize pastes so the budget check holds
 let stagingPending = 0;                                  // pastes still encoding — send waits for them
 
+// agent-per-conversation §2.6: a conversation whose agent was removed says so once, when shown (not
+// recorded: regenerated, like other notices).
+function noteAgentMissing(conv) {
+  if (!conv || !convAgentMissing(conv.id) || conv.missingNoted) return;
+  conv.missingNoted = true;
+  appendSystemMessage(ConvCore.AGENT_REMOVED_TEXT, conv);
+}
+const messageInputPlaceholder = messageInput.placeholder;
 function updateSendEnabled() {
-  sendBtn.disabled = stagingPending > 0
+  const missing = convAgentMissing(conversationId);      // agent-per-conversation §2.6: read-only
+  messageInput.disabled = missing;
+  messageInput.placeholder = missing ? "agent 已移除：這段對話無法再傳訊息" : messageInputPlaceholder;
+  sendBtn.disabled = missing || stagingPending > 0
     || (messageInput.value.trim().length === 0 && stagedImages.length === 0 && stagedFiles.length === 0);
 }
 
@@ -3079,7 +3241,7 @@ async function stageDroppedFiles(files, target = currentConv) {
   }
   if (binary.length) appendSystemMessage(`不支援的檔案類型（看起來是二進位檔）：${binary.join("、")}，未附加`);
   if (!images.length) return;
-  const active = room.find((c) => c.agent.url === activeAgentUrl);
+  const active = connOfConv(target ? target.id : conversationId);   // §2.7: the staging conversation's agent
   if (active && active.acpReady && !active.canImage) {
     appendSystemMessage(`${active.name} 不支援圖片，未附加`);
     return;
@@ -3141,7 +3303,7 @@ messageInput.addEventListener("paste", (e) => {
   }
   if (plan.images.length === 0) return;                  // text (Office/Sheets copies too) — paste normally
   e.preventDefault();                                    // don't also paste the image's path/text into the box
-  const active = room.find((c) => c.agent.url === activeAgentUrl);
+  const active = connOfConv(conversationId);           // §2.7: the on-screen conversation's agent (staging is for it)
   if (active && active.acpReady && !active.canImage) {
     appendSystemMessage(`${active.name} 不支援圖片，未附加`);
     return;
@@ -3207,6 +3369,7 @@ messagesList.addEventListener("click", (e) => {
 // top); agent→agent relay stays <message from>-wrapped. @mention routing reads the raw text.
 function sendMessage() {
   if (!currentConv) { appendSystemMessage("目前沒有開著的對話：先封存一段，或從 🗂️ 總覽重新打開。"); return; }
+  if (convAgentMissing(conversationId)) { appendSystemMessage(ConvCore.AGENT_REMOVED_TEXT); return; }
   const text = messageInput.value.trim();
   const images = stagedImages.slice();                   // snapshot the staged attachments
   const files = stagedFiles.slice();
@@ -3260,7 +3423,7 @@ function postUserText(text, images, replyTo, mentions, files) {
   }, Composer.expandAttachments(text, files));
 
   loopGuard.onHuman();
-  const targets = RoomCore.resolveTargets(roomMembers(), myUserId, { mode: roomConfig.mode, text, mentions });
+  const targets = RoomCore.resolveTargets(roomMembers(conversationId), myUserId, { mode: roomConfig.mode, text, mentions });
   const sentTo = [];
   targets.forEach((id) => {
     const c = connById(id);
@@ -3311,7 +3474,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return false;
   }
   if (typeof msg.reqId !== "string" || seenPushIds.has(msg.reqId)) { sendResponse({ ok: false, error: "duplicate" }); return false; }
-  const active = connById(activeAgentUrl);
+  const active = connOfConv(cid);                       // §2.7: that conversation's agent
   if (!active || !active.initialized) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
   if (cid !== conversationId) switchConversation(cid);   // P2: never blocked, a running reply continues behind
   seenPushIds.add(msg.reqId);
@@ -3416,7 +3579,7 @@ function relayAgentReply(originConn, text, convId = conversationId) {
     }
     return;
   }
-  const targets = RoomCore.resolveTargets(roomMembers(), originConn.id, {
+  const targets = RoomCore.resolveTargets(roomMembers(convId), originConn.id, {
     mode: roomConfig.mode,
     text,
   });

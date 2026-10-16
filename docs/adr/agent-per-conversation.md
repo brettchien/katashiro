@@ -238,3 +238,22 @@ One PR after this ADR is accepted:
   two-agent case (two `FakeGateway` instances, two URLs; e2e/) — two conversations on two agents
   streaming at once, archive the last conversation of one → its socket closes, URL edit → rebind.
 - `TESTING.md`: real-Chrome steps for the picker, two agents at once, removing an agent in use.
+
+## 6. Implementation notes (2026-10-16)
+
+Decided while building it (not asked; flagged in the PR):
+
+- **No auto-created conversation with several agents.** A window with nothing open (start-up, or
+  its last conversation archived) used to get a new empty conversation at once. With two or more
+  agents that would need a silent default, which Q3 rejected, so the panel shows the agent picker in
+  the lobby instead; with one agent it still opens one at once.
+- **Two agents may not share a URL** (the URL is the identity, §2.1): adding one, or editing a URL
+  to one already in the list, is refused with a system line.
+- **A local URL edit rebinds directly** (`rebindConversations(old, new)`), not through
+  `agents:seen`: a rename made since the last check would make the edit look like a removal there.
+  Renames refresh `agents:seen`. `agents:seen` (storage.local) is what start-up compares against to
+  find an edit synced from another device (§2.6).
+- **Removing an agent disconnects only its `Conn`**; the room is not rebuilt, so the other agents'
+  running turns and sockets are untouched (E2E checks it).
+- A removed agent's conversation says so once when shown (a system line, not recorded); its
+  composer is disabled with a placeholder saying why.
