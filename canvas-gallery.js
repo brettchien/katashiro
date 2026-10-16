@@ -53,6 +53,7 @@
 
   let rows = [];                                   // every canvas, newest first
   let convIndex = {};                              // conv:index
+  let agentNames = {};                             // { url: name } of the configured agents (storage.sync)
   let openLive = new Set();                        // conversation ids open in a live window
   let myWindowId = null;                           // this tab's window (cached: the click must not await)
   const contents = new Map();                      // id → { rev, text } (normalized), for content search
@@ -120,6 +121,11 @@
       try { live = new Set((await chrome.windows.getAll({ windowTypes: ALL_WINDOW_TYPES })).map((w) => String(w.id))); } catch (_) { /* none known */ }
       convIndex = got[ConvCore.INDEX_KEY] || {};
       openLive = ConvCore.liveOpenIds(windows, live);
+      agentNames = {};
+      try {
+        const { agents } = await chrome.storage.sync.get("agents");
+        for (const a of Array.isArray(agents) ? agents : []) if (a && typeof a.url === "string" && !(a.url in agentNames)) agentNames[a.url] = a.name || "Agent";
+      } catch (_) { /* names unknown: every row says agent 已移除 only if it has a URL we cannot name */ }
     } catch (_) {
       convIndex = {};
       openLive = new Set();
@@ -129,8 +135,8 @@
   function renderConversations(q) {
     const counts = {};
     for (const r of rows) counts[r.conversationId] = (counts[r.conversationId] || 0) + 1;
-    const all = ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: "", now: Date.now() });
-    const shown = G.queryTerms(q).length ? ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: q, now: Date.now() }) : all;
+    const all = ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: "", now: Date.now(), agentNames });
+    const shown = G.queryTerms(q).length ? ConvCore.galleryRows({ index: convIndex, openLive, canvasCounts: counts, query: q, now: Date.now(), agentNames }) : all;
     convSection.hidden = all.length === 0;
     convListEl.replaceChildren(...shown.map((r) => {
       const li = document.createElement("li");
@@ -152,8 +158,13 @@
       del.textContent = "🗑 刪除";
       del.title = "刪除這段對話：訊息、它的畫布（含所有版本與圖片）。無法復原";
       del.addEventListener("click", () => deleteConversation(r, del));
+      // agent-per-conversation §7 I2: the agent this conversation is bound to (reopening connects it).
+      const agent = cell(r.agent || "agent 已移除", r.agent ? `重新打開會連到 ${r.agent}（${r.agentUrl}）` : `${r.agentUrl || "沒有 agent"} 不在設定裡了：重新打開後無法傳訊息，在設定加回同一個網址就能繼續`);
+      agent.classList.add("conv-agent");
+      if (!r.agent) agent.classList.add("missing");
       li.append(
         title,
+        agent,
         cell(r.time, r.at ? G.absoluteTime(r.at) : ""),
         cell(`${r.canvases} 個畫布`),
         cell(r.archived ? "已封存" : "在關掉的視窗", r.archived ? "從分頁列的 × 封存" : "留在關掉的視窗裡（沒有封存）"),
@@ -369,7 +380,8 @@
   // Metas change on every write, delete and mirror bookkeeping; one re-read per burst.
   let reloadTimer = 0;
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX))) return;
+    const agentsChanged = area === "sync" && "agents" in changes;   // §7 I2: the rows name the agents
+    if (!agentsChanged && (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k.startsWith(ConvCore.WINDOW_PREFIX)))) return;
     clearTimeout(reloadTimer);
     reloadTimer = setTimeout(reload, 150);
   });

@@ -7,7 +7,9 @@
 import * as h from "../helpers.mjs";
 import { FakeGateway } from "../fake-gateway.mjs";
 
-const chips = (panel) => panel.evaluate(() => Array.from(document.querySelectorAll("#roster .roster-chip")).map((c) => (c.querySelector(".roster-name") || {}).textContent || ""));
+// Each chip as "name" + "*" if it is the current conversation's (highlighted) + "~" if 未使用.
+const chips = (panel) => panel.evaluate(() => Array.from(document.querySelectorAll("#roster .roster-chip")).map((c) =>
+  ((c.querySelector(".roster-name") || {}).textContent || "") + (c.classList.contains("current") ? "*" : "") + (c.classList.contains("unused") ? "~" : "")));
 const indexOf = (ctx) => ctx.control.evaluate(async () => (await chrome.storage.local.get("conv:index"))["conv:index"] || {});
 
 async function openSettings(panel) {
@@ -49,17 +51,21 @@ export default [
       try {
         await h.renameCurrent(panel, "Alpha");
         const sidA = await h.sessionOf(ctx, "Alpha");
-        t.check((await chips(panel)).join() === "Fake", "one chip: the on-screen conversation's agent", await chips(panel));
+        t.check((await chips(panel)).join() === "Fake*", "one agent, one chip: the on-screen conversation's, highlighted", await chips(panel));
 
         await addAgent(panel, "Other", gwY.url);
         t.check(socketsOf(gwY) === 0, "adding an agent connects nothing (no conversation uses it)");
+        t.check((await chips(panel)).join() === "Fake*,Other~", "a chip per agent; the unused one says 未使用 (§7 I1)", await chips(panel));
+        await panel.evaluate(() => Array.from(document.querySelectorAll("#roster .roster-chip")).find((c) => c.classList.contains("unused")).click());
+        await h.sleep(200);
+        t.check(socketsOf(gwY) === 0 && (await h.strip(panel)).length === 1 && !(await panel.evaluate(() => !!document.querySelector(".agent-picker"))), "clicking a chip that is not the current one does nothing (Brett: 1:1)");
         const newX = gwX.methods("session/new").length;
         const opts = await newWith(panel, "Other");
-        t.check(opts.length === 2 && opts.some((o) => o.startsWith("Fake（🔌")) && opts.some((o) => o === "Other（未連線）"), "the picker lists both; the unconnected one says 未連線", opts);
+        t.check(opts.length === 2 && opts.some((o) => o.startsWith("Fake（🔌")) && opts.some((o) => o === "Other（未使用）"), "the picker lists both; the unconnected one says 未使用", opts);
         await h.until(null, () => gwY.methods("session/new").length === 1, "Y: session/new for the new conversation");
         await h.renameCurrent(panel, "Beta");
         await h.until(panel, () => /已連線至 Other/.test(document.body.innerText), "the connected notice for Other");
-        t.check((await chips(panel)).join() === "Other", "the chip follows: Other", await chips(panel));
+        t.check((await chips(panel)).join() === "Fake,Other*", "the highlight follows: Other; Fake (connected for Alpha) is shown too", await chips(panel));
         t.check(gwX.methods("session/new").length === newX, "X opened no session for Y's conversation (§2.7 Conn.cur)", gwX.methods("session/new").length - newX);
         const idB = await h.convIdByTitle(ctx, "Beta");
         const idA = await h.convIdByTitle(ctx, "Alpha");
@@ -74,7 +80,7 @@ export default [
         await h.send(panel, "question for beta");
         const pB = await gwY.waitPrompt();
         await h.switchTo(panel, "Alpha");
-        t.check((await chips(panel)).join() === "Fake", "back on Alpha, the chip is Fake", await chips(panel));
+        t.check((await chips(panel)).join() === "Fake*,Other", "back on Alpha, Fake is highlighted", await chips(panel));
         await h.send(panel, "question for alpha");
         const pA = await gwX.waitPrompt();
         t.check(pA.sessionId === sidA && pB.sessionId.startsWith("y_"), "each prompt went to its own agent", [pA.sessionId, pB.sessionId]);
@@ -154,7 +160,7 @@ export default [
         await closeSettings(panel);
         await h.until(null, () => socketsOf(gwZ) === 0, "its socket closed");
         t.check(await panel.evaluate(() => document.getElementById("message-input").disabled && document.getElementById("send-btn").disabled), "the composer is disabled (read-only)");
-        t.check((await chips(panel)).join() === "agent 已移除", "the chip says agent 已移除", await chips(panel));
+        t.check((await chips(panel)).join() === "agent 已移除*,Spare~", "the current chip says agent 已移除; the other agent is 未使用", await chips(panel));
         t.check(/agent 已移除/.test(await h.visibleText(panel)), "the conversation says so");
         t.check((await h.strip(panel)).some((x) => x.title === "Alpha"), "the conversation stays open");
 
@@ -162,7 +168,7 @@ export default [
         await addAgent(panel, "Back", gwZ.url);
         await h.until(panel, () => !document.getElementById("message-input").disabled, "the composer is enabled again");
         await h.until(null, () => socketsOf(gwZ) === 1, "reconnected to the re-added URL");
-        await h.until(panel, () => (document.querySelector("#roster .roster-name") || {}).textContent === "Back", "the chip shows the re-added agent");
+        await h.until(panel, () => (document.querySelector("#roster .roster-chip.current .roster-name") || {}).textContent === "Back", "the highlighted chip is the re-added agent");
         t.ok("adding the URL back revives the conversation");
       } finally {
         await gwZ.stop();

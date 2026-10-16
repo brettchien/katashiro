@@ -422,8 +422,10 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     agent that was 使用中 (one chip, that agent); `chrome.storage.sync.get("activeAgentUrl")` in the
     panel's DevTools still has the old value (not deleted, §2.1).
   - **The picker:** ＋ shows 「新對話要跟哪個 agent 聊？」 with both agents; the one no open
-    conversation uses says 未連線. Pick the other agent: the new conversation connects to it (已連線至
-    …) and the chip shows only that agent. Switching tabs switches the chip. With one agent in
+    conversation uses says 未使用. Pick the other agent: the new conversation connects to it (已連線至
+    …). The roster has a chip per agent: the on-screen conversation's is highlighted with the full
+    status, another connected one shows its link state, an unused one is dimmed 未使用; clicking a
+    chip that is not the current one does nothing. Switching tabs moves the highlight. With one agent in
     Settings, ＋ opens a conversation at once (no picker).
   - **At once:** ask something long in the Orca conversation, switch to the Falcon one and ask there:
     both reply at the same time, each in its own conversation (⏳ on the background tab, ● when it

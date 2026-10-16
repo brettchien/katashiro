@@ -102,8 +102,8 @@ the first configured agent and written back.
 - ＋ with **two or more** agents configured opens a **system card** (the style of the 3-tab archive
   picker, multi-conversation §3.3, not an agent card) listing the agents by name in Settings order.
   An agent this window is connected to shows its link status (🔌 online / offline); one it is not
-  connected to (not in the wanted set) shows **未連線**, not offline: its state is unknown, and it
-  is not probed just to fill the picker. Picking one creates the conversation bound to it. Cancel
+  connected to (not in the wanted set) shows **未使用** (未連線 until §7 I1), not offline: its state
+  is unknown, and it is not probed just to fill the picker. Picking one creates the conversation bound to it. Cancel
   (or closing the card) creates nothing.
 - **One agent** configured → no picker, the conversation is bound to it.
 - With **3 conversations already open**, the existing archive picker comes **after** the agent
@@ -116,9 +116,16 @@ the first configured agent and written back.
 
 ### 2.5 Chip and roster (Q4)
 
-- The roster shows **one chip: the on-screen conversation's agent**, with the three-segment status
-  (🔌 link · 🚇 tunnel · 🌐 browser); click = reconnect that agent (R2, unchanged). The dimmed
-  "點此啟用" chips of dormant agents go away, and with them switching from the chips.
+- ~~The roster shows **one chip: the on-screen conversation's agent**~~ — **revised 2026-10-16
+  (Brett 22:17 / 22:37, §7 I1): a chip per configured agent**, in Settings order:
+  - the on-screen conversation's agent: **highlighted**, the three-segment status (🔌 link · 🚇
+    tunnel · 🌐 browser); click = reconnect that agent (R2, unchanged);
+  - another agent this window is connected to (an open conversation uses it): its name and link
+    state;
+  - an agent no open conversation of this window uses: dimmed, **未使用** (not connected because
+    unused, not broken).
+  Clicking a chip that is not the current one **does nothing**: a conversation is bound to its agent
+  1:1 (Q1), so there is nothing to switch to. The single-active "點此啟用" switching stays gone.
 - **Tabs carry no agent mark.** Who a conversation is with shows when it is on screen (chip, the
   agent name on its replies, as today).
 - The roster label `N/M agents 上線` becomes the on-screen agent's state only; a background
@@ -280,6 +287,8 @@ items I1–I10 (canvas cv_ad6f6f9310df). Decisions (Brett 22:24–22:38 TPE) and
   windows' conversations: the number the remove confirm gives).
 - **I7 — repeated URLs in a stored list**: the first agent of each URL is kept, a chat line says
   which were dropped; the list is written only on the next Settings change.
-- Still to come: I1 (a chip per agent; §2.5 revised), I2 (the gallery shows each conversation's
-  agent), I8 (a turn cut by a dropped socket), I9 (other windows' / devices' agent edits followed
+- **I1 — a chip per agent** (Brett 22:17 / 22:37): §2.5 revised above; the picker says 未使用 too.
+- **I2 — the gallery names each conversation's agent** (Brett 22:22): a column in 🗂️ 對話 with the
+  agent's name (`agent 已移除` when its URL is no longer configured); the search matches it too.
+- Still to come: I8 (a turn cut by a dropped socket), I9 (other windows' / devices' agent edits followed
   live, with I10).

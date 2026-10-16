@@ -2335,7 +2335,7 @@ async function showArchivePicker(then) {
 
 // The agent picker (agent-per-conversation §2.4, Q3): which agent a new conversation is with — for
 // its whole life (Q1). A system card like the archive picker; one at a time. Each agent shows its
-// link state if this window is connected to it, 未連線 otherwise (not probed just for this). The
+// link state if this window is connected to it, 未使用 otherwise (§7 I1; not probed just for this). The
 // archive picker, if 3 are open, comes after the pick (newConversation).
 let agentPickerCard = null;
 function showAgentPicker() {
@@ -2360,7 +2360,7 @@ function showAgentPicker() {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "conv-picker-option";
-    b.textContent = `${a.name || "Agent"}（${c && c.enabled ? `🔌 ${connState(c).label}` : "未連線"}）`;
+    b.textContent = `${a.name || "Agent"}（${c && c.enabled ? `🔌 ${connState(c).label}` : "未使用"}）`;
     b.title = a.url;
     b.addEventListener("click", () => { close(); newConversation(a.url); });
     list.appendChild(b);
@@ -2578,8 +2578,23 @@ function renderSeg(kind, glyph, seg) {
   return el;
 }
 
-// agent-per-conversation §2.5 (Q4): one chip, the on-screen conversation's agent. No conversation
-// on screen → no chip; its agent removed → a chip that says so (§2.6).
+// agent-per-conversation §2.5, revised 2026-10-16 (Brett, §7 I1): a chip per configured agent, in
+// Settings order. The on-screen conversation's agent is highlighted with the full status (click =
+// reconnect); another agent this window is connected to shows its name and link state; one no open
+// conversation uses is dimmed, 未使用. Only the current chip reacts to a click: a conversation is
+// bound to its agent 1:1 (Q1), so another chip has nothing to switch to. A removed agent of the
+// on-screen conversation gets a chip that says so (§2.6).
+function rosterStatus(c) {
+  return RoomCore.roomStatus({
+    acpReady: c.acpReady, alive: c.alive, lastFailure: c.lastFailure,
+    enabled: c.enabled, online: c.online,
+    allowed: c.agent.browserAccess !== false,
+    attached: c.browserAttached,
+    tunnelFresh: Date.now() - (c.lastTunnelMsgAt || 0) < TUNNEL_FRESH_MS,
+    actMode,
+  });
+}
+
 function updateRoster() {
   const c = connOfConv(conversationId);
   const missing = convAgentMissing(conversationId);
@@ -2593,7 +2608,7 @@ function updateRoster() {
   rosterEl.innerHTML = "";
   if (missing) {
     const chip = document.createElement("div");
-    chip.className = "roster-chip dormant";
+    chip.className = "roster-chip dormant current";
     chip.title = `${convAgentUrl(conversationId)} 不在設定裡了：在設定加回同一個網址就能繼續這段對話`;
     const nm = document.createElement("span");
     nm.className = "roster-name";
@@ -2601,41 +2616,49 @@ function updateRoster() {
     chip.appendChild(nm);
     rosterEl.appendChild(chip);
   }
-  if (c) {
+  room.forEach((r) => {
     const chip = document.createElement("div");
-
     const nm = document.createElement("span");
     nm.className = "roster-name";
-    nm.textContent = c.name;                             // textContent: agent name is user config
+    nm.textContent = r.name;                             // textContent: agent name is user config
 
-    // Three-segment status (🔌 link · 🚇 tunnel · 🌐 browser, ADR §8.2).
-    const s = RoomCore.roomStatus({
-      acpReady: c.acpReady, alive: c.alive, lastFailure: c.lastFailure,
-      enabled: c.enabled, online: c.online,
-      allowed: c.agent.browserAccess !== false,
-      attached: c.browserAttached,
-      tunnelFresh: Date.now() - (c.lastTunnelMsgAt || 0) < TUNNEL_FRESH_MS,
-      actMode,
-    });
-    chip.className = "roster-chip active " + s.link.cls;
-    chip.appendChild(nm);
-    chip.appendChild(renderSeg("link", "🔌", s.link));
-    if (s.tunnel) chip.appendChild(renderSeg("tunnel", "🚇", s.tunnel));
-    if (s.browser) chip.appendChild(renderSeg("browser", "🌐", s.browser));
-
-    // Show which ACP session this chip is bound to (hover) — lets you confirm which
-    // session you're talking to vs the gateway/mon-tick's `sess=` id.
-    chip.title = `ACP session: ${c.acpSessionId || "—"}`;
-
-    // R2 — one-click manual reconnect on an unhealthy link; a healthy link is inert.
-    if (c.enabled !== false && s.link.cls !== "online") {
-      chip.classList.add("clickable");
-      chip.title = "點擊重新連線";
-      chip.addEventListener("click", () => { c.connect(); updateRoster(); });
+    if (r === c) {
+      // The on-screen conversation's agent: highlighted, three-segment status (🔌 link · 🚇 tunnel ·
+      // 🌐 browser, ADR §8.2).
+      const s = rosterStatus(r);
+      chip.className = "roster-chip active current " + s.link.cls;
+      chip.appendChild(nm);
+      chip.appendChild(renderSeg("link", "🔌", s.link));
+      if (s.tunnel) chip.appendChild(renderSeg("tunnel", "🚇", s.tunnel));
+      if (s.browser) chip.appendChild(renderSeg("browser", "🌐", s.browser));
+      // Show which ACP session this chip is bound to (hover) — lets you confirm which
+      // session you're talking to vs the gateway/mon-tick's `sess=` id.
+      chip.title = `ACP session: ${r.acpSessionId || "—"}`;
+      // R2 — one-click manual reconnect on an unhealthy link; a healthy link is inert.
+      if (r.enabled !== false && s.link.cls !== "online") {
+        chip.classList.add("clickable");
+        chip.title = "點擊重新連線";
+        chip.addEventListener("click", () => { r.connect(); updateRoster(); });
+      }
+    } else if (r.enabled) {
+      // Connected for another open conversation of this window: its name and link state only.
+      const s = rosterStatus(r);
+      chip.className = "roster-chip other " + s.link.cls;
+      chip.appendChild(nm);
+      chip.appendChild(renderSeg("link", "🔌", s.link));
+      chip.title = `${r.name}：${connState(r).label}（這個視窗另一段對話在用）`;
+    } else {
+      // No open conversation of this window uses it, so it is not connected — not broken.
+      chip.className = "roster-chip dormant unused";
+      chip.appendChild(nm);
+      const note = document.createElement("span");
+      note.className = "roster-note";
+      note.textContent = "未使用";
+      chip.appendChild(note);
+      chip.title = "這個視窗沒有開著的對話用這個 agent，所以沒有連線。按 ＋ 選它就能開一段新對話。";
     }
-
     rosterEl.appendChild(chip);
-  }
+  });
 
   // Keep the settings list's per-row status live too, when it's open.
   if (settingsView && settingsView.classList.contains("active")) updateAgentListStatus();

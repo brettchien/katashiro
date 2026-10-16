@@ -1079,10 +1079,20 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .agent-uses.on { color: var(--accent-success); }
 
-/* The chip of a conversation whose agent was removed (agent-per-conversation §2.6). */
+/* agent-per-conversation §2.5 (revised, §7 I1): the on-screen conversation's agent is highlighted;
+   an agent no open conversation uses (未使用) or a removed one is dimmed and dashed. */
+.roster-chip.current {
+  border-width: 2px;
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
 .roster-chip.dormant {
   opacity: 0.55;
   border-style: dashed;
+}
+.roster-note {
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
 
 .agent-browser-toggle.on {

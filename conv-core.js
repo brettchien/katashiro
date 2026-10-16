@@ -524,16 +524,22 @@
    * newest lastMessageAt first, filtered by title (the gallery's search box: all terms must match).
    * → [{ id, title, time, at, canvases, archived }]
    */
-  function galleryRows({ index, openLive, canvasCounts, query, now }) {
+  // agentNames (agent-per-conversation §7 I2): { [url]: name } of the configured agents. Each row
+  // names its conversation's agent (null: not in the list any more — removed), and the search
+  // matches that name as well as the title.
+  function galleryRows({ index, openLive, canvasCounts, query, now, agentNames = {} }) {
     const terms = normalize(query).split(/\s+/).filter(Boolean);
     const rows = [];
     for (const [id, e] of Object.entries(index || {})) {
       if (!isConvId(id) || !e || openLive.has(id)) continue;
       if (e.deletingAt != null) continue;              // §7.1: being deleted (finished on the next start)
       const title = displayTitle(e, id);
-      if (terms.length && !terms.every((t) => normalize(title).includes(t))) continue;
+      const agentUrl = typeof e.agentUrl === "string" ? e.agentUrl : null;
+      const agent = agentUrl && Object.prototype.hasOwnProperty.call(agentNames || {}, agentUrl) ? String(agentNames[agentUrl] || "Agent") : null;
+      const hay = normalize(`${title} ${agent || ""}`);
+      if (terms.length && !terms.every((t) => hay.includes(t))) continue;
       const at = Number(e.lastMessageAt || e.createdAt || 0);
-      rows.push({ id, title, at, time: tabTime(at, now), canvases: Number((canvasCounts && canvasCounts[id]) || 0), archived: e.archivedAt != null });
+      rows.push({ id, title, agentUrl, agent, at, time: tabTime(at, now), canvases: Number((canvasCounts && canvasCounts[id]) || 0), archived: e.archivedAt != null });
     }
     return rows.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
   }

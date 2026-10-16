@@ -557,6 +557,21 @@ test("planDelete: refused while open in a live window (with it); else closed-win
   assert.equal(r.entry.deletingAt, 50);
 });
 
+test("galleryRows (agent-per-conversation §7 I2): each row names its agent; removed → null; search matches the agent", () => {
+  const now = new Date(2026, 9, 16, 22, 0).getTime();
+  const index = {
+    [ID(1)]: { title: "Plan", lastMessageAt: now - 10, archivedAt: 1, agentUrl: "wss://o/acp" },
+    [ID(2)]: { title: "Notes", lastMessageAt: now - 20, archivedAt: 1, agentUrl: "ws://gone/acp" },
+    [ID(3)]: { title: "Old", lastMessageAt: now - 30, archivedAt: 1 },
+  };
+  const agentNames = { "wss://o/acp": "orca" };
+  const rows = C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "", now, agentNames });
+  assert.deepEqual(rows.map((r) => [r.id, r.agent, r.agentUrl]), [[ID(1), "orca", "wss://o/acp"], [ID(2), null, "ws://gone/acp"], [ID(3), null, null]]);
+  assert.deepEqual(C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "ORCA", now, agentNames }).map((r) => r.id), [ID(1)]);
+  assert.deepEqual(C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "orca plan", now, agentNames }).map((r) => r.id), [ID(1)]);
+  assert.deepEqual(C.galleryRows({ index, openLive: new Set(), canvasCounts: {}, query: "notes", now }).map((r) => r.id), [ID(2)]);   // no names given: title search as before
+});
+
 test("pendingDeletions / reopenRefusal / galleryRows: a marked conversation is gone for the user", () => {
   const index = { [ID(1)]: { title: "keep", lastMessageAt: 2 }, [ID(2)]: { title: "going", deletingAt: 3, lastMessageAt: 3 }, bogus: { deletingAt: 1 } };
   assert.deepEqual(C.pendingDeletions(index), [ID(2)]);
