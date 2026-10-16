@@ -1557,8 +1557,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
     runningOnDefaults = false;
     applyConfig(remote);
     buildRoom();
-    // §2.6: a URL edit in the arriving list rebinds this device's conversations before connecting.
-    reconcileAgents().finally(() => { syncConnections(); renderConvTabs(); updateSendEnabled(); });
+    // §2.4: the conversations opened meanwhile sit on the placeholder agent this list replaces →
+    // the old active agent, as the setup's Connect does (agents:seen is the default list, so §2.6
+    // would read the placeholder as removed — its name is no other agent's). Then §2.6: a URL edit
+    // in the arriving list rebinds this device's conversations before connecting.
+    const placeholder = agents.some((a) => a.url === DEFAULT_AGENT.url)
+      ? Promise.resolve()
+      : rebindConversations(DEFAULT_AGENT.url, RoomCore.resolveActiveUrl(agents, legacyActiveAgentUrl))
+        .catch((e) => console.warn("katashiro: rebinding conversations to the synced agents failed:", e));
+    placeholder.then(() => reconcileAgents()).finally(() => { syncConnections(); renderConvTabs(); updateSendEnabled(); });
     updateRoster();
     if (settingsView && settingsView.classList.contains("active")) {
       renderRoomConfig();
@@ -2120,13 +2127,18 @@ async function archiveConversation(id) {
   convs.delete(id);
   if (conv.listEl) conv.listEl.remove();
   await forgetCanvasGroupId(id);
-  syncConnections();                                     // §2.3: its agent's last open conversation → disconnect
+  // §2.3: its agent's last open conversation → disconnect. Except with one agent, when closing the
+  // last tab opens a new one on that same agent: connections are synced after it, so the socket
+  // stays up (§4: nothing changes for a single-agent user). With several, the picker comes first.
+  const reopensOnSame = wasCurrent && !(windowRec.current && convs.has(windowRec.current)) && agents.length <= 1;
+  if (!reopensOnSame) syncConnections();
   if (wasCurrent) {
     currentConv = null;
     conversationId = null;
     if (windowRec.current && convs.has(windowRec.current)) { showConversation(windowRec.current); activateSessions(); applyGroupSwitch(); }
     else await startNewConversation();
   }
+  if (reopensOnSame) syncConnections();
   renderConvTabs();
   // §4.5: close its group's tabs (no longer tracked: it left `convs` above). After the switch, so
   // what was kept open is said in the conversation now on screen.
@@ -2936,7 +2948,10 @@ function renderAgentList() {
       if (agents.some((x) => x !== a && x.url === next)) { url.value = a.url; appendSystemMessage(`已經有一個 agent 用這個網址：${next}`); return; }
       // agent-per-conversation §2.6: every conversation on the old URL (open or archived) is rebound
       // to the new one before the agent reconnects there (its old Conn's cards close as disconnected).
+      // Its Conn shares this agent object, so it is dropped first: nothing it saves while the
+      // rebind runs may land under the new URL (its old server's session id under sessions[next]).
       const from = a.url;
+      if (room[i]) room[i].disconnect();
       a.url = next;
       persist();
       // Rebound here, not through agents:seen (a rename since then would make it look like a

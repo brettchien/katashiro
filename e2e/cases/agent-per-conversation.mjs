@@ -169,4 +169,47 @@ export default [
       }
     },
   },
+  {
+    name: "one agent: archiving the last conversation keeps the socket (the new one is on the same agent)",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      await h.send(panel, "something to keep");
+      await h.idle(panel);
+      const ws = [...gw.sockets][0];
+      const inits = gw.methods("initialize").length;
+      await h.pressClose(panel, "Alpha");
+      await h.until(panel, () => document.querySelectorAll(".conv-tab").length === 1 && (document.querySelector(".conv-tab.current .conv-tab-title") || {}).textContent !== "Alpha", "a new conversation in its place");
+      await h.until(null, () => gw.methods("session/new").length >= 2, "session/new for the new conversation");
+      t.check(socketsOf(gw) === 1 && [...gw.sockets][0] === ws && ws.readyState === 1, "the same socket stays open", socketsOf(gw));
+      t.check(gw.methods("initialize").length === inits, "no new handshake", gw.methods("initialize").length - inits);
+    },
+  },
+  {
+    name: "fresh install: a conversation opened on the placeholder agent follows the synced agents when they arrive",
+    async run(ctx, t) {
+      const { gw } = ctx;
+      // A new device: nothing synced yet, nothing local.
+      await h.reloadExtension(ctx);
+      const synced = await ctx.control.evaluate(() => chrome.storage.sync.get(null));
+      await ctx.control.evaluate(async () => { await chrome.storage.sync.clear(); await chrome.storage.local.clear(); });
+      const panel = await h.openSidePanel(ctx, ctx.control);
+      await h.until(panel, () => !!document.querySelector(".conv-tab.current"), "a conversation on the placeholder agent");
+      let idx = await indexOf(ctx);
+      const ids = Object.keys(idx);
+      t.check(ids.length === 1 && idx[ids[0]].agentUrl === "ws://localhost:8080/acp", "bound to the placeholder agent", idx);
+      const news = gw.methods("session/new").length;
+      // The synced config lands a few seconds later.
+      await ctx.control.evaluate((s) => chrome.storage.sync.set(s), synced);
+      await h.until(null, (n) => gw.methods("session/new").length > n, "session/new on the synced agent", news);
+      await h.until(panel, () => !document.getElementById("message-input").disabled, "the composer is enabled");
+      t.check(!/agent 已移除/.test(await h.visibleText(panel)), "not read-only (agent 已移除)");
+      idx = await indexOf(ctx);
+      t.check(idx[ids[0]].agentUrl === gw.url, "rebound to the synced agent (conv:index)", idx[ids[0]]);
+      t.check((await h.storedConvs(ctx))[ids[0]]?.agentUrl !== "ws://localhost:8080/acp", "…and its record");
+      await h.send(panel, "hello after sync");
+      await h.until(null, () => gw.prompts.some((p) => /hello after sync/.test(p.userText)), "the message reaches the synced agent");
+      t.ok("the conversation talks to the synced agent");
+    },
+  },
 ];
