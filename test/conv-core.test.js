@@ -263,6 +263,31 @@ test("planAdoption: a new window adopts the most recently used orphan, as many a
   assert.deepEqual(p.prune, []);
 });
 
+test("planAdoption skip (agent-per-conversation §7 I3): empty conversations take no slot and are archived", () => {
+  const now = 100 * DAY;
+  // Review #158 nit 1: window 20 has 1 open → 2 free; the orphan holds [E (empty, current), B, C].
+  const windows = {
+    10: { open: [ID(9), ID(2), ID(3)], current: ID(9), savedAt: now - 5000 },
+    20: { open: [ID(5)], current: ID(5), savedAt: now },
+  };
+  const index = { [ID(2)]: { lastMessageAt: now - 50 }, [ID(3)]: { lastMessageAt: now - 100 } };
+  const p = C.planAdoption({ ownWindowId: 30, windows, liveIds: new Set(["20", "30"]), index, now, skip: new Set([ID(9)]) });
+  assert.deepEqual(p.take, [ID(2), ID(3)]);                // both fit: the empty one took no slot
+  assert.equal(p.current, ID(2));                           // the empty current falls to the newest
+  assert.deepEqual(p.archive, [ID(9)]);
+  // A record holding only empty conversations is not adopted.
+  const q = C.planAdoption({ ownWindowId: 30, windows: { 10: { open: [ID(9)], current: ID(9), savedAt: now } }, liveIds: new Set(["30"]), index: {}, now, skip: new Set([ID(9)]) });
+  assert.equal(q.adopt, null);
+  assert.deepEqual(q.take, []);
+});
+
+test("isEmptyConversation: no messages and no canvases", () => {
+  assert.equal(C.isEmptyConversation(undefined, undefined), true);
+  assert.equal(C.isEmptyConversation({ messages: [] }, []), true);
+  assert.equal(C.isEmptyConversation({ messages: [{ text: "hi" }] }, []), false);
+  assert.equal(C.isEmptyConversation({ messages: [] }, ["cv_1"]), false);
+});
+
 test("planAdoption: a window with its own record adopts nothing; old orphans are pruned and archived", () => {
   const now = 100 * DAY;
   const windows = {

@@ -358,7 +358,10 @@
    * Other orphan records older than keepMs are pruned and their ids archived.
    * → { adopt: windowId | null, take: [ids], current, archive: [ids], prune: [windowIds] }
    */
-  function planAdoption({ ownWindowId, windows, liveIds, index, now, keepMs = ORPHAN_KEEP_MS, maxOpen = MAX_OPEN }) {
+  // skip (agent-per-conversation §7 I3): ids of empty conversations (no messages, no canvases). They
+  // are never adopted and take no slot: a record holding only those is not chosen, and the adopted
+  // record's go to `archive` (archiving deletes an empty conversation).
+  function planAdoption({ ownWindowId, windows, liveIds, index, now, keepMs = ORPHAN_KEEP_MS, maxOpen = MAX_OPEN, skip = new Set() }) {
     const own = String(ownWindowId);
     const idx = index || {};
     const lastAt = (id) => Number((idx[id] && idx[id].lastMessageAt) || 0);
@@ -368,7 +371,7 @@
     const free0 = Math.max(0, maxOpen - liveOpenIds(windows, liveIds, own).size);
     if (!windows[own] && free0 > 0) {
       for (const w of orphans) {
-        if (!openOf(windows[w]).length) continue;
+        if (!openOf(windows[w]).some((id) => !skip.has(id))) continue;
         if (adopt === null || usedAt(w) > usedAt(adopt)) adopt = w;
       }
     }
@@ -378,12 +381,13 @@
     if (adopt !== null) {
       const rec = windows[adopt];
       const ids = openOf(rec);
-      const cur = ids.includes(rec.current) ? rec.current : null;
+      const cur = ids.includes(rec.current) && !skip.has(rec.current) ? rec.current : null;
       const ordered = [...(cur ? [cur] : []), ...ids.filter((x) => x !== cur).sort((a, b) => lastAt(b) - lastAt(a))];
       const busy = liveOpenIds(windows, liveIds, own);
       let free = Math.max(0, maxOpen - busy.size);
       for (const id of ordered) {
         if (busy.has(id)) continue;                      // already open in a live window: theirs
+        if (skip.has(id)) { archive.push(id); continue; }   // empty: nothing to come back to
         if (free > 0) { take.push(id); free--; } else archive.push(id);
       }
       // Tab order as it was in the adopted record.

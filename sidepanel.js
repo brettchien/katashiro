@@ -25,6 +25,11 @@ const room = [];
 let legacyActiveAgentUrl = null;
 // Agents dropped from the stored list for repeating a URL (applyConfig), said once in the chat.
 let dedupedAgents = [];
+function noteDedupedAgents() {
+  if (!dedupedAgents.length) return;
+  appendSystemMessage(`設定裡有重複網址的 agent，已只保留第一個：${dedupedAgents.map((a) => `${a.name || "Agent"}（${a.url}）`).join("、")}`);
+  dedupedAgents = [];
+}
 
 // Connection config (the heartbeat; RoomCore normalizes it). The routing mode and loop-guard cap
 // it used to carry went with the relay.
@@ -1509,10 +1514,7 @@ loadConfig().then(async (r) => {
     renderSyncBadge();
 
     switchView("chat");
-    if (dedupedAgents.length) {
-      appendSystemMessage(`設定裡有重複網址的 agent，已只保留第一個：${dedupedAgents.map((a) => `${a.name || "Agent"}（${a.url}）`).join("、")}`);
-      dedupedAgents = [];
-    }
+    noteDedupedAgents();
     // Conversations (migration, this window's open set and locks) BEFORE building/connecting, so
     // each conn resumes the current conversation's saved session.
     try { await loadConversations(); } catch (e) { console.error("katashiro: loading conversations failed:", e); }
@@ -1548,6 +1550,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (!RoomCore.shouldAdoptRemoteConfig({ runningOnDefaults, userEdited, remote })) return;
     runningOnDefaults = false;
     applyConfig(remote);
+    noteDedupedAgents();
     buildRoom();
     // §2.4: the conversations opened meanwhile sit on the placeholder agent this list replaces →
     // the old active agent, as the setup's Connect does (agents:seen is the default list, so §2.6
@@ -1832,19 +1835,20 @@ async function loadConversations() {
     const own = windows[wid];
     // §3.7: a window with no record adopts the most recently used orphan record (browser restart);
     // old orphan records are pruned and their conversations archived.
-    const plan = ConvCore.planAdoption({ ownWindowId: wid, windows, liveIds: live, index, now: Date.now() });
-    // An empty conversation (no messages, no canvases) is not adopted: there is nothing to come back
-    // to, and with several agents a new conversation starts at the agent picker instead (Brett
-    // 2026-10-16, agent-per-conversation §6). It is archived with the rest, which deletes it.
-    if (!own && plan.take.length) {
-      const got = await chrome.storage.local.get([...plan.take.map(ConvCore.convKey), ...plan.take.map(ConvCore.canvasIndexKey)]);
-      const empty = plan.take.filter((id) => ConvCore.isEmptyConversation(got[ConvCore.convKey(id)], got[ConvCore.canvasIndexKey(id)]));
-      if (empty.length) {
-        plan.take = plan.take.filter((id) => !empty.includes(id));
-        plan.archive.push(...empty);
-        if (!plan.take.includes(plan.current)) plan.current = plan.take[0] || null;
+    // An empty conversation (no messages, no canvases) is not adopted and takes no slot: there is
+    // nothing to come back to, and with several agents a new conversation starts at the agent
+    // picker instead (Brett 2026-10-16, agent-per-conversation §7 I3). The adopted record's empty
+    // ones are archived with the rest, which deletes them. Read only when this window may adopt.
+    const skip = new Set();
+    if (!own) {
+      const orphanIds = [...new Set(Object.entries(windows).filter(([w]) => w !== wid && !live.has(String(w)))
+        .flatMap(([, rec]) => (Array.isArray(rec && rec.open) ? rec.open : []).filter(ConvCore.isConvId)))];
+      if (orphanIds.length) {
+        const got = await chrome.storage.local.get([...orphanIds.map(ConvCore.convKey), ...orphanIds.map(ConvCore.canvasIndexKey)]);
+        for (const id of orphanIds) if (ConvCore.isEmptyConversation(got[ConvCore.convKey(id)], got[ConvCore.canvasIndexKey(id)])) skip.add(id);
       }
     }
+    const plan = ConvCore.planAdoption({ ownWindowId: wid, windows, liveIds: live, index, now: Date.now(), skip });
     const wanted = own
       ? { open: (Array.isArray(own.open) ? own.open : []).filter(ConvCore.isConvId), current: own.current }
       : { open: plan.take, current: plan.current };
@@ -1874,7 +1878,21 @@ async function loadConversations() {
     // must leave the conversations in a record, not in none.
     windowRec = { open, current };
     await writeWindowRec();
-    if (plan.archive.length) await convStore.archiveIds(plan.archive);
+    // §7 I3: the empty conversations of the other orphan records (not adopted, not pruned) leave
+    // those records and are archived (= deleted) too, so none lingers as a "closed window" row.
+    const leftEmpty = [];
+    const emptyWrites = {};
+    if (skip.size) {
+      for (const [w, rec] of Object.entries(windows)) {
+        if (w === wid || live.has(String(w)) || w === plan.adopt || plan.prune.includes(w)) continue;
+        const ids = (Array.isArray(rec && rec.open) ? rec.open : []).filter((id) => skip.has(id));
+        if (!ids.length) continue;
+        leftEmpty.push(...ids);
+        emptyWrites[ConvCore.windowKey(w)] = { ...ids.reduce((r, id) => ConvCore.withClosed(r, id), rec), savedAt: rec.savedAt || 0 };
+      }
+    }
+    if (Object.keys(emptyWrites).length) await chrome.storage.local.set(emptyWrites);
+    if (plan.archive.length || leftEmpty.length) await convStore.archiveIds([...plan.archive, ...leftEmpty]);
     const drop = [...plan.prune, ...(plan.adopt !== null && !own ? [plan.adopt] : [])].map(ConvCore.windowKey);
     if (drop.length) await chrome.storage.local.remove(drop);
     // P1b §4.4: conversations adopted from an orphan record (a browser restart) are "coming back".
@@ -3400,7 +3418,7 @@ function sendMessage() {
   if (capError) { appendSystemMessage(capError); return; }
   const replyTo = replyTarget;                           // what this message answers (or null)
   setReplyTarget(null);
-  postUserText(text, images, replyTo, files);
+  if (!postUserText(text, images, replyTo, files).length) appendSystemMessage("訊息沒有送出：這段對話的 agent 目前沒有連線（看上方 chip 的狀態，或稍後再送）。");
   // Q6 (multi-conversation §4.3): at the send — never mid-turn — bring the conversation's working
   // tab to the front if the user is looking at another tab.
   switchToWorkingTab(conversationId).catch(() => {});
@@ -3441,7 +3459,8 @@ function postUserText(text, images, replyTo, files) {
   }, Composer.expandAttachments(text, files));
 
   // A conversation's only recipient is its own agent (agent-per-conversation §2.7), and only while
-  // it is connected: a Conn that is not must never pile up prompts in its queue (review: Orca).
+  // this window wants it connected (`enabled`, user intent: a Conn reconnecting still queues, and
+  // flushes once it is back). One not wanted must never pile up prompts in its queue (review: Orca).
   const c = connOfConv(conversationId);
   if (!c || !c.enabled) return [];
   c.enqueue(framed, images);
