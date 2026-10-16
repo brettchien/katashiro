@@ -68,6 +68,8 @@ real ones.
 | `working-tab-canvas.mjs` | canvas tools and the working tab | #141 / Q6: `canvas_highlight` / `canvas_goto` (answered by the real canvas tab) make it the working tab; the next send brings it forward |
 | `canvas-inject-css.mjs` | canvas_inject_css | the sheet reaches the real canvas tab's sandboxed frame, two sheets add up, they survive a re-render, `url()` is refused, `clear` removes them; `read_dom` on a canvas tab names the canvas tools |
 | `user-image-open.mjs` | a pasted image | the image reaches the prompt; its chat thumbnail (zoom-in cursor) opens it full size in a new tab, on every click |
+| `agent-per-conversation.mjs` | two agents, two fake gateways | ADR agent-per-conversation: the ＋ agent picker (未連線 for an unconnected agent); both stream at once into their own lists; the chip follows the conversation on screen; Y's handshake opens no session for X's conversation (§2.7 `Conn.cur`); archiving an agent's last conversation closes its socket |
+| | migration, URL edit, removal | the old `activeAgentUrl` binds the conversation and stays in storage.sync; a URL edit rebinds both copies and drops the old session; removing the agent in use leaves the conversation read-only; adding the URL back revives it |
 | `reload-tab-group.mjs` | **xfail (#139)** | after an extension reload, a conversation's next tab must join its existing group: today a second group with the same title is made |
 
 ## Adding a case

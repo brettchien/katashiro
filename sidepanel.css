@@ -1053,7 +1053,6 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .agent-actions { flex-wrap: wrap; justify-content: flex-end; }
 
 .agent-conn-toggle,
-.agent-active-toggle,
 .agent-browser-toggle {
   padding: 5px 9px;
   border-radius: 8px;
@@ -1072,24 +1071,18 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   border-color: var(--accent);
 }
 
-/* Single-active selector (settings): the in-use agent is highlighted + inert. */
-.agent-active-toggle.on {
-  background: var(--accent-success-glow);
-  color: var(--accent-success);
-  border-color: var(--accent-success);
-  cursor: default;
+/* Settings: how many open conversations use this agent (agent-per-conversation §2.5). */
+.agent-uses {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
 }
+.agent-uses.on { color: var(--accent-success); }
 
-/* Dormant roster chip — a selector for an inactive agent; click activates it. */
+/* The chip of a conversation whose agent was removed (agent-per-conversation §2.6). */
 .roster-chip.dormant {
   opacity: 0.55;
   border-style: dashed;
-}
-.roster-chip.dormant:hover { opacity: 0.85; }
-.roster-activate {
-  font-size: 10px;
-  color: var(--text-muted);
-  white-space: nowrap;
 }
 
 .agent-browser-toggle.on {

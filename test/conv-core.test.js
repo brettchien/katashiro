@@ -762,3 +762,101 @@ test("backgroundTabRefusal (P2 Q8): own group only, never the user's tab, no wri
   assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: userInGroup, write: true }), C.BG_USER_IN_GROUP_TEXT);
   assert.equal(C.backgroundTabRefusal({ tab: mine, groupId: 5, userTabs: [null, undefined] }), null);
 });
+
+// --- an agent per conversation (ADR docs/adr/agent-per-conversation.md) -------------------------
+
+const X = "wss://x.example/acp", Y = "wss://y.example/acp", Z = "wss://z.example/acp";
+
+test("planAgentMigration (§2.2): entries without agentUrl get the fallback, bound ones are left alone", () => {
+  const idx = { [ID(1)]: { title: "a" }, [ID(2)]: { title: "b", agentUrl: Y }, [ID(3)]: { title: "c", agentUrl: null } };
+  const p = C.planAgentMigration(idx, X);
+  assert.deepEqual(p.changed.sort(), [ID(1), ID(3)]);
+  assert.equal(p.index[ID(1)].agentUrl, X);
+  assert.equal(p.index[ID(2)].agentUrl, Y);
+  assert.equal(idx[ID(1)].agentUrl, undefined);            // input not mutated
+  assert.deepEqual(C.planAgentMigration(p.index, X).changed, []);   // idempotent
+  assert.deepEqual(C.planAgentMigration(idx, null).changed, []);    // no agent to bind to → nothing
+});
+
+test("migrateAgents (§2.2): writes the index once; a second run finds nothing", async () => {
+  const s = fakeStorage({ [C.INDEX_KEY]: { [ID(1)]: { title: "a" }, [ID(2)]: { title: "b", agentUrl: Y } } });
+  const st = store(s);
+  assert.deepEqual(await st.migrateAgents(X), { migrated: 1 });
+  assert.equal(s.data[C.INDEX_KEY][ID(1)].agentUrl, X);
+  assert.equal(s.data[C.INDEX_KEY][ID(2)].agentUrl, Y);
+  assert.deepEqual(await st.migrateAgents(Z), { migrated: 0 });
+  assert.equal(s.data[C.INDEX_KEY][ID(1)].agentUrl, X);
+});
+
+test("migrateAgents (§2.1): never touches activeAgentUrl (it lives in storage.sync and stays)", async () => {
+  const s = fakeStorage({ activeAgentUrl: X, [C.INDEX_KEY]: { [ID(1)]: { title: "a" } } });
+  await store(s).migrateAgents(X);
+  assert.equal(s.data.activeAgentUrl, X);
+});
+
+test("wantedAgentUrls (§2.3): distinct open agents, minus URLs not in the agents list", () => {
+  assert.deepEqual([...C.wantedAgentUrls([X, X, Y, Z, null], [X, Y])].sort(), [X, Y]);
+  assert.deepEqual([...C.wantedAgentUrls([], [X])], []);
+});
+
+test("agentUrlEdits (§2.6): same position + same name + a URL new to the list = an edit; else a removal", () => {
+  const a = [{ name: "Orca", url: X }, { name: "Falcon", url: Y }];
+  assert.deepEqual(C.agentUrlEdits(a, [{ name: "Orca", url: Z }, { name: "Falcon", url: Y }]), [{ from: X, to: Z }]);
+  assert.deepEqual(C.agentUrlEdits(a, [{ name: "Orca2", url: Z }, { name: "Falcon", url: Y }]), []);   // renamed too: removal + addition
+  assert.deepEqual(C.agentUrlEdits(a, [{ name: "Falcon", url: Y }]), []);                              // removal shifts positions: no edit
+  assert.deepEqual(C.agentUrlEdits(a, [{ name: "Orca", url: Y }, { name: "Falcon", url: X }]), []);    // swapped: no URL is new
+  assert.deepEqual(C.agentUrlEdits(a, a), []);
+  assert.deepEqual(C.agentUrlEdits(null, a), []);
+});
+
+test("planRebind / reboundRecord (§2.6): only conversations on `from`; the old session goes", () => {
+  const p = C.planRebind({ [ID(1)]: { agentUrl: X, archivedAt: 5 }, [ID(2)]: { agentUrl: Y } }, X, Z);
+  assert.deepEqual(p.ids, [ID(1)]);
+  assert.equal(p.index[ID(1)].agentUrl, Z);
+  assert.equal(p.index[ID(1)].archivedAt, 5);
+  assert.equal(p.index[ID(2)].agentUrl, Y);
+  const r = C.reboundRecord({ id: ID(1), agentUrl: X, sessions: { [X]: "sess_1", [Y]: "sess_2" }, messages: [1] }, X, Z);
+  assert.deepEqual(r, { id: ID(1), agentUrl: Z, sessions: { [Y]: "sess_2" }, messages: [1] });
+});
+
+test("rebindAgent (§2.6): index first, then every record — archived ones too", async () => {
+  const s = fakeStorage({
+    [C.INDEX_KEY]: { [ID(1)]: { agentUrl: X, archivedAt: null }, [ID(2)]: { agentUrl: X, archivedAt: 9 }, [ID(3)]: { agentUrl: Y } },
+    [C.convKey(ID(1))]: { id: ID(1), agentUrl: X, sessions: { [X]: "s1" }, messages: [] },
+    [C.convKey(ID(2))]: { id: ID(2), agentUrl: X, sessions: { [X]: "s2" }, messages: [] },
+    [C.convKey(ID(3))]: { id: ID(3), agentUrl: Y, sessions: { [Y]: "s3" }, messages: [] },
+  });
+  const { ids } = await store(s).rebindAgent(X, Z);
+  assert.deepEqual(ids.sort(), [ID(1), ID(2)]);
+  for (const id of [ID(1), ID(2)]) {
+    assert.equal(s.data[C.INDEX_KEY][id].agentUrl, Z);
+    assert.equal(s.data[C.convKey(id)].agentUrl, Z);
+    assert.deepEqual(s.data[C.convKey(id)].sessions, {});
+  }
+  assert.equal(s.data[C.convKey(ID(3))].agentUrl, Y);
+});
+
+test("rebindAgent cut short after the index: the record is fixed on load (index wins, §2.1)", async () => {
+  const s = fakeStorage({
+    [C.INDEX_KEY]: { [ID(1)]: { agentUrl: X } },
+    [C.convKey(ID(1))]: { id: ID(1), agentUrl: X, sessions: { [X]: "s1" }, messages: [] },
+  }, { failAfter: 1 });
+  await assert.rejects(store(s).rebindAgent(X, Z));
+  assert.equal(s.data[C.INDEX_KEY][ID(1)].agentUrl, Z);
+  assert.equal(s.data[C.convKey(ID(1))].agentUrl, X);
+  assert.deepEqual(C.recordAgentUrl(s.data[C.INDEX_KEY][ID(1)], s.data[C.convKey(ID(1))], X), { url: Z, writeBack: true, writeIndex: false });
+});
+
+test("recordAgentUrl (§2.1): index wins; record only → index written; neither → fallback both", () => {
+  assert.deepEqual(C.recordAgentUrl({ agentUrl: X }, { agentUrl: X }, Z), { url: X, writeBack: false, writeIndex: false });
+  assert.deepEqual(C.recordAgentUrl({ agentUrl: X }, { agentUrl: Y }, Z), { url: X, writeBack: true, writeIndex: false });
+  assert.deepEqual(C.recordAgentUrl({}, { agentUrl: Y }, Z), { url: Y, writeBack: false, writeIndex: true });
+  assert.deepEqual(C.recordAgentUrl(undefined, null, Z), { url: Z, writeBack: true, writeIndex: true });
+  assert.deepEqual(C.recordAgentUrl(undefined, null, null), { url: null, writeBack: false, writeIndex: false });
+});
+
+test("conversationsUsing (§2.6): open and archived count, being deleted does not", () => {
+  const idx = { [ID(1)]: { agentUrl: X }, [ID(2)]: { agentUrl: X, archivedAt: 3 }, [ID(3)]: { agentUrl: X, deletingAt: 4 }, [ID(4)]: { agentUrl: Y } };
+  assert.equal(C.conversationsUsing(idx, X), 2);
+  assert.equal(C.conversationsUsing(idx, Z), 0);
+});

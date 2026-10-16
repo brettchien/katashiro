@@ -62,7 +62,11 @@
   const DELETE_MISSING_TEXT = "找不到這段對話（可能已經在別的分頁刪除了）";
   // A panel could not take conv:<id> and no live window lists it: held by a delete in progress
   // (§7.1), not by another window's panel — so no "前往那個視窗".
-  const CONV_BUSY_TEXT = "這段對話正在別處處理中（可能正在刪除）：稍後再試";
+  // ADR agent-per-conversation §2.6: storage.local, the agents list this device last bound its
+  // conversations against — a URL edit synced from another device is found against it at start-up.
+  const AGENTS_SEEN_KEY = "agents:seen";
+  const AGENT_REMOVED_TEXT = "agent 已移除：這段對話的 agent 不在設定裡了，無法再傳訊息（可以閱讀、封存或刪除；在設定加回同一個網址就能繼續）";
+  const CONV_BUSY_TEXT ="這段對話正在別處處理中（可能正在刪除）：稍後再試";
   // P1b §4.6: set_title refusals the agent reads (English, like every tool result).
   const SET_TITLE_USER_TEXT = "the user named this conversation; set_title never replaces a name the user typed";
   const SET_TITLE_EMPTY_TEXT = "title is empty after removing control and layout characters";
@@ -611,6 +615,94 @@
     return lines.join("\n");
   }
 
+  // --- An agent per conversation (ADR docs/adr/agent-per-conversation.md) ------------------------
+
+  const hasAgentUrl = (e) => !!(e && typeof e.agentUrl === "string" && e.agentUrl);
+
+  /**
+   * §2.2: every index entry without `agentUrl` is bound to `fallbackUrl` (the old activeAgentUrl,
+   * resolved). Idempotent: the trigger is "has no agentUrl". → { index, changed: [ids] }
+   */
+  function planAgentMigration(index, fallbackUrl) {
+    const idx = { ...(index || {}) };
+    const changed = [];
+    if (!fallbackUrl) return { index: idx, changed };
+    for (const [id, e] of Object.entries(idx)) {
+      if (!e || typeof e !== "object" || hasAgentUrl(e)) continue;
+      idx[id] = { ...e, agentUrl: fallbackUrl };
+      changed.push(id);
+    }
+    return { index: idx, changed };
+  }
+
+  /** §2.3: the agents to keep connected — the open conversations' agents still in the agents list. */
+  function wantedAgentUrls(openAgentUrls, agentUrls) {
+    const known = new Set(agentUrls || []);
+    const out = new Set();
+    for (const u of openAgentUrls || []) if (u && known.has(u)) out.add(u);
+    return out;
+  }
+
+  /**
+   * §2.6: the URL edits between two agents lists — an old URL that is gone, with an entry at the
+   * same position, with the same name, whose URL is new to the list. Anything else that drops a URL
+   * is a removal. → [{ from, to }]
+   */
+  function agentUrlEdits(before, after) {
+    const prev = Array.isArray(before) ? before : [];
+    const next = Array.isArray(after) ? after : [];
+    const prevUrls = new Set(prev.map((a) => a && a.url));
+    const nextUrls = new Set(next.map((a) => a && a.url));
+    const out = [];
+    prev.forEach((a, i) => {
+      const b = next[i];
+      if (!a || !b || !a.url || !b.url || a.url === b.url) return;
+      if (nextUrls.has(a.url) || prevUrls.has(b.url)) return;
+      if ((a.name || "") !== (b.name || "")) return;
+      out.push({ from: a.url, to: b.url });
+    });
+    return out;
+  }
+
+  /** §2.6: the index with every conversation bound to `from` rebound to `to`. → { index, ids } */
+  function planRebind(index, from, to) {
+    const idx = { ...(index || {}) };
+    const ids = [];
+    if (!from || !to || from === to) return { index: idx, ids };
+    for (const [id, e] of Object.entries(idx)) {
+      if (!e || e.agentUrl !== from) continue;
+      idx[id] = { ...e, agentUrl: to };
+      ids.push(id);
+    }
+    return { index: idx, ids };
+  }
+
+  /** §2.6: a conversation record rebound — agentUrl `to`, the session on `from` dropped (the new server knows none). */
+  function reboundRecord(rec, from, to) {
+    const r = rec && typeof rec === "object" ? rec : {};
+    const sessions = { ...(r.sessions && typeof r.sessions === "object" ? r.sessions : {}) };
+    delete sessions[from];
+    return { ...r, agentUrl: to, sessions };
+  }
+
+  /**
+   * §2.1: a record's agent. The index entry is the truth; a record that differs (a rewrite cut
+   * short between the two copies) takes the index's value and is written back. Neither has one
+   * (defensive, after §2.2) → `fallbackUrl`, written back to both. → { url, writeBack, writeIndex }
+   */
+  function recordAgentUrl(entry, rec, fallbackUrl) {
+    if (hasAgentUrl(entry)) return { url: entry.agentUrl, writeBack: !rec || rec.agentUrl !== entry.agentUrl, writeIndex: false };
+    if (hasAgentUrl(rec)) return { url: rec.agentUrl, writeBack: false, writeIndex: true };
+    return { url: fallbackUrl || null, writeBack: !!fallbackUrl, writeIndex: !!fallbackUrl };
+  }
+
+  /** §2.6: how many conversations (open or archived, not being deleted) are bound to `url`. */
+  function conversationsUsing(index, url) {
+    let n = 0;
+    for (const e of Object.values(index || {})) if (e && e.agentUrl === url && e.deletingAt == null) n++;
+    return n;
+  }
+
   /**
    * The canvas side of a delete, from a CanvasStore (canvas-store.js createCanvasStore): the canvases
    * whose meta names the conversation, each through store.remove (the canvas 🗑's path: every
@@ -822,7 +914,40 @@
       return done;
     }
 
-    return { readWindows, readIndex, updateIndex, archiveIds, migrate, deleteConversation, finishDeletions, getMatching: (test) => getMatching(storage, test) };
+    // --- agent per conversation (ADR agent-per-conversation) ---------------------------------------
+
+    /** §2.2: bind every conversation without an agent to `fallbackUrl`. → { migrated: number } */
+    async function migrateAgents(fallbackUrl) {
+      let changed = [];
+      await updateIndex((idx) => {
+        const plan = planAgentMigration(idx, fallbackUrl);
+        changed = plan.changed;
+        return changed.length ? plan.index : undefined;
+      });
+      return { migrated: changed.length };
+    }
+
+    /**
+     * §2.6: rebind every conversation on `from` to `to` — the index first (it is the truth), then
+     * each `conv:<id>`, archived ones too. A run cut short between the two is finished when the
+     * record is loaded (recordAgentUrl). → { ids }
+     */
+    async function rebindAgent(from, to) {
+      let ids = [];
+      await updateIndex((idx) => {
+        const plan = planRebind(idx, from, to);
+        ids = plan.ids;
+        return ids.length ? plan.index : undefined;
+      });
+      if (!ids.length) return { ids };
+      const got = (await storage.get(ids.map(convKey))) || {};
+      const writes = {};
+      for (const id of ids) if (got[convKey(id)]) writes[convKey(id)] = reboundRecord(got[convKey(id)], from, to);
+      if (Object.keys(writes).length) await storage.set(writes);
+      return { ids };
+    }
+
+    return { readWindows, readIndex, updateIndex, archiveIds, migrate, deleteConversation, finishDeletions, migrateAgents, rebindAgent, getMatching: (test) => getMatching(storage, test) };
   }
 
   return {
@@ -840,5 +965,7 @@
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,
+    AGENTS_SEEN_KEY, AGENT_REMOVED_TEXT, planAgentMigration, wantedAgentUrls, agentUrlEdits, planRebind, reboundRecord,
+    recordAgentUrl, conversationsUsing,
   };
 });

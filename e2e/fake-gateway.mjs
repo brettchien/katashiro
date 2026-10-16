@@ -32,7 +32,9 @@ export const POOL_BUSY_TEXT = "⚠️ **Service Busy**\nAll agent sessions are i
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class FakeGateway {
-  constructor() {
+  // prefix: of the session ids it makes — two gateways in one case (two agents) stay apart.
+  constructor({ prefix = "sess_" } = {}) {
+    this.prefix = prefix;
     this.log = [];                 // every client → gateway request / notification, in order
     this.prompts = [];             // every session/prompt: { id, sessionId, text, ws, at, done }
     this.cancels = [];             // sessionId of each session/cancel
@@ -86,7 +88,7 @@ export class FakeGateway {
       case "initialize":
         return this.reply(ws, m.id, { protocolVersion: 1, agentCapabilities: { loadSession: true, promptCapabilities: { image: true } } });
       case "session/new": {
-        const sid = `sess_${this.nextSession++}`;
+        const sid = `${this.prefix}${this.nextSession++}`;
         this.sessions.set(sid, { ws, acpId: p.mcpServers && p.mcpServers[0] && p.mcpServers[0].id, connectionId: null });
         return this.reply(ws, m.id, { sessionId: sid });
       }
