@@ -185,9 +185,10 @@ without a `sessionId` (multi-conversation §3.11), `askUser`, `showImage`, `onCa
 
 `restarted` still closes one conversation's cards; `disconnected` — an agent deliberately
 disconnected — now happens when that agent's **last open conversation is archived** (its own cards
-are already closed by the archive; delete only takes archived conversations, §2.3) or when its URL / token is edited or it is removed
-(§2.6), and closes that agent's cards in every conversation, as today. "Another agent made active"
-no longer exists as a cause. The 3-pending-card cap stays per agent per conversation.
+are already closed by the archive; delete only takes archived conversations, §2.3) or when its URL
+/ token is edited or it is removed (§2.6), and closes that agent's cards in every conversation, as
+today. "Another agent made active" no longer exists as a cause. The 3-pending-card cap stays per
+agent per conversation.
 
 ## 3. Alternatives considered
 
@@ -227,7 +228,8 @@ One PR after this ADR is accepted:
 - `conv-core.js`: `agentUrl` in index / record; the migration (§2.2); `wantedAgentUrls(openIds)`;
   rebind on URL edit (§2.6).
 - `sidepanel.js`: `syncConnections()` replacing `connectAll` / `setActiveAgent`; the agent picker;
-  the one-chip roster; the §2.7 table; Settings changes (§2.5, §2.6); remove `activeAgentUrl`.
+  the one-chip roster; the §2.7 table; Settings changes (§2.5, §2.6); stop writing
+  `activeAgentUrl` (kept in `CONFIG_KEYS`, read by the migration only, §2.1).
 - `room-core.js`: `resolveActiveUrl` kept for the migration only.
 - Tests: unit tests for the migration (including "`activeAgentUrl` is not deleted"), wanted set
   (removed URLs excluded), rebind (both copies; index wins on load; a remote same-position
