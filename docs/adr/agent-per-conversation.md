@@ -50,34 +50,48 @@ Brett's answers (2026-10-16, `ask_user` cards):
 
 - `conv:index[id].agentUrl` and `conv:<id>.agentUrl`: the conversation's agent, **written once at
   creation**, never rewritten except by §2.6 (URL edit). The index copy lets the gallery and the
-  tab strip know it without loading each conversation.
+  tab strip know it without loading each conversation. **The index copy is the truth**: a record
+  whose `agentUrl` differs from its index entry (a rewrite interrupted between the two) takes the
+  index's value when loaded and is written back.
 - `conv:<id>.sessions` stays a map (`{ <agentUrl>: <acpSessionId> }`); in practice it holds one key.
   Not narrowed to a single value, so §2.6 and old records need no second shape.
-- `activeAgentUrl` leaves the config (`CONFIG_KEYS`). It is read once more, for the migration.
+- `activeAgentUrl` is **no longer written, but stays in `CONFIG_KEYS` and in `storage.sync`** for at
+  least one release: it is read by the migration (§2.2) on every device, and builds from before
+  this change still use it. Removing the key is a later change.
 - **Agent identity stays the URL** (`Conn.id = agent.url`, as today). A separate agent id was
   considered (§3); the URL is what every existing record is keyed by.
 
 ### 2.2 Migration (one time, on the first start of this build)
 
 Every conversation in `conv:index` without `agentUrl` gets the old `activeAgentUrl` (resolved with
-`RoomCore.resolveActiveUrl`, so a missing or stale value falls to the first agent). Same shape as the
-P1a migration: write the new field, then drop `activeAgentUrl`; an interrupted run is finished by the
-next start, because "has no `agentUrl`" is the trigger. Nothing else moves: the sessions map already
-holds that agent's session.
+`RoomCore.resolveActiveUrl`, so a missing or stale value falls to the first agent). The trigger is
+"this device's record has no `agentUrl`", so an interrupted run is finished by the next start.
+Nothing else moves: the sessions map already holds that agent's session.
+
+`activeAgentUrl` is **left in place, not deleted** (§2.1). It lives in `storage.sync`, the
+conversations in `storage.local`: a device that migrated first and deleted it would leave every
+other device migrating onto the first agent (wrong binding), and a device still on an older build
+would have its active agent reset by the `onChanged` of the deletion. Since nothing writes it any
+more, the value every device migrates with is the one they last agreed on.
 
 A record without `agentUrl` met later (cannot happen after the migration; defensive) is treated as
 the first configured agent and written back.
 
 ### 2.3 Connections (Q2)
 
-- **Wanted set** = the distinct `agentUrl`s of the conversations open in this window's tab strip
-  (≤ 3, the open-conversation cap, so ≤ 3 sockets per window). `syncConnections()` connects every
-  wanted `Conn` that is not connected and disconnects every connected one that is not wanted. It
-  replaces `connectAll()` / `setActiveAgent()` and runs after: start-up, ＋, archive, reopen from the
-  gallery, delete, and any Settings change to the agent list.
+- **Wanted set** = the distinct `agentUrl`s of the conversations open in this window's tab strip,
+  **minus URLs no longer in the agents list** (a removed agent's read-only conversations, §2.6, want
+  no socket). ≤ 3, the open-conversation cap, so ≤ 3 sockets per window. `syncConnections()`
+  connects every wanted `Conn` that is not connected and disconnects every connected one that is not
+  wanted. It replaces `connectAll()` / `setActiveAgent()` and runs after: start-up, ＋, archive,
+  reopen from the gallery, and any change to the agent list (Settings here, or a remote one via
+  `storage.onChanged`).
 - A `Conn` is disconnected only when **no** open conversation uses it. Archive is already refused
   while that conversation replies or has prompts queued (§3.4 / P2 §5.1), so the last conversation
-  of an agent cannot go while a turn of it runs.
+  of an agent cannot go while a turn of it runs. **Delete does not change the wanted set**: it only
+  takes conversations that are not open (`ConvStore.deleteConversation` refuses one open in a live
+  window or locked by a panel, multi-conversation §7.1), so the conversation was archived first,
+  and that archive already ran `syncConnections()`.
 - Each window's panel has its own `Conn`s, as today: two windows with Orca conversations open two
   Orca sockets. Pool use is per session, not per socket, so this is unchanged.
 - `Conn.enabled` keeps its meaning (should this conn be up?) and becomes "is it in the wanted set";
@@ -86,9 +100,11 @@ the first configured agent and written back.
 ### 2.4 ＋ and the agent picker (Q1, Q3)
 
 - ＋ with **two or more** agents configured opens a **system card** (the style of the 3-tab archive
-  picker, multi-conversation §3.3, not an agent card) listing the agents by name in Settings order,
-  each with its link status (🔌 online / offline). Picking one creates the conversation bound to
-  it. Cancel (or closing the card) creates nothing.
+  picker, multi-conversation §3.3, not an agent card) listing the agents by name in Settings order.
+  An agent this window is connected to shows its link status (🔌 online / offline); one it is not
+  connected to (not in the wanted set) shows **未連線**, not offline: its state is unknown, and it
+  is not probed just to fill the picker. Picking one creates the conversation bound to it. Cancel
+  (or closing the card) creates nothing.
 - **One agent** configured → no picker, the conversation is bound to it.
 - With **3 conversations already open**, the existing archive picker comes **after** the agent
   picker: first what the user came for, then what has to give way. Cancelling either creates nothing.
@@ -114,10 +130,16 @@ the first configured agent and written back.
 ### 2.6 Settings edits to an agent in use
 
 - **URL edited**: every conversation bound to the old URL — open or archived, via `conv:index` — is
-  rebound to the new one (`agentUrl` rewritten; `sessions[old]` dropped, since the new server knows
-  none of its sessions). The open ones get `session/new` on the new socket and the U2 host line
-  (multi-conversation §3.5) so the agent can read `chat_history`. This is the only rewrite of
+  rebound to the new one. Both copies are rewritten, index first (it is the truth, §2.1), then each
+  `conv:<id>` (`agentUrl` and `sessions[old]` dropped, since the new server knows none of its
+  sessions); archived records too. The open ones get `session/new` on the new socket and the U2 host
+  line (multi-conversation §3.5) so the agent can read `chat_history`. This is the only rewrite of
   `agentUrl` (§2.1). Cards of that agent close as `disconnected` (§3.8).
+- **The same edit arriving from another device.** The agents list syncs, the bindings (in
+  `storage.local`) do not, so each device rebinds its own conversations when the new list arrives
+  via `storage.onChanged`. An old entry whose URL is gone, with a new entry **at the same position
+  and with the same name** whose URL is new, counts as a URL edit and is rebound as above. Anything
+  else that drops a URL counts as a removal (below); adding that URL back later still revives.
 - **Token edited / browser access toggled**: reconnect that agent, as today; conversations keep their
   binding and resume their sessions.
 - **Agent removed**: Settings first says how many conversations use it (`3 段對話使用這個 agent，
@@ -139,6 +161,18 @@ Every `activeAgentUrl` read becomes "the agent of conversation X", with X stated
 | canvas push (📨, `canvas-push`): `connById(activeAgentUrl)` | the agent of `msg.conversationId` |
 | `activateSessions()` on switch | each `Conn` opens the sessions of its own open conversations |
 | `retryLast` guard "not the active agent → no-op" | "this `Conn` is not this conversation's agent, or not wanted → no-op" |
+| `Conn.cur` (the on-screen conversation's state, created on first read by `stateFor`) | the on-screen conversation's state **only if it is bound to this `Conn`**, else `null` |
+| `Conn.stateFor(convId)` (creates a state for any conversation) | creates one only for a conversation bound to this `Conn`; otherwise `null` |
+
+`Conn.cur` is the one that matters most. With one connected `Conn` it was always right; with
+several, every `Conn` would treat the on-screen conversation as its own. Concretely, when agent Y's
+socket finishes its handshake it opens a session for `this.cur`: with conversation A (bound to X) on
+screen, Y would `session/new` for A, and `saveConv` would write `sessions[Y]` into A. Everything
+that defaults to `st = this.cur` has the same problem and is covered by the new `cur`: the handshake
+above, `enqueue` (from `postUserText`), the roster's `acpReady` / `acpSessionId`, a `session/update`
+without a `sessionId` (multi-conversation §3.11), `askUser`, `showImage`, `onCanvasWrite`,
+`finalizeStream` and `confirmOutcome`. Callers that loop `room.forEach(c => …(convId))` (stop,
+⏹ on a tab) stay correct: the `Conn`s not bound to that conversation have no state for it.
 
 - **@mentions**: a conversation has one agent, so `@OtherAgent` routes nowhere new: the text goes
   to the conversation's agent as written. The room modes (mention / ambient) and the loop guard stay
@@ -150,8 +184,8 @@ Every `activeAgentUrl` read becomes "the agent of conversation X", with X stated
 ### 2.8 Cards (multi-conversation §3.8)
 
 `restarted` still closes one conversation's cards; `disconnected` — an agent deliberately
-disconnected — now happens when that agent's **last open conversation is archived or deleted** (its
-own cards are already closed by the archive) or when its URL / token is edited or it is removed
+disconnected — now happens when that agent's **last open conversation is archived** (its own cards
+are already closed by the archive; delete only takes archived conversations, §2.3) or when its URL / token is edited or it is removed
 (§2.6), and closes that agent's cards in every conversation, as today. "Another agent made active"
 no longer exists as a cause. The 3-pending-card cap stays per agent per conversation.
 
@@ -195,7 +229,10 @@ One PR after this ADR is accepted:
 - `sidepanel.js`: `syncConnections()` replacing `connectAll` / `setActiveAgent`; the agent picker;
   the one-chip roster; the §2.7 table; Settings changes (§2.5, §2.6); remove `activeAgentUrl`.
 - `room-core.js`: `resolveActiveUrl` kept for the migration only.
-- Tests: unit tests for the migration, wanted set, rebind; the multi-conversation smoke gets a
+- Tests: unit tests for the migration (including "`activeAgentUrl` is not deleted"), wanted set
+  (removed URLs excluded), rebind (both copies; index wins on load; a remote same-position
+  same-name edit); the smoke checks Y's handshake opens no session for an on-screen X
+  conversation (§2.7 `Conn.cur`). The multi-conversation smoke also gets a
   two-agent case (two `FakeGateway` instances, two URLs; e2e/) — two conversations on two agents
   streaming at once, archive the last conversation of one → its socket closes, URL edit → rebind.
 - `TESTING.md`: real-Chrome steps for the picker, two agents at once, removing an agent in use.
