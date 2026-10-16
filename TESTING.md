@@ -446,6 +446,10 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     with a conversation that has messages is still adopted. Press ＋ in one conversation and switch
     to another without picking: the picker stays above the input; ＋ again shows the same one.
     Settings has no 房間模式; each agent says 開著 N 段／共 M 段.
+  - **A dropped socket mid-turn (§7 I8):** ask something long, and while it replies cut the
+    network (DevTools → Network → Offline, then back Online within a few seconds). The chat says
+    「連線中斷：… 的回覆…，重新連線後會重送你的訊息」 and the agent answers the resent message in full
+    instead of calling it a duplicate.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito

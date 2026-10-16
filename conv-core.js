@@ -299,6 +299,16 @@
     return t ? `${RECONNECT_HINT}\n\n${t}` : RECONNECT_HINT;
   }
 
+  // agent-per-conversation §7 I8 (2026-10-16 22:20:57 TPE): the socket dropped mid-turn after the
+  // gateway had the prompt; the agent answered into the dead connection, and the requeued resend
+  // read as a duplicate. The resend carries this line, so the agent answers again in full.
+  const RESEND_HINT = "[katashiro: the connection dropped while you were answering the message below, so your reply " +
+    "did not reach the user. If you already received it, answer it again in full: it is a resend, not a duplicate.]";
+  function withResendHint(text) {
+    const t = text == null ? "" : String(text);
+    return t ? `${RESEND_HINT}\n\n${t}` : RESEND_HINT;
+  }
+
   // --- the open set -------------------------------------------------------------------------------
 
   const isWindowId = (w) => /^\d+$/.test(String(w));
@@ -976,7 +986,7 @@
     isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
     archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, backgroundTabRefusal,
-    BG_NO_TAB_TEXT, BG_NOT_OWN_TEXT, BG_USER_ON_TAB_TEXT, BG_USER_IN_GROUP_TEXT, needsReconnectHint, withReconnectHint,
+    BG_NO_TAB_TEXT, BG_NOT_OWN_TEXT, BG_USER_ON_TAB_TEXT, BG_USER_IN_GROUP_TEXT, needsReconnectHint, withReconnectHint, RESEND_HINT, withResendHint,
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,

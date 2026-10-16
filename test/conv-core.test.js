@@ -900,3 +900,9 @@ test("conversationsUsing (§2.6): open and archived count, being deleted does no
   assert.equal(C.conversationsUsing(idx, X), 2);
   assert.equal(C.conversationsUsing(idx, Z), 0);
 });
+
+test("withResendHint (agent-per-conversation §7 I8): the line, a blank line, the message", () => {
+  assert.equal(C.withResendHint("hi"), `${C.RESEND_HINT}\n\nhi`);
+  assert.equal(C.withResendHint(""), C.RESEND_HINT);
+  assert.match(C.RESEND_HINT, /resend, not a duplicate/);
+});

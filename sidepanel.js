@@ -168,6 +168,7 @@ class SessionState {
     this.readyGen = -1;                                  // the socket generation it was resumed / created on
     this.opening = null;                                 // the in-flight session/resume | session/new
     this.hintPending = false;                            // U2 (§3.5): the next accepted prompt carries the host line
+    this.resendPending = false;                          // §7 I8: the next prompt is a resend after a mid-turn drop
     this.promptQueue = [];
     this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
@@ -804,7 +805,8 @@ class Conn {
 
     // U2 host line (§3.5): first, at flush time only — never stored, never in the retry copy.
     const hinted = st.hintPending;
-    const sent = hinted ? ConvCore.withReconnectHint(text) : text;
+    const resent = st.resendPending;                     // §7 I8: innermost, right above the message
+    const sent = hinted ? ConvCore.withReconnectHint(resent ? ConvCore.withResendHint(text) : text) : (resent ? ConvCore.withResendHint(text) : text);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
     this.acpRequest("session/prompt", {
@@ -830,6 +832,7 @@ class Conn {
           return;
         }
         if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
+        if (resent) st.resendPending = false;
         st.turnActive = false;
         updateStopButton();
         renderConvTabs();
@@ -847,13 +850,21 @@ class Conn {
         const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
         if (action === "requeue") {
           // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
-          // that rejects the in-flight turn with "connection closed"). The prompt almost certainly
-          // never landed, so re-queue it — the onclose-scheduled reconnect flushes it on a fresh
-          // session (ADR R3). Safe: a dead socket means the agent never received this turn. The
-          // host line is not re-queued: the flag still stands, so the resend carries it again.
+          // that rejects the in-flight turn with "connection closed"). Re-queue it — the
+          // onclose-scheduled reconnect flushes it (ADR R3). The prompt may well have LANDED: on
+          // 2026-10-16 22:20:57 TPE the socket dropped 4 s after the gateway took it, the agent
+          // answered into the dead connection, and the resend read as a duplicate. So the resend
+          // carries RESEND_HINT (answer again in full), and the chat says what happened, under
+          // whatever part of the reply had arrived (§7 I8). The host line is not re-queued: the
+          // flag still stands, so the resend carries it again.
+          const partial = !!(st.stream && st.stream.text);
           st.promptQueue.unshift(text);
           st.pendingImages.unshift(...images);           // the images never landed either
+          st.resendPending = true;
           this.finalizeStream(undefined, st);
+          this.inState(st, () => appendSystemMessage(partial
+            ? `連線中斷：${this.name} 上面的回覆不完整，重新連線後會重送你的訊息，請它重新回答。`
+            : `連線中斷：${this.name} 的回覆沒有送到，重新連線後會重送你的訊息，請它重新回答。`));
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
           // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer

@@ -74,6 +74,7 @@ real ones.
 | | fresh install | a conversation opened on the placeholder agent follows the synced agents when they arrive |
 | | pickers and settings | the agent picker sits above the input and survives a switch; a second ＋ shows the same one; Settings has no room mode and says 開著 N 段／共 M 段 |
 | | a new window, two agents | an empty conversation left by a closed window is not adopted (picker, and it is deleted); one with messages is |
+| `reconnect-resend.mjs` | a socket dropped mid-turn | agent-per-conversation §7 I8: the requeued resend carries the resend line (and only it); the partial reply stays; the chat says it was cut |
 | `reload-tab-group.mjs` | **xfail (#139)** | after an extension reload, a conversation's next tab must join its existing group: today a second group with the same title is made |
 
 ## Adding a case
