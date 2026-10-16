@@ -27,7 +27,7 @@ dev tooling only (puppeteer-core for the headless smokes); see
 | `sidepanel.css`  | Glassmorphic dark-mode styling                            |
 | `sidepanel.js`   | ACP/WebSocket transport, agent management, chat rendering + history/resume, roster |
 | `browser-mcp.js` | The browser MCP server (tool registry + DOM tool bodies) served over the ACP tunnel |
-| `room-core.js`   | Pure multi-agent room logic — @mention routing, agent-to-agent relay, loop guard   |
+| `room-core.js`   | Pure panel logic — prompt framing/batching, heartbeat and reconnect decisions, roster status |
 | `agent-tools.js` | Pure mapping of the agent's own `tool_call` / `tool_call_update` progress to tool-strip pills |
 | `composer.js`    | Pure composer rules — paste classification, accepted types, per-turn image budget, prompt blocks; dropped files: byte sniffing, limits, text-attachment expansion |
 | `markdown.js`    | The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy/link hardening |

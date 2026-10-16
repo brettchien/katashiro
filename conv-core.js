@@ -617,6 +617,11 @@
 
   // --- An agent per conversation (ADR docs/adr/agent-per-conversation.md) ------------------------
 
+  /** Empty = no messages and no canvases (§3.2: such a conversation is not kept when archived). */
+  function isEmptyConversation(rec, canvasIndex) {
+    return !msgsOf(rec).length && !(Array.isArray(canvasIndex) && canvasIndex.length);
+  }
+
   const hasAgentUrl = (e) => !!(e && typeof e.agentUrl === "string" && e.agentUrl);
 
   /**
@@ -771,7 +776,7 @@
       const list = [...new Set((ids || []).filter(isConvId))];
       if (!list.length) return { archived: [], deleted: [] };
       const got = (await storage.get([...list.map(convKey), ...list.map(canvasIndexKey)])) || {};
-      const empty = list.filter((id) => !msgsOf(got[convKey(id)]).length && !(Array.isArray(got[canvasIndexKey(id)]) && got[canvasIndexKey(id)].length));
+      const empty = list.filter((id) => isEmptyConversation(got[convKey(id)], got[canvasIndexKey(id)]));
       const t = now();
       await updateIndex((idx) => {
         for (const id of list) {
@@ -965,7 +970,7 @@
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,
-    AGENTS_SEEN_KEY, AGENT_REMOVED_TEXT, planAgentMigration, wantedAgentUrls, agentUrlEdits, planRebind, reboundRecord,
+    AGENTS_SEEN_KEY, AGENT_REMOVED_TEXT, isEmptyConversation, planAgentMigration, wantedAgentUrls, agentUrlEdits, planRebind, reboundRecord,
     recordAgentUrl, conversationsUsing,
   };
 });

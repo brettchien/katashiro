@@ -1,37 +1,9 @@
-// Unit tests for the katashiro room-core module (room-core.js) — the pure routing/relay brain.
-// Runs under `node --test` with no DOM/WebSocket. This first cut covers the attribution and
-// @mention primitives; relay target-resolution and the loop guard get their own tests as they land.
+// Unit tests for the katashiro room-core module (room-core.js): prompt framing and batching, the
+// heartbeat / reconnect decisions, the roster status, config storage policy. Runs under
+// `node --test` with no DOM/WebSocket.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const RoomCore = require("../room-core.js");
-
-test("escapeAttr collapses newlines and neutralizes quotes", () => {
-  assert.equal(RoomCore.escapeAttr("Falcon"), "Falcon");
-  assert.equal(RoomCore.escapeAttr('  Kirin\n'), "Kirin");
-  assert.equal(RoomCore.escapeAttr('a"b'), "a'b");
-  assert.equal(RoomCore.escapeAttr("line1\nline2"), "line1 line2");
-  assert.equal(RoomCore.escapeAttr(null), "");
-  assert.equal(RoomCore.escapeAttr(undefined), "");
-});
-
-test("wrapRelay produces a well-formed <message from> block", () => {
-  assert.equal(
-    RoomCore.wrapRelay("Falcon", "hello there"),
-    '<message from="Falcon">\nhello there\n</message>'
-  );
-});
-
-test("wrapRelay keeps the body verbatim and sanitizes only the name", () => {
-  const out = RoomCore.wrapRelay('Ki"rin', "text with @mention and \"quotes\"");
-  assert.match(out, /^<message from="Ki'rin">\n/);
-  assert.match(out, /text with @mention and "quotes"/); // body untouched
-  assert.match(out, /\n<\/message>$/);
-});
-
-test("wrapRelay tolerates empty/null text", () => {
-  assert.equal(RoomCore.wrapRelay("A", ""), '<message from="A">\n\n</message>');
-  assert.equal(RoomCore.wrapRelay("A", null), '<message from="A">\n\n</message>');
-});
 
 test("batchPrompts joins a backlog into one blank-line-separated prompt, order preserved", () => {
   assert.equal(RoomCore.batchPrompts(["first", "second", "third"]), "first\n\nsecond\n\nthird");
@@ -163,6 +135,14 @@ test("roomStatus dim: a down link greys tunnel+browser; a detached tunnel greys 
   assert.equal(up.browser.dim, false);
 });
 
+test("dedupeAgents: keeps the first agent of each URL, reports the rest (agent-per-conversation §2.1)", () => {
+  const a = { name: "Orca", url: "wss://o/acp" }, b = { name: "Orca again", url: "wss://o/acp" }, c = { name: "Jelly", url: "ws://j/acp" };
+  assert.deepEqual(RoomCore.dedupeAgents([a, c, b]), { agents: [a, c], dropped: [b] });
+  assert.deepEqual(RoomCore.dedupeAgents([a, c]), { agents: [a, c], dropped: [] });
+  assert.deepEqual(RoomCore.dedupeAgents([null, { name: "x" }, a]), { agents: [a], dropped: [] });
+  assert.deepEqual(RoomCore.dedupeAgents(undefined), { agents: [], dropped: [] });
+});
+
 test("resolveActiveUrl: a stored active wins when it still names a configured agent", () => {
   const agents = [{ url: "ws://a" }, { url: "ws://b" }];
   assert.equal(RoomCore.resolveActiveUrl(agents, "ws://b"), "ws://b");
@@ -185,7 +165,9 @@ test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor"
   assert.equal(d.heartbeatIntervalMs, 60000);
   assert.equal(d.heartbeatTimeoutMs, 5000);
   // Missing / non-numeric → defaults.
-  const filled = RoomCore.normalizeRoomConfig({ mode: "mention" });
+  // A stored config from before agent-per-conversation (mode / loopGuardCap) reads without them.
+  const filled = RoomCore.normalizeRoomConfig({ mode: "mention", loopGuardCap: 10 });
+  assert.deepEqual(Object.keys(filled).sort(), ["heartbeatIntervalMs", "heartbeatTimeoutMs"]);
   assert.equal(filled.heartbeatIntervalMs, 60000);
   assert.equal(filled.heartbeatTimeoutMs, 5000);
   assert.equal(RoomCore.normalizeRoomConfig({ heartbeatIntervalMs: "x" }).heartbeatIntervalMs, 60000);
@@ -194,168 +176,6 @@ test("normalizeRoomConfig fills heartbeat defaults and clamps junk to the floor"
   assert.equal(RoomCore.normalizeRoomConfig({ heartbeatTimeoutMs: 10 }).heartbeatTimeoutMs, 5000);
   // A valid custom value is kept (floored to an int).
   assert.equal(RoomCore.normalizeRoomConfig({ heartbeatIntervalMs: 30000.7 }).heartbeatIntervalMs, 30000);
-});
-
-test("parseMentions extracts a single mention", () => {
-  assert.deepEqual(RoomCore.parseMentions("hi @Falcon"), ["Falcon"]);
-});
-
-test("parseMentions extracts multiple mentions in order, deduped case-insensitively", () => {
-  assert.deepEqual(
-    RoomCore.parseMentions("@Falcon please ask @Kirin and @falcon again"),
-    ["Falcon", "Kirin"]
-  );
-});
-
-test("parseMentions matches mid-text and at start, over word chars/underscore/hyphen", () => {
-  assert.deepEqual(RoomCore.parseMentions("@k04 and @kaiju_heiki-10 hi"), ["k04", "kaiju_heiki-10"]);
-});
-
-test("parseMentions ignores email-like @ (no preceding whitespace/start)", () => {
-  assert.deepEqual(RoomCore.parseMentions("mail me at brett@host.com"), []);
-});
-
-test("parseMentions returns [] for no mentions / empty / null", () => {
-  assert.deepEqual(RoomCore.parseMentions("just a plain message"), []);
-  assert.deepEqual(RoomCore.parseMentions(""), []);
-  assert.deepEqual(RoomCore.parseMentions(null), []);
-});
-
-// --- resolveTargets (fan-out relay, broadcast baseline) ---------------------
-const MEMBERS = [
-  { id: "a", name: "Falcon" },
-  { id: "b", name: "Kirin" },
-  { id: "c", name: "k04" },
-];
-
-test("resolveTargets: a user message reaches every agent", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user"), ["a", "b", "c"]);
-});
-
-test("resolveTargets: an agent relay reaches every agent except the origin", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a"), ["b", "c"]);
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "b"), ["a", "c"]);
-});
-
-test("resolveTargets: single-agent room, agent origin gets no targets", () => {
-  assert.deepEqual(RoomCore.resolveTargets([{ id: "a", name: "Solo" }], "a"), []);
-});
-
-test("resolveTargets: empty / non-array members yields []", () => {
-  assert.deepEqual(RoomCore.resolveTargets([], "user"), []);
-  assert.deepEqual(RoomCore.resolveTargets(null, "user"), []);
-});
-
-// --- resolveNames (name->conn registry) -------------------------------------
-test("resolveNames maps mention names to ids, case-insensitively", () => {
-  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["Falcon"]), ["a"]);
-  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["kirin", "K04"]), ["b", "c"]);
-  assert.deepEqual(RoomCore.resolveNames(MEMBERS, ["Nobody"]), []);
-  assert.deepEqual(RoomCore.resolveNames(null, ["x"]), []);
-});
-
-// --- resolveTargets: @mention mode ------------------------------------------
-test("mention mode: @Falcon routes only to Falcon", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "hihi @Falcon" }), ["a"]);
-});
-
-test("mention mode: multiple @ route to just those, case-insensitive", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@Kirin and @k04 pls" }), ["b", "c"]);
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@falcon" }), ["a"]);
-});
-
-test("mention mode: no @ broadcasts (bare message not lost)", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "just talking" }), ["a", "b", "c"]);
-});
-
-test("mention mode: @name not in room falls through to broadcast", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { text: "@Ghost hi" }), ["a", "b", "c"]);
-});
-
-test("mention mode: origin is never a target even if @-addressed", () => {
-  // agent 'a' (Falcon) relays a message that @Falcon — origin excluded, no other Falcon → broadcast
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { text: "@Falcon note" }), ["b", "c"]);
-  // agent 'a' @Kirin → only Kirin
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { text: "@Kirin thoughts?" }), ["b"]);
-});
-
-test("mention mode: pre-parsed opts.mentions is honored", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { mentions: ["Kirin"] }), ["b"]);
-});
-
-test("ambient mode: mentions ignored, always broadcast (minus origin)", () => {
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "user", { mode: "ambient", text: "@Falcon" }), ["a", "b", "c"]);
-  assert.deepEqual(RoomCore.resolveTargets(MEMBERS, "a", { mode: "ambient", text: "@Falcon" }), ["b", "c"]);
-});
-
-// --- room config (mode) -----------------------------------------------------
-test("MODES lists the two routing modes", () => {
-  assert.deepEqual(RoomCore.MODES, ["mention", "ambient"]);
-});
-
-test("normalizeMode defaults unknown/empty to mention, passes valid through", () => {
-  assert.equal(RoomCore.normalizeMode("mention"), "mention");
-  assert.equal(RoomCore.normalizeMode("ambient"), "ambient");
-  assert.equal(RoomCore.normalizeMode("bogus"), "mention");
-  assert.equal(RoomCore.normalizeMode(undefined), "mention");
-  assert.equal(RoomCore.normalizeMode(null), "mention");
-});
-
-const HB = { heartbeatIntervalMs: 60000, heartbeatTimeoutMs: 5000 }; // heartbeat defaults, appended below
-
-test("defaultRoomConfig is mention mode with the default loop-guard cap", () => {
-  assert.deepEqual(RoomCore.defaultRoomConfig(), { mode: "mention", loopGuardCap: 10, ...HB });
-});
-
-test("normalizeRoomConfig repairs junk and honors valid mode + cap", () => {
-  assert.deepEqual(RoomCore.normalizeRoomConfig(null), { mode: "mention", loopGuardCap: 10, ...HB });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({}), { mode: "mention", loopGuardCap: 10, ...HB });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "ambient", loopGuardCap: 3 }), { mode: "ambient", loopGuardCap: 3, ...HB });
-  assert.deepEqual(RoomCore.normalizeRoomConfig({ mode: "nope", loopGuardCap: 0 }), { mode: "mention", loopGuardCap: 10, ...HB });
-});
-
-// --- loop guard -------------------------------------------------------------
-test("normalizeCap coerces to a positive int, defaulting junk to 10", () => {
-  assert.equal(RoomCore.normalizeCap(3), 3);
-  assert.equal(RoomCore.normalizeCap("4"), 4);
-  assert.equal(RoomCore.normalizeCap(2.9), 2);
-  assert.equal(RoomCore.normalizeCap(0), 10);
-  assert.equal(RoomCore.normalizeCap(-1), 10);
-  assert.equal(RoomCore.normalizeCap("x"), 10);
-  assert.equal(RoomCore.normalizeCap(undefined), 10);
-});
-
-test("loop guard allows up to cap consecutive agent relays, then blocks", () => {
-  const g = RoomCore.createLoopGuard(3);
-  assert.deepEqual(g.onAgentRelay(), { allowed: true, tripped: false, count: 1, cap: 3 });
-  assert.equal(g.onAgentRelay().allowed, true); // 2
-  assert.equal(g.onAgentRelay().allowed, true); // 3
-  const trip = g.onAgentRelay();               // 4th blocked
-  assert.equal(trip.allowed, false);
-  assert.equal(trip.tripped, true);            // first block reports tripped
-});
-
-test("loop guard reports tripped only once until reset", () => {
-  const g = RoomCore.createLoopGuard(1);
-  assert.equal(g.onAgentRelay().allowed, true);   // 1
-  assert.deepEqual(g.onAgentRelay(), { allowed: false, tripped: true, count: 1, cap: 1 });
-  assert.equal(g.onAgentRelay().tripped, false);  // still blocked, no re-trip
-});
-
-test("a human message resets the cascade", () => {
-  const g = RoomCore.createLoopGuard(2);
-  g.onAgentRelay(); g.onAgentRelay();
-  assert.equal(g.onAgentRelay().allowed, false);  // blocked
-  g.onHuman();
-  assert.deepEqual(g.state(), { count: 0, cap: 2, tripped: false });
-  assert.equal(g.onAgentRelay().allowed, true);   // flows again
-});
-
-test("loop guard cap defaults on junk and can be re-capped live", () => {
-  const g = RoomCore.createLoopGuard("bad");
-  assert.equal(g.state().cap, 10);
-  g.setCap(2);
-  assert.equal(g.state().cap, 2);
 });
 
 // --- promptFailureAction: reconnect-duplication policy ----------------------

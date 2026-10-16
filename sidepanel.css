@@ -1671,7 +1671,17 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .system-action:hover { border-color: var(--text-secondary); }
 
 /* The archive picker (§3.4): the extension asking, not an agent — neutral, no agent accent. */
-.message.system:has(> .conv-picker) { align-self: stretch; }
+/* The pickers' dock above the input (agent-per-conversation §6). [hidden] must win over display. */
+.picker-dock {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 16px 6px;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+.picker-dock[hidden] { display: none; }
+.picker-row { display: flex; }
 .conv-picker {
   display: flex;
   flex-direction: column;

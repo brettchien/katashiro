@@ -212,4 +212,84 @@ export default [
       t.ok("the conversation talks to the synced agent");
     },
   },
+  {
+    name: "pickers sit above the input: a switch does not hide them; settings: no room mode, usage counts",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      await h.sessionOf(ctx, "Alpha");
+      const gwY = await new FakeGateway({ prefix: "y_" }).start();
+      try {
+        await addAgent(panel, "Other", gwY.url);
+        await newWith(panel, "Other");
+        await h.renameCurrent(panel, "Beta");
+        // ＋ in Beta, then switch to Alpha without picking: the picker stays on screen.
+        await panel.evaluate(() => document.querySelector(".conv-tab-new")?.click());
+        await h.until(panel, () => !!document.querySelector("#picker-dock .agent-picker"), "the agent picker in the dock");
+        t.check(!(await panel.evaluate(() => !!document.querySelector(".conv-messages .agent-picker"))), "…not inside a conversation's list");
+        await h.switchTo(panel, "Alpha");
+        t.check(await panel.evaluate(() => { const d = document.getElementById("picker-dock"); return !d.hidden && d.offsetHeight > 0 && !!d.querySelector(".agent-picker"); }), "after switching to Alpha the picker is still visible (I4)");
+        await panel.evaluate(() => document.querySelector(".conv-tab-new")?.click());
+        t.check((await panel.evaluate(() => document.querySelectorAll(".agent-picker").length)) === 1, "a second ＋ shows the same picker, not a second one");
+        await panel.evaluate(() => document.querySelector("#picker-dock .conv-picker-cancel").click());
+        t.check(await panel.evaluate(() => document.getElementById("picker-dock").hidden), "取消 empties and hides the dock");
+
+        // Settings (I5, I6): no room mode / loop guard; per agent "開著 N 段／共 M 段".
+        await openSettings(panel);
+        t.check(await panel.evaluate(() => !document.getElementById("mode-mention") && !document.getElementById("loopguard-cap")), "settings: no room mode, no loop-guard cap (I5)");
+        const uses = await panel.evaluate(() => Array.from(document.querySelectorAll(".agent-row")).map((r) => r.querySelector(".agent-uses").textContent));
+        t.check(uses.join("|") === "開著 1 段／共 1 段|開著 1 段／共 1 段", "settings: 開著 N 段／共 M 段 per agent (I6)", uses);
+        await closeSettings(panel);
+        await h.pressClose(panel, "Beta");
+        await h.until(panel, () => !Array.from(document.querySelectorAll(".conv-tab-title")).some((e) => e.textContent === "Beta"), "Beta archived");
+        await openSettings(panel);
+        const after = await panel.evaluate(() => Array.from(document.querySelectorAll(".agent-row")).map((r) => r.querySelector(".agent-uses").textContent));
+        t.check(after[1] === "開著 0 段／共 1 段", "an archived conversation still counts in 共 (I6)", after);
+        await closeSettings(panel);
+      } finally {
+        await gwY.stop();
+      }
+    },
+  },
+  {
+    name: "two agents, a new window: an empty conversation left by a closed window is not adopted (picker), one with messages is",
+    async run(ctx, t) {
+      const { panel } = ctx;
+      await addAgent(panel, "Other", "ws://127.0.0.1:9/acp");
+      const E = "c_eeeeeeeeeeee", F = "c_ffffffffffff";
+      const now = Date.now();
+      // A closed window (id 999991) whose record holds an empty conversation.
+      await ctx.control.evaluate(async (a) => {
+        const idx = (await chrome.storage.local.get("conv:index"))["conv:index"] || {};
+        idx[a.E] = { title: null, titleSource: null, createdAt: a.now, lastMessageAt: null, archivedAt: null, agentUrl: a.url };
+        await chrome.storage.local.set({ "conv:index": idx, "window:999991": { open: [a.E], current: a.E, savedAt: a.now } });
+      }, { E, now, url: ctx.gw.url });
+      const openWindow = async () => {
+        const url = h.controlUrl(ctx);
+        await ctx.control.evaluate((u) => chrome.windows.create({ url: u, type: "normal" }), url);
+        const ctl = await (await ctx.browser.waitForTarget((x) => x.url() === url)).asPage();
+        await h.until(ctl, () => document.readyState === "complete", "the new window's control page");
+        return h.openSidePanel(ctx, ctl);
+      };
+      const p2 = await openWindow();
+      await h.until(p2, () => !!document.querySelector("#picker-dock .agent-picker"), "window 2 shows the agent picker");
+      t.check((await p2.evaluate(() => document.querySelectorAll(".conv-tab").length)) === 0, "no conversation was opened from the empty record (I3)");
+      await h.until(ctx.control, (e) => chrome.storage.local.get("conv:index").then((r) => !(r["conv:index"] || {})[e]), "the empty conversation is gone (archived = deleted)", E);
+      t.ok("the empty conversation was deleted, not adopted");
+
+      // A closed window whose record holds a conversation WITH messages: adopted as before.
+      await ctx.control.evaluate(async (a) => {
+        const idx = (await chrome.storage.local.get("conv:index"))["conv:index"] || {};
+        idx[a.F] = { title: "Kept", titleSource: "user", createdAt: a.now, lastMessageAt: a.now, archivedAt: null, agentUrl: a.url };
+        await chrome.storage.local.set({
+          "conv:index": idx,
+          [`conv:${a.F}`]: { id: a.F, agentUrl: a.url, sessions: {}, messages: [{ kind: "sent", text: "hello", timestamp: a.now, senderName: "You" }], savedAt: a.now },
+          "window:999992": { open: [a.F], current: a.F, savedAt: a.now },
+        });
+      }, { F, now, url: ctx.gw.url });
+      const p3 = await openWindow();
+      await h.until(p3, () => (document.querySelector(".conv-tab.current .conv-tab-title") || {}).textContent === "Kept", "window 3 adopts the conversation with messages");
+      t.check(!(await p3.evaluate(() => !!document.querySelector("#picker-dock .agent-picker"))), "…and shows no picker");
+    },
+  },
 ];

@@ -439,6 +439,11 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     URL back: the input works again and the conversation resumes.
   - **Another device:** with Chrome sync on, edit the URL on device A (same position, same name);
     reload the panel on device B: B's conversations of that agent follow the new URL.
+  - **Follow-ups (§7):** close a window whose only conversation is empty, open a new window and
+    its panel: with 2+ agents the agent picker shows (no conversation is opened); a closed window
+    with a conversation that has messages is still adopted. Press ＋ in one conversation and switch
+    to another without picking: the picker stays above the input; ＋ again shows the same one.
+    Settings has no 房間模式; each agent says 開著 N 段／共 M 段.
 - **Not in incognito (#109):** chrome://extensions → Details has no *Allow in Incognito* switch,
   and an incognito window has no Katashiro action or side panel. Leftovers:
   on the previous version, with Katashiro allowed in incognito, write a canvas from an incognito
