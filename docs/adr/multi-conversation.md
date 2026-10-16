@@ -5,7 +5,8 @@
   deleting a conversation brought forward from P4 at 21:39 TPE, §7.1). **Q10 (P3) open** (§6).
 - **Date:** 2026-10-12
 - **Author:** Brett Chien (drafted by Orca)
-- **Related:** [single-active agent](./single-active-agent.md) (unchanged through P3);
+- **Related:** [single-active agent](./single-active-agent.md) (lifted by
+  [agent per conversation](./agent-per-conversation.md), 2026-10-16);
   [ACP connection ownership](./acp-connection-ownership.md) (becomes P3); [canvas](./canvas.md)
   §3.1 (tab group per conversation), §3.6 (storage keyed by `conversationId`), §3.11 (the gallery
   shows every conversation); [ask_user](./ask-user.md) §2.3 (Q1 visible-time hook, Q4 supersede);
@@ -94,7 +95,9 @@ discussion):
 | Q12 | P1b | An `ask_user` / 🔒 card in a conversation not on screen | Tab-strip mark + Chrome notification (16:34) |
 
 The single-active-agent model stays: one connection, one agent per panel through P3. What changes is
-which session (and later, sessions) that connection serves.
+which session (and later, sessions) that connection serves. **Lifted 2026-10-16** by
+[agent per conversation](./agent-per-conversation.md): each conversation is bound to its own agent
+and the panel connects every agent an open conversation uses.
 
 ---
 
@@ -671,7 +674,8 @@ has been used; that ADR stays Proposed until then.
 - Upstream openab `session/close`, so archiving frees a pool slot at once.
 - Deleting a conversation: its messages, canvases with their history and images (canvas §3.6).
   **Brought forward and built (Brett 2026-10-12 21:39 TPE): §7.1.**
-- Several agents in one conversation (lifts single-active for a conversation).
+- Several agents in one conversation. (One agent **per** conversation, several at once in a panel:
+  [agent per conversation](./agent-per-conversation.md), 2026-10-16.)
 - Searching conversation content, if the 3-tab model turns out to need it.
 
 ### 7.1 Deleting a conversation (Brett 2026-10-12 21:39 TPE)

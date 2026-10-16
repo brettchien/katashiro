@@ -1,6 +1,8 @@
 # ADR: Single-active agent + config management
 
-- **Status:** Proposed 2026-08-07
+- **Status:** Proposed 2026-08-07. **§2.1–§2.3 superseded** by
+  [agent per conversation](./agent-per-conversation.md) (2026-10-16): no active agent, each
+  conversation has its own.
 - **Date:** 2026-08-07
 - **Author:** Brett Chien
 - **Related:** [katashiro multi-agent room](./acp-connection-ownership.md) (the current all-connect model);
