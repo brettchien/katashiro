@@ -1,10 +1,9 @@
-// Katashiro side panel — multi-agent room.
+// Katashiro side panel.
 //
-// Each configured agent gets its OWN live WebSocket + ACP session, held in a `Conn`
-// instance. All room members are connected at once; a user message is routed per room mode
-// (@mention → addressed agents; else broadcast), and each agent streams its own reply
-// (attributed) into the shared scrollback. Agent-to-agent relay is live — an agent's reply is
-// fanned out to the others (`<message from="...">`-wrapped) under a loop guard (see room-core.js).
+// Each configured agent gets its OWN WebSocket, held in a `Conn`, with one ACP session per
+// conversation bound to it (ADR agent-per-conversation): a conversation talks to exactly one
+// agent, and the panel connects every agent an open conversation uses. There is no agent→agent
+// relay, @mention routing or loop guard any more (removed with that ADR).
 
 // --- Room-level state --------------------------------------------------------
 let myUserId = "me";
@@ -24,10 +23,12 @@ const room = [];
 // The single-active `activeAgentUrl` is only read, by the one-time migration (§2.2), and no longer
 // written (§2.1: it stays in storage.sync for builds from before this change).
 let legacyActiveAgentUrl = null;
+// Agents dropped from the stored list for repeating a URL (applyConfig), said once in the chat.
+let dedupedAgents = [];
 
-// Room routing config (mode + loop-guard cap). RoomCore owns the pure logic; we persist it.
+// Connection config (the heartbeat; RoomCore normalizes it). The routing mode and loop-guard cap
+// it used to carry went with the relay.
 let roomConfig = RoomCore.defaultRoomConfig();
-let loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
 
 // Jev grounding token (optional, BYO-key): the user's OpenRouter key for the Jev decisions
 // API. Empty = grounding disabled. Persisted with the rest of config in chrome.storage.sync and
@@ -44,15 +45,6 @@ let attachConfig = Composer.normalizeAttachConfig(null);
 // per-agent: it answers "may this browser be written to at all", which the tab, not the agent,
 // is the subject of.
 let actMode = false;
-function roomMembers(convId) {
-  // A conversation's only member is its own agent (agent-per-conversation §2.7): @OtherAgent routes
-  // nowhere new. A Conn that is not connected must never be a target — an enqueued prompt would
-  // silently pile up in its promptQueue (review: Orca).
-  const url = convAgentUrl(convId);
-  return room
-    .filter((c) => c.enabled && c.agent.url === url)
-    .map((c) => ({ id: c.id, name: c.name }));
-}
 // The agent conversation `id` is bound to (agent-per-conversation §2.1), as this panel loaded it.
 function convAgentUrl(id) {
   const conv = id ? convs.get(id) : null;
@@ -67,9 +59,6 @@ function connOfConv(id) {
 function convAgentMissing(id) {
   const url = convAgentUrl(id);
   return !!id && convs.has(id) && !agents.some((a) => a.url === url);
-}
-function connById(id) {
-  return room.find((c) => c.id === id) || null;
 }
 
 // ACP constants
@@ -840,7 +829,6 @@ class Conn {
         updateStopButton();
         renderConvTabs();
         this.finalizeStream(res && res.stopReason, st);  // stopReason "cancelled" ⇒ partial reply kept
-        this.inState(st, () => relayAgentReply(this, replyText, st.convId)); // fan it out, within its conversation
         // Q9 (§5): a turn that finished where the user is not → ● on its tab (recordMessage) and a
         // notification. A stopped turn is the user's own doing: no notification.
         if (st.convId !== conversationId && this.states.get(st.convId) === st && !(res && res.stopReason === "cancelled")) notifyTurnDone(st.convId, this.name);
@@ -1357,10 +1345,6 @@ const newAgentToken = document.getElementById("new-agent-token");
 const addAgentBtn = document.getElementById("add-agent-btn");
 const cancelSettingsBtn = document.getElementById("cancel-settings-btn");
 
-const modeMentionBtn = document.getElementById("mode-mention");
-const modeAmbientBtn = document.getElementById("mode-ambient");
-const modeHintEl = document.getElementById("mode-hint");
-const loopGuardCapInput = document.getElementById("loopguard-cap");
 const jevTokenInput = document.getElementById("jev-token-input");
 
 const actReadBtn = document.getElementById("act-read");
@@ -1488,7 +1472,12 @@ function renderSyncBadge() {
 // Load a stored (or empty → default) config object into the live state.
 function applyConfig(r) {
   if (Array.isArray(r.agents) && r.agents.length) {
-    agents = r.agents;
+    // Two agents may not share a URL (it is the identity, agent-per-conversation §2.1). A stored
+    // list from before that rule keeps the first of each; the list is saved as is until the next
+    // Settings change (persist), so nothing is written behind the user's back.
+    const d = RoomCore.dedupeAgents(r.agents);
+    agents = d.agents.length ? d.agents : [{ ...DEFAULT_AGENT }];
+    if (d.dropped.length) dedupedAgents = d.dropped;
   } else if (r.wsUrl) {
     agents = [{ name: "OpenAB", url: r.wsUrl }];
   } else {
@@ -1496,7 +1485,6 @@ function applyConfig(r) {
   }
   legacyActiveAgentUrl = typeof r.activeAgentUrl === "string" ? r.activeAgentUrl : null;   // migration only (§2.2)
   roomConfig = RoomCore.normalizeRoomConfig(r.roomConfig);
-  loopGuard = RoomCore.createLoopGuard(roomConfig.loopGuardCap);
   // Strict true: anything stored malformed (or absent) reads as read-only. The safe state
   // is the one you fall back into.
   actMode = r.actMode === true;
@@ -1521,6 +1509,10 @@ loadConfig().then(async (r) => {
     renderSyncBadge();
 
     switchView("chat");
+    if (dedupedAgents.length) {
+      appendSystemMessage(`設定裡有重複網址的 agent，已只保留第一個：${dedupedAgents.map((a) => `${a.name || "Agent"}（${a.url}）`).join("、")}`);
+      dedupedAgents = [];
+    }
     // Conversations (migration, this window's open set and locks) BEFORE building/connecting, so
     // each conn resumes the current conversation's saved session.
     try { await loadConversations(); } catch (e) { console.error("katashiro: loading conversations failed:", e); }
@@ -1568,7 +1560,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
     placeholder.then(() => reconcileAgents()).finally(() => { syncConnections(); renderConvTabs(); updateSendEnabled(); });
     updateRoster();
     if (settingsView && settingsView.classList.contains("active")) {
-      renderRoomConfig();
       renderActMode();
       renderAgentList();
       if (jevTokenInput) jevTokenInput.value = jevToken;
@@ -1662,8 +1653,9 @@ function currentWindow() {
 function makeConv(id, data) {
   const d = data && typeof data === "object" ? data : {};
   // agent-per-conversation §2.1: the index entry's agentUrl is the truth; a record that differs is
-  // written back (a rebind cut short), and one with neither is bound to the first agent (§2.2).
-  const bind = ConvCore.recordAgentUrl(convIndex[id], data, agents[0] && agents[0].url);
+  // written back (a rebind cut short), and one with neither gets what the migration would give it
+  // (§2.2: the old active agent, else the first) — never a different silent default.
+  const bind = ConvCore.recordAgentUrl(convIndex[id], data, RoomCore.resolveActiveUrl(agents, legacyActiveAgentUrl));
   if (bind.writeIndex) {
     convIndex[id] = { ...(convIndex[id] || freshIndexEntry()), agentUrl: bind.url };
     patchIndex(id, () => ({ agentUrl: bind.url }));
@@ -1841,6 +1833,18 @@ async function loadConversations() {
     // §3.7: a window with no record adopts the most recently used orphan record (browser restart);
     // old orphan records are pruned and their conversations archived.
     const plan = ConvCore.planAdoption({ ownWindowId: wid, windows, liveIds: live, index, now: Date.now() });
+    // An empty conversation (no messages, no canvases) is not adopted: there is nothing to come back
+    // to, and with several agents a new conversation starts at the agent picker instead (Brett
+    // 2026-10-16, agent-per-conversation §6). It is archived with the rest, which deletes it.
+    if (!own && plan.take.length) {
+      const got = await chrome.storage.local.get([...plan.take.map(ConvCore.convKey), ...plan.take.map(ConvCore.canvasIndexKey)]);
+      const empty = plan.take.filter((id) => ConvCore.isEmptyConversation(got[ConvCore.convKey(id)], got[ConvCore.canvasIndexKey(id)]));
+      if (empty.length) {
+        plan.take = plan.take.filter((id) => !empty.includes(id));
+        plan.archive.push(...empty);
+        if (!plan.take.includes(plan.current)) plan.current = plan.take[0] || null;
+      }
+    }
     const wanted = own
       ? { open: (Array.isArray(own.open) ? own.open : []).filter(ConvCore.isConvId), current: own.current }
       : { open: plan.take, current: plan.current };
@@ -2252,6 +2256,19 @@ async function archiveAnywhere(id) {
 // One card at a time, claimed before the first await so two calls cannot each build one. What
 // follows the pick is the LATEST request's: on load a full panel first asks for "new
 // conversation", then a pending 重新打開 from the gallery asks again — that reopen must win.
+// The pickers (archive, agent) sit in a dock above the input, not in a conversation's list: a
+// switch must not hide a picker that is still open, or a second ＋ would seem to do nothing
+// (Brett 2026-10-16, agent-per-conversation §6).
+const pickerDock = document.getElementById("picker-dock");
+function dockPicker(row) {
+  pickerDock.appendChild(row);
+  pickerDock.hidden = false;
+  row.scrollIntoView({ block: "nearest" });
+}
+function undockPicker(row) {
+  row.remove();
+  pickerDock.hidden = !pickerDock.children.length;
+}
 let pickerCard = null;
 let pickerThen = null;
 async function showArchivePicker(then) {
@@ -2265,7 +2282,7 @@ async function showArchivePicker(then) {
     windows[String(panelWindowId)] = windowRec;
     ids = [...ConvCore.liveOpenIds(windows, live)];
   } catch (_) { /* nothing to list */ }
-  row.className = "message system";
+  row.className = "picker-row";
   const card = document.createElement("div");
   card.className = "conv-picker";
   card.setAttribute("role", "group");
@@ -2280,7 +2297,7 @@ async function showArchivePicker(then) {
   const status = document.createElement("div");
   status.className = "conv-picker-status";
   status.hidden = true;
-  const close = () => { row.remove(); pickerCard = null; pickerThen = null; };
+  const close = () => { undockPicker(row); pickerCard = null; pickerThen = null; };
   const buttons = [];
   for (const id of ids) {
     const mine = convs.has(id);
@@ -2313,8 +2330,7 @@ async function showArchivePicker(then) {
   buttons.push(cancel);
   card.append(head, hint, list, status, cancel);
   row.appendChild(card);
-  chatList.appendChild(row);
-  maybeScroll();
+  dockPicker(row);
 }
 
 // The agent picker (agent-per-conversation §2.4, Q3): which agent a new conversation is with — for
@@ -2326,7 +2342,7 @@ function showAgentPicker() {
   if (agentPickerCard) { agentPickerCard.scrollIntoView({ block: "nearest" }); return; }
   const row = document.createElement("div");
   agentPickerCard = row;
-  row.className = "message system";
+  row.className = "picker-row";
   const card = document.createElement("div");
   card.className = "conv-picker agent-picker";
   card.setAttribute("role", "group");
@@ -2338,7 +2354,7 @@ function showAgentPicker() {
   hint.textContent = "選了之後這段對話就固定是這個 agent；要跟別的 agent 聊就再開一段。";
   const list = document.createElement("div");
   list.className = "conv-picker-list";
-  const close = () => { row.remove(); agentPickerCard = null; };
+  const close = () => { undockPicker(row); agentPickerCard = null; };
   agents.forEach((a) => {
     const c = room.find((x) => x.agent.url === a.url);
     const b = document.createElement("button");
@@ -2359,8 +2375,7 @@ function showAgentPicker() {
   });
   card.append(head, hint, list, cancel);
   row.appendChild(card);
-  chatList.appendChild(row);
-  maybeScroll();
+  dockPicker(row);
 }
 
 // The panel has no conversation and the user cancelled the picker: say where the 3 are.
@@ -2646,7 +2661,6 @@ function switchView(viewName) {
 
 // --- UI event listeners ------------------------------------------------------
 settingsBtn.addEventListener("click", () => {
-  renderRoomConfig();
   renderActMode();
   renderAgentList();
   if (jevTokenInput) jevTokenInput.value = jevToken;
@@ -2686,18 +2700,6 @@ function clearChat() {
 }
 
 if (clearChatBtn) clearChatBtn.addEventListener("click", clearChat);
-
-// Room routing config controls (static elements — wire once).
-if (modeMentionBtn) modeMentionBtn.addEventListener("click", () => setRoomMode("mention"));
-if (modeAmbientBtn) modeAmbientBtn.addEventListener("click", () => setRoomMode("ambient"));
-if (loopGuardCapInput) {
-  loopGuardCapInput.addEventListener("change", () => {
-    roomConfig.loopGuardCap = RoomCore.normalizeCap(loopGuardCapInput.value);
-    loopGuardCapInput.value = String(roomConfig.loopGuardCap);
-    loopGuard.setCap(roomConfig.loopGuardCap);
-    persist();
-  });
-}
 
 // Jev grounding token (BYO-key). Trim on save — a pasted key often carries trailing whitespace.
 if (jevTokenInput) {
@@ -2795,26 +2797,6 @@ function attachReveal(input) {
 
 // Attach reveal toggles to the two static token fields (Jev grounding + add-agent token).
 [jevTokenInput, document.getElementById("new-agent-token")].forEach(attachReveal);
-
-// Reflect the room routing config (mode + cap) in the settings UI.
-function renderRoomConfig() {
-  const mode = roomConfig.mode;
-  if (modeMentionBtn) modeMentionBtn.classList.toggle("on", mode === "mention");
-  if (modeAmbientBtn) modeAmbientBtn.classList.toggle("on", mode === "ambient");
-  if (modeHintEl) {
-    modeHintEl.textContent =
-      mode === "mention"
-        ? "＠ 指名才觸發該 agent；沒 ＠ 則廣播全體。"
-        : "全體都收到每則訊息、各自決定是否回應（靠 loop guard 收斂）。";
-  }
-  if (loopGuardCapInput) loopGuardCapInput.value = String(roomConfig.loopGuardCap);
-}
-
-function setRoomMode(mode) {
-  roomConfig.mode = RoomCore.normalizeMode(mode);
-  persist();
-  renderRoomConfig();
-}
 
 // Act mode controls. No reconnect on change: the tunnel stays up and the gate is consulted per
 // tool call, so turning writes off takes hold on the next call rather than the next handshake.
@@ -2995,13 +2977,15 @@ function renderAgentList() {
     const actions = document.createElement("div");
     actions.className = "agent-actions";
 
-    // agent-per-conversation §2.5: how many of this window's open conversations use it (no "使用中"
-    // radio any more: a conversation picks its agent at ＋).
+    // agent-per-conversation §2.5: how many conversations use it — open in this window, and in all
+    // (archived and other windows too: the number the remove confirm gives). No "使用中" radio any
+    // more: a conversation picks its agent at ＋.
     const uses = windowRec.open.filter((id) => convs.has(id) && convs.get(id).agentUrl === a.url).length;
+    const total = ConvCore.conversationsUsing(convIndex, a.url);
     const useEl = document.createElement("span");
     useEl.className = "agent-uses" + (uses ? " on" : "");
-    useEl.textContent = uses ? `${uses} 段對話使用中` : "沒有開著的對話";
-    useEl.title = "這個視窗開著的對話裡，跟這個 agent 聊的有幾段";
+    useEl.textContent = total ? `開著 ${uses} 段／共 ${total} 段` : "沒有對話";
+    useEl.title = "開著：這個視窗開著、跟這個 agent 聊的對話；共：所有跟它聊的對話（含封存和其他視窗）";
 
     // Per-agent browser access control (on ⇒ declares the browser MCP tunnel for this agent).
     const brOn = a.browserAccess !== false;              // default on (backward compatible)
@@ -3378,10 +3362,8 @@ messagesList.addEventListener("click", (e) => {
   }
 });
 
-// Route a user turn per mode (@mention → addressed agents only; else broadcast) and reset the
-// cascade — a human message always breaks any agent↔agent loop. User text is sent under a
-// [time user (↩ quoted)] header (RoomCore.framePrompt; the gateway adds its own sender_context on
-// top); agent→agent relay stays <message from>-wrapped. @mention routing reads the raw text.
+// Send a user turn to the on-screen conversation's agent, under a [time user (↩ quoted)] header
+// (RoomCore.framePrompt; the gateway adds its own sender_context on top).
 function sendMessage() {
   if (!currentConv) { appendSystemMessage("目前沒有開著的對話：先封存一段，或從 🗂️ 總覽重新打開。"); return; }
   if (convAgentMissing(conversationId)) { appendSystemMessage(ConvCore.AGENT_REMOVED_TEXT); return; }
@@ -3395,7 +3377,7 @@ function sendMessage() {
   if (capError) { appendSystemMessage(capError); return; }
   const replyTo = replyTarget;                           // what this message answers (or null)
   setReplyTarget(null);
-  postUserText(text, images, replyTo, undefined, files);
+  postUserText(text, images, replyTo, files);
   // Q6 (multi-conversation §4.3): at the send — never mid-turn — bring the conversation's working
   // tab to the front if the user is looking at another tab.
   switchToWorkingTab(conversationId).catch(() => {});
@@ -3408,13 +3390,11 @@ function sendMessage() {
   sendBtn.disabled = true;
 }
 
-// Post a message as the user: show it, frame it, route it to the room. Shared by the input box and
-// the canvas's Send to agent / Send error (which compose their text in the canvas tab, §3.7).
-// `mentions` (optional): route by these @names instead of parsing `text` — a canvas push carries
-// canvas data that must not pick the recipients. `files` (optional): dropped text files, expanded
-// after the text in what the agent receives; routing still reads only `text`. Returns the agents it
-// was enqueued to.
-function postUserText(text, images, replyTo, mentions, files) {
+// Post a message as the user: show it, frame it, send it to the conversation's agent. Shared by the
+// input box and the canvas's Send to agent / Send error (which compose their text in the canvas tab,
+// §3.7). `files` (optional): dropped text files, expanded after the text in what the agent
+// receives. Returns the agents it was enqueued to ([] or [its agent]).
+function postUserText(text, images, replyTo, files) {
   images = images || [];
   files = files || [];
   if (!currentConv) return [];
@@ -3437,14 +3417,12 @@ function postUserText(text, images, replyTo, mentions, files) {
     replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text },
   }, Composer.expandAttachments(text, files));
 
-  loopGuard.onHuman();
-  const targets = RoomCore.resolveTargets(roomMembers(conversationId), myUserId, { mode: roomConfig.mode, text, mentions });
-  const sentTo = [];
-  targets.forEach((id) => {
-    const c = connById(id);
-    if (c) { c.enqueue(framed, images); sentTo.push(c); }
-  });
-  return sentTo;
+  // A conversation's only recipient is its own agent (agent-per-conversation §2.7), and only while
+  // it is connected: a Conn that is not must never pile up prompts in its queue (review: Orca).
+  const c = connOfConv(conversationId);
+  if (!c || !c.enabled) return [];
+  c.enqueue(framed, images);
+  return [c];
 }
 
 // §3.7: a canvas tab asks this panel to post as the user (Send to agent / Ask agent / Send error). Only from
@@ -3493,8 +3471,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!active || !active.initialized) { sendResponse({ ok: false, error: "the agent is not connected" }); return false; }
   if (cid !== conversationId) switchConversation(cid);   // P2: never blocked, a running reply continues behind
   seenPushIds.add(msg.reqId);
-  // @mentions come from the user's note only, never from the diff / error text inside the fence.
-  const sentTo = postUserText(msg.text, [], null, RoomCore.parseMentions(msg.note));
+  const sentTo = postUserText(msg.text, [], null);
   if (!sentTo.length) { sendResponse({ ok: false, error: "no agent in this conversation received it" }); return false; }
   // §4.3: the user is working in this canvas tab; the next send from the composer stays here.
   if (sender.tab && Number.isInteger(sender.tab.id)) noteWorkingTab(cid, sender.tab.id).catch(() => {});
@@ -3579,32 +3556,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }).finally(() => { canvasSubmitPending = false; });
   return true;
 });
-
-// Relay an agent's finalized reply into the room so OTHER agents can see + respond to it — the
-// "talk to each other like a Discord thread" mechanic. Wrapped with attribution, routed per
-// mode, and bounded by the loop guard (surfaces a system line once when the cascade is paused).
-// `convId`: the conversation the reply was in — a relay goes to the other agents' sessions of that
-// same conversation (P2 §5: it may not be the one on screen).
-function relayAgentReply(originConn, text, convId = conversationId) {
-  if (!text || !text.trim()) return;
-  const guard = loopGuard.onAgentRelay();
-  if (!guard.allowed) {
-    if (guard.tripped) {
-      appendSystemMessage(`⏸️ 已暫停 agent 互相接話（連續 ${guard.cap} 次）— 你說句話就繼續。`);
-    }
-    return;
-  }
-  const targets = RoomCore.resolveTargets(roomMembers(convId), originConn.id, {
-    mode: roomConfig.mode,
-    text,
-  });
-  if (!targets.length) return;
-  const wrapped = RoomCore.wrapRelay(originConn.name, text);
-  targets.forEach((id) => {
-    const c = connById(id);
-    if (c && convs.has(convId)) c.enqueue(wrapped, [], c.stateFor(convId));
-  });
-}
 
 // --- Rendering helpers -------------------------------------------------------
 // --- Tool pill details (hover tooltip + click expander) ---------------------------
@@ -4840,11 +4791,10 @@ function askCard(spec, conn, st = conn.cur) {
   });
   pendingAsks.set(id, entry);
   // The answer: settle first (a second click is a no-op), then send it to the asking agent only,
-  // framed like any user message. It is the user speaking, so it resets the agent↔agent loop guard.
+  // framed like any user message.
   submit = (raw) => {
     const answer = AskCore.normalizeAnswer(spec, raw);
     if (!answer || !entry.ask.answer(answer)) return;
-    loopGuard.onHuman();
     conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)), [], entry.state);
   };
 

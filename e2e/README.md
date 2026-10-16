@@ -70,6 +70,10 @@ real ones.
 | `user-image-open.mjs` | a pasted image | the image reaches the prompt; its chat thumbnail (zoom-in cursor) opens it full size in a new tab, on every click |
 | `agent-per-conversation.mjs` | two agents, two fake gateways | ADR agent-per-conversation: the ＋ agent picker (未連線 for an unconnected agent); both stream at once into their own lists; the chip follows the conversation on screen; Y's handshake opens no session for X's conversation (§2.7 `Conn.cur`); archiving an agent's last conversation closes its socket |
 | | migration, URL edit, removal | the old `activeAgentUrl` binds the conversation and stays in storage.sync; a URL edit rebinds both copies and drops the old session; removing the agent in use leaves the conversation read-only; adding the URL back revives it |
+| | one agent: archive the last conversation | the socket stays up (no new handshake) when the new conversation is on the same agent |
+| | fresh install | a conversation opened on the placeholder agent follows the synced agents when they arrive |
+| | pickers and settings | the agent picker sits above the input and survives a switch; a second ＋ shows the same one; Settings has no room mode and says 開著 N 段／共 M 段 |
+| | a new window, two agents | an empty conversation left by a closed window is not adopted (picker, and it is deleted); one with messages is |
 | `reload-tab-group.mjs` | **xfail (#139)** | after an extension reload, a conversation's next tab must join its existing group: today a second group with the same title is made |
 
 ## Adding a case

@@ -31,7 +31,7 @@ Under this system:
 
 - **Roster status at a glance**: each agent chip carries two self-labelled badges — a **connection badge** (● 已連線 / ◐ 連線中 / ○ 連線失敗 / ◌ 已停用) and, when the agent is allowed browser access, a **browser badge** (🌐 可操作 / 🌐 唯讀 / 🌐 未連 / ⚠️ 無回應). A liveness heartbeat keeps them honest — a half-open socket surfaces as ⚠️ 無回應 rather than a stale "connected", and clicking an unhealthy chip reconnects it.
 
-- **Multi-Agent Room**: several agents share one chatroom, each on its own ACP connection. `@mention` mode (the default) routes a message only to the agents named in it and broadcasts when none are; ambient mode gives everyone everything. Agent replies are relayed to the other agents wrapped as `<message from="...">`, so they can answer each other — bounded by a **loop guard** that pauses a runaway agent-to-agent cascade and resets the moment a human speaks. Per-agent connect/disconnect and browser-access toggles, and one openab session per Chrome window.
+- **Several agents, one per conversation**: configure any number of agents; each conversation is bound to the one picked at ＋ (ADR `docs/adr/agent-per-conversation.md`), and conversations with different agents reply at the same time, each on its own ACP connection. Per-agent browser-access toggles.
 
 - **Unified Chat Space**: Optimized specifically for a single multi-party chatroom, bypassing cluttered sidebar lists to fit perfectly in a narrow Side Panel.
 - **LINE-style Chat Bubbles**: Self-sent messages align to the right (green), while received agent messages align to the left (dark slate blue) with custom avatars, sender names, and timestamp markers.
@@ -47,7 +47,7 @@ Under this system:
 - `sidepanel.css`: High-fidelity styling utilizing modern CSS design tokens.
 - `sidepanel.js`: Main client-side script managing WebSockets, Chrome local storage, auto-reconnection, and message rendering.
 - `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](#-serving-an-mcp-server-over-reverse-mcp-over-acp).
-- `room-core.js`: Multi-agent room logic — @mention routing, agent-to-agent relay, and the loop guard.
+- `room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`; for the canvas frame only, `reveal.js`, Milkdown crepe and `@mermaid-js/tiny`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).

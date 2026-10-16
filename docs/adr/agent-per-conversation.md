@@ -177,7 +177,8 @@ without a `sessionId` (multi-conversation §3.11), `askUser`, `showImage`, `onCa
 - **@mentions**: a conversation has one agent, so `@OtherAgent` routes nowhere new: the text goes
   to the conversation's agent as written. The room modes (mention / ambient) and the loop guard stay
   in the code and in Settings for now, but have one member to route to; removing them is not part of
-  this change.
+  this change. **Removed 2026-10-16 (Brett 22:24 / 22:38, §7 I5):** the Settings section, the
+  agent→agent relay, @mention routing and the loop guard, code and tests.
 - **Act mode stays global** (it is about the browser, not an agent: single-active ADR / `actMode`
   comment). The browser tools' Q8 rules are per conversation already and do not change.
 
@@ -257,3 +258,28 @@ Decided while building it (not asked; flagged in the PR):
   running turns and sockets are untouched (E2E checks it).
 - A removed agent's conversation says so once when shown (a system line, not recorded); its
   composer is disabled with a placeholder saying why.
+
+## 7. Follow-ups from the real-Chrome test (2026-10-16)
+
+Brett tested build 2e03472 in Chrome on 2026-10-16 22:16–22:31 TPE; the notes became improvement
+items I1–I10 (canvas cv_ad6f6f9310df). Decisions (Brett 22:24–22:38 TPE) and where they landed:
+
+- **I3 — no empty conversation is adopted** (Brett 22:30): a new window adopts the most recently
+  closed window's conversations (multi-conversation §3.7), but an empty one (no messages, no
+  canvases) is skipped and archived, which deletes it. With 2+ agents the window then starts at the
+  agent picker; with one agent it opens a new conversation, as before. Conversations with content
+  are still adopted (Brett 22:31). A record with no agent at all now gets what the migration would
+  give it (§2.2), not the first agent.
+- **I4 — the pickers sit above the input** (Brett 22:26): the agent picker and the 3-open archive
+  picker go into a dock above the composer instead of the conversation's list, so a switch never
+  hides an open picker (before, a second ＋ in another conversation seemed to do nothing).
+- **I5 — room mode removed** (Brett 22:24, code too 22:38): Settings' 房間模式 and loop-guard cap,
+  the relay, @mention routing and the loop guard (`room-core.js` and its tests). `roomConfig`
+  keeps only the heartbeat; a stored `mode` / `loopGuardCap` is read without them.
+- **I6 — Settings counts**: each agent row says 開著 N 段／共 M 段 (M includes archived and other
+  windows' conversations: the number the remove confirm gives).
+- **I7 — repeated URLs in a stored list**: the first agent of each URL is kept, a chat line says
+  which were dropped; the list is written only on the next Settings change.
+- Still to come: I1 (a chip per agent; §2.5 revised), I2 (the gallery shows each conversation's
+  agent), I8 (a turn cut by a dropped socket), I9 (other windows' / devices' agent edits followed
+  live, with I10).
