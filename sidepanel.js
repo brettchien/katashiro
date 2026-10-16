@@ -1620,7 +1620,6 @@ async function followRemoteAgentsNow(nextRaw) {
   if (!next.length) return;
   const edits = ConvCore.agentUrlEdits(agents, next);
   agents = next;
-  for (const { from, to } of edits) await rebindConversations(from, to);
   const keep = new Map();
   for (const c of room) {
     const a = next.find((x) => x.url === c.agent.url);
@@ -1635,13 +1634,14 @@ async function followRemoteAgentsNow(nextRaw) {
     if (!c) { c = new Conn(a); c.enabled = false; }
     room.push(c);
   }
+  // Rebound after the retargeted Conns are dropped (as a Settings URL edit here does): nothing they
+  // save or finalize while the rebind runs may put the old URL back.
+  for (const { from, to } of edits) await rebindConversations(from, to);
   await reconcileAgents();                               // agents:seen = the list now followed
-  syncConnections();
+  syncConnections();                                     // re-renders Settings when it is open
   renderConvTabs();
   updateSendEnabled();
   if (convAgentMissing(conversationId)) noteAgentMissing(currentConv);
-  // Settings re-renders unless the user is typing in the agent list right now.
-  if (settingsView && settingsView.classList.contains("active") && !(agentListEl && agentListEl.contains(document.activeElement))) renderAgentList();
 }
 
 function persist() {

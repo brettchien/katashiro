@@ -306,4 +306,7 @@ items I1–I10 (canvas cv_ad6f6f9310df). Decisions (Brett 22:24–22:38 TPE) and
   writes the old URL back (I10, the #157 review's F4). A Conn whose URL, token and browser access
   are unchanged stays (a rename applies in place, its turns are untouched); a removed or retargeted
   one is disconnected (cards close as `disconnected`), a new one is added unconnected, then
-  `syncConnections`. Settings re-renders unless the user is typing in the agent list.
+  `syncConnections`; Settings, when open, re-renders (an unsaved edit in it is dropped: its rows
+  point at the list it replaced). Retargeted Conns are dropped before the rebind, as for a local
+  URL edit. A list this panel wrote within 30 s that another window writes back (A→B→A) is taken for
+  an echo and followed only on reload.
