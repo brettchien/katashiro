@@ -74,8 +74,9 @@ Show the draft, then ask for the go with `katashiro.ask_user`
 For the next step:
 
 1. `katashiro.canvas_read` (you need the stored text and its `version` anyway).
-2. Mark it with **one** `canvas_inject_css` sheet: `{clear: true}` first, then the sheet for this
-   step. Blocks of a markdown canvas carry `data-line-start` — the block's **0-based line** in the
+2. Mark it with **one** `canvas_inject_css` sheet, in **two calls**: `{id, clear: true}` to remove
+   the previous sheet, then `{id, css}` with the sheet for this step. One call carrying both
+   `clear` and `css` silently drops the `css`. Blocks of a markdown canvas carry `data-line-start` — the block's **0-based line** in the
    text `canvas_read` returns — so the step's heading and code block are exact selectors:
 
    ```css
@@ -86,9 +87,13 @@ For the next step:
    pre[data-line-start="33"] { outline: 3px solid #f59e0b !important; outline-offset: 2px !important; }
    ```
 
-   Count lines from 0 in the `content` you just read. Check once with `katashiro.screenshot` of
-   the canvas tab the first time; if nothing is marked (an older canvas whose stored text differs
-   from what it renders), fall back to `h3:nth-of-type(n)` selectors from the heading order.
+   Count lines from 0 in the `content` you just read, never in the text you wrote: normalization
+   adds blank lines around headings. Check once with `katashiro.screenshot` of the canvas tab the
+   first time. If nothing is marked, or `canvas_open` / `canvas_patch` said the text is **not
+   normalized yet** (stored raw text can differ from what renders: doubled blank lines, `<br />`
+   lines), fall back to `h3:nth-of-type(n)` selectors from the heading order.
+   While the user is editing the canvas, `canvas_inject_css` is refused (and `canvas_highlight`
+   is deferred): keep going, and mark the step again once they stop.
 3. `canvas_highlight` with `heading: "<env> · <n> · <name>"` and a short `label`
    (`"Step 3 · prd-a · run now"`). It glows for at most 10 s and scrolls the block into view; the
    CSS sheet is what stays.
@@ -120,15 +125,18 @@ anchor:
  "replace": "| 2026-10-18 20:41 | stg | stg · 2 | parts 1 204 → 1 204, ttl unset → 30d | ✅ pass | |\n| — | — | — | — | — | end of log |"}
 ```
 
-- Markdown is stored normalized (table padding, dashes may change): take the anchor row's `find`
-  **exactly as `canvas_read` returns it**, not as you first wrote it.
+- Markdown is stored normalized, and table padding changes as rows are added: take the anchor
+  row's `find` **exactly as the latest `canvas_read` (or the last patch's `normalizedDiff`)
+  returns it**, not as you first wrote it or from an earlier read.
+- Write a `|` inside a cell as `\|`.
 - **Time** = the operator's local time from the `[time user]` header of the message that carried
   the output, labelled with their timezone in the table header. Not your host's clock.
 - Key numbers before → after, a verdict (`✅ pass` / `❌ fail` / `⚠️ anomaly` / `↩ rolled back`),
   short notes.
 - An anomaly (spike, warning, slow query) gets its own row with the follow-up check you agreed on.
-- If the patch is refused as **stale** (the operator edited the canvas), `canvas_read` again and
-  retry on the new version. Never re-send the whole canvas over their edits.
+- If the operator edited the canvas meanwhile, the patch is rebased over their edit
+  (`rebasedOver`). If it is refused as **stale** (your `find` no longer matches), `canvas_read`
+  again and retry on the new version. Never re-send the whole canvas over their edits.
 - When live state diverges from the runbook (a host renamed, a count off by a known amount),
   **patch the runbook first**, say in one line what changed, then continue. Edits above the log
   move line numbers: `canvas_read` before the next CSS sheet.
