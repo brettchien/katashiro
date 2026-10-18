@@ -11,7 +11,7 @@
 > §5 Readability idea). `wait_for` shipped as `{selector?, text?, timeout?}` (top-frame only) —
 > without the §3.4 `ref?`/`state?` params. Everything else (snapshot + refs + stale-ref check,
 > native-setter `type`, snapshot-after-action, visible+enabled actionability, vendored
-> `dom-accessibility-api`) matches. The full served tool table is in the [README](../../README.md#the-tools-we-serve).
+> `dom-accessibility-api`) matches. The full served tool table is in the [docs/tools.md](../tools.md).
 
 > Citations are inline as `[Key]` at the point of the claim; each key resolves in **References** at the
 > end. This makes provenance traceable per-decision — which part is inspired by what.

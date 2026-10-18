@@ -11,7 +11,7 @@
 // canvas.html is served over http with a stub of the chrome.* APIs it uses (storage with one
 // markdown canvas, runtime.sendMessage recording the push and answering like the side panel).
 // Headless Chrome is not the extension: focus between the page and the frame, IME and the real
-// side panel still need the manual checks in TESTING.md. Checks:
+// side panel still need the manual checks in docs/testing.md. Checks:
 //   - selecting text shows the 💬 below the selection, over the frame, not over the text;
 //   - the 💬 opens the popover (role=dialog, excerpt, note focused); no window.prompt;
 //   - an empty note: an inline hint, nothing sent; Shift+Enter is a new line; an IME Enter does not send;

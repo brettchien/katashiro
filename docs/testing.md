@@ -14,8 +14,8 @@ npm ci && npm run chrome && npm run smoke  # the puppeteer smokes in a pinned he
 npm run chrome:full && npm run e2e         # T2 E2E: the real extension + side panel against a fake gateway
 ```
 
-Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [README → Run the tests](README.md#run-the-tests).
-The E2E cases, how they work and their limits: [e2e/README.md](e2e/README.md). Manual items below
+Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [CONTRIBUTING → Running the tests](../CONTRIBUTING.md#running-the-tests).
+The E2E cases, how they work and their limits: [e2e/README.md](../e2e/README.md). Manual items below
 marked **(E2E: …)** are covered there in real Chrome against a fake gateway; with a real agent they
 are still worth a look after a gateway change.
 
@@ -49,7 +49,7 @@ are still worth a look after a gateway change.
 ## Tools served
 
 The surface — params, returns, and which tools count as writes — is tabulated in
-[README → The tools we serve](README.md#the-tools-we-serve). Kept in one place so the two
+[docs/tools.md](tools.md). Kept in one place so the two
 documents cannot drift.
 
 Two things to expect while testing: a failure (no active tab, restricted page like `chrome://`,

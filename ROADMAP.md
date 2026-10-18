@@ -26,7 +26,7 @@ Every capability below is a variation on those two directions.
 > `screenshot`, `scroll`, `hover`, `highlight`, `tabs`, `wait_for`, …) and act-mode write tools
 > (`click`, `type`, `fill_form`, `select_option`, `upload_file`, `press_key`, `navigate`,
 > `history`, `reload`, `inject_css`, …) — is tabulated with params in the
-> [README](README.md#the-tools-we-serve), the one place the list is kept. Reads go through an **accessibility-tree snapshot
+> [docs/tools.md](docs/tools.md), the one place the list is kept. Reads go through an **accessibility-tree snapshot
 > with stable element refs** (cross-frame, stale-ref checked) rather than a raw `innerText` dump —
 > see `docs/adr/a11y-snapshot-and-element-refs.md`. Action tools return the post-action snapshot so
 > the agent rarely needs a follow-up read.

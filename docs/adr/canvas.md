@@ -565,7 +565,7 @@ below is built around that.
   - `canvas:<id>:agent` — only on canvases stored before history: the agent's last write while it
     differed from the latest. The next write moves it into `v:<agentVersion>` (lazy migration).
 - **The cap is a byte budget** (200 MB, §6 Q3; a `canvas:budgetBytes` storage override can lower
-  it for testing, see TESTING.md). **A canvas's footprint is its whole history** (Brett,
+  it for testing, see docs/testing.md). **A canvas's footprint is its whole history** (Brett,
   2026-10-11): the sum of its versions' sizes, each a full copy, with an image canvas's image
   counted once per distinct image. So a canvas costs up to N + 1 copies of its text plus its
   images, and the budget is reached by many canvases, long histories of large canvases, or many

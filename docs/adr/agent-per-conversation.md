@@ -245,7 +245,7 @@ One PR after this ADR is accepted:
   conversation (§2.7 `Conn.cur`). The multi-conversation smoke also gets a
   two-agent case (two `FakeGateway` instances, two URLs; e2e/) — two conversations on two agents
   streaming at once, archive the last conversation of one → its socket closes, URL edit → rebind.
-- `TESTING.md`: real-Chrome steps for the picker, two agents at once, removing an agent in use.
+- `docs/testing.md` (was `TESTING.md`): real-Chrome steps for the picker, two agents at once, removing an agent in use.
 
 ## 6. Implementation notes (2026-10-16)
 
