@@ -20,7 +20,7 @@ dev tooling only (puppeteer-core for the headless smokes); see
 ## Project structure
 
 - `manifest.json`: Manifest V3, with the Side Panel API.
-- `background.js`: Service worker; opens the side panel from the toolbar icon.
+- `background.js`: Service worker; opens the side panel from the toolbar icon, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
 - `sidepanel.html` / `sidepanel.css`: The side panel's layout and styles.
 - `sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
 - `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
@@ -37,7 +37,7 @@ dev tooling only (puppeteer-core for the headless smokes); see
 - `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [README → Agent skills](README.md#-agent-skills)).
 - `canvas.html` / `canvas.js` (with `canvas-core.js`, `canvas-store.js`, `canvas-tabs.js`, `canvas-mirror.js` and the sandboxed `canvas-frame.html`): canvases, one tab each. `canvas-gallery.html` / `canvas-gallery.js` (with `canvas-gallery-core.js`): the canvas gallery. See [`docs/adr/canvas.md`](docs/adr/canvas.md).
 - `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
-- `scripts/`: smoke tests in a real headless Chrome (`smoke-*.mjs`, run by `npm run smoke`), the release build stamp, and vendor rebuild helpers.
+- `scripts/`: smoke tests in a real headless Chrome (`smoke-*.mjs`, run by `npm run smoke`), the two-session ACP check against a real gateway (`acp-two-sessions.mjs`, see [docs/testing.md](docs/testing.md#p2-prerequisite-two-session-test)), the release build stamp, and vendor rebuild helpers.
 - `e2e/`: end-to-end tests of the real extension and side panel against a fake ACP gateway (`npm run e2e`; see [`e2e/README.md`](e2e/README.md)).
 - `docs/adr/`: the design decisions behind each feature (canvas, multi-conversation, agent per conversation, ask_user, attachments, tunnel liveness, …).
 - `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
@@ -94,7 +94,9 @@ checks that a diagram error notice in the canvas header belongs to the render it
     side-panel features — canvases, `notify`, `ask_user` — are not writes, even when they open a tab;
   - mark `sessionScope: true` if it works on tabs or the browser rather than the active page's DOM —
     otherwise it first resolves the active tab and checks its origin, and fails on a tab Katashiro
-    cannot script;
+    cannot script. A `sessionScope` tool is refused in a background conversation unless it is listed
+    in `BACKGROUND_SESSION_TOOLS` — add it there only if it never brings a tab forward or acts on
+    the tab the user is on (see [docs/tools.md → In a background conversation](docs/tools.md#in-a-background-conversation));
   - give it a `redact(args)` hook so the activity pill never shows secrets (a test enforces it), and
     a `secrets(args)` hook for short values — passwords, typed text — that must also be scrubbed
     from the result summary;
@@ -162,6 +164,6 @@ chore: bump manifest version to 1.1.0
 - Describe what changed and how you verified it (which page / agent you tested against).
 - Ensure the extension loads without console errors before requesting review.
 - CI (`.github/workflows/ci.yml`) syntax-checks every runtime script, runs
-  `node --test test/*.test.js`, and runs the puppeteer smokes (`npm run smoke`) on
-  each PR; run the same locally before pushing (`npm test`, and
-  `npm ci && npm run chrome && npm run smoke`).
+  `node --test test/*.test.js`, the puppeteer smokes (`npm run smoke`) and the T2 E2E
+  (`npm run e2e`) on each PR; run the same locally before pushing (`npm test`,
+  `npm ci && npm run chrome && npm run smoke`, and `npm run chrome:full && npm run e2e`).

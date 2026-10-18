@@ -1383,7 +1383,7 @@ loadBuildInfo();
 
 // Settings → 重新載入 Katashiro: chrome.runtime.reload() re-reads an unpacked extension from disk,
 // exactly like chrome://extensions' reload button. It closes the side panel in EVERY window; each
-// window's scrollback and resumable ACP session ids (storage.local) and synced settings survive.
+// conversation's scrollback and resumable ACP session ids (storage.local) and synced settings survive.
 // Confirmed with confirm(), like 清除聊天. In-flight turns get session/cancel first, with a short
 // delay so the notification leaves before the page dies (pagehide's cancel is best effort).
 const reloadExtensionBtn = document.getElementById("reload-extension-btn");
@@ -1410,7 +1410,7 @@ setInterval(() => updateRoster(), ROSTER_REFRESH_MS);
 // storage and sends a DELETE for every synced key to the server (Chromium
 // SyncStorageBackend::DeleteStorage → SyncableSettingsStorage::Clear → ACTION_DELETE). Upgrade an
 // unpacked install with chrome://extensions ↻ reload, which keeps storage — never remove + re-add.
-// Session ids + scrollback stay in storage.local (per-window, never synced).
+// Session ids + scrollback stay in storage.local (per conversation, never synced).
 // NOTE: agent URLs/tokens sync across devices too, so a device-specific endpoint (e.g.
 // ws://localhost) may need adjusting on another machine.
 const CONFIG_KEYS = ["agents", "wsUrl", "roomConfig", "actMode", "activeAgentUrl", "jevToken", "screenshotConfig", "attachConfig"];

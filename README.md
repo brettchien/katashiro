@@ -4,8 +4,9 @@
 gateway over the Agent Client Protocol (ACP), and lets the agent see and operate the browser you
 are using.
 
-- **Chat beside any page** — up to 3 conversations at a time, each bound to one of your agents, with
-  history that survives a reload; paste screenshots or drop files into the chat.
+- **Chat beside any page** — up to 3 open conversations (across all windows), each bound to one of
+  your agents, with history that survives a reload. A conversation keeps working while you look at
+  another; archived ones reopen from the 🗂️ gallery. Paste screenshots or drop files into the chat.
 - **Let the agent use the browser** — 51 `katashiro.*` tools: read the page, click, type, fill forms,
   navigate, manage tabs, point things out to you, ask you multiple-choice questions. Writes stay
   off until you allow them.
@@ -35,11 +36,12 @@ send reaches the agent's session, so it could not keep an incognito promise.
 
 ## 🔌 Connect
 
-1. In the side panel, enter your OpenAB endpoint (e.g. `ws://localhost:8080/acp`) and its token
-   (non-loopback endpoints need one).
-2. Add more agents in **Settings (⚙️)** if you like; each new conversation (＋) picks one. Each agent
-   there has its own **🌐 開／關** switch (on by default): off, that agent gets no browser tools at
-   all — a second control besides act mode.
+1. On first open, the side panel asks for an agent name and your OpenAB endpoint
+   (e.g. `ws://localhost:8080/acp`).
+2. If the endpoint is not on localhost, open **Settings (⚙️)** and enter its token in that agent's
+   row (non-loopback endpoints need one). Add more agents there if you like; each new conversation
+   (＋) picks one. Each agent also has its own **🌐 開／關** switch (on by default): off, that agent
+   gets no browser tools at all — a second control besides act mode.
 3. **Install the agent skills** (below) into each agent, so it uses Katashiro's features properly.
 
 **What the gateway needs.** Chat needs OpenAB's ACP WebSocket (`OPENAB_ACP_ENABLED=true`, bearer
@@ -89,7 +91,7 @@ Details: [docs/tools.md → Act mode](docs/tools.md#act-mode--writes-are-off-by-
 | `storage`, `unlimitedStorage` | Settings (synced), chat history, sessions, and canvases with their versions and images (local; canvases have their own 200 MB budget). |
 | `scripting`, `<all_urls>` | Page tools read and act on the active tab. Writes still need act mode. |
 | `tabs`, `tabGroups` | Tab tools, and one tab group per conversation for its canvases and working tabs. |
-| `notifications` | `katashiro.notify`, and the alert when a question waits in a background conversation. |
+| `notifications` | `katashiro.notify`, and alerts from a conversation you are not looking at: a question waits for you, or a reply finished or failed. |
 | `sessions` (optional) | Only for `katashiro.reopen_tab`; off until you allow it in Settings. |
 
 Upgrading from 2.x, Chrome may ask you to accept `notifications` and `unlimitedStorage`, added in 3.0.
@@ -117,4 +119,4 @@ tools are writes: [docs/tools.md](docs/tools.md).
 - [CONTRIBUTING](CONTRIBUTING.md) — development setup, project structure, tests, commit convention.
 - [docs/testing.md](docs/testing.md) — test layers and step-by-step checks in real Chrome.
 - [ROADMAP](ROADMAP.md) and [`docs/adr/`](docs/adr/) — what is planned, and why things are the way they are.
-- [Releases](../../releases) — builds and release notes. **3.0.0** brought canvases and the 🗂️ gallery, several conversations with one agent each, and new tools (`ask_user`, `show_image`, `chat_history`, `notify`, `client_info`, `canvas_*`); it removed room mode (agent-to-agent relay) and incognito support.
+- [Releases](../../releases) — builds and release notes. **3.0.0** brought canvases and the 🗂️ gallery, several conversations with one agent each, and new tools (`ask_user`, `show_image`, `chat_history`, `set_title`, `notify`, `client_info`, `canvas_*`); it removed room mode (agent-to-agent relay) and incognito support.

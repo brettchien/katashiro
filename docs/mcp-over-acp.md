@@ -12,7 +12,8 @@ own tools this way, you need exactly three things:
    ```json
    { "mcpServers": [ { "type": "acp", "id": "<uuid>", "name": "katashiro" } ] }
    ```
-   `id` is minted fresh per connection; `name` is stable and is what the operator allowlists.
+   `id` is minted per declared instance — Katashiro mints one per (conversation, agent) session and
+   reuses it across socket reconnects; `name` is stable and is what the operator allowlists.
    The gateway answers with a server-initiated `mcp/connect`, which you reply to with a
    `connectionId`.
 2. **Answer `tools/list`** with your tool set. OpenAB fetches once per declared server and
