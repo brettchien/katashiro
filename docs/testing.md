@@ -6,7 +6,7 @@ katashiro in Chrome replaces the mock with a real browser so the agent operates 
 
 ## Automated tests
 
-Before the manual checks below, the automated ones (CI runs both on every PR and push to `main`):
+Before the manual checks below, the automated ones (CI runs all three on every PR and push to `main`):
 
 ```bash
 npm test                                   # unit tests (node --test), no Chrome needed
@@ -21,8 +21,11 @@ are still worth a look after a gateway change.
 
 ## Prerequisites
 
-- An OpenAB agent with the browser-control build + `cursor-agent --approve-mcps`.
-  Falcon: `ws://192.168.139.2:8080/acp` (transport token in the `falcon-acp-auth` k8s secret).
+- An OpenAB gateway with the ACP WebSocket on (`OPENAB_ACP_ENABLED=true`, transport token
+  `OPENAB_ACP_AUTH_KEY`) and, for the browser tools, the OAB MCP Facade (`[mcp]` in OpenAB's
+  `config.toml`, with the agent's MCP config pointing at it) — see the README's
+  [Connect → What the gateway needs](../README.md#-connect). Without the Facade the chat works but
+  the agent has no browser tools.
 
 ## Load the extension
 
@@ -31,8 +34,10 @@ are still worth a look after a gateway change.
 
 ## Connect
 
-3. **Settings (⚙️)** → set the endpoint to the OpenAB `/acp` URL and paste the transport token
-   → **Save and Reconnect**. The status dot should go green.
+3. On first open, enter an agent name and the OpenAB `/acp` URL → **建立連線**. For a
+   non-loopback endpoint, open **Settings (⚙️)** and paste the transport token into that agent's
+   row: a changed URL or token is saved when you leave the field and the agent reconnects by
+   itself. The status dot should go green.
    - The token is entered here at runtime — never embedded in code.
    - The browser passes it via the WebSocket subprotocol (`openab.bearer.<token>`), so it stays out of the URL.
 
@@ -208,7 +213,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   scrolls to the original and flashes it. Send two messages before the agent answers and ask it to
   answer each one separately: its reply arrives as one message per part, each quoting the message it
   answers, and each with its own **↩**. Reload the panel: the split parts and quotes come back the
-  same. With two agents in a room, ↩ on each agent's reply jumps to that reply, not the other one.
+  same. With two replies of the agent in view, ↩ on each jumps to that reply, not the other one.
   Send two short messages within one second (e.g. `` ` `` then `2`) and ask the agent to answer the
   first: its quote shows the first, not the second (headers carry milliseconds,
   `[2026-10-12T14:54:11.234+08:00 user]`, and a `↩` with milliseconds matches only that message; a miscopied one falls back to its second only when that second holds a single message).
@@ -232,7 +237,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   again: the card is still open, and closes as 未回答（逾時）about 30 s of *visible* time later, with
   nothing sent to the agent; opening Settings also pauses it. Send a normal message while a card is
   open → 未回答（你送了別的訊息）, and only your message reaches the agent. 🧹 清除聊天 → 未回答（聊天已清除）.
-  Switch the active agent → 未回答（agent 已中斷連線）. A question or label with a line break shows as one
+  Make the agent reconnect from Settings (toggle its 🌐, or change its URL or token) →
+  未回答（agent 已中斷連線）. A question or label with a line break shows as one
   line. Ask for a 4th open question → the agent gets an error. Answer while the agent's turn is
   still running → the answer is queued and sent when the turn ends. Choosing "delete it" deletes
   nothing by itself; a real `canvas_delete` still shows its own 🔒 card.
@@ -278,9 +284,11 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     the auto title. Switch tabs: each keeps its scroll position, cards and ↩ buttons; the roster
     chip says 握手中 → 已連線 and the chat says 已續接 the first time per connection. Long titles end
     in … with the full title on hover.
-  - **Turn guard:** while the agent replies, clicking another tab, ＋ or × on the current tab
-    shows 「回覆中不能切換——等回完或先按 ⏹ 停止」; after ⏹ it works. Stop a turn in A, switch to
-    B at once: nothing from A's late output appears in B (DevTools console: "dropped a session/update").
+  - **Turn guard:** while the agent replies, clicking another tab or ＋ works (the reply continues
+    in the background, ⏳ on its tab). On a replying tab the × becomes ⏹ (停止這段對話的回覆): it
+    stops the reply and does not archive; archiving a conversation that is still replying (or has
+    queued messages) is refused with 「回覆中不能封存——等回完或先按 ⏹ 停止」. Stop a turn in A, switch to B at once:
+    nothing from A's late output appears in B (DevTools console: "dropped a session/update").
   - **3 open across windows:** (E2E: the replying one disabled, and window 2's pick of it refused
     with 回覆中不能封存 — `p2-background-turns.mjs`) with 3 tabs in window 1, ＋ shows the picker (a neutral card, not an
     agent's) listing the 3; a replying one is disabled; 取消 opens nothing. In window 2, open the
@@ -297,8 +305,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     in the panel first. Search filters conversation titles too.
   - **Cards:** an ask card in A, switch to B: its clock stops (the hint's seconds do not run
     down), it is still pending when you come back; sending a message in B leaves it pending; × on A:
-    the card is gone with A (internally `archived`). Make another agent active: A's and B's cards
-    close as agent 已中斷連線.
+    the card is gone with A (internally `archived`). Make A's agent reconnect from Settings (toggle
+    its 🌐): its cards in A and B close as agent 已中斷連線.
   - **Canvas:** the canvas group is named after the conversation and follows a rename. From the
     gallery, a canvas of an open but not current conversation opens in that conversation's group
     without switching; Send to agent from it switches to its conversation first (refused while the
@@ -336,8 +344,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     drop, the failed attempts space out (DevTools Network → WS: about 1, 2, 4, 8, 16 s apart, then
     every ~30 s), not every 5 s. After the restart / deploy above (a clean close) the record says
     `in 1s` (±20 %).
-  - **Turn off:** turn the agent's conn off (or make another agent active): `client_info` (from
-    another agent) lists `closed by Katashiro (conn turned off) … → none`.
+  - **Turn off:** disconnect the agent (× its last open conversation, or toggle its 🌐 in
+    Settings): `client_info` (from another agent) lists `closed by Katashiro (conn turned off) … → none`.
   - **Known gap:** an openab restart in under 2 min whose socket drops **without** a close frame
     looks like a quick blip, so the line is skipped even though the agent lost its session (fix: an
     openab boot id, proposal A).
@@ -431,7 +439,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     both reply at the same time, each in its own conversation (⏳ on the background tab, ● when it
     finishes). Each agent sees only its own conversation's messages.
   - **Disconnect:** × the only conversation of one agent: that agent disconnects (Settings shows
-    已停用 and 沒有開著的對話); the other keeps replying. Reopen it from 🗂️: it reconnects and resumes
+    已停用 and 開著 0 段／共 N 段); the other keeps replying. Reopen it from 🗂️: it reconnects and resumes
     (已續接 …).
   - **URL edit:** change an in-use agent's URL in Settings to another gateway: its conversations
     say 已連線至 … on the new URL, and the first message carries the reconnect hint (the agent can read
@@ -504,7 +512,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - The canvas frame's console shows no CSP errors.
 - **Canvas header in a narrow tab:** open a canvas you edited (v2（你的修改）) in a Split View half
   (or drag the window to ~600px). No button label breaks over lines: whole buttons move to a
-  second row, and below ~720px 🗂️ ↺ ⇆ ◐ ✕ 📤 💬 show only their icon (hover gives the title; a
+  second row, and below ~720px 🗂️ ↺ ⇆ ◐ ✕ 📤 💬 📨 show only their icon (hover gives the title; a
   screen reader still reads the full label). The version label stays on one line; a long title ends
   in …. At full width the labels are back.
 - **Version history (ADR §3.5):** Settings → **畫布版本紀錄** shows 10; type 0 or 99
