@@ -19,11 +19,10 @@ dev tooling only (puppeteer-core for the headless smokes); see
 
 ## Project structure
 
-- `manifest.json`: Configuration manifest using Manifest V3 and the Chrome Side Panel API.
-- `background.js`: Background Service Worker that registers the extension trigger to open the Side Panel on click.
-- `sidepanel.html`: The HTML layout for the chatroom interface.
-- `sidepanel.css`: High-fidelity styling utilizing modern CSS design tokens.
-- `sidepanel.js`: Main client-side script managing WebSockets, Chrome local storage, auto-reconnection, and message rendering.
+- `manifest.json`: Manifest V3, with the Side Panel API.
+- `background.js`: Service worker; opens the side panel from the toolbar icon.
+- `sidepanel.html` / `sidepanel.css`: The side panel's layout and styles.
+- `sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
 - `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
 - `room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
 - `conv-core.js`: Pure multi-conversation logic — storage layout, the open set (at most 3 across windows), adoption after a browser restart, titles, agent binding. See [`docs/adr/multi-conversation.md`](docs/adr/multi-conversation.md) and [`docs/adr/agent-per-conversation.md`](docs/adr/agent-per-conversation.md).
@@ -90,9 +89,17 @@ checks that a diagram error notice in the canvas header belongs to the render it
 - **Design first.** A feature that changes behaviour beyond one module gets an ADR in
   [`docs/adr/`](docs/adr/) before the code (see the existing ones for the shape).
 - **A new browser tool** is one entry in `TOOLS` in `browser-mcp.js`: schema and implementation
-  together, so `tools/list` is derived from it. Name it `katashiro.<verb>`, mark `write: true` if
-  it changes a page or the browser (act mode gates it), and give it a `redact(args)` hook so the
-  activity pill never shows secrets. Add its row to [`docs/tools.md`](docs/tools.md).
+  together, so `tools/list` is derived from it. Name it `katashiro.<verb>`, and:
+  - mark `write: true` if it acts on a page or on tabs on the user's behalf (act mode gates it);
+    side-panel features — canvases, `notify`, `ask_user` — are not writes, even when they open a tab;
+  - mark `sessionScope: true` if it works on tabs or the browser rather than the active page's DOM —
+    otherwise it first resolves the active tab and checks its origin, and fails on a tab Katashiro
+    cannot script;
+  - give it a `redact(args)` hook so the activity pill never shows secrets (a test enforces it), and
+    a `secrets(args)` hook for short values — passwords, typed text — that must also be scrubbed
+    from the result summary;
+  - add its row to [`docs/tools.md`](docs/tools.md), and bump the tool count in the README
+    ("51 `katashiro.*` tools") and in [`docs/features.md`](docs/features.md) ("and 46 more").
 - **A feature the agent needs more than one tool call to use well** (or a rule it must follow,
   like ending the turn after `ask_user`) gets a skill in [`skills/`](skills/) and a row in the
   README's Agent skills table.

@@ -17,7 +17,8 @@ are using.
 
 ## 🚀 Install
 
-Runs on Chromium browsers (Chrome, Edge); not Firefox. There is no build step.
+Runs on Chromium browsers (Chrome, Edge); not Firefox (Arc needs a `chrome.sidePanel` polyfill).
+There is no build step.
 
 1. Download the latest **`katashiro-<version>.zip`** from [**Releases**](../../releases) and unzip it
    to a folder you will keep — or `git clone https://github.com/brettchien/katashiro.git`.
@@ -28,14 +29,17 @@ Runs on Chromium browsers (Chrome, Edge); not Firefox. There is no build step.
 **Settings → 重新載入 Katashiro**), then reopen the side panel. Chats, sessions and settings are kept.
 **Don't remove the extension to upgrade** — Chrome deletes its synced settings on removal.
 
-Settings sync through your Google account. Katashiro does not run in incognito windows: whatever you
+Settings (agents, tokens, switches) sync through your Google account; chat history and canvases stay
+in this browser. Katashiro does not run in incognito windows: whatever you
 send reaches the agent's session, so it could not keep an incognito promise.
 
 ## 🔌 Connect
 
 1. In the side panel, enter your OpenAB endpoint (e.g. `ws://localhost:8080/acp`) and its token
    (non-loopback endpoints need one).
-2. Add more agents in **Settings (⚙️)** if you like; each new conversation (＋) picks one.
+2. Add more agents in **Settings (⚙️)** if you like; each new conversation (＋) picks one. Each agent
+   there has its own **🌐 開／關** switch (on by default): off, that agent gets no browser tools at
+   all — a second control besides act mode.
 3. **Install the agent skills** (below) into each agent, so it uses Katashiro's features properly.
 
 **What the gateway needs.** Chat needs OpenAB's ACP WebSocket (`OPENAB_ACP_ENABLED=true`, bearer
@@ -50,6 +54,8 @@ without it the chat works but the agent has no browser tools.
 
 Some features need the agent to follow a procedure, not just call a tool. The skills in
 [`skills/`](skills/) teach it that — **install them into every agent that chats through Katashiro.**
+They are not in the release zip: take them from the repo (`git clone`, or download it from GitHub),
+and install them **where the agent runs** (its machine or container), not where the browser runs.
 
 | Skill | Teaches the agent to | Without it |
 |---|---|---|
@@ -57,13 +63,14 @@ Some features need the agent to follow a procedure, not just call a tool. The sk
 | [`katashiro-ask-user`](skills/katashiro-ask-user/SKILL.md) | Ask you a multiple-choice question on a card, then **end its turn** and wait for your answer as a new message | The agent may sit waiting or poll for the answer instead of ending the turn |
 | [`katashiro-point-at`](skills/katashiro-point-at/SKILL.md) | Point at what it is explaining: glow an element or a canvas block, or emphasise several with temporary CSS | Works, but the agent rarely shows you where it means |
 
-For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them into the skills directory:
+For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them from a checkout of this
+repo into the agent's skills directory:
 
 ```bash
 cp -r skills/katashiro-* ~/.claude/skills/
 ```
 
-**Copy them again after updating Katashiro** — an installed skill does not update itself.
+**Copy them again after updating Katashiro** (`git pull` first) — an installed skill does not update itself.
 `show-image.sh` needs `bash`, `curl`, `jq` and `base64`, and runs only in a Katashiro chat
 (it uses the session's `$OPENAB_SESSION_TOKEN`).
 
@@ -72,7 +79,8 @@ cp -r skills/katashiro-* ~/.claude/skills/
 The agent operates the browser **as you**, with whatever you are logged into. Reading works
 always; **writes** (click, type, navigate, close tabs, …) are refused until you turn on act mode
 (**Settings → 瀏覽器寫入 → ✋ 可操作**). With act mode on there is no per-action confirmation and no
-site blocklist — keep Katashiro off a site with Chrome's own **Site access** setting instead.
+site blocklist. Chrome's own **Site access** setting keeps the page tools off a site, but not the tab
+tools: `navigate` / `new_tab` can still open it, and `tabs` still shows its tabs' URLs and titles.
 Details: [docs/tools.md → Act mode](docs/tools.md#act-mode--writes-are-off-by-default).
 
 | Permission | Why |
@@ -97,7 +105,9 @@ Upgrading from 2.x, Chrome may ask you to accept `notifications` and `unlimitedS
 | Canvases | `canvas_open`, `canvas_patch`, `canvas_read`, `canvas_list`, `canvas_delete`, `canvas_highlight`, `canvas_inject_css`, `canvas_goto`, `canvas_view`, `canvas_gallery` |
 | Natural-language grounding *(optional, your own OpenRouter key)* | `assert`, `click_text`, `type_text` |
 
-Parameters, results and limits for each: [docs/tools.md](docs/tools.md).
+Act mode gates more than the *Act on the page* row: the tab tools that open, switch, close, move or
+group tabs, and `click_text` / `type_text`, are writes too. Parameters, results, limits, and which
+tools are writes: [docs/tools.md](docs/tools.md).
 
 ## 📚 Documentation
 
