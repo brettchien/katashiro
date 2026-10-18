@@ -9,7 +9,7 @@ commit convention this repo follows.
 Katashiro is a zero-build, vanilla-JS Chrome Extension (Manifest V3) — no
 bundler, and the extension loads nothing from `node_modules`. `package.json` holds
 dev tooling only (puppeteer-core for the headless smokes); see
-[README → Run the tests](README.md#run-the-tests).
+[Running the tests](#running-the-tests).
 
 1. Clone the repo.
 2. Open `chrome://extensions/` and enable **Developer mode**.
@@ -17,22 +17,66 @@ dev tooling only (puppeteer-core for the headless smokes); see
 4. Edit the source, then hit the **↻ reload** button on the extension card to
    pick up changes. Reload the Side Panel to re-run `sidepanel.js`.
 
-### Project layout
+## Project structure
 
-| File             | Responsibility                                             |
-|------------------|------------------------------------------------------------|
-| `manifest.json`  | MV3 config, permissions, Side Panel registration           |
-| `background.js`  | Service worker — opens the Side Panel on action click       |
-| `sidepanel.html` | Chat UI markup                                             |
-| `sidepanel.css`  | Glassmorphic dark-mode styling                            |
-| `sidepanel.js`   | ACP/WebSocket transport, agent management, chat rendering + history/resume, roster |
-| `browser-mcp.js` | The browser MCP server (tool registry + DOM tool bodies) served over the ACP tunnel |
-| `room-core.js`   | Pure panel logic — prompt framing/batching, heartbeat and reconnect decisions, roster status |
-| `agent-tools.js` | Pure mapping of the agent's own `tool_call` / `tool_call_update` progress to tool-strip pills |
-| `composer.js`    | Pure composer rules — paste classification, accepted types, per-turn image budget, prompt blocks; dropped files: byte sniffing, limits, text-attachment expansion |
-| `markdown.js`    | The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy/link hardening |
-| `page/a11y-walker.js` | Content script — a11y-tree snapshot + element-ref resolution injected into the page |
-| `vendor/`        | Prebuilt eval-free IIFE bundles (dom-accessibility-api, markdown-it, dompurify, highlight.js); see `vendor/BUILD.md` |
+- `manifest.json`: Configuration manifest using Manifest V3 and the Chrome Side Panel API.
+- `background.js`: Background Service Worker that registers the extension trigger to open the Side Panel on click.
+- `sidepanel.html`: The HTML layout for the chatroom interface.
+- `sidepanel.css`: High-fidelity styling utilizing modern CSS design tokens.
+- `sidepanel.js`: Main client-side script managing WebSockets, Chrome local storage, auto-reconnection, and message rendering.
+- `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
+- `room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
+- `conv-core.js`: Pure multi-conversation logic — storage layout, the open set (at most 3 across windows), adoption after a browser restart, titles, agent binding. See [`docs/adr/multi-conversation.md`](docs/adr/multi-conversation.md) and [`docs/adr/agent-per-conversation.md`](docs/adr/agent-per-conversation.md).
+- `composer.js`: Pure rules for pasted images and dropped files — what to intercept, type and size limits, and how text + attachments become an ACP `session/prompt`. See [`docs/adr/chat-attachments.md`](docs/adr/chat-attachments.md).
+- `agent-tools.js`: Maps the agent's own tool-call updates (ACP `tool_call` / `tool_call_update`) to tool-strip pills.
+- `ask-core.js`: The pure half of `katashiro.ask_user` — question rules, how a card settles, its visible-time clock, the answer text. See [`docs/adr/ask-user.md`](docs/adr/ask-user.md).
+- `confirm-core.js`: The pure half of the panel's 🔒 confirm card — text rules and the one-shot decision state machine.
+- `jev-grounding.js`: Optional Jev (TypeSafe) decision helper behind `assert`, `click_text` and `type_text` (BYO OpenRouter key).
+- `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
+- `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
+- `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`; for the canvas frame only, `reveal.js`, Milkdown crepe and `@mermaid-js/tiny`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
+- `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [README → Agent skills](README.md#-agent-skills)).
+- `canvas.html` / `canvas.js` (with `canvas-core.js`, `canvas-store.js`, `canvas-tabs.js`, `canvas-mirror.js` and the sandboxed `canvas-frame.html`): canvases, one tab each. `canvas-gallery.html` / `canvas-gallery.js` (with `canvas-gallery-core.js`): the canvas gallery. See [`docs/adr/canvas.md`](docs/adr/canvas.md).
+- `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
+- `scripts/`: smoke tests in a real headless Chrome (`smoke-*.mjs`, run by `npm run smoke`), the release build stamp, and vendor rebuild helpers.
+- `e2e/`: end-to-end tests of the real extension and side panel against a fake ACP gateway (`npm run e2e`; see [`e2e/README.md`](e2e/README.md)).
+- `docs/adr/`: the design decisions behind each feature (canvas, multi-conversation, agent per conversation, ask_user, attachments, tunnel liveness, …).
+- `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
+
+
+## Running the tests
+
+The extension has no dependencies; `package.json` is dev tooling only (it never ships, and nothing
+the extension loads comes from `node_modules`).
+
+```bash
+npm test                      # = node --test test/*.test.js — no install, no Chrome (chrome.*/crypto/socket are mocked)
+
+npm ci && npm run chrome      # once: puppeteer-core, and chrome-headless-shell (pinned in package.json) into .cache/chrome
+npm run smoke                 # every scripts/smoke-*.mjs in a real headless Chrome, with a summary
+npm run smoke -- mermaid      # only the named ones; or run one directly: node scripts/smoke-mermaid.mjs
+
+npm run chrome:full           # once: full Chrome for Testing (same version) — the smokes' headless shell cannot load extensions
+npm run e2e                   # T2 E2E: the real extension and side panel against a fake ACP gateway (e2e/README.md)
+```
+
+CI (`.github/workflows/ci.yml`) runs all three on every PR and push to `main`. The smokes find
+puppeteer-core and Chrome through `scripts/lib/smoke-env.mjs`; `CHROME=/path/to/chrome-headless-shell`
+and `PUPPETEER_CORE=/path/to/node_modules/puppeteer-core` override them.
+
+What they check: `scripts/smoke-mermaid.mjs` (ADR canvas §2) renders diagrams in the real canvas
+frame under the sandbox CSP and fails on any CSP violation outside its allow-list (it also writes a
+screenshot of the fixture, to its first argument or `/tmp/ks11-mermaid.png`);
+`scripts/smoke-glow-ranges.mjs` checks `canvas_patch`'s exact-range glow (ADR
+canvas §3.10) in the real canvas frame, and `scripts/smoke-editor-undo.mjs` the edit-mode ↶ 復原 /
+↷ 重做 (ADR canvas §3.5: the editor's own history, focus kept in the editor).
+`scripts/smoke-ask-selection.mjs` checks the frame's `selection{rect}` (where the 💬 goes, re-sent on
+scroll, dropped out of view) and `scripts/smoke-ask-popover.mjs` the Ask agent popover in the real
+`canvas.html` with stubbed `chrome.*` APIs (ADR canvas §3.7). `scripts/smoke-diagram-notice.mjs`
+checks that a diagram error notice in the canvas header belongs to the render it came from, and
+`scripts/smoke-multi-conversation.mjs` the multi-conversation side panel and gallery (see
+[docs/testing.md](docs/testing.md)).
+
 
 ## Code style
 
@@ -40,6 +84,20 @@ dev tooling only (puppeteer-core for the headless smokes); see
 - Render agent- or network-sourced text via `textContent` — **except the chat message body**, which is markdown and may reach `innerHTML` **only** through the single `renderMarkdown`/DOMPurify sink (`markdown.js`). No other `innerHTML` of remote data.
 - Keep comments in English; user-facing UI strings may be Traditional Chinese.
 - **No secrets.** Never commit tokens, keys, or private endpoints. `ws://localhost:8080/acp` is the only endpoint placeholder.
+
+## Adding a feature or a tool
+
+- **Design first.** A feature that changes behaviour beyond one module gets an ADR in
+  [`docs/adr/`](docs/adr/) before the code (see the existing ones for the shape).
+- **A new browser tool** is one entry in `TOOLS` in `browser-mcp.js`: schema and implementation
+  together, so `tools/list` is derived from it. Name it `katashiro.<verb>`, mark `write: true` if
+  it changes a page or the browser (act mode gates it), and give it a `redact(args)` hook so the
+  activity pill never shows secrets. Add its row to [`docs/tools.md`](docs/tools.md).
+- **A feature the agent needs more than one tool call to use well** (or a rule it must follow,
+  like ending the turn after `ask_user`) gets a skill in [`skills/`](skills/) and a row in the
+  README's Agent skills table.
+- User-visible behaviour goes in [`docs/features.md`](docs/features.md); the README keeps only
+  what a new user needs.
 
 ## Commit convention — Conventional Commits
 
@@ -59,7 +117,7 @@ All commits **must** follow the [Conventional Commits](https://www.conventionalc
 |------------|----------------------------------------------------------|
 | `feat`     | A new user-facing capability                              |
 | `fix`      | A bug fix                                                 |
-| `docs`     | Documentation only (README, ROADMAP, this file)          |
+| `docs`     | Documentation only (README, ROADMAP, docs/, this file)   |
 | `style`    | Formatting / whitespace, no behavior change              |
 | `refactor` | Code change that neither fixes a bug nor adds a feature   |
 | `perf`     | Performance improvement                                   |

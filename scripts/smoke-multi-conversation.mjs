@@ -12,7 +12,7 @@
 // localStorage (one key per item), so several pages ("windows", ?win=N) share it, see each other's
 // writes as storage.onChanged, and hold real Web Locks against each other. Not the extension:
 // runtime messaging between pages, tab groups, the real gateway and the real gallery → side panel
-// round trip still need the manual checks in TESTING.md. Checks:
+// round trip still need the manual checks in docs/testing.md. Checks:
 //   - history:* keys migrate (pre-#61 entry included) into conv:/window:, ≤ 3 open, and resume;
 //   - the tab strip: titles (auto from the first user message), ＋, switching, rename, ×;
 //   - per-conversation sessions: session/new for a new one, session/resume on a switch back, its own
