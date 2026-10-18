@@ -1,5 +1,7 @@
 # Katashiro (紙代 / 形代) - OpenAB Companion ⛩️
 
+![Katashiro banner](images/banner.jpg)
+
 **Katashiro** is a Chrome side-panel chat for your **OpenAB** agents. It connects to an OpenAB
 gateway over the Agent Client Protocol (ACP), and lets the agent see and operate the browser you
 are using.
