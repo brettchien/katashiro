@@ -80,12 +80,12 @@ but never takes the user's screen and acts only on tabs of its own tab group:
 
 - **Page tools** act on the conversation's **working tab**, not the active tab, without bringing it
   forward — never on the tab the user is on, and no writes while the user is on one of the group's
-  tabs (reads still work). With no working tab the call says to open one with `new_tab`.
+  tabs (reads still work). With no working tab the call says to open one with `new_tab` or pick one of the group's tabs with `switch_tab`.
 - **`screenshot` is refused**: Chrome captures only the tab in front.
 - **Tab tools:** `tabs` / `tab_groups` list as usual; `new_tab` always opens in the background, in
-  the group, as the working tab; `switch_tab` only selects one of the group's tabs as the working tab
+  the group, as the working tab (if it could not join the group it is not, and page tools cannot act on it); `switch_tab` only selects one of the group's tabs as the working tab
   (nothing is activated or focused); `close_tab` closes one of the group's tabs named by `index` or
-  `url`. `reopen_tab`, `tab_update`, the group and split tools are refused.
+  `url` — it is a write, so it needs act mode and is refused while the user is on one of the group's tabs. `reopen_tab`, `tab_update`, the group and split tools are refused.
 - **Canvas tools** that only store or read work (`canvas_open` without `beside`, `canvas_read`,
   `canvas_patch`, `canvas_delete`, `canvas_list`); the ones that show a canvas (`canvas_goto`,
   `canvas_highlight`, `canvas_inject_css`, `canvas_view`, `canvas_gallery`, `canvas_open` with
