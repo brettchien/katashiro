@@ -115,7 +115,9 @@ does today, so:
 3. **A 🔒 confirm card per command** (proposed default, Q3): `terminal_run` and `terminal_write` show
    the exact command (plain text, one line per line, control characters made visible) and the
    terminal it goes to. 允許 runs it, 拒絕 or 2 minutes of silence declines, and the turn ending
-   cancels it. The card fits in the 150 s budget because it times out at 120 s.
+   cancels it. **One budget per call:** the card and the wait share the 150 s, so the time the user
+   took on the card comes off `timeoutSec` (a command allowed after 100 s waits at most 50 s, then
+   returns `running: true`). The card itself times out at 120 s.
 4. **Optional allowlist** (Q4), in Settings: command prefixes that run without a card, matched on the
    whole command line after trimming. Example: `git status`, `git diff`, `ls`, `pwd`, `npm test`. A
    line containing `;`, `&&`, `|`, `` ` ``, `$(` or a redirect never matches. Empty by default.
