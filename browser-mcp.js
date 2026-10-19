@@ -3135,6 +3135,86 @@
       }
     },
 
+    "katashiro.conversation_list": {
+      description:
+        "List the user's OTHER Katashiro conversations (not this one), newest first: id, title, whether it " +
+        "is archived, and the canvases in each (id, title, kind, version — never their content). Use it to " +
+        "find where a canvas on the same topic lives, then katashiro.canvas_move to bring it here or to send " +
+        "one of yours there. A deleted conversation is not listed. Optional `query` filters by conversation title.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: { query: { type: "string", description: "words that must all appear in the conversation title (optional)" } },
+      },
+      redact: redactDefault,
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store || typeof c.conversations !== "function") return errText("conversations are not available in this host (no side panel)");
+        let rows;
+        try { rows = await c.conversations(typeof args.query === "string" ? args.query : ""); }
+        catch (e) { return errText(`conversation_list: ${(e && e.message) || e}`); }
+        return okText(JSON.stringify({ conversations: rows }));
+      }
+    },
+
+    "katashiro.canvas_move": {
+      description:
+        "Move a canvas between conversations, so the canvases of one topic end up together. Either PUSH one " +
+        "of this conversation's canvases to another conversation (`to` = that conversation's id, from " +
+        "katashiro.conversation_list), or PULL another conversation's canvas into this one (its `id` from " +
+        "conversation_list; leave `to` out). A canvas cannot be moved between two other conversations. The user is " +
+        "asked to confirm in the side panel chat every time; if they decline, do not answer within 2 minutes, or " +
+        "your turn ends first, nothing moves (\"declined\"). Only the owner changes: content, versions and images " +
+        "go with it. After a push you can no longer read or change it; after a pull canvas_read it before you use " +
+        "it. The other conversation's agent is told in its next message.",
+      sessionScope: true,
+      inputSchema: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "canvas id" },
+          to: { type: "string", description: "PUSH: the conversation to move this conversation's canvas to. Leave out to PULL a canvas into this conversation." }
+        },
+        required: ["id"]
+      },
+      redact: redactDefault,
+      async call(args, ctx) {
+        const c = ctx.canvas;
+        if (!c || !c.store || typeof c.conversationInfo !== "function") return errText("canvases are not available in this host (no side panel)");
+        const own = c.conversationId();
+        let meta;
+        try { meta = (await c.store.allMetas()).find((m) => m && m.id === args.id); }
+        catch (e) { return errText(`canvas_move: ${(e && e.message) || e}`); }
+        if (!meta) return errText(`canvas_move: no canvas "${args.id}"`);
+        const from = meta.conversationId;
+        const to = args.to == null || args.to === "" ? own : String(args.to);
+        if (from === to) return errText(`canvas_move: canvas "${meta.title}" (${meta.id}) is already in ${to === own ? "this" : "that"} conversation`);
+        if (from !== own && to !== own) return errText("canvas_move: only a canvas of this conversation can be pushed, and only into this conversation can one be pulled");
+        const push = from === own;
+        const other = c.conversationInfo(push ? to : from);
+        if (!other || other.gone) return errText(`canvas_move: no conversation "${push ? to : from}"${other && other.gone ? ` (${other.gone})` : ""}; see katashiro.conversation_list`);
+        if (typeof c.confirmMove !== "function") return errText("canvas_move: no way to ask the user here");
+        let answer = false;
+        try { answer = await c.confirmMove({ id: meta.id, title: meta.title, version: meta.version, push, otherTitle: other.title }); }
+        catch (_) { answer = false; }
+        const ok = answer === true || !!(answer && typeof answer === "object" && answer.ok === true);
+        const state = answer && typeof answer === "object" ? answer.state : null;
+        if (!ok) {
+          if (state === "skipped") return okText(`declined: the turn ended before the user was asked; canvas "${meta.title}" (${meta.id}) was not moved`);
+          if (state === "ended") return okText(`declined: the turn ended before the user answered; canvas "${meta.title}" (${meta.id}) was not moved`);
+          return okText(`declined: the user did not move canvas "${meta.title}" (${meta.id})`);
+        }
+        try {
+          // `from` re-checked under the canvas lock: moved by someone else while asking → refused.
+          await c.store.move({ id: meta.id, from, to, quiet: own });
+        } catch (e) {
+          return errText(`canvas_move: ${(e && e.message) || e}`);
+        }
+        return okText(push
+          ? `moved canvas "${meta.title}" (${meta.id}) to conversation "${other.title}"; it is no longer in this conversation`
+          : `moved canvas "${meta.title}" (${meta.id}, v${meta.version}) into this conversation from "${other.title}"; canvas_read it before you rely on it`);
+      }
+    },
+
     "katashiro.canvas_goto": {
       description:
         "Show a given slide of a SLIDES canvas to the user: brings its tab to the front (opening it if " +
@@ -3644,7 +3724,7 @@
     "katashiro.ask_user", "katashiro.show_image",
     "katashiro.tabs", "katashiro.tab_groups", "katashiro.new_tab", "katashiro.switch_tab", "katashiro.close_tab",
     "katashiro.canvas_open", "katashiro.canvas_read", "katashiro.canvas_patch", "katashiro.canvas_delete",
-    "katashiro.canvas_list",
+    "katashiro.canvas_list", "katashiro.canvas_move", "katashiro.conversation_list",
   ]);
   const BACKGROUND_PAGE_REFUSED = new Set(["katashiro.screenshot"]);
   const BACKGROUND_REFUSAL =

@@ -794,8 +794,8 @@ Work on one topic often ends up spread over several conversations, each with its
   filters them by title (`ConvCore.moveTargets`). Its own conversation is never listed, and neither
   is a deleted one or one being deleted (§7.1). Before moving, the page reads `conv:index` again and
   refuses a target deleted in the meantime.
-- **The user's choice only.** No agent tool moves a canvas (like archive, §3.4): an agent cannot
-  pull another conversation's canvas into its own.
+- **Agents too, with the user's yes every time** (Brett 2026-10-19 18:55 TPE, reversing the first
+  "user only" draft; push and pull, option B). See the agent tools below.
 - **What moves:** `CanvasStore.move({ id, from, to })` changes `meta.conversationId` and nothing
   else, so content, history, images, `agentVersion` and `agentSeenVersion` all stay. It runs under
   the canvas's lock, with `canvas:index` nested as everywhere. `from` must still be the canvas's
@@ -819,6 +819,21 @@ Work on one topic often ends up spread over several conversations, each with its
 - **The folder mirror** needs nothing new: the next sync (any panel, on the meta change) finds the
   conversation's folder changed and moves the files there, as for a conversation rename (§7,
   `file.move`). A slug already taken there gets `-2`.
+- **Agent tools.** `katashiro.conversation_list { query? }` lists the other conversations (the
+  picker's rows) and each one's canvases (id, title, kind, version), never their content.
+  `katashiro.canvas_move { id, to? }` does one of two things:
+  - **push:** a canvas of this conversation, to `to`.
+  - **pull:** another conversation's canvas into this one (no `to`).
+
+  Moving between two other conversations is refused, as is an unknown or deleted conversation, before
+  anyone is asked. Every move waits for a 🔒 confirm card in the agent's turn (`ConfirmCore`, as for
+  `canvas_delete`): no answer in 2 minutes, a 拒絕, or the turn ending first means nothing moves. The
+  card names the canvas, the other conversation and who can read it afterwards. The move itself is
+  the same `CanvasStore.move`, with `from` re-checked under the lock. Only the other conversation gets
+  a note (`quiet`: the mover knows). Both tools work in a background conversation (they store, show
+  no canvas).
+  Why a card even for a push: the other conversation may be bound to another agent
+  (agent-per-conversation), and a move hands it the canvas; a pull reads data this agent could not see.
 - Not done: copying (a new canvas in the other conversation), moving several canvases at once, and
   an undo button (moving it back is the undo; each agent then hears the latest move only).
 

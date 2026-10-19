@@ -218,6 +218,8 @@ test("tools/list returns every browser tool, in order", async () => {
     "katashiro.canvas_read",
     "katashiro.canvas_patch",
     "katashiro.canvas_delete",
+    "katashiro.conversation_list",
+    "katashiro.canvas_move",
     "katashiro.canvas_goto",
     "katashiro.canvas_highlight",
     "katashiro.canvas_inject_css",
@@ -3874,4 +3876,73 @@ test("new_tab: complete but with a pendingUrl → still waits for onUpdated", as
   const ms = Date.now() - t0;
   assert.ok(ms >= 90 && ms < 2000, `took ${ms} ms`);
   assert.equal(listeners.size, 0);
+});
+
+// multi-conversation §7.3 (Brett 2026-10-19 18:55 TPE): canvas_move pushes and pulls, with a confirm every time.
+function withConversations(d, data) {
+  d.canvas.conversations = async (q) => [{ id: "c_000000000002", title: "Other", archived: false, lastMessageAt: null, canvases: [], q }];
+  d.canvas.conversationInfo = (id) => ({ c_000000000002: { title: "Other", gone: null }, c_000000000003: { title: "Third", gone: null }, c_000000000009: { title: "Gone", gone: "deleted" } })[id] || null;
+  return data;
+}
+
+test("katashiro.conversation_list: the panel's list as JSON (metadata only), query passed through", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d);
+  withConversations(d);
+  const r = await callTool(d, "katashiro.conversation_list", { query: "oth" });
+  const j = JSON.parse(r.content[0].text);
+  assert.equal(j.conversations[0].id, "c_000000000002");
+  assert.equal(j.conversations[0].q, "oth");
+  delete d.canvas.conversations;
+  assert.equal((await callTool(d, "katashiro.conversation_list", {})).isError, true);
+});
+
+test("katashiro.canvas_move: push asks, then moves (the mover's conversation gets no note); decline moves nothing", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const { data } = withCanvas(d);
+  withConversations(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Notes", content: "a" });
+  const asked = [];
+  d.canvas.confirmMove = async (info) => { asked.push(info); return { ok: false, state: "declined" }; };
+  let r = await callTool(d, "katashiro.canvas_move", { id: "cv_000000000001", to: "c_000000000002" });
+  assert.match(r.content[0].text, /^declined: the user did not move/);
+  assert.deepEqual(asked[0], { id: "cv_000000000001", title: "Notes", version: 1, push: true, otherTitle: "Other" });
+  assert.equal(data[CanvasStore.metaKey("cv_000000000001")].conversationId, "c_test");
+  d.canvas.confirmMove = async () => ({ ok: false, state: "ended" });
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000001", to: "c_000000000002" })).content[0].text, /turn ended before the user answered/);
+  d.canvas.confirmMove = async () => true;
+  r = await callTool(d, "katashiro.canvas_move", { id: "cv_000000000001", to: "c_000000000002" });
+  assert.match(r.content[0].text, /^moved canvas "Notes" \(cv_000000000001\) to conversation "Other"/);
+  assert.equal(data[CanvasStore.metaKey("cv_000000000001")].conversationId, "c_000000000002");
+  assert.equal(data[CanvasStore.movedKey("c_test")], undefined);                  // the mover knows
+  assert.equal(data[CanvasStore.movedKey("c_000000000002")][0].dir, "in");       // the other agent is told
+  assert.equal((await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" })).isError, true);
+});
+
+test("katashiro.canvas_move: pull another conversation's canvas in; refusals", async () => {
+  const { deps: d } = deps({ actMode: false });
+  const { data } = withCanvas(d);
+  withConversations(d);
+  await d.canvas.store.agentWrite({ conversationId: "c_000000000002", title: "Theirs", content: "t" });   // cv_…1
+  await callTool(d, "katashiro.canvas_open", { title: "Mine", content: "m" });                            // cv_…2
+  const asked = [];
+  d.canvas.confirmMove = async (info) => { asked.push(info); return { ok: true }; };
+  let r = await callTool(d, "katashiro.canvas_move", { id: "cv_000000000001" });
+  assert.match(r.content[0].text, /^moved canvas "Theirs" \(cv_000000000001, v1\) into this conversation from "Other"; canvas_read it/);
+  assert.equal(asked[0].push, false);
+  assert.equal(data[CanvasStore.movedKey("c_000000000002")][0].dir, "out");
+  assert.equal(data[CanvasStore.movedKey("c_test")], undefined);
+  assert.equal((await callTool(d, "katashiro.canvas_read", { id: "cv_000000000001" })).isError, undefined);
+  asked.length = 0;
+  // Refused without asking: already here, between two other conversations, unknown / deleted target, no canvas.
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002" })).content[0].text, /already in this conversation/);
+  await d.canvas.store.agentWrite({ conversationId: "c_000000000002", title: "Far", content: "f" });      // cv_…3
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000003", to: "c_000000000003" })).content[0].text, /only a canvas of this conversation/);
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_000000000009" })).content[0].text, /no conversation "c_000000000009" \(deleted\)/);
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_nope" })).content[0].text, /no conversation "c_nope"/);
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000099" })).content[0].text, /no canvas "cv_000000000099"/);
+  assert.equal(asked.length, 0);
+  delete d.canvas.confirmMove;
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_000000000002" })).content[0].text, /no way to ask the user/);
+  assert.equal(data[CanvasStore.metaKey("cv_000000000002")].conversationId, "c_test");
 });

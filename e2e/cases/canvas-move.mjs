@@ -68,4 +68,67 @@ export default [
       await h.idle(panel);
     },
   },
+  {
+    name: "an agent pulls another conversation's canvas with canvas_move after the user's 允許; a push the user refuses (拒絕) moves nothing",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const textOf = (x) => x.text || "";
+      const pendingCard = ".conv-messages:not([hidden]) .confirm-card.pending";
+      const sidG = await h.namedConversation(ctx, panel, "Gamma", { fresh: false });
+      gw.hold = true;
+      let since = gw.prompts.length;
+      await h.send(panel, "draft the topic");
+      await gw.waitPrompt((p) => p.sessionId === sidG, { since });
+      let r = FakeGateway.text(await gw.callTool(sidG, "katashiro.canvas_open", { title: "Topic", kind: "markdown", content: "# Topic\n\nFrom Gamma." }));
+      const cvId = (/id (cv_[0-9a-f]+)/.exec(r.text) || [])[1];
+      t.check(!r.isError && cvId, "canvas_open in Gamma", r.text);
+      await h.until(null, async () => { const x = await canvasTabOf(ctx, cvId); return x && x.status === "complete" && x.groupId > 0; }, "the canvas tab in Gamma's group");
+      gw.endTurn(sidG);
+      await h.idle(panel);
+
+      const sidD = await h.namedConversation(ctx, panel, "Delta");
+      since = gw.prompts.length;
+      await h.send(panel, "bring the topic canvas here");
+      await gw.waitPrompt((p) => p.sessionId === sidD, { since });
+      r = FakeGateway.text(await gw.callTool(sidD, "katashiro.conversation_list", {}));
+      const list = JSON.parse(r.text).conversations;
+      const g = list.find((c) => c.title === "Gamma");
+      t.check(g && g.canvases.some((c) => c.id === cvId && c.title === "Topic") && !list.some((c) => c.title === "Delta"), "conversation_list: Gamma with its canvas, not Delta itself", list);
+      t.check(!r.text.includes("From Gamma"), "…titles only, no content");
+      // Pull: the 🔒 card in Delta's turn; 允許.
+      const pull = gw.callTool(sidD, "katashiro.canvas_move", { id: cvId });
+      await h.until(panel, (sel) => !!document.querySelector(sel), "the confirm card", pendingCard);
+      const card = await panel.evaluate((sel) => document.querySelector(sel).innerText, pendingCard);
+      t.check(/要移動畫布/.test(card) && /Topic/.test(card) && /從「Gamma」移進這段對話/.test(card), "the card names the canvas and where it comes from", card);
+      await panel.evaluate((sel) => document.querySelector(`${sel} .confirm-card-allow`).click(), pendingCard);
+      r = FakeGateway.text(await pull);
+      t.check(!r.isError && r.text.startsWith(`moved canvas "Topic" (${cvId}, v1) into this conversation from "Gamma"`), "允許 → pulled", r.text);
+      await h.until(null, async () => (await groupTitleOf(ctx, await canvasTabOf(ctx, cvId))) === "Delta", "the canvas tab in Delta's group");
+      t.ok("the pulled canvas's tab moved to Delta's group");
+      r = FakeGateway.text(await gw.callTool(sidD, "katashiro.canvas_read", { id: cvId }));
+      t.check(!r.isError && /From Gamma/.test(r.text), "Delta's agent reads it", r.text.slice(0, 80));
+      // Push it back: 拒絕 → nothing moves.
+      const push = gw.callTool(sidD, "katashiro.canvas_move", { id: cvId, to: g.id });
+      await h.until(panel, (sel) => !!document.querySelector(sel), "the second confirm card", pendingCard);
+      await panel.evaluate((sel) => document.querySelector(`${sel} .confirm-card-deny`).click(), pendingCard);
+      r = FakeGateway.text(await push);
+      t.check(/^declined/.test(r.text), "拒絕 → declined", r.text);
+      t.check((await groupTitleOf(ctx, await canvasTabOf(ctx, cvId))) === "Delta", "…and it stays in Delta");
+      gw.endTurn(sidD);
+      await h.idle(panel);
+      gw.hold = false;
+      // Delta's agent made the move: no note for it. Gamma's agent is told the canvas left.
+      since = gw.prompts.length;
+      await h.send(panel, "thanks");
+      let p = await gw.waitPrompt((x) => x.sessionId === sidD, { since });
+      t.check(!textOf(p).includes("[katashiro: the user moved canvas"), "the mover gets no note", textOf(p).slice(0, 80));
+      await h.idle(panel);
+      await h.switchTo(panel, "Gamma");
+      since = gw.prompts.length;
+      await h.send(panel, "anything new?");
+      p = await gw.waitPrompt((x) => x.sessionId === sidG, { since });
+      t.check(textOf(p).includes(`(${cvId}) to another conversation`), "Gamma's agent is told it left", textOf(p).slice(0, 160));
+      await h.idle(panel);
+    },
+  },
 ];

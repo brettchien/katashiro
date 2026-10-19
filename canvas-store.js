@@ -866,10 +866,11 @@
      * tool). Only its conversationId changes — content, history, images and versions stay. Under the
      * canvas's lock (nested canvas:index, as everywhere): `from` must still be its conversation
      * (refused otherwise: someone moved it meanwhile). Both index entries move, and each conversation
-     * gets a note for its agent (`out` for `from`, `in` for `to`; one per canvas, the latest).
+     * gets a note for its agent (`out` for `from`, `in` for `to`; one per canvas, the latest) —
+     * except `quiet`: the conversation whose agent made the move (katashiro.canvas_move) knows already.
      * → { moved: true, version } | { moved: false } (already there).
      */
-    async function move({ id, from, to }) {
+    async function move({ id, from, to, quiet = null }) {
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (!to || typeof to !== "string") throw new Error("no conversation to move the canvas to");
       let result = { moved: false };
@@ -887,7 +888,9 @@
           const newList = (got[indexKey(to)] || []).filter((e) => e.id !== id).concat([indexEntry(meta)]);
           const note = (dir) => ({ id, title: meta.title, kind: meta.kind, version: meta.version, dir, at });
           const notes = (list, dir) => (Array.isArray(list) ? list : []).filter((n) => n && n.id !== id).concat([note(dir)]).slice(-MOVE_NOTES_MAX);
-          const set = { [metaKey(id)]: meta, [indexKey(to)]: newList, [movedKey(old)]: notes(got[movedKey(old)], "out"), [movedKey(to)]: notes(got[movedKey(to)], "in") };
+          const set = { [metaKey(id)]: meta, [indexKey(to)]: newList };
+          if (quiet !== old) set[movedKey(old)] = notes(got[movedKey(old)], "out");
+          if (quiet !== to) set[movedKey(to)] = notes(got[movedKey(to)], "in");
           if (oldList.length) set[indexKey(old)] = oldList;
           await storage.set(set);
           if (!oldList.length) await storage.remove(indexKey(old));

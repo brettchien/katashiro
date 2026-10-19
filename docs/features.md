@@ -76,5 +76,5 @@ Under this system:
 * **Writing the Code = Drawing Talismans**
   * Writing configuration files (`manifest.json`) and styling components acts as the ritual of drawing magical talismans to establish a connection path between the summoner and the spirit.
 * **Browser Tools = The Shikigami's Hands (施術)**
-  * Through **MCP-over-ACP**, the summoned agent no longer merely *speaks* through the vessel — it *acts*. The extension serves DOM-semantic tools (`katashiro.snapshot`, `katashiro.click`, `katashiro.type`, `katashiro.navigate`, `katashiro.screenshot` and 46 more — see [the tool table](tools.md)) so the shikigami can reach through the katashiro and operate the living page. Perception and action, not just a voice.
+  * Through **MCP-over-ACP**, the summoned agent no longer merely *speaks* through the vessel — it *acts*. The extension serves DOM-semantic tools (`katashiro.snapshot`, `katashiro.click`, `katashiro.type`, `katashiro.navigate`, `katashiro.screenshot` and 48 more — see [the tool table](tools.md)) so the shikigami can reach through the katashiro and operate the living page. Perception and action, not just a voice.
 

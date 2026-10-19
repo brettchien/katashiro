@@ -406,6 +406,31 @@ class Conn {
             ],
           }, { conn: this, st, notAskedNote: `${this.name} 的回合已結束，刪除畫布的要求未執行（沒有詢問你）。` });
         },
+        // canvas_move / conversation_list (multi-conversation §7.3, Brett 2026-10-19 18:55 TPE: push and
+        // pull, a confirm card every time). The list is metadata only — titles, never content.
+        conversations: async (query) => {
+          const metas = await canvasStore.allMetas();
+          return ConvCore.moveTargets({ index: convIndex, exclude: st.convId, query, now: Date.now() }).map((r) => {
+            const at = Number(convIndex[r.id] && convIndex[r.id].lastMessageAt) || 0;
+            return {
+              id: r.id, title: r.title, archived: r.archived, lastMessageAt: at ? new Date(at).toISOString() : null,
+              canvases: metas.filter((m) => m && m.conversationId === r.id).map((m) => ({ id: m.id, title: m.title, kind: m.kind, version: m.version })),
+            };
+          });
+        },
+        conversationInfo: (id) => {
+          if (!ConvCore.isConvId(id) || !convIndex[id]) return null;
+          return { title: ConvCore.displayTitle(convIndex[id], id), gone: ConvCore.reopenRefusal(convIndex[id]) };
+        },
+        confirmMove: ({ title, version, push, otherTitle }) => confirmOutcome({
+          title: `${this.name} 要移動畫布`,
+          lines: [
+            `「${title}」（v${version}）`,
+            push ? `從這段對話移到「${otherTitle}」。` : `從「${otherTitle}」移進這段對話。`,
+            push ? "移過去之後，這段對話的 agent 就讀不到也改不了它；那段對話的 agent 讀得到。"
+              : "移進來之後，這段對話的 agent 讀得到也改得了它；原本那段對話的 agent 就讀不到了。",
+          ],
+        }, { conn: this, st, notAskedNote: `${this.name} 的回合已結束，移動畫布的要求未執行（沒有詢問你）。` }),
         // Storage full on this agent's canvas_open / canvas_patch: ask in this agent's turn (#80).
         confirmEvict: (info) => confirmEvictCard(info, this, st),
         gotoSlide: (id, slide) => gotoCanvasSlide(id, slide),
