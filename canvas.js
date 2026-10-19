@@ -49,6 +49,7 @@
   const fileEl = document.getElementById("canvas-file");
   const reconnectBtn = document.getElementById("canvas-reconnect");
   const rewriteBtn = document.getElementById("canvas-rewrite");
+  const convBtn = document.getElementById("canvas-conv");
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
@@ -204,6 +205,10 @@
       // Open in another window whose panel is closed: a button to go there.
       notice(`${failed}：${CanvasCore.clipError(r.error)}`, { label: "前往那個視窗", fn: () => chrome.windows.update(r.windowId, { focused: true }).catch(() => {}) });
       r.shown = true;                           // callers keep this notice (it has the button)
+    } else if (!r.ok && r.error === ConvCore.ARCHIVED_PUSH_TEXT) {
+      // Archived (multi-conversation §7.2): a button to reopen it here, then the user tries again.
+      notice(`${failed}：${r.error}`, { label: "重新打開對話", fn: () => openConversation(retry) });
+      r.shown = true;
     }
     return r;
   }
@@ -1496,6 +1501,7 @@
     mountFrame();
     if (compareView) return;
     deleteBtn.hidden = false;
+    readConvTitle();
     store.touch(canvasId).catch(() => {});      // "last opened", for eviction order (§3.6)
     // Catch up this canvas, and notice a file changed or deleted outside Katashiro (never imported).
     syncFile({ check: true });
@@ -1505,6 +1511,55 @@
   document.getElementById("canvas-gallery").addEventListener("click", () => {
     CanvasTabs.openGalleryTab(chrome, chrome.runtime.getURL("canvas-gallery.html")).catch(() => {});
   });
+
+  // --- 🗨️ 對話 (multi-conversation §7.2) --------------------------------------------------------
+  // This canvas's conversation in the side panel of this tab's window: switched to if open there,
+  // reopened if archived (this tab then joins its group), or the window that has it named. Also the
+  // button of an "已封存" refusal (askPanel). The button shows the conversation's title (conv:index).
+  // myWindowId (refreshPanelHere, above) is this tab's window, cached: the click must not await.
+  // A tab dragged to another window is attached there: read it again.
+  try { chrome.tabs.onAttached.addListener(() => { refreshPanelHere(); }); } catch (_) { /* no tabs events */ }
+  let convTitle = "";
+  async function readConvTitle() {
+    const cid = current && current.meta.conversationId;
+    if (compareView || !cid) { convBtn.hidden = true; return; }
+    let idx = {};
+    try { idx = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {}; } catch (_) { /* untitled */ }
+    convTitle = ConvCore.displayTitle(idx[cid], cid);
+    convBtn.textContent = `🗨️ ${convTitle}`;
+    convBtn.title = `在側邊欄打開這個畫布的對話「${convTitle}」（已封存的會重新打開）`;
+    convBtn.hidden = false;
+  }
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[ConvCore.INDEX_KEY] && current) readConvTitle();
+  });
+  // No await before chrome.sidePanel.open: it needs this click's user gesture. `retry`: from a
+  // refusal, what to do again once the conversation is open.
+  function openConversation(retry) {
+    const id = current && current.meta.conversationId;
+    if (!id) return undefined;
+    const wid = myWindowId;
+    if (wid == null) { notice("找不到這個分頁所在的視窗，請重新整理再試。"); return undefined; }
+    try { chrome.sidePanel.open({ windowId: wid }).catch(() => {}); } catch (_) { /* old Chrome: the panel may already be open */ }
+    convBtn.disabled = true;
+    return (async () => {
+      let answer;
+      try { answer = await CanvasTabs.requestConvOpen(chrome, { id, windowId: wid, canvasId, keyPrefix: ConvCore.REOPEN_KEY_PREFIX }); }
+      finally { convBtn.disabled = false; }
+      const title = convTitle || "對話";
+      if (answer && answer.ok) {
+        if (retry) notice(`已在側邊欄打開「${title}」：${retry}。`);
+        else flash(`已在側邊欄打開「${title}」。`);
+      } else if (answer && answer.error) {
+        const go = Number.isInteger(answer.windowId)
+          ? { label: "前往那個視窗", fn: () => chrome.windows.update(answer.windowId, { focused: true }).catch(() => {}) } : null;
+        notice(`沒有打開：${CanvasCore.clipError(answer.error)}`, go);
+      } else {
+        notice(`已打開側邊欄：對話會在側邊欄載入後打開${retry ? `，之後${retry}` : ""}。`);
+      }
+    })();
+  }
+  convBtn.addEventListener("click", () => { openConversation(); });
 
   // #70: delete. Its history goes with it (§3.5), so it says it cannot be undone.
   deleteBtn.addEventListener("click", async () => {

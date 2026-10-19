@@ -209,6 +209,30 @@
     return api.tabs.create(opts);
   }
 
+  // Ask the panel of `windowId` to open conversation `id` (multi-conversation §3.4 重新打開, §7.2 from
+  // a canvas): the request is left in storage.session under `keyPrefix + windowId` for a panel still
+  // loading, and sent as katashiro-conv-open. `canvasId`: the canvas tab asking (the panel checks
+  // the canvas is that conversation's, and groups the tab). The caller opens the side panel first,
+  // in its click (chrome.sidePanel.open needs the gesture, so it cannot wait for this). `api` =
+  // chrome (storage.session, runtime). → the panel's answer, or undefined (no answer in time).
+  async function requestConvOpen(api, { id, windowId, canvasId = null, keyPrefix, timeoutMs = 8000, newId = () => crypto.randomUUID() }) {
+    const reqId = newId();
+    const req = { id, reqId, at: Date.now() };
+    if (canvasId) req.canvasId = canvasId;
+    try { await api.storage.session.set({ [`${keyPrefix}${windowId}`]: req }); } catch (_) { /* the message below still works */ }
+    let timer;
+    try {
+      const timeout = new Promise((res) => { timer = setTimeout(() => res(undefined), timeoutMs); });
+      const msg = { type: "katashiro-conv-open", id, windowId, reqId };
+      if (canvasId) msg.canvasId = canvasId;
+      return await Promise.race([api.runtime.sendMessage(msg), timeout]);
+    } catch (_) {
+      return undefined;                                  // no panel listening at all
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // --- One tab group per conversation (multi-conversation ADR §4) -----------------------------------
   // The conversation's group holds its canvases and the tabs its agent opened. The GROUP is the
   // membership: a tab dragged out is the user's again, so everything below reads groupId, never a
@@ -347,5 +371,5 @@
     return { close, keep, needNewTab };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab };
+  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
 });

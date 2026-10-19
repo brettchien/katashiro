@@ -12,6 +12,8 @@
   <header class="canvas-header">
     <!-- The canvas gallery (§3.7): every canvas across conversations. -->
     <button id="canvas-gallery" class="canvas-btn" data-icon="🗂️" type="button" title="畫布總覽（所有畫布）">🗂️ 總覽</button>
+    <!-- Multi-conversation §7.2: this canvas's conversation in the side panel (reopened if archived). -->
+    <button id="canvas-conv" class="canvas-btn canvas-conv" data-icon="🗨️" type="button" hidden>🗨️ 對話</button>
     <span class="canvas-icon" aria-hidden="true">📄</span>
     <h1 id="canvas-title" class="canvas-title">Canvas</h1>
     <span id="canvas-version" class="canvas-version"></span>
@@ -81,6 +83,8 @@
   <script src="canvas-mirror.js"></script>
   <script src="canvas-core.js"></script>
   <script src="canvas-tabs.js"></script>
+  <script src="confirm-core.js"></script>
+  <script src="conv-core.js"></script>
   <script src="canvas.js"></script>
 </body>
 </html>

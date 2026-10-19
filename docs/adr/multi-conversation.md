@@ -202,7 +202,8 @@ Message ids stay `<conversationId>:<ms>` (#61, #62), so nothing that refers to a
   every conversation not open in a live window (archived, or left in a closed window's record, §3.3),
   newest `lastMessageAt` first, with title, last message time and
   canvas count, filtered by the same search box (title only). **重新打開** sends
-  `katashiro-conv-open { id }` (accepted only from `canvas-gallery.html`, like `katashiro-canvas-open`)
+  `katashiro-conv-open { id }` (accepted only from `canvas-gallery.html`, like `katashiro-canvas-open`; also from
+  `canvas.html` for its own conversation since §7.2)
   to the panel of the gallery's window. That panel takes the conversation's lock (§3.6), clears
   `archivedAt`, adds it to `open` and switches to it. With no panel there, the gallery opens the side
   panel for its window (`chrome.sidePanel.open` in the click's user gesture) and leaves the request in
@@ -351,8 +352,8 @@ than 7 days are pruned and their conversations archived (`archivedAt` set). The 
 - `katashiro-canvas-push` (Send to agent / 💬 Ask agent / Send error) for an open but not current
   conversation **switches to it first**, under §3.5's rule (refused while the current one is replying,
   and the canvas tab is told why), then posts. For an archived conversation it is refused:
-  `這段對話已封存，先從總覽重新打開`. P1b makes the other refusals say what is really the case
-  (§4.8).
+  `這段對話已封存：先重新打開它` (with a **重新打開對話** button since §7.2; it read
+  `…先從總覽重新打開` before). P1b makes the other refusals say what is really the case (§4.8).
 
 ### 3.11 Implementation notes (MVP, 2026-10-12)
 
@@ -672,6 +673,7 @@ has been used; that ADR stays Proposed until then.
     a user rename in quick succession is one move. A canvas saved meanwhile moves at once with its
     save (its siblings follow when the title settles).
 - Upstream openab `session/close`, so archiving frees a pool slot at once.
+- From a canvas to its conversation: **built (Brett 2026-10-19 18:13 TPE): §7.2.**
 - Deleting a conversation: its messages, canvases with their history and images (canvas §3.6).
   **Brought forward and built (Brett 2026-10-12 21:39 TPE): §7.1.**
 - Several agents in one conversation. (One agent **per** conversation, several at once in a panel:
@@ -745,6 +747,40 @@ Archive (§3.4) never deletes; this is the only way a conversation with content 
   user's copy, maybe under git).
 
 ---
+
+### 7.2 From a canvas to its conversation (Brett 2026-10-19 18:13 TPE)
+
+A canvas belongs to one conversation (`meta.conversationId`), and the gallery opens any canvas —
+also one whose conversation is archived, as an ungrouped tab (§3.4). Until now nothing led from
+there back to the conversation: the gallery's 對話 column was a label, and the canvas tab's pushes
+were refused with "已封存" and no way forward. Brett chose all three entry points:
+
+- **Canvas tab header: 🗨️ `<conversation title>`** (title from `conv:index`, followed live; cut
+  short with an ellipsis; icon only in a narrow tab). Not in a compare tab.
+- **Gallery canvas row: 🗨️** beside 🗑, for that row's conversation.
+- **The "已封存" refusal** of 📤 Send to agent / 💬 Ask agent / 📨 To chat input / its Enter
+  (§3.10) gets a **重新打開對話** button; once the conversation is open the canvas tab says to try
+  again (the note or selection is kept, as for 打開側邊欄, §4.8 3).
+
+All three go the way of the gallery's 重新打開 (§3.4): `chrome.sidePanel.open` for the sender's
+window in the click, the request left in `storage.session` for a panel still loading, and
+`katashiro-conv-open { id, windowId, reqId, canvasId? }` (one helper, `CanvasTabs.requestConvOpen`).
+The panel's `reopenConversation` already covers every case: open in this panel → switched to;
+archived → reopened (its group's tabs come back, §4.4); 3 open → the archive picker; open in another
+live window → refused with that window's id, and the canvas tab or gallery offers **前往那個視窗**;
+deleted → refused (§7.1).
+
+`katashiro-conv-open` is now accepted from `canvas.html` too (never a compare tab), with two rules
+for it:
+
+- **Its own conversation only.** A canvas tab sends `canvasId`; the panel reads that canvas's meta
+  and refuses (`這個畫布不屬於那段對話`) unless its `conversationId` is the one asked for — the same
+  for a request picked up from `storage.session`. A canvas tab cannot open other conversations.
+- **The window is the tab's own** (`sender.tab.windowId`), not the message's `windowId`.
+
+Once the conversation is open in this panel and its group's tabs are back, the canvas tab that asked
+joins the conversation's group if it is in no group (the ungrouped tab the gallery opened while the
+conversation was archived). Not before: `restoreGroupTabs` would otherwise make a second group.
 
 ## 8. Alternatives considered
 

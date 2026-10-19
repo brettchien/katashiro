@@ -53,6 +53,7 @@ const STUB = `
   const data = {
     "canvas:${ID}:meta": { id: "${ID}", title: "Plan", kind: "markdown", version: 4, agentVersion: 4, author: "agent", conversationId: "conv1", normalized: true },
     "canvas:${ID}:latest": ${JSON.stringify(CONTENT)},
+    "conv:index": { conv1: { title: "Plan chat" } },
   };
   const ev = () => ({ addListener() {}, removeListener() {} });
   const pick = (keys) => {
@@ -67,12 +68,17 @@ const STUB = `
   window.__submits = [];
   window.__submitAnswer = { ok: true };
   window.__prompts = 0;
+  window.__convOpens = [];                     // katashiro-conv-open (multi-conversation §7.2)
+  window.__convAnswer = { ok: true };
+  window.__sidePanelOpened = [];
+  window.__session = {};
   window.prompt = () => { window.__prompts++; return null; };
   window.chrome = {
     runtime: {
       id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined,
       sendMessage: async (msg) => {
         if (msg && msg.type === "katashiro-canvas-submit-input") { __submits.push(msg); return __submitAnswer; }
+        if (msg && msg.type === "katashiro-conv-open") { __convOpens.push(msg); return __convAnswer; }
         const to = msg && msg.type === "katashiro-canvas-to-input";
         if (!msg || (msg.type !== "katashiro-canvas-push" && !to)) return undefined;
         (to ? __toInput : __pushes).push(msg);
@@ -80,8 +86,9 @@ const STUB = `
         return to ? __inputAnswer : __answer;
       },
     },
-    storage: { local: { get: async (k) => pick(k), set: async (o) => { Object.assign(data, o); }, remove: async () => {} }, onChanged: ev() },
-    tabs: { query: async () => [], getCurrent: (cb) => { const t = { id: 1 }; if (cb) cb(t); return Promise.resolve(t); }, onRemoved: ev(), onUpdated: ev(), create: async () => ({}), update: async () => ({}), remove: async () => {} },
+    storage: { local: { get: async (k) => pick(k), set: async (o) => { Object.assign(data, o); }, remove: async () => {} }, session: { set: async (o) => { Object.assign(__session, o); } }, onChanged: ev() },
+    tabs: { query: async () => [], getCurrent: (cb) => { const t = { id: 1, windowId: 3 }; if (cb) cb(t); return Promise.resolve(t); }, onRemoved: ev(), onUpdated: ev(), onAttached: ev(), create: async () => ({}), update: async () => ({}), remove: async () => {} },
+    sidePanel: { open: (o) => { __sidePanelOpened.push(o); return Promise.resolve(); } },
   };
 })();`;
 const server = http.createServer((req, res) => {
@@ -388,11 +395,33 @@ try {
   s = await state();
   check(s.submits === sub0 + 3 && s.toInput === beforeIn + 9, "the draft case is not armed: Enter sends nothing, nor clicks the 📨 again", s);
   // A refusal says so; nothing stays disabled.
-  await page.evaluate(() => { window.__inputAnswer = { ok: false, error: "這段對話已封存，先從總覽重新打開" }; });
+  await page.evaluate(() => { window.__inputAnswer = { ok: false, error: "這段對話已封存：先重新打開它" }; });
   await page.click("#canvas-send-sel");
   await until(() => /沒放進輸入框/.test(document.getElementById("canvas-notice").textContent), "沒放進輸入框");
   s = await state();
   check(s.toInput === beforeIn + 10 && /已封存/.test(s.notice) && !s.sendDisabled, "a refusal: 沒放進輸入框 with the reason, controls enabled", s);
+  // §7.2: 已封存 comes with 重新打開對話 — the side panel opened in that click, then katashiro-conv-open
+  // for this canvas's own conversation, naming the canvas; the request is left for a loading panel too.
+  const act = await page.evaluate(() => { const b = document.getElementById("canvas-notice-action"); return { shown: !b.hidden, label: b.textContent }; });
+  check(act.shown && act.label === "重新打開對話", "已封存: a 重新打開對話 button", act);
+  await page.click("#canvas-notice-action");
+  await until(() => window.__convOpens.length === 1, "重新打開對話 sends katashiro-conv-open");
+  let co = await page.evaluate(() => ({ open: window.__sidePanelOpened, msg: window.__convOpens[0], session: window.__session, notice: document.getElementById("canvas-notice").textContent }));
+  check(co.open.length === 1 && co.open[0].windowId === 3, "…the side panel of this tab's window opens in the click", co.open);
+  check(co.msg.id === "conv1" && co.msg.canvasId === ID && co.msg.windowId === 3, "…for this canvas's conversation, naming the canvas", co.msg);
+  check(co.session["katashiro.convOpen.3"] && co.session["katashiro.convOpen.3"].canvasId === ID, "…and left in storage.session for a loading panel", co.session);
+  await until(() => /已在側邊欄打開「Plan chat」/.test(document.getElementById("canvas-notice").textContent), "the reopen notice");
+  co = await page.evaluate(() => document.getElementById("canvas-notice").textContent);
+  check(/^已在側邊欄打開「Plan chat」：.+。$/.test(co), "…then says to try again", co);
+  // The header's 🗨️ shows the conversation title and does the same; open elsewhere → 前往那個視窗.
+  const cb = await page.evaluate(() => { const b = document.getElementById("canvas-conv"); return { shown: !b.hidden, text: b.textContent }; });
+  check(cb.shown && cb.text === "🗨️ Plan chat", "the header 🗨️ names the conversation", cb);
+  await page.evaluate(() => { window.__convAnswer = { ok: false, error: "這段對話開在另一個視窗", windowId: 8 }; });
+  await page.click("#canvas-conv");
+  await until(() => window.__convOpens.length === 2 && /沒有打開/.test(document.getElementById("canvas-notice").textContent), "🗨️ open elsewhere");
+  const el = await page.evaluate(() => ({ notice: document.getElementById("canvas-notice").textContent, label: document.getElementById("canvas-notice-action").textContent, shown: !document.getElementById("canvas-notice-action").hidden, n: window.__sidePanelOpened.length }));
+  check(el.shown && el.label === "前往那個視窗" && /另一個視窗/.test(el.notice) && el.n === 2, "🗨️: open in another window offers 前往那個視窗", el);
+  await page.evaluate(() => { window.__convAnswer = { ok: true }; });
   // No panel answering at all: the same notice as a push, nothing pushed.
   await page.evaluate(() => { window.__inputAnswer = undefined; });
   await page.click("#canvas-send-sel");
