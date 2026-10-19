@@ -674,6 +674,7 @@ has been used; that ADR stays Proposed until then.
     save (its siblings follow when the title settles).
 - Upstream openab `session/close`, so archiving frees a pool slot at once.
 - From a canvas to its conversation: **built (Brett 2026-10-19 18:13 TPE): §7.2.**
+- Moving a canvas to another conversation: **built (Brett 2026-10-19 18:29 TPE): §7.3.**
 - Deleting a conversation: its messages, canvases with their history and images (canvas §3.6).
   **Brought forward and built (Brett 2026-10-12 21:39 TPE): §7.1.**
 - Several agents in one conversation. (One agent **per** conversation, several at once in a panel:
@@ -781,6 +782,45 @@ for it:
 Once the conversation is open in this panel and its group's tabs are back, the canvas tab that asked
 joins the conversation's group if it is in no group (the ungrouped tab the gallery opened while the
 conversation was archived). Not before: `restoreGroupTabs` would otherwise make a second group.
+
+### 7.3 Moving a canvas to another conversation (Brett 2026-10-19 18:29 TPE)
+
+Work on one topic often ends up spread over several conversations, each with its own canvases.
+**↪ 移到其他對話** brings a canvas into the conversation where its topic lives.
+
+- **Where:** a ↪ button in the canvas tab header (next to 🗨️; not in a compare tab) and on each
+  gallery canvas row. Both open the same picker (`conv-picker.js`, a modal `<dialog>`), which lists
+  every other conversation in `conv:index`, open or archived, newest `lastMessageAt` first, and
+  filters them by title (`ConvCore.moveTargets`). Its own conversation is never listed, and neither
+  is a deleted one or one being deleted (§7.1). Before moving, the page reads `conv:index` again and
+  refuses a target deleted in the meantime.
+- **The user's choice only.** No agent tool moves a canvas (like archive, §3.4): an agent cannot
+  pull another conversation's canvas into its own.
+- **What moves:** `CanvasStore.move({ id, from, to })` changes `meta.conversationId` and nothing
+  else, so content, history, images, `agentVersion` and `agentSeenVersion` all stay. It runs under
+  the canvas's lock, with `canvas:index` nested as everywhere. `from` must still be the canvas's
+  conversation; if someone moved it meanwhile, the move is refused. Both per-conversation index
+  entries move in the same write as the meta. Because every agent tool already checks
+  `meta.conversationId`, the old conversation's agent gets `no canvas … in this conversation` (or
+  `belongs to another conversation` on a write) from that moment on, and the new one can read it.
+- **Both agents are told**, once, in their next prompt: a host line first, flush time only, like U2
+  (§3.5).
+  - New conversation: `the user moved canvas "<title>" (<id>, v<n>) into this conversation from another one … read it with katashiro.canvas_read …`.
+  - Old conversation: `… moved canvas "<title>" (<id>) to another conversation …`.
+
+  The other conversation is never named. The notes are kept in `canvas:<conversation>:moved` (one
+  per canvas, the latest; at most 20), written in the same write as the move, so they wait for a
+  conversation that is archived or whose panel is closed. Each panel mirrors them in memory. A
+  prompt carrying notes drops exactly those (`takeMoveNotes`, by id + time) once it is accepted. A
+  pool-busy reply keeps them, as it keeps the U2 line. Deleting a conversation removes its notes.
+- **The canvas tab** follows, in the panel of its own window: it joins the new conversation's group
+  if that conversation is open in this panel, else leaves the old conversation's group. Its header
+  (🗨️ title) follows the meta change.
+- **The folder mirror** needs nothing new: the next sync (any panel, on the meta change) finds the
+  conversation's folder changed and moves the files there, as for a conversation rename (§7,
+  `file.move`). A slug already taken there gets `-2`.
+- Not done: copying (a new canvas in the other conversation), moving several canvases at once, and
+  an undo button (moving it back is the undo; each agent then hears the latest move only).
 
 ## 8. Alternatives considered
 

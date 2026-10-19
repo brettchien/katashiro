@@ -318,13 +318,20 @@
       conv.title = `在側邊欄打開這個畫布的對話「${r.conversation}」`;
       conv.addEventListener("click", () => reopenConversation({ id: r.conversationId, title: r.conversation }, conv));
       conv.hidden = !r.conversationId;
+      // §7.3: move the canvas to another conversation.
+      const mv = document.createElement("button");
+      mv.type = "button";
+      mv.className = "canvas-btn gallery-move";
+      mv.textContent = "↪";
+      mv.title = "把這個畫布移到其他對話";
+      mv.addEventListener("click", () => moveCanvas(r, mv));
       const del = document.createElement("button");
       del.type = "button";
       del.className = "canvas-btn gallery-delete";
       del.textContent = "🗑";
       del.title = "刪除這個畫布";
       del.addEventListener("click", () => deleteCanvas(r, del));
-      li.append(open, conv, del);
+      li.append(open, conv, mv, del);
       return li;
     });
     listEl.replaceChildren(...items);
@@ -367,6 +374,32 @@
       notice("這個對話的側邊面板沒有開：畫布開在一般分頁，不在畫布群組裡。", 6000);
     } catch (e) {
       notice(`無法開啟：${CanvasCore.clipError((e && e.message) || e)}`, 6000);
+    }
+  }
+
+  // --- ↪ 移到其他對話 (multi-conversation §7.3, as the canvas tab's) ---------------------------------
+  async function moveCanvas(r, btn) {
+    const now = Date.now();
+    const rows = (q) => ConvCore.moveTargets({ index: convIndex, exclude: r.conversationId, query: q, now });
+    if (!rows("").length) { notice("沒有其他對話可以移過去。", 4000); return; }
+    const title = r.title.replace(/\s+/g, " ").trim().slice(0, 60);
+    const to = await ConvPicker.open({
+      heading: `把「${title}」移到…`,
+      hint: "內容、版本紀錄和圖片都會跟著走；原本那段對話的 agent 之後就讀不到也改不了它，兩邊的 agent 都會在下一則訊息收到通知。",
+      rows,
+    });
+    if (!to) return;
+    btn.disabled = true;
+    try {
+      const fresh = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {};
+      const gone = ConvCore.reopenRefusal(fresh[to]);
+      if (gone) { notice(`沒有移過去：${gone}`, 6000); return; }
+      await store.move({ id: r.id, from: r.conversationId, to });
+      notice(`已把「${title}」移到「${ConvCore.displayTitle(fresh[to], to)}」。`, 4000);
+    } catch (e) {
+      notice(`沒有移過去：${CanvasCore.clipError((e && e.message) || e)}`, 6000);
+    } finally {
+      btn.disabled = false;
     }
   }
 

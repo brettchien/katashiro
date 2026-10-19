@@ -80,6 +80,7 @@
   const convKey = (id) => `${CONV_PREFIX}${id}`;
   const windowKey = (windowId) => `${WINDOW_PREFIX}${windowId}`;
   const canvasIndexKey = (id) => `canvas:${id}:index`;   // CanvasStore's per-conversation index
+  const canvasMovedKey = (id) => `canvas:${id}:moved`;   // CanvasStore's move notes for its agent (§7.3)
 
   /** "c_" + 12 hex from a UUID (crypto.randomUUID in the panel and the worker). */
   function mintId(randomUUID) {
@@ -307,6 +308,29 @@
   function withResendHint(text) {
     const t = text == null ? "" : String(text);
     return t ? `${RESEND_HINT}\n\n${t}` : RESEND_HINT;
+  }
+
+  // §7.3: canvases the user moved into or out of this conversation since its agent last heard
+  // (CanvasStore's canvas:<conv>:moved notes), one host line each, first in the next prompt (flush
+  // time only, like the lines above; dropped once a prompt carrying them is accepted). The other
+  // conversation is never named. Titles are agent / user text: JSON-quoted, capped.
+  const MOVE_TITLE_MAX = 80;
+  function canvasMoveLine(n) {
+    const title = JSON.stringify(String((n && n.title) || "").slice(0, MOVE_TITLE_MAX));
+    const id = /^cv_[0-9a-f]{12}$/.test(String(n && n.id)) ? n.id : "?";
+    if (n && n.dir === "in") {
+      return `[katashiro: the user moved canvas ${title} (${id}, v${Number(n.version) || 0}) into this conversation from another one. ` +
+        `It is yours now: read it with katashiro.canvas_read before you rely on it or change it.]`;
+    }
+    return `[katashiro: the user moved canvas ${title} (${id}) to another conversation. It is no longer in this one: ` +
+      `you cannot read or change it, and canvas_list no longer shows it.]`;
+  }
+  function withCanvasMoveNotes(text, notes) {
+    const list = Array.isArray(notes) ? notes.filter((n) => n && (n.dir === "in" || n.dir === "out")) : [];
+    if (!list.length) return text;
+    const lines = list.map(canvasMoveLine).join("\n");
+    const t = text == null ? "" : String(text);
+    return t ? `${lines}\n\n${t}` : lines;
   }
 
   // --- the open set -------------------------------------------------------------------------------
@@ -613,6 +637,26 @@
   }
 
   /**
+   * §7.3 移到其他對話: the conversations a canvas can move to — every one in conv:index except its own
+   * and one deleted or being deleted, newest lastMessageAt first, filtered by title (all terms).
+   * → [{ id, title, time, archived }]
+   */
+  function moveTargets({ index, exclude, query = "", now }) {
+    const terms = normalize(query).split(/\s+/).filter(Boolean);
+    const rows = [];
+    for (const [id, e] of Object.entries(index || {})) {
+      if (!isConvId(id) || id === exclude || reopenRefusal(e)) continue;
+      const title = displayTitle(e, id);
+      const t = normalize(title);
+      if (!terms.every((w) => t.includes(w))) continue;
+      const at = Number(e.lastMessageAt) || 0;
+      rows.push({ id, title, time: tabTime(at, now), archived: e.archivedAt != null, at });
+    }
+    rows.sort((a, b) => b.at - a.at || (a.id < b.id ? -1 : 1));
+    return rows.map(({ at, ...r }) => r);
+  }
+
+  /**
    * The gallery's confirm text (§7.1): what goes, that the mirror folder's files stay, that it cannot
    * be undone. The title is agent-writable (set_title, first message): flattened to one line, like
    * a confirm card's, so it cannot add a line such as "(nothing will be deleted)".
@@ -805,7 +849,8 @@
         }
         return idx;
       });
-      if (empty.length) await storage.remove(empty.map(convKey));
+      // An empty one may still hold §7.3 move notes (its canvases moved in and out again).
+      if (empty.length) await storage.remove([...empty.map(convKey), ...empty.map(canvasMovedKey)]);
       return { archived: list.filter((id) => !empty.includes(id)), deleted: empty };
     }
 
@@ -876,7 +921,7 @@
         // One sweep after all of them; best effort (the next save or delete sweeps again).
         if (ids.length || sweepAlways) { try { await ops.sweep(); } catch (_) { /* best effort */ } }
       }
-      await storage.remove([convKey(id), canvasIndexKey(id)]);
+      await storage.remove([convKey(id), canvasIndexKey(id), canvasMovedKey(id)]);
       if (deps.sessionStorage) { try { await deps.sessionStorage.remove(`${GROUP_KEY_PREFIX}${id}`); } catch (_) { /* best effort */ } }
       // Last: the mark itself (only if it is still a mark: never an entry someone re-created).
       await updateIndex((idx) => {
@@ -979,14 +1024,14 @@
     MAX_OPEN, AUTO_TITLE_MAX, USER_TITLE_MAX, INDEX_TIME_MIN_MS, ORPHAN_KEEP_MS,
     HISTORY_PREFIX, CONV_PREFIX, WINDOW_PREFIX, INDEX_KEY, SCHEMA_KEY, REOPEN_KEY_PREFIX, GROUP_KEY_PREFIX,
     DELETED_TEXT, DELETE_OPEN_TEXT, DELETE_CHANGED_TEXT, DELETE_MISSING_TEXT, CONV_BUSY_TEXT,
-    planDelete, deleteSnapshot, deleteRecheck, pendingDeletions, reopenRefusal, deleteConfirmText, canvasOps,
+    planDelete, deleteSnapshot, deleteRecheck, pendingDeletions, reopenRefusal, moveTargets, deleteConfirmText, canvasOps,
     LOCK_MIGRATE, LOCK_WINDOWS, LOCK_INDEX, ID_RE,
     ARCHIVE_BLOCKED_TEXT, POOL_EXHAUSTED_TEXT, OPEN_ELSEWHERE_TEXT, ARCHIVED_PUSH_TEXT, PANEL_CLOSED_PUSH_TEXT, RECONNECT_HINT,
     SET_TITLE_USER_TEXT, SET_TITLE_EMPTY_TEXT, cleanName, agentTitledEntry, pushRefusal,
-    isConvId, convKey, windowKey, canvasIndexKey, mintId, shortId,
+    isConvId, convKey, windowKey, canvasIndexKey, canvasMovedKey, mintId, shortId,
     autoTitle, displayTitle, firstUserTitle, titleAfterUserMessage, renamedEntry, tabTime, shouldWriteIndexTime,
     archiveBlocked, promptFailureText, isPoolBusyReply, tabMark, backgroundTabRefusal,
-    BG_NO_TAB_TEXT, BG_NOT_OWN_TEXT, BG_USER_ON_TAB_TEXT, BG_USER_IN_GROUP_TEXT, needsReconnectHint, withReconnectHint, RESEND_HINT, withResendHint,
+    BG_NO_TAB_TEXT, BG_NOT_OWN_TEXT, BG_USER_ON_TAB_TEXT, BG_USER_IN_GROUP_TEXT, needsReconnectHint, withReconnectHint, RESEND_HINT, withResendHint, canvasMoveLine, withCanvasMoveNotes,
     QUICK_RECONNECT_MS, POOL_TTL_MS, continuesRun, lastReplyAt, reconnectHintDecision,
     liveOpenIds, windowHolding, withOpened, withClosed, planAdoption,
     planIdFixes, indexFieldsFor, planMigration, galleryRows, createConvStore,

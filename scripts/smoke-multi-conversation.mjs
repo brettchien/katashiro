@@ -40,6 +40,8 @@
 //     into one group, adopting open ones instead of duplicating them.
 //   - §7.2 🗨️ from a canvas tab: refused for a canvas of another conversation and from a compare
 //     tab; reopening from the canvas tab brings the group back and the ungrouped tab that asked joins it.
+//   - §7.3 a canvas moved out of / back into a conversation: its tab leaves / rejoins the group; the
+//     agent gets one host line in its next prompt, dropped once that prompt is accepted.
 //   - §7.1 delete from the gallery: the confirm says what goes; refused while another page holds the
 //     conversation's lock; then its record, index entry, closed-window record
 //     entry and canvases go, another conversation's stay; a stale reopen is refused; a delete cut
@@ -1022,6 +1024,39 @@ try {
   check(model.tabs.filter((t) => t.url === canvasUrl).length === 1, "reopen: the open canvas tab is adopted, not opened twice", model.tabs.map((t) => t.url));
   const reA = model.tabs.find((t) => t.url === "https://agent.example/a");
   check(reA.active === false, "reopen: tabs come back in the background", reA);
+
+  // §7.3 移到其他對話: the canvas tab leaves A's group when its canvas moves to a conversation not open
+  // here; A's agent is told in its next prompt, once (the note goes when that prompt is accepted).
+  // Moved back into A (open here): the tab rejoins A's group and the agent is told it is in.
+  const moveCanvas = (from, to) => q.evaluate((a) => CanvasStore.createCanvasStore({ storage: chrome.storage.local, lock: (n, fn) => navigator.locks.request(n, fn) }).move({ id: "cv_000000000abe", from: a[0], to: a[1] }), [from, to]);
+  const promptsNow = async () => (await acpLog(q)).filter((m) => m.method === "session/prompt").map((m) => m.params.prompt[0].text);
+  const OTHER = ID(88);
+  await turnIdle();
+  r = await moveCanvas(convA, OTHER);
+  check(r && r.moved, "§7.3: the canvas moves to another conversation", r);
+  await until(q, () => window.__tm().tabs.find((t) => t.id === 901).groupId === -1, "§7.3: its tab leaves A's group (that conversation is not open here)");
+  let nPrompts = (await promptsNow()).length;
+  await send(q, "after the move");
+  await until(q, (n) => window.__acp.log.filter((m) => m.method === "session/prompt").length > n, "§7.3: the next prompt", nPrompts);
+  let pText = (await promptsNow()).at(-1);
+  check(pText.startsWith('[katashiro: the user moved canvas "loose" (cv_000000000abe) to another conversation.') && pText.endsWith("after the move"), "§7.3: A's agent is told first in its next prompt", pText.slice(0, 160));
+  check(!pText.includes(OTHER), "…without naming the other conversation", null);
+  await turnIdle();
+  await until(q, (id) => localStorage.getItem("ls:canvas:" + id + ":moved") === null, "§7.3: the note goes once the prompt is accepted", convA);
+  nPrompts = (await promptsNow()).length;
+  await send(q, "and again");
+  await until(q, (n) => window.__acp.log.filter((m) => m.method === "session/prompt").length > n, "§7.3: the prompt after", nPrompts);
+  check(!(await promptsNow()).at(-1).includes("[katashiro: the user moved canvas"), "…and only once", (await promptsNow()).at(-1).slice(0, 80));
+  await turnIdle();
+  r = await moveCanvas(OTHER, convA);
+  check(r && r.moved, "§7.3: moved back into A", r);
+  await until(q, () => { const m = window.__tm(); const c = m.tabs.find((t) => t.id === 900); const l = m.tabs.find((t) => t.id === 901); return l.groupId > 0 && l.groupId === c.groupId; }, "§7.3: its tab rejoins A's group (open here)");
+  nPrompts = (await promptsNow()).length;
+  await send(q, "it is back");
+  await until(q, (n) => window.__acp.log.filter((m) => m.method === "session/prompt").length > n, "§7.3: the prompt after moving back", nPrompts);
+  pText = (await promptsNow()).at(-1);
+  check(pText.startsWith('[katashiro: the user moved canvas "loose" (cv_000000000abe, v1) into this conversation from another one.') && !pText.includes("to another conversation"), "§7.3: …and told it is in (one line per canvas: the latest)", pText.slice(0, 200));
+  await turnIdle();
 
   // Browser restart: window 5 is gone; Chrome restored the agent tab (new id, ungrouped) in window 7.
   await q.close();

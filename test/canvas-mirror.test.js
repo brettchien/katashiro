@@ -1169,3 +1169,26 @@ test("a mermaid canvas is mirrored as one ```mermaid fence, longer than any back
   assert.equal((await env.mirror.sync(id)).action, "write");
   assert.equal(await readText(env.dir, "c_abc/flow.md"), "```mermaid\ngraph TD\n  A-->B\n```\n");
 });
+
+test("§7.3 a canvas moved to another conversation: its files move to that conversation's folder", async () => {
+  const env = setup();
+  await setTitle(env, CID, "Draft");
+  await setTitle(env, CID2, "Topic");
+  const a = await env.store.agentWrite({ conversationId: CID, title: "Plan", content: "a" });
+  const stay = await env.store.agentWrite({ conversationId: CID, title: "Stays", content: "s" });
+  const there = await env.store.agentWrite({ conversationId: CID2, title: "Plan", content: "p" });   // same title there
+  await env.mirror.syncAll();
+  await env.store.move({ id: a.id, from: CID, to: CID2 });
+  const r = await env.mirror.sync(a.id);
+  assert.notEqual(r.action, "error", JSON.stringify(r));
+  assert.equal(await readText(env.dir, "0123456-draft/plan.md"), null);
+  assert.equal(await readText(env.dir, "0123456-draft/stays.md"), "s");     // its old neighbour stays
+  assert.equal((await env.meta(a.id)).file.convSlug, "fedcba9-topic");
+  assert.equal((await env.meta(a.id)).file.move, undefined);
+  const slug = (await env.meta(a.id)).file.slug;
+  assert.notEqual(slug, (await env.meta(there.id)).file.slug);              // no clash with the canvas already there
+  assert.equal(await readText(env.dir, `fedcba9-topic/${slug}.md`), "a");
+  assert.equal(await readText(env.dir, "fedcba9-topic/plan.md"), "p");
+  assert.equal(JSON.parse(await readText(env.dir, `.katashiro/${a.id}.json`)).conversation, "fedcba9-topic");
+  assert.equal((await env.meta(stay.id)).file.convSlug, "0123456-draft");
+});

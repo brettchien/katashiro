@@ -12,6 +12,9 @@
 //   canvas:<id>:v:<n>              every other version in history
 //   canvas:<id>:agent              only before history: the agent's last write while it differed from
 //                                  the latest (meta.agentBytes its size). The next write migrates it.
+//   canvas:<conversationId>:moved  [{ id, title, kind, version, dir: "in" | "out", at }] canvases the
+//                                  user moved into or out of that conversation (multi-conversation
+//                                  §7.3), until its agent has been told (takeMoveNotes).
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
 // filesByFolder. patchRanges: what the latest canvas_patch changed (§3.10, #107). noMirror marks
 // a canvas an incognito window stored before Katashiro stopped running in incognito (#109); none is
@@ -57,6 +60,8 @@
   const ID_RE = /^cv_[0-9a-f]{12}$/;
 
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
+  const movedKey = (conversationId) => `canvas:${conversationId}:moved`;
+  const MOVE_NOTES_MAX = 20;                // per conversation: older notes give way
   const metaKey = (id) => `canvas:${id}:meta`;
   const latestKey = (id) => `canvas:${id}:latest`;
   // Before history (§3.5): the agent's last write, kept only once the latest differed from it.
@@ -856,6 +861,55 @@
       return result;
     }
 
+    /**
+     * Move a canvas to another conversation (multi-conversation §7.3, the user's choice; no agent
+     * tool). Only its conversationId changes — content, history, images and versions stay. Under the
+     * canvas's lock (nested canvas:index, as everywhere): `from` must still be its conversation
+     * (refused otherwise: someone moved it meanwhile). Both index entries move, and each conversation
+     * gets a note for its agent (`out` for `from`, `in` for `to`; one per canvas, the latest).
+     * → { moved: true, version } | { moved: false } (already there).
+     */
+    async function move({ id, from, to }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      if (!to || typeof to !== "string") throw new Error("no conversation to move the canvas to");
+      let result = { moved: false };
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (from && cur.conversationId !== from) throw new Error(`canvas "${id}" is no longer in that conversation`);
+        if (cur.conversationId === to) return;
+        const old = cur.conversationId;
+        const meta = { ...cur, conversationId: to };
+        const at = now();
+        await lock("canvas:index", async () => {
+          const got = (await storage.get([indexKey(old), indexKey(to), movedKey(old), movedKey(to)])) || {};
+          const oldList = (got[indexKey(old)] || []).filter((e) => e.id !== id);
+          const newList = (got[indexKey(to)] || []).filter((e) => e.id !== id).concat([indexEntry(meta)]);
+          const note = (dir) => ({ id, title: meta.title, kind: meta.kind, version: meta.version, dir, at });
+          const notes = (list, dir) => (Array.isArray(list) ? list : []).filter((n) => n && n.id !== id).concat([note(dir)]).slice(-MOVE_NOTES_MAX);
+          const set = { [metaKey(id)]: meta, [indexKey(to)]: newList, [movedKey(old)]: notes(got[movedKey(old)], "out"), [movedKey(to)]: notes(got[movedKey(to)], "in") };
+          if (oldList.length) set[indexKey(old)] = oldList;
+          await storage.set(set);
+          if (!oldList.length) await storage.remove(indexKey(old));
+        });
+        result = { moved: true, version: meta.version };
+      });
+      return result;
+    }
+
+    /**
+     * The agent of `conversationId` has been told about these moves (its prompt was accepted): drop
+     * the notes it saw (same id and at), keep any written since.
+     */
+    async function takeMoveNotes({ conversationId, seen }) {
+      const done = new Set((seen || []).map((n) => `${n.id}@${n.at}`));
+      await lock("canvas:index", async () => {
+        const list = ((await getOne(movedKey(conversationId))) || []).filter((n) => n && !done.has(`${n.id}@${n.at}`));
+        if (list.length) await storage.set({ [movedKey(conversationId)]: list });
+        else await storage.remove(movedKey(conversationId));
+      });
+    }
+
     // The canvas tab was opened (LRU order for eviction). Not a content change: version untouched.
     async function touch(id) {
       if (!ID_RE.test(String(id))) return;
@@ -865,7 +919,7 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas };
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas, move, takeMoveNotes };
   }
 
   // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
@@ -891,5 +945,5 @@
 
   return { createCanvasStore, incognitoLeftovers,
     historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint,
-    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey };
+    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
 });

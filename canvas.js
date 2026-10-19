@@ -50,6 +50,7 @@
   const reconnectBtn = document.getElementById("canvas-reconnect");
   const rewriteBtn = document.getElementById("canvas-rewrite");
   const convBtn = document.getElementById("canvas-conv");
+  const moveBtn = document.getElementById("canvas-move");
   const store = CanvasStore.createCanvasStore({
     storage: chrome.storage.local,
     lock: (name, fn) => navigator.locks.request(name, fn),
@@ -1520,18 +1521,22 @@
   // A tab dragged to another window is attached there: read it again.
   try { chrome.tabs.onAttached.addListener(() => { refreshPanelHere(); }); } catch (_) { /* no tabs events */ }
   let convTitle = "";
-  async function readConvTitle() {
-    const cid = current && current.meta.conversationId;
-    if (compareView || !cid) { convBtn.hidden = true; return; }
+  async function readConvTitle(cidNow) {
+    const cid = cidNow || (current && current.meta.conversationId);
+    if (compareView || !cid) { convBtn.hidden = moveBtn.hidden = true; return; }
     let idx = {};
     try { idx = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {}; } catch (_) { /* untitled */ }
     convTitle = ConvCore.displayTitle(idx[cid], cid);
     convBtn.textContent = `🗨️ ${convTitle}`;
     convBtn.title = `在側邊欄打開這個畫布的對話「${convTitle}」（已封存的會重新打開）`;
-    convBtn.hidden = false;
+    convBtn.hidden = moveBtn.hidden = false;
   }
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes[ConvCore.INDEX_KEY] && current) readConvTitle();
+    if (area !== "local" || !current) return;
+    // Moved (§7.3, here or from the gallery): the meta's new conversation, before refresh() has run.
+    const mc = changes[CanvasStore.metaKey(canvasId)];
+    const moved = mc && mc.newValue && mc.oldValue && mc.newValue.conversationId !== mc.oldValue.conversationId ? mc.newValue.conversationId : null;
+    if (moved || changes[ConvCore.INDEX_KEY]) readConvTitle(moved);
   });
   // No await before chrome.sidePanel.open: it needs this click's user gesture. `retry`: from a
   // refusal, what to do again once the conversation is open.
@@ -1560,6 +1565,39 @@
     })();
   }
   convBtn.addEventListener("click", () => { openConversation(); });
+
+  // --- ↪ 移到其他對話 (multi-conversation §7.3) ---------------------------------------------------
+  // The picker lists every other conversation (open or archived, never a deleted one); the move is
+  // CanvasStore.move: only conversationId changes. The side panels follow it (tab group, folder
+  // mirror, a host line for each agent); this tab re-reads its header from the meta change.
+  moveBtn.addEventListener("click", async () => {
+    if (!current || moveBtn.disabled) return;
+    const from = current.meta.conversationId;
+    const title = String(current.meta.title || "Canvas").slice(0, 60);
+    let index = {};
+    try { index = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {}; } catch (_) { /* none */ }
+    const now = Date.now();
+    if (!ConvCore.moveTargets({ index, exclude: from, now }).length) { flash("沒有其他對話可以移過去。"); return; }
+    const to = await ConvPicker.open({
+      heading: `把「${title}」移到…`,
+      hint: "內容、版本紀錄和圖片都會跟著走；原本那段對話的 agent 之後就讀不到也改不了它，兩邊的 agent 都會在下一則訊息收到通知。",
+      rows: (q) => ConvCore.moveTargets({ index, exclude: from, query: q, now }),
+    });
+    if (!to) return;
+    moveBtn.disabled = true;
+    try {
+      // Picked from a list read before the dialog: deleted meanwhile → refused here (§7.1).
+      const fresh = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {};
+      const gone = ConvCore.reopenRefusal(fresh[to]);
+      if (gone) { notice(`沒有移過去：${gone}`); return; }
+      await store.move({ id: canvasId, from, to });
+      flash(`已移到「${ConvCore.displayTitle(fresh[to], to)}」。`);
+    } catch (e) {
+      notice(`沒有移過去：${CanvasCore.clipError((e && e.message) || e)}`);
+    } finally {
+      moveBtn.disabled = false;
+    }
+  });
 
   // #70: delete. Its history goes with it (§3.5), so it says it cannot be undone.
   deleteBtn.addEventListener("click", async () => {

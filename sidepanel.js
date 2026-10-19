@@ -807,6 +807,9 @@ class Conn {
     const hinted = st.hintPending;
     const resent = st.resendPending;                     // §7 I8: innermost, right above the message
     let sent = resent ? ConvCore.withResendHint(text) : text;
+    // §7.3: canvases moved into / out of this conversation, until a prompt carrying them is accepted.
+    const moveNotes = canvasMoveNotes.get(st.convId) || [];
+    if (moveNotes.length) sent = ConvCore.withCanvasMoveNotes(sent, moveNotes);
     if (hinted) sent = ConvCore.withReconnectHint(sent);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
@@ -833,6 +836,7 @@ class Conn {
           return;
         }
         if (hinted) st.hintPending = false;              // accepted: the agent has seen the line
+        if (moveNotes.length) canvasStore.takeMoveNotes({ conversationId: st.convId, seen: moveNotes }).catch(() => {});
         if (resent) st.resendPending = false;
         st.turnActive = false;
         updateStopButton();
@@ -3868,6 +3872,41 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (canvasMirrorPending.size) runCanvasMirror();
 });
+// Multi-conversation §7.3: canvases the user moved between conversations. canvasMoveNotes mirrors
+// every canvas:<conv>:moved list (read at flush time, synchronously); the canvas tab follows the
+// move here: into the new conversation's group when that one is open in this panel, else out of
+// the old one's group. Only tabs in this panel's window (another window's panel does its own).
+const canvasMoveNotes = new Map();                      // conversationId → [{ id, title, …, dir, at }]
+const MOVED_KEY_RE = /^canvas:(c_[0-9a-f]{12}):moved$/;
+CanvasStore.getMatching(chrome.storage.local, (k) => MOVED_KEY_RE.test(k)).then((got) => {
+  for (const [k, v] of Object.entries(got || {})) if (Array.isArray(v)) canvasMoveNotes.set(MOVED_KEY_RE.exec(k)[1], v);
+}, () => {});
+async function followMovedCanvas(id, from, to) {
+  try {
+    const tab = await findCanvasTab(id);
+    if (!tab || tab.windowId !== panelWindowId || !canGroupTabs()) return;
+    if (convs.has(to)) { await canvasTabQueue(() => addToCanvasGroup(tab, to), to); return; }
+    if (!convs.has(from)) return;
+    const g = await storedCanvasGroupId(from);
+    if (g != null && tab.groupId === g) await chrome.tabs.ungroup(tab.id);
+  } catch (_) { /* grouping is cosmetic */ }
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  for (const [k, ch] of Object.entries(changes)) {
+    const mv = MOVED_KEY_RE.exec(k);
+    if (mv) {
+      if (Array.isArray(ch.newValue) && ch.newValue.length) canvasMoveNotes.set(mv[1], ch.newValue);
+      else canvasMoveNotes.delete(mv[1]);
+      continue;
+    }
+    const m = /^canvas:(cv_[0-9a-f]{12}):meta$/.exec(k);
+    const from = m && ch.oldValue && ch.oldValue.conversationId;
+    const to = m && ch.newValue && ch.newValue.conversationId;
+    if (from && to && from !== to) followMovedCanvas(m[1], from, to);
+  }
+});
+
 // Multi-conversation §7 / #101: a conversation's mirror folder follows its title. A title change
 // moves nothing by itself; once it has settled (CanvasMirror.TITLE_SETTLE_MS without another change)
 // the conversation's canvases are synced, which moves their files to the new folder in one go.

@@ -1162,3 +1162,58 @@ test("commit: a failed remove of trimmed versions does not fail the write", asyn
   const idx = storage.data[CanvasStore.indexKey("c")].find((e) => e.id === id);
   assert.equal(idx.version, 4, "the index is updated");
 });
+
+test("move (multi-conversation §7.3): only the conversation changes; both indexes, a note for each agent", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c_a", title: "Plan", content: "# v1" });
+  await s.agentWrite({ conversationId: "c_a", id: a.id, baseVersion: 1, title: "Plan", content: "# v2" });
+  const keep = await s.agentWrite({ conversationId: "c_a", title: "Stays", content: "x" });
+  const before = structuredClone(storage.data[CanvasStore.metaKey(a.id)]);
+  assert.deepEqual(await s.move({ id: a.id, from: "c_a", to: "c_b" }), { moved: true, version: 2 });
+  const meta = storage.data[CanvasStore.metaKey(a.id)];
+  assert.deepEqual({ ...meta, conversationId: "c_a" }, before);          // nothing else changed
+  assert.equal(meta.conversationId, "c_b");
+  assert.deepEqual((await s.list({ conversationId: "c_a" })).map((e) => e.id), [keep.id]);
+  assert.deepEqual((await s.list({ conversationId: "c_b" })).map((e) => [e.id, e.version]), [[a.id, 2]]);
+  // The old conversation's agent can no longer read or write it; the new one can.
+  await assert.rejects(() => s.read({ conversationId: "c_a", id: a.id }), /no canvas/);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c_a", id: a.id, baseVersion: 2, title: "Plan", content: "no" }), /another conversation/);
+  assert.equal((await s.read({ conversationId: "c_b", id: a.id })).content, "# v2");
+  const out = storage.data[CanvasStore.movedKey("c_a")], inn = storage.data[CanvasStore.movedKey("c_b")];
+  assert.deepEqual(out.map((n) => [n.id, n.dir, n.title, n.version]), [[a.id, "out", "Plan", 2]]);
+  assert.deepEqual(inn.map((n) => [n.id, n.dir, n.kind]), [[a.id, "in", "markdown"]]);
+  // Already there → nothing; a stale `from` (moved meanwhile) → refused.
+  assert.deepEqual(await s.move({ id: a.id, from: "c_b", to: "c_b" }), { moved: false });
+  await assert.rejects(() => s.move({ id: a.id, from: "c_a", to: "c_c" }), /no longer in that conversation/);
+  await assert.rejects(() => s.move({ id: "cv_000000000999", to: "c_c" }), /no canvas/);
+  await assert.rejects(() => s.move({ id: "nope", to: "c_c" }), /not a canvas id/);
+  // Moving the last canvas out removes the old index key; moving back keeps one note per canvas (the latest).
+  await s.move({ id: keep.id, from: "c_a", to: "c_b" });
+  assert.equal(CanvasStore.indexKey("c_a") in storage.data, false);
+  await s.move({ id: a.id, from: "c_b", to: "c_a" });
+  assert.deepEqual(storage.data[CanvasStore.movedKey("c_a")].map((n) => [n.id, n.dir]), [[keep.id, "out"], [a.id, "in"]]);
+  assert.deepEqual(storage.data[CanvasStore.movedKey("c_b")].map((n) => [n.id, n.dir]), [[keep.id, "in"], [a.id, "out"]]);
+});
+
+test("takeMoveNotes drops only the notes the agent saw; a note written since stays", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c_a", title: "A", content: "a" });
+  const b = await s.agentWrite({ conversationId: "c_a", title: "B", content: "b" });
+  await s.move({ id: a.id, from: "c_a", to: "c_b" });
+  const seen = structuredClone(storage.data[CanvasStore.movedKey("c_b")]);
+  await s.move({ id: b.id, from: "c_a", to: "c_b" });                     // after the prompt went out
+  await s.takeMoveNotes({ conversationId: "c_b", seen });
+  assert.deepEqual(storage.data[CanvasStore.movedKey("c_b")].map((n) => n.id), [b.id]);
+  await s.takeMoveNotes({ conversationId: "c_b", seen: storage.data[CanvasStore.movedKey("c_b")] });
+  assert.equal(CanvasStore.movedKey("c_b") in storage.data, false);
+});
+
+test("move notes are capped per conversation (the oldest go)", async () => {
+  const { s, storage } = store();
+  const ids = [];
+  for (let i = 0; i < CanvasStore.MOVE_NOTES_MAX + 3; i++) ids.push((await s.agentWrite({ conversationId: "c_a", title: `T${i}`, content: "x" })).id);
+  for (const id of ids) await s.move({ id, from: "c_a", to: "c_b" });
+  const notes = storage.data[CanvasStore.movedKey("c_b")];
+  assert.equal(notes.length, CanvasStore.MOVE_NOTES_MAX);
+  assert.equal(notes[notes.length - 1].id, ids[ids.length - 1]);
+});
