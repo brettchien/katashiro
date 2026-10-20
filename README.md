@@ -9,7 +9,7 @@ are using.
 - **Chat beside any page** — up to 3 open conversations (across all windows), each bound to one of
   your agents, with history that survives a reload. A conversation keeps working while you look at
   another; archived ones reopen from the 🗂️ gallery. Paste screenshots or drop files into the chat.
-- **Let the agent use the browser** — 51 `katashiro.*` tools: read the page, click, type, fill forms,
+- **Let the agent use the browser** — 53 `katashiro.*` tools: read the page, click, type, fill forms,
   navigate, manage tabs, point things out to you, ask you multiple-choice questions. Writes stay
   off until you allow them.
 - **Get long answers as canvases** — reports, slide decks, Mermaid diagrams or images in a tab beside

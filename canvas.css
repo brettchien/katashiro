@@ -186,3 +186,31 @@ body {
 .ask-status.warn { color: var(--warn); }
 .ask-keys { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .ask-status:not(:empty) + .ask-keys { display: none; }
+
+/* 移到其他對話 (multi-conversation §7.3): the conversation picker (conv-picker.js), canvas tab and gallery. */
+.conv-picker {
+  width: min(460px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  padding: 14px 16px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.conv-picker[open] { display: flex; flex-direction: column; gap: 8px; }
+.conv-picker::backdrop { background: rgba(0, 0, 0, 0.5); }
+.conv-picker-heading { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.conv-picker-hint { margin: 0; color: var(--muted); font-size: 12px; }
+.conv-picker-search { padding: 4px 8px; font: inherit; font-size: 13px; color: var(--text); background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 6px; }
+.conv-picker-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1 1 auto; min-height: 0; }
+.conv-picker-row {
+  display: flex; width: 100%; gap: 10px; align-items: baseline; justify-content: space-between;
+  padding: 6px 8px; font: inherit; font-size: 13px; text-align: left; color: var(--text);
+  background: transparent; border: 0; border-bottom: 1px solid var(--border); cursor: pointer;
+}
+.conv-picker-row:hover, .conv-picker-row:focus-visible { background: rgba(255, 255, 255, 0.06); outline: none; }
+.conv-picker-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.conv-picker-meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
+.conv-picker-empty { margin: 4px 0; color: var(--muted); font-size: 12px; }
+.conv-picker-empty[hidden] { display: none; }
+.conv-picker-cancel { align-self: flex-end; }

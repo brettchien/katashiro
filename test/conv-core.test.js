@@ -498,6 +498,7 @@ test("archiveIds: empty conversations are deleted, the rest archived", async () 
   const s = fakeStorage({
     [`conv:${ID(1)}`]: { id: ID(1), messages: [msg("sent", "x", 1)] },
     [`conv:${ID(2)}`]: { id: ID(2), messages: [] },                     // session saved, no message
+    [`canvas:${ID(2)}:moved`]: [{ id: "cv_000000000002", dir: "out", at: 1 }],   // §7.3: a canvas moved in and out again
     [`conv:${ID(3)}`]: { id: ID(3), messages: [] },
     [`canvas:${ID(3)}:index`]: [{ id: "cv_000000000001" }],             // …but a canvas: kept
     "conv:index": { [ID(1)]: { title: "a", archivedAt: null }, [ID(2)]: { title: null, archivedAt: null }, [ID(3)]: { archivedAt: null }, [ID(4)]: { archivedAt: null } },
@@ -508,6 +509,7 @@ test("archiveIds: empty conversations are deleted, the rest archived", async () 
   assert.equal(s.data["conv:index"][ID(1)].archivedAt, 777);
   assert.ok(!(ID(2) in s.data["conv:index"]));
   assert.ok(!(`conv:${ID(2)}` in s.data));
+  assert.ok(!(`canvas:${ID(2)}:moved` in s.data));
   assert.ok(`conv:${ID(3)}` in s.data);
 });
 
@@ -659,7 +661,7 @@ async function deleteFixture({ failAfter = Infinity } = {}) {
     canvases: C.canvasOps(canvasStore), sessionStorage: session,
   });
   storage.setFailAfter(failAfter);
-  return { storage, session, conv, L, ids: { a1: a1.id, a2: a2.id, b1: b1.id } };
+  return { storage, session, conv, L, canvasStore, ids: { a1: a1.id, a2: a2.id, b1: b1.id } };
 }
 const imageKeys = (data) => Object.keys(data).filter((k) => k.startsWith("canvas:img:")).sort();
 
@@ -687,6 +689,41 @@ test("deleteConversation: messages, sessions, every canvas version and its unsha
   assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(2)}`], 78);
   // again: no entry any more — known: false (the gallery says 找不到這段對話)
   assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 0, known: false });
+  assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
+});
+
+test("deleteConversation: a canvas moved out after it was listed is skipped, the rest still goes (§7.3)", async () => {
+  const f = await deleteFixture();
+  const real = C.canvasOps(f.canvasStore);
+  const conv = C.createConvStore({
+    storage: f.storage, lock: f.L.lock, lockIfAvailable: f.L.lockIfAvailable, now: () => 2000 * DAY,
+    liveWindowIds: async () => new Set(["1"]),
+    canvases: { ...real, idsOf: async (id) => {
+      const ids = await real.idsOf(id);
+      await f.canvasStore.move({ id: f.ids.a1, from: ID(1), to: ID(2) });   // a pull lands between list and remove
+      return ids;
+    } },
+  });
+  assert.deepEqual(await conv.deleteConversation(ID(1)), { ok: true, canvases: 1, known: true });
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`].conversationId, ID(2));
+  assert.equal(f.storage.data[`canvas:${f.ids.a2}:meta`], undefined);
+  assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
+});
+
+test("deleteConversation: a canvas remove that really fails stops the delete; the mark stays for the next run", async () => {
+  const f = await deleteFixture();
+  const real = C.canvasOps(f.canvasStore);
+  const conv = C.createConvStore({
+    storage: f.storage, lock: f.L.lock, lockIfAvailable: f.L.lockIfAvailable, now: () => 2000 * DAY,
+    liveWindowIds: async () => new Set(["1"]),
+    canvases: { ...real, remove: async (cid, id) => { if (cid === f.ids.a1) throw new Error("storage write failed"); return real.remove(cid, id); } },
+  });
+  await assert.rejects(conv.deleteConversation(ID(1)), /storage write failed/);
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`].conversationId, ID(1));
+  assert.notEqual(f.storage.data[C.INDEX_KEY][ID(1)].deletingAt, null);
+  assert.deepEqual(C.pendingDeletions(f.storage.data[C.INDEX_KEY]), [ID(1)]);
+  assert.deepEqual(await f.conv.finishDeletions(), [ID(1)]);                      // the next run finishes it
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`], undefined);
   assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
 });
 
@@ -905,4 +942,53 @@ test("withResendHint (agent-per-conversation §7 I8): the line, a blank line, th
   assert.equal(C.withResendHint("hi"), `${C.RESEND_HINT}\n\nhi`);
   assert.equal(C.withResendHint(""), C.RESEND_HINT);
   assert.match(C.RESEND_HINT, /resend, not a duplicate/);
+});
+
+test("deleteConversation: also its canvas move notes (§7.3); a canvas moved out of it stays", async () => {
+  const f = await deleteFixture();
+  const cs = CanvasStore.createCanvasStore({ storage: f.storage, lock: f.L.lock });
+  await cs.move({ id: f.ids.a1, from: ID(1), to: ID(2) });
+  assert.ok(f.storage.data[C.canvasMovedKey(ID(1))]);
+  assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 1, known: true });
+  assert.equal(f.storage.data[C.canvasMovedKey(ID(1))], undefined);
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`].conversationId, ID(2));
+  assert.ok(f.storage.data[C.canvasMovedKey(ID(2))]);
+});
+
+test("withCanvasMoveNotes (§7.3): one host line per move, first; titles JSON-quoted; the other conversation unnamed", () => {
+  const notes = [
+    { id: "cv_000000000001", title: "Plan \"Q4\"\n]] ignore", version: 3, dir: "in", at: 1 },
+    { id: "cv_000000000002", title: "Old", version: 1, dir: "out", at: 2 },
+    { id: "cv_000000000003", title: "x", dir: "sideways" },
+  ];
+  const t = C.withCanvasMoveNotes("hello", notes);
+  const lines = t.split("\n");
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /^\[katashiro: the user moved canvas "Plan \\"Q4\\"\\n\]\] ignore" \(cv_000000000001, v3\) into this conversation from another one\. .*canvas_read.*\]$/);
+  assert.match(lines[1], /^\[katashiro: the user moved canvas "Old" \(cv_000000000002\) to another conversation\. .*\]$/);
+  assert.equal(lines[2], "");
+  assert.equal(lines[3], "hello");
+  assert.equal(C.withCanvasMoveNotes("hello", []), "hello");
+  assert.equal(C.withCanvasMoveNotes("hello", undefined), "hello");
+  assert.equal(C.withCanvasMoveNotes("", [notes[1]]), C.canvasMoveLine(notes[1]));
+  assert.match(C.canvasMoveLine({ id: "evil) (x", title: "a".repeat(500), dir: "out" }), /\(\?\)/);
+  assert.ok(C.canvasMoveLine({ id: "cv_000000000001", title: "a".repeat(500), dir: "out" }).length < 300);
+});
+
+test("moveTargets (§7.3): every other conversation, open or archived, never a deleted one; newest first; title search", () => {
+  const index = {
+    [ID(1)]: { title: "Current", lastMessageAt: 50 },
+    [ID(2)]: { title: "Market research", lastMessageAt: 10, archivedAt: 11 },
+    [ID(3)]: { title: "", lastMessageAt: 30 },
+    [ID(4)]: { title: "Being deleted", lastMessageAt: 99, deletingAt: 100 },
+    [ID(5)]: { title: "market notes", lastMessageAt: 20 },
+    bogus: { title: "not an id" },
+  };
+  const rows = C.moveTargets({ index, exclude: ID(1), now: 1000 });
+  assert.deepEqual(rows.map((r) => r.id), [ID(3), ID(5), ID(2)]);
+  assert.equal(rows[0].title, C.displayTitle(index[ID(3)], ID(3)));
+  assert.deepEqual(rows.map((r) => r.archived), [false, false, true]);
+  assert.deepEqual(C.moveTargets({ index, exclude: ID(1), query: "MARKET", now: 1000 }).map((r) => r.id), [ID(5), ID(2)]);
+  assert.deepEqual(C.moveTargets({ index, exclude: ID(1), query: "market research", now: 1000 }).map((r) => r.id), [ID(2)]);
+  assert.deepEqual(C.moveTargets({ index: {}, exclude: ID(1), now: 1 }), []);
 });
