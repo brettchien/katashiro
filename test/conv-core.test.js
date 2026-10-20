@@ -710,6 +710,23 @@ test("deleteConversation: a canvas moved out after it was listed is skipped, the
   assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
 });
 
+test("deleteConversation: a canvas remove that really fails stops the delete; the mark stays for the next run", async () => {
+  const f = await deleteFixture();
+  const real = C.canvasOps(f.canvasStore);
+  const conv = C.createConvStore({
+    storage: f.storage, lock: f.L.lock, lockIfAvailable: f.L.lockIfAvailable, now: () => 2000 * DAY,
+    liveWindowIds: async () => new Set(["1"]),
+    canvases: { ...real, remove: async (cid, id) => { if (cid === f.ids.a1) throw new Error("storage write failed"); return real.remove(cid, id); } },
+  });
+  await assert.rejects(conv.deleteConversation(ID(1)), /storage write failed/);
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`].conversationId, ID(1));
+  assert.notEqual(f.storage.data[C.INDEX_KEY][ID(1)].deletingAt, null);
+  assert.deepEqual(C.pendingDeletions(f.storage.data[C.INDEX_KEY]), [ID(1)]);
+  assert.deepEqual(await f.conv.finishDeletions(), [ID(1)]);                      // the next run finishes it
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`], undefined);
+  assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
+});
+
 test("deleteConversation: refused (nothing touched) while open in a live window, or its lock is held elsewhere", async () => {
   const f = await deleteFixture();
   const snap = JSON.stringify(f.storage.data);

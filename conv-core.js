@@ -784,6 +784,11 @@
         return (await store.allMetas()).filter((m) => m && m.conversationId === conversationId && /^cv_[0-9a-f]{12}$/.test(String(m.id))).map((m) => m.id);
       },
       remove: (id, conversationId) => store.remove({ conversationId, id, sweep: false }),
+      // The conversation canvas `id` belongs to now, or null (gone).
+      async ownerOf(id) {
+        const m = (await store.allMetas()).find((x) => x && x.id === id);
+        return m ? m.conversationId : null;
+      },
       sweep: () => store.sweepImages(),
     };
   }
@@ -918,8 +923,10 @@
       if (ops) {
         const ids = await ops.idsOf(id);
         for (const cid of ids) {
-          // Moved out since idsOf (§7.3) → "no canvas in this conversation": no longer ours, skip it.
-          try { if ((await ops.remove(cid, id)).removed) canvases++; } catch (_) { /* moved away meanwhile */ }
+          // Moved out (§7.3) or gone since idsOf → skip it. Still ours → a real failure: rethrow, so the
+          // deletingAt mark stays and the next run resumes (never an orphan left behind).
+          try { if ((await ops.remove(cid, id)).removed) canvases++; }
+          catch (e) { if (typeof ops.ownerOf !== "function" || (await ops.ownerOf(cid)) === id) throw e; }
         }
         // One sweep after all of them; best effort (the next save or delete sweeps again).
         if (ids.length || sweepAlways) { try { await ops.sweep(); } catch (_) { /* best effort */ } }
