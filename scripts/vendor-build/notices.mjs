@@ -1,14 +1,14 @@
 // Writes THIRD_PARTY_NOTICES.md from installed node_modules trees (see vendor/BUILD.md, "Notices").
 // Usage: node notices.mjs <node_modules dir>... > ../../THIRD_PARTY_NOTICES.md
 // Every package found is listed (over-inclusion is harmless); build tools, type-only packages and
-// what @mermaid-js/tiny leaves out of its bundle (its README: no mindmap, architecture or KaTeX;
-// ELK is a separate layout package) are skipped. Packages with identical license and NOTICE text
-// share one copy of it.
+// what @mermaid-js/tiny leaves out of its bundle (its README: no mindmap or architecture; ELK is a
+// separate layout package) are skipped. KaTeX is kept: tiny drops it, but crepe bundles it. Packages
+// with identical license and NOTICE text share one copy of it.
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-const SKIP = /^(esbuild|@esbuild\/|@types\/|katex$|elkjs$|cytoscape|cose-base$|layout-base$)/;
-const LICENSE_FILE = /^(licen[cs]e|copying)(\.(md|txt|markdown))?$/i;
+const SKIP = /^(esbuild|@esbuild\/|@types\/|elkjs$|cytoscape|cose-base$|layout-base$)/;
+const LICENSE_FILE = /^(licen[cs]e|copying)(-[\w-]+)?(\.(md|txt|markdown))?$/i; // also LICENSE-MIT.txt, LICENSE-MPL
 const NOTICE_FILE = /^notice(\.(md|txt))?$/i;
 
 const pkgs = new Map(); // "name@version" → { name, version, license, text }
@@ -31,10 +31,11 @@ function add(dir) {
   if (!meta.name || SKIP.test(meta.name)) return;
   const key = `${meta.name}@${meta.version}`;
   if (pkgs.has(key)) return;
-  const file = readdirSync(dir).find((f) => LICENSE_FILE.test(f));
-  const license = typeof meta.license === "string" ? meta.license : meta.license?.type || "UNKNOWN";
-  const notice = readdirSync(dir).find((f) => NOTICE_FILE.test(f));
-  const text = [file, notice].filter(Boolean).map((f) => readFileSync(join(dir, f), "utf8").trim()).join("\n\n") || null;
+  const files = readdirSync(dir).filter((f) => LICENSE_FILE.test(f) || NOTICE_FILE.test(f)).sort();
+  const text = files.map((f) => readFileSync(join(dir, f), "utf8").trim()).join("\n\n") || null;
+  let license = typeof meta.license === "string" ? meta.license : meta.license?.type || "UNKNOWN";
+  // A package.json without a license field (khroma) still ships its license text.
+  if (license === "UNKNOWN" && /^(the )?mit license/i.test(text ?? "")) license = "MIT";
   pkgs.set(key, { name: meta.name, version: meta.version, license, text });
 }
 

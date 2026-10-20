@@ -146,8 +146,12 @@ these bundles, with its license text. Regenerate it whenever a vendored library 
 
 ```bash
 cd scripts/vendor-build && npm ci --ignore-scripts
-# @mermaid-js/tiny is prebuilt and declares no dependencies: install the matching mermaid's tree
-# (and dom-accessibility-api, built separately above) into a scratch dir.
-mkdir -p /tmp/nx && (cd /tmp/nx && npm init -y && npm i --ignore-scripts --omit=dev mermaid@12.1.0 dom-accessibility-api@0.7.1)
-node notices.mjs node_modules /tmp/nx/node_modules > ../../THIRD_PARTY_NOTICES.md
+# @mermaid-js/tiny is prebuilt and declares no dependencies: mermaid-tree/ pins the matching
+# mermaid's tree (and dom-accessibility-api, built separately above).
+(cd mermaid-tree && npm ci --ignore-scripts --omit=dev)
+node notices.mjs node_modules mermaid-tree/node_modules > ../../THIRD_PARTY_NOTICES.md
 ```
+
+The mermaid-tree lock makes the notices reproducible, but its transitive versions are whatever npm
+resolved when the lock was written, not necessarily the ones tiny was built with (e.g. dompurify is
+listed twice). License texts rarely differ between patch versions; bump the lock with the tiny version.

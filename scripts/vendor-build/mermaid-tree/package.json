@@ -1,0 +1,9 @@
+{
+  "name": "katashiro-mermaid-tree",
+  "private": true,
+  "description": "Dependency tree of the mermaid that @mermaid-js/tiny is built from, for THIRD_PARTY_NOTICES.md only (see vendor/BUILD.md).",
+  "dependencies": {
+    "dom-accessibility-api": "0.7.1",
+    "mermaid": "12.1.0"
+  }
+}
