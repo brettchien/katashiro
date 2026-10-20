@@ -661,7 +661,7 @@ async function deleteFixture({ failAfter = Infinity } = {}) {
     canvases: C.canvasOps(canvasStore), sessionStorage: session,
   });
   storage.setFailAfter(failAfter);
-  return { storage, session, conv, L, ids: { a1: a1.id, a2: a2.id, b1: b1.id } };
+  return { storage, session, conv, L, canvasStore, ids: { a1: a1.id, a2: a2.id, b1: b1.id } };
 }
 const imageKeys = (data) => Object.keys(data).filter((k) => k.startsWith("canvas:img:")).sort();
 
@@ -689,6 +689,24 @@ test("deleteConversation: messages, sessions, every canvas version and its unsha
   assert.equal(f.session.data[`${C.GROUP_KEY_PREFIX}${ID(2)}`], 78);
   // again: no entry any more — known: false (the gallery says 找不到這段對話)
   assert.deepEqual(await f.conv.deleteConversation(ID(1)), { ok: true, canvases: 0, known: false });
+  assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
+});
+
+test("deleteConversation: a canvas moved out after it was listed is skipped, the rest still goes (§7.3)", async () => {
+  const f = await deleteFixture();
+  const real = C.canvasOps(f.canvasStore);
+  const conv = C.createConvStore({
+    storage: f.storage, lock: f.L.lock, lockIfAvailable: f.L.lockIfAvailable, now: () => 2000 * DAY,
+    liveWindowIds: async () => new Set(["1"]),
+    canvases: { ...real, idsOf: async (id) => {
+      const ids = await real.idsOf(id);
+      await f.canvasStore.move({ id: f.ids.a1, from: ID(1), to: ID(2) });   // a pull lands between list and remove
+      return ids;
+    } },
+  });
+  assert.deepEqual(await conv.deleteConversation(ID(1)), { ok: true, canvases: 1, known: true });
+  assert.equal(f.storage.data[`canvas:${f.ids.a1}:meta`].conversationId, ID(2));
+  assert.equal(f.storage.data[`canvas:${f.ids.a2}:meta`], undefined);
   assert.equal(f.storage.data[C.INDEX_KEY][ID(1)], undefined);
 });
 

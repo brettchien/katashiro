@@ -3190,7 +3190,7 @@
         if (from === to) return errText(`canvas_move: canvas "${meta.title}" (${meta.id}) is already in ${to === own ? "this" : "that"} conversation`);
         if (from !== own && to !== own) return errText("canvas_move: only a canvas of this conversation can be pushed, and only into this conversation can one be pulled");
         const push = from === own;
-        const other = c.conversationInfo(push ? to : from);
+        const other = await c.conversationInfo(push ? to : from);
         if (!other || other.gone) return errText(`canvas_move: no conversation "${push ? to : from}"${other && other.gone ? ` (${other.gone})` : ""}; see katashiro.conversation_list`);
         if (typeof c.confirmMove !== "function") return errText("canvas_move: no way to ask the user here");
         let answer = false;
@@ -3203,6 +3203,10 @@
           if (state === "ended") return okText(`declined: the turn ended before the user answered; canvas "${meta.title}" (${meta.id}) was not moved`);
           return okText(`declined: the user did not move canvas "${meta.title}" (${meta.id})`);
         }
+        // The card waits up to 2 minutes: the other conversation deleted meanwhile → refused (§7.1), or
+        // the canvas would land in a conversation whose delete already listed its canvases (an orphan).
+        const again = await c.conversationInfo(push ? to : from);
+        if (!again || again.gone) return errText(`canvas_move: conversation "${push ? to : from}" is gone (${(again && again.gone) || "deleted"}); canvas "${meta.title}" (${meta.id}) was not moved`);
         try {
           // `from` re-checked under the canvas lock: moved by someone else while asking → refused.
           await c.store.move({ id: meta.id, from, to, quiet: own });

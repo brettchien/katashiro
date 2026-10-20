@@ -917,7 +917,10 @@
       let canvases = 0;
       if (ops) {
         const ids = await ops.idsOf(id);
-        for (const cid of ids) if ((await ops.remove(cid, id)).removed) canvases++;
+        for (const cid of ids) {
+          // Moved out since idsOf (§7.3) → "no canvas in this conversation": no longer ours, skip it.
+          try { if ((await ops.remove(cid, id)).removed) canvases++; } catch (_) { /* moved away meanwhile */ }
+        }
         // One sweep after all of them; best effort (the next save or delete sweeps again).
         if (ids.length || sweepAlways) { try { await ops.sweep(); } catch (_) { /* best effort */ } }
       }

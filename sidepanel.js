@@ -418,9 +418,13 @@ class Conn {
             };
           });
         },
-        conversationInfo: (id) => {
-          if (!ConvCore.isConvId(id) || !convIndex[id]) return null;
-          return { title: ConvCore.displayTitle(convIndex[id], id), gone: ConvCore.reopenRefusal(convIndex[id]) };
+        // Read fresh, not convIndex: canvas_move asks again once its card is answered (a delete may have started).
+        conversationInfo: async (id) => {
+          if (!ConvCore.isConvId(id)) return null;
+          let index = convIndex;
+          try { index = (await chrome.storage.local.get(ConvCore.INDEX_KEY))[ConvCore.INDEX_KEY] || {}; } catch (_) { /* last read */ }
+          if (!index[id]) return null;
+          return { title: ConvCore.displayTitle(index[id], id), gone: ConvCore.reopenRefusal(index[id]) };
         },
         confirmMove: ({ title, version, push, otherTitle }) => confirmOutcome({
           title: `${this.name} 要移動畫布`,

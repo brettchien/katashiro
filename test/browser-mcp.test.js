@@ -3942,6 +3942,11 @@ test("katashiro.canvas_move: pull another conversation's canvas in; refusals", a
   assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_nope" })).content[0].text, /no conversation "c_nope"/);
   assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000099" })).content[0].text, /no canvas "cv_000000000099"/);
   assert.equal(asked.length, 0);
+  // The target deleted while the card waited: asked, then refused, nothing moved.
+  const info = d.canvas.conversationInfo;
+  d.canvas.confirmMove = async () => { d.canvas.conversationInfo = async (id) => (id === "c_000000000002" ? { title: "Other", gone: "deleted" } : info(id)); return { ok: true }; };
+  assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_000000000002" })).content[0].text, /conversation "c_000000000002" is gone \(deleted\).*was not moved/);
+  d.canvas.conversationInfo = info;
   delete d.canvas.confirmMove;
   assert.match((await callTool(d, "katashiro.canvas_move", { id: "cv_000000000002", to: "c_000000000002" })).content[0].text, /no way to ask the user/);
   assert.equal(data[CanvasStore.metaKey("cv_000000000002")].conversationId, "c_test");

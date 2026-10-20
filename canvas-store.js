@@ -891,7 +891,7 @@
           const set = { [metaKey(id)]: meta, [indexKey(to)]: newList };
           if (quiet !== old) set[movedKey(old)] = notes(got[movedKey(old)], "out");
           if (quiet !== to) set[movedKey(to)] = notes(got[movedKey(to)], "in");
-          if (oldList.length) set[indexKey(old)] = oldList;
+          set[indexKey(old)] = oldList;                  // [] when emptied: cut short before the remove → still right
           await storage.set(set);
           if (!oldList.length) await storage.remove(indexKey(old));
         });
