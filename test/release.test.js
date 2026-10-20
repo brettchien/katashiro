@@ -75,3 +75,14 @@ test("release zip includes every script the service worker importScripts (conv-c
     assert.ok(shipped(entries, f), `${f} is imported by background.js but missing from the release zip`);
   }
 });
+
+test("release zip ships the license and the third-party notices", () => {
+  const yml = read(".github/workflows/release.yml");
+  const m = yml.match(/^\s*zip "[^"]+" (.+)$/m);
+  assert.ok(m, "no zip step adds the license files");
+  const files = m[1].trim().split(/\s+/);
+  for (const f of ["LICENSE", "THIRD_PARTY_NOTICES.md"]) {
+    assert.ok(files.includes(f), `${f} is missing from the release zip`);
+    assert.ok(fs.existsSync(path.join(root, f)), `${f} is not in the repo`);
+  }
+});

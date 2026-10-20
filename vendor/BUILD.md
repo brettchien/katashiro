@@ -138,3 +138,16 @@ the hashes above.
 **Keep `"type": "module"`.** With `"type": "commonjs"` (which newer `npm init -y` writes), esbuild treats
 the ESM entry files as needing lazy-init wrappers (`__esm`). The bundle still behaves the same, but it's
 a few hundred bytes larger and its hash no longer matches.
+
+## Notices
+
+`THIRD_PARTY_NOTICES.md` (repo root, shipped in the release zip) lists every package that can end up in
+these bundles, with its license text. Regenerate it whenever a vendored library or its version changes:
+
+```bash
+cd scripts/vendor-build && npm ci --ignore-scripts
+# @mermaid-js/tiny is prebuilt and declares no dependencies: install the matching mermaid's tree
+# (and dom-accessibility-api, built separately above) into a scratch dir.
+mkdir -p /tmp/nx && (cd /tmp/nx && npm init -y && npm i --ignore-scripts --omit=dev mermaid@12.1.0 dom-accessibility-api@0.7.1)
+node notices.mjs node_modules /tmp/nx/node_modules > ../../THIRD_PARTY_NOTICES.md
+```
