@@ -50,6 +50,8 @@ jobs:
             page vendor \
             icon.png icon16.png icon32.png icon48.png icon128.png \
             -x "*.md"
+          # The licenses ship with the code (MIT, and the vendored libraries' notices).
+          zip "katashiro-${VERSION}.zip" LICENSE THIRD_PARTY_NOTICES.md
 
       - name: Create release
         env:

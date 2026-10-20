@@ -123,3 +123,8 @@ tools are writes: [docs/tools.md](docs/tools.md).
 - [docs/testing.md](docs/testing.md) — test layers and step-by-step checks in real Chrome.
 - [ROADMAP](ROADMAP.md) and [`docs/adr/`](docs/adr/) — what is planned, and why things are the way they are.
 - [Releases](../../releases) — builds and release notes. **3.0.0** brought canvases and the 🗂️ gallery, several conversations with one agent each, and new tools (`ask_user`, `show_image`, `chat_history`, `set_title`, `notify`, `client_info`, `canvas_*`); it removed room mode (agent-to-agent relay) and incognito support.
+
+## License
+
+[MIT](LICENSE). The libraries bundled in `vendor/` keep their own licenses — see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

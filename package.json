@@ -2,6 +2,7 @@
   "name": "katashiro-dev",
   "private": true,
   "description": "Dev tooling only (tests, puppeteer smokes, E2E). The extension itself has no dependencies and never loads anything from node_modules.",
+  "license": "MIT",
   "engines": {
     "node": ">=22.12.0"
   },
