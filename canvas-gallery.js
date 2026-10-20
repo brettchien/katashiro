@@ -182,24 +182,22 @@
     try { chrome.tabs.getCurrent().then((t) => { if (t) myWindowId = t.windowId; }, () => {}); } catch (_) { /* not in a tab */ }
   }
 
-  // 重新打開: no await before chrome.sidePanel.open — it needs this click's user gesture.
+  // 重新打開 (and a canvas row's 🗨️, §7.2): no await before chrome.sidePanel.open — it needs this
+  // click's user gesture. `r` = { id, title } of the conversation.
   function reopenConversation(r, btn) {
     const wid = myWindowId;
     if (wid == null) { notice("找不到這個分頁所在的視窗，請重新整理總覽再試。", 6000); return; }
     try { chrome.sidePanel.open({ windowId: wid }).catch(() => {}); } catch (_) { /* old Chrome: the panel may already be open */ }
     btn.disabled = true;
     (async () => {
-      const reqId = crypto.randomUUID();
-      try { await chrome.storage.session.set({ [`${ConvCore.REOPEN_KEY_PREFIX}${wid}`]: { id: r.id, reqId, at: Date.now() } }); } catch (_) { /* the message below still works */ }
-      let answer, timer;
-      try {
-        const timeout = new Promise((res) => { timer = setTimeout(() => res(undefined), REOPEN_TIMEOUT_MS); });
-        answer = await Promise.race([chrome.runtime.sendMessage({ type: "katashiro-conv-open", id: r.id, windowId: wid, reqId }), timeout]);
-      } catch (_) { answer = undefined; }
-      finally { clearTimeout(timer); }
+      const answer = await CanvasTabs.requestConvOpen(chrome, { id: r.id, windowId: wid, keyPrefix: ConvCore.REOPEN_KEY_PREFIX, timeoutMs: REOPEN_TIMEOUT_MS });
       if (answer && answer.ok) notice(`已在側邊欄打開「${r.title}」。`, 4000);
-      else if (answer && answer.error) notice(`沒有打開：${CanvasCore.clipError(answer.error)}`, 8000);
-      else notice("已打開側邊欄：對話會在側邊欄載入後打開。", 6000);
+      else if (answer && answer.error) {
+        // Open in another window (§7.2: the panel names it): a button to go there.
+        const go = Number.isInteger(answer.windowId)
+          ? { label: "前往那個視窗", onClick: () => chrome.windows.update(answer.windowId, { focused: true }).catch(() => {}) } : undefined;
+        notice(`沒有打開：${CanvasCore.clipError(answer.error)}`, 8000, go);
+      } else notice("已打開側邊欄：對話會在側邊欄載入後打開。", 6000);
       btn.disabled = false;
     })();
   }
@@ -312,13 +310,21 @@
         cell(r.conversation, `對話 ${r.conversationId}`),
       );
       open.addEventListener("click", () => openCanvas(r));
+      // §7.2: the canvas's conversation in the side panel (switched to, or reopened if archived).
+      const conv = document.createElement("button");
+      conv.type = "button";
+      conv.className = "canvas-btn gallery-conv";
+      conv.textContent = "🗨️";
+      conv.title = `在側邊欄打開這個畫布的對話「${r.conversation}」`;
+      conv.addEventListener("click", () => reopenConversation({ id: r.conversationId, title: r.conversation }, conv));
+      conv.hidden = !r.conversationId;
       const del = document.createElement("button");
       del.type = "button";
       del.className = "canvas-btn gallery-delete";
       del.textContent = "🗑";
       del.title = "刪除這個畫布";
       del.addEventListener("click", () => deleteCanvas(r, del));
-      li.append(open, del);
+      li.append(open, conv, del);
       return li;
     });
     listEl.replaceChildren(...items);

@@ -52,7 +52,7 @@
   const BG_USER_IN_GROUP_TEXT = "the user is looking at one of your conversation's tabs right now: no changes to its pages until they switch back to your conversation or leave that tab. Reading still works";
   const POOL_EXHAUSTED_TEXT = "agent 那邊同時進行的對話已滿（和 Discord、排程共用）——等其他回覆結束再按重試";
   const OPEN_ELSEWHERE_TEXT = "這段對話開在另一個視窗";
-  const ARCHIVED_PUSH_TEXT = "這段對話已封存，先從總覽重新打開";
+  const ARCHIVED_PUSH_TEXT = "這段對話已封存：先重新打開它";
   // P1b §4.8: a push for a conversation open in another live window whose panel is closed.
   const PANEL_CLOSED_PUSH_TEXT = "這段對話開在另一個視窗，那個視窗的側邊欄沒開：到那個視窗打開側邊欄再送";
   // §7.1 deleting a conversation.

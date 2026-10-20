@@ -334,3 +334,33 @@ test("planArchiveClose: close the group's tabs, keep dirty canvases, never empty
   assert.deepEqual(T.planArchiveClose({ tabs: tabs.slice(0, 2), groupId: 5, dirtyIds: [] }), { close: [1, 2], keep: [], needNewTab: true });
   assert.deepEqual(T.planArchiveClose({ tabs, groupId: null }), { close: [], keep: [], needNewTab: false });
 });
+
+test("requestConvOpen: leaves the request for a loading panel, sends it, returns the answer", async () => {
+  const set = [], sent = [];
+  const api = (answer) => ({
+    storage: { session: { set: async (o) => { set.push(o); } } },
+    runtime: { sendMessage: async (m) => { sent.push(m); if (answer instanceof Error) throw answer; return answer; } },
+  });
+  const opts = { id: "c_000000000001", windowId: 7, keyPrefix: "k.", newId: () => "r1" };
+  assert.deepEqual(await T.requestConvOpen(api({ ok: true }), opts), { ok: true });
+  assert.deepEqual(Object.keys(set[0]), ["k.7"]);
+  assert.equal(set[0]["k.7"].id, "c_000000000001");
+  assert.equal(set[0]["k.7"].reqId, "r1");
+  assert.equal("canvasId" in set[0]["k.7"], false);              // the gallery's 重新打開: no canvas
+  assert.deepEqual(sent[0], { type: "katashiro-conv-open", id: "c_000000000001", windowId: 7, reqId: "r1" });
+  // From a canvas tab (§7.2): the canvas goes with both, so the panel can check it.
+  set.length = sent.length = 0;
+  await T.requestConvOpen(api({ ok: true }), { ...opts, canvasId: "cv_000000000001" });
+  assert.equal(set[0]["k.7"].canvasId, "cv_000000000001");
+  assert.equal(sent[0].canvasId, "cv_000000000001");
+  // No panel listening (sendMessage rejects) or no answer in time → undefined.
+  assert.equal(await T.requestConvOpen(api(new Error("Receiving end does not exist")), opts), undefined);
+  const silent = { storage: { session: { set: async () => {} } }, runtime: { sendMessage: () => new Promise(() => {}) } };
+  assert.equal(await T.requestConvOpen(silent, { ...opts, timeoutMs: 10 }), undefined);
+  // No storage.session: the message still goes.
+  sent.length = 0;
+  const noSession = { storage: { session: { set: async () => { throw new Error("no"); } } }, runtime: api({ ok: false, error: "x" }).runtime };
+  noSession.runtime.sendMessage = async (m) => { sent.push(m); return { ok: false, error: "x" }; };
+  assert.deepEqual(await T.requestConvOpen(noSession, opts), { ok: false, error: "x" });
+  assert.equal(sent.length, 1);
+});

@@ -2242,8 +2242,10 @@ async function archiveConversation(id) {
 
 // Reopen (§3.4, from the gallery's 對話 section): take the lock, move it out of a closed window's
 // record if it is in one, clear archivedAt, add it to this window and switch to it.
-async function reopenConversation(id) {
-  if (convs.has(id)) { switchConversation(id); return { ok: true }; }
+// `adopt` (§7.2): called once the conversation is open here and its group's tabs are back — the
+// canvas tab that asked joins the group then (not before: restoreGroupTabs would make a second one).
+async function reopenConversation(id, { adopt } = {}) {
+  if (convs.has(id)) { switchConversation(id); if (adopt) adopt(); return { ok: true }; }
   const r = await withWindowsLock(async () => {
     const [windows, live, index] = await Promise.all([convStore.readWindows(), liveWindowIds(), convStore.readIndex()]);
     // §7.1: deleted (or being deleted) — never recreated as an empty conversation by a stale gallery tab.
@@ -2252,7 +2254,7 @@ async function reopenConversation(id) {
     const wid = String(panelWindowId);
     windows[wid] = windowRec;
     const holder = ConvCore.windowHolding(windows, live, id);
-    if (holder !== null && holder !== wid && live.has(holder)) return { elsewhere: true };
+    if (holder !== null && holder !== wid && live.has(holder)) return { elsewhere: true, holder };
     if (ConvCore.liveOpenIds(windows, live).size >= ConvCore.MAX_OPEN) return { full: true };
     if (!(await holdConvLock(id))) return { elsewhere: true };
     const writes = {};
@@ -2271,7 +2273,12 @@ async function reopenConversation(id) {
     return { ok: false, error: "已經開了 3 段對話：在側邊欄選一段封存後就會打開" };
   }
   if (r.gone) { appendSystemMessage(r.gone); return { ok: false, error: r.gone }; }
-  if (r.elsewhere) { noticeOpenElsewhere(id); return { ok: false, error: ConvCore.OPEN_ELSEWHERE_TEXT }; }
+  if (r.elsewhere) {
+    noticeOpenElsewhere(id);
+    // The window that has it, so a canvas tab or the gallery can offer to go there (§7.2).
+    const windowId = /^\d+$/.test(String(r.holder)) ? Number(r.holder) : null;
+    return { ok: false, error: ConvCore.OPEN_ELSEWHERE_TEXT, windowId };
+  }
   const got = await chrome.storage.local.get([ConvCore.convKey(id), ConvCore.INDEX_KEY]);
   if (got[ConvCore.INDEX_KEY]) adoptIndex(got[ConvCore.INDEX_KEY]);
   if (currentConv) writeIndexTime(currentConv);
@@ -2281,7 +2288,8 @@ async function reopenConversation(id) {
   syncConnections();                                     // §2.3: its agent connects if it was not
   activateSessions();
   // §4.4: it comes back with its group's tabs; then §4.2 (and Q12 for the one left).
-  restoreGroupTabs(id).catch((e) => console.warn("katashiro: reopening a conversation's tabs failed:", e)).then(() => afterLeaving(prev));
+  restoreGroupTabs(id).catch((e) => console.warn("katashiro: reopening a conversation's tabs failed:", e))
+    .then(() => adopt && adopt()).then(() => afterLeaving(prev));
   return { ok: true };
 }
 
@@ -2492,11 +2500,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-// 重新打開 in the gallery (§3.4): accepted only from canvas-gallery.html, answered by the panel of
-// the gallery's window. A gallery that found no panel opened one and left the request in
-// storage.session; the panel picks it up on load (pickUpReopenRequest). reqId dedupes the two.
+// 重新打開 in the gallery (§3.4), and 🗨️ 對話 in a canvas tab or a gallery canvas row (§7.2):
+// accepted only from canvas-gallery.html and canvas.html, answered by the panel of the sender's
+// window. A sender that found no panel opened one and left the request in storage.session; the
+// panel picks it up on load (pickUpReopenRequest). reqId dedupes the two. `canvasId` (a canvas
+// tab): the conversation must be that canvas's — a canvas tab opens its own conversation, no other —
+// and the canvas tab joins the conversation's group if it is in none (opened ungrouped from the
+// gallery while the conversation was archived, canvas §3.7).
 const handledReopens = new Set();
-async function handleReopen(id, reqId) {
+async function canvasOfConversation(canvasId, id) {
+  if (!CanvasStore.ID_RE.test(String(canvasId))) return false;
+  const k = CanvasStore.metaKey(canvasId);
+  const meta = (await chrome.storage.local.get(k))[k];
+  return !!meta && meta.conversationId === id;
+}
+async function adoptCanvasTab(canvasId, id) {
+  try {
+    const tab = await findCanvasTab(canvasId);
+    if (!tab || tab.windowId !== panelWindowId || CanvasTabs.groupOf(tab) !== CanvasTabs.TAB_GROUP_NONE) return;
+    await canvasTabQueue(() => addToCanvasGroup(tab, id), id);
+  } catch (_) { /* grouping is cosmetic */ }
+}
+async function handleReopen(id, reqId, canvasId = null) {
   if (reqId) {
     if (handledReopens.has(reqId)) return { ok: true };
     handledReopens.add(reqId);
@@ -2506,17 +2531,23 @@ async function handleReopen(id, reqId) {
       if (got[k] && got[k].reqId === reqId) await chrome.storage.session.remove(k);
     } catch (_) { /* no storage.session */ }
   }
-  return reopenConversation(id);
+  if (canvasId == null) return reopenConversation(id);
+  if (!(await canvasOfConversation(canvasId, id))) return { ok: false, error: "這個畫布不屬於那段對話" };
+  return reopenConversation(id, { adopt: () => adoptCanvasTab(canvasId, id) });
 }
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg || msg.type !== "katashiro-conv-open") return false;
-  if (!fromOwnPage(sender, "/canvas-gallery.html") || !ConvCore.isConvId(msg.id)) {
-    sendResponse({ ok: false, error: "not from the Katashiro gallery" });
+  const fromCanvas = fromCanvasTab(sender);
+  if (!(fromCanvas || fromOwnPage(sender, "/canvas-gallery.html")) || !ConvCore.isConvId(msg.id)) {
+    sendResponse({ ok: false, error: "not from the Katashiro gallery or a canvas" });
     return false;
   }
-  if (panelWindowId == null || String(msg.windowId) !== String(panelWindowId)) return false;
+  // A canvas tab's window is the tab's own, not what the message says.
+  const wid = fromCanvas ? (sender.tab && sender.tab.windowId) : msg.windowId;
+  if (panelWindowId == null || String(wid) !== String(panelWindowId)) return false;
+  const canvasId = fromCanvas ? String(msg.canvasId || "") : null;
   panelReady
-    .then(() => handleReopen(msg.id, typeof msg.reqId === "string" ? msg.reqId : null))
+    .then(() => handleReopen(msg.id, typeof msg.reqId === "string" ? msg.reqId : null, canvasId))
     .then(sendResponse, (e) => sendResponse({ ok: false, error: (e && e.message) || String(e) }));
   return true;
 });
@@ -2526,7 +2557,7 @@ async function pickUpReopenRequest() {
   try { r = (await chrome.storage.session.get(k))[k]; } catch (_) { return; }
   if (!r) return;
   try { await chrome.storage.session.remove(k); } catch (_) { /* best effort */ }
-  if (ConvCore.isConvId(r.id) && Date.now() - Number(r.at || 0) < 60 * 1000) handleReopen(r.id, r.reqId || null);
+  if (ConvCore.isConvId(r.id) && Date.now() - Number(r.at || 0) < 60 * 1000) handleReopen(r.id, r.reqId || null, r.canvasId == null ? null : String(r.canvasId));
 }
 
 // §3.2: lastMessageAt always on panel hide.

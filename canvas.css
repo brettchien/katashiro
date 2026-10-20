@@ -107,6 +107,8 @@ body {
   white-space: nowrap;
   flex: 0 0 auto;
 }
+/* 🗨️ 對話 (multi-conversation §7.2): the conversation title, cut short. */
+.canvas-header .canvas-conv { max-width: 16em; overflow: hidden; text-overflow: ellipsis; }
 /* Narrow tab: the buttons with long labels show only their icon (data-icon). The label stays the
    button's text, so its accessible name and title are unchanged; only the visible text goes. */
 @media (max-width: 720px) {

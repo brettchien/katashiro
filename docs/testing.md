@@ -310,7 +310,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - **Canvas:** the canvas group is named after the conversation and follows a rename. From the
     gallery, a canvas of an open but not current conversation opens in that conversation's group
     without switching; Send to agent from it switches to its conversation first (refused while the
-    current one replies); from an archived conversation's canvas tab: 「這段對話已封存，先從總覽重新打開」.
+    current one replies); from an archived conversation's canvas tab: 「這段對話已封存：先重新打開它」.
 - **Reconnect hint (A′) and disconnect diagnostics (E) (ADR browser-tunnel-liveness §9).** The
   headless smoke above covers a quick unclean drop and a quick reconnect after a clean close. In Chrome, with a real agent, keep the side panel's
   DevTools console open (it logs `socket open — same run / new run`, `disconnect — …` and

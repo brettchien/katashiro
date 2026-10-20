@@ -26,7 +26,7 @@
   align-items: center;
 }
 .gallery-head {
-  padding: 6px 48px 6px 10px;
+  padding: 6px 88px 6px 10px;   /* the row's 🗨️ and 🗑 buttons */
   color: var(--muted);
   font-size: 12px;
   border-bottom: 1px solid var(--border);
@@ -81,6 +81,8 @@
   text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
 }
+.gallery-conv { flex: 0 0 auto; }
+.gallery-conv[hidden] { display: none; }
 .gallery-delete { flex: 0 0 auto; margin-right: 6px; }
 
 .gallery-empty { color: var(--muted); font-size: 13px; padding: 24px 10px; }

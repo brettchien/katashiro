@@ -38,6 +38,8 @@
 //     canvas's Enter after it (katashiro-canvas-submit-input) sends the input as the send button would,
 //     once (deduped), never for a conversation not on screen, an empty input or a compare tab; reopen and a browser restart bring the tabs back
 //     into one group, adopting open ones instead of duplicating them.
+//   - §7.2 🗨️ from a canvas tab: refused for a canvas of another conversation and from a compare
+//     tab; reopening from the canvas tab brings the group back and the ungrouped tab that asked joins it.
 //   - §7.1 delete from the gallery: the confirm says what goes; refused while another page holds the
 //     conversation's lock; then its record, index entry, closed-window record
 //     entry and canvases go, another conversation's stay; a stale reopen is refused; a delete cut
@@ -986,17 +988,34 @@ try {
   // Push refusals (§4.8): conversation A is archived → 已封存; a conversation open in a live window
   // whose panel is closed → that window's panel is closed.
   r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: convA, text: "x", note: "", reqId: "p1" });
-  check(r && r.ok === false && r.error === "這段對話已封存，先從總覽重新打開", "push for an archived conversation: 已封存", r);
+  check(r && r.ok === false && r.error === "這段對話已封存：先重新打開它", "push for an archived conversation: 已封存", r);
   r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-to-input", conversationId: convA, text: "x", reqId: "ti9" });
-  check(r && r.ok === false && r.error === "這段對話已封存，先從總覽重新打開", "to input for an archived conversation: the same 已封存", r);
+  check(r && r.ok === false && r.error === "這段對話已封存：先重新打開它", "to input for an archived conversation: the same 已封存", r);
   await q.evaluate((id) => { localStorage.setItem("ls:__live", "[5,6]"); localStorage.setItem("ls:window:6", JSON.stringify({ open: [id], current: id, savedAt: Date.now() })); }, ID(77));
   r = await q.evaluate((m) => window.__deliver(m, "/canvas.html?id=cv_000000000abc"), { type: "katashiro-canvas-push", conversationId: ID(77), text: "x", note: "", reqId: "p2" });
   check(r && r.ok === false && /另一個視窗，那個視窗的側邊欄沒開/.test(r.error) && r.windowId === 6, "push for a conversation whose window's panel is closed says so, with the window", r);
   await q.evaluate(() => { localStorage.setItem("ls:__live", "[5]"); localStorage.removeItem("ls:window:6"); });
 
-  // Reopen A from the gallery: its tabs come back into one group; the open canvas tab is adopted, not duplicated.
-  r = await q.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, windowId: 5, reqId: "r1" }, "/canvas-gallery.html"), convA);
+  // §7.2 🗨️ 對話 from a canvas tab: only that canvas's own conversation. An ungrouped canvas tab of A
+  // (opened from the gallery while A was archived) asks for another conversation → refused, nothing opens.
+  const looseUrl = `${origin}/canvas.html?id=cv_000000000abe`;
+  await q.evaluate((u, a, o) => {
+    localStorage.setItem("ls:canvas:cv_000000000abe:meta", JSON.stringify({ id: "cv_000000000abe", conversationId: a, title: "loose", kind: "markdown", version: 1 }));
+    localStorage.setItem("ls:canvas:cv_000000000abd:meta", JSON.stringify({ id: "cv_000000000abd", conversationId: o, title: "other", kind: "markdown", version: 1 }));
+    const m = window.__tm(); m.tabs.push({ id: 901, windowId: 5, url: u, active: false, groupId: -1, splitViewId: -1, pinned: false, index: 100, lastAccessed: 1 }); window.__tmSave(m);
+  }, looseUrl, convA, ID(77));
+  r = await q.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, canvasId: "cv_000000000abd", windowId: 5, reqId: "cv1" }, "/canvas.html?id=cv_000000000abd"), convA);
+  check(r && r.ok === false && r.error === "這個畫布不屬於那段對話", "canvas 🗨️: a canvas of another conversation cannot open A", r);
+  check((await tabs(q)).length === 1, "…and A stays archived", await tabs(q));
+  // A compare tab is not a canvas tab: no answer from this panel's gate (the stub resolves undefined).
+  r = await q.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, canvasId: "cv_000000000abe", windowId: 5, reqId: "cv2" }, "/canvas.html?id=cv_000000000abe&view=agent"), convA);
+  check(r && r.ok === false && /not from/.test(r.error), "canvas 🗨️: refused from a compare tab", r);
+
+  // Reopen A from its canvas tab (§7.2; the gallery's 重新打開 is checked above): its tabs come back
+  // into one group; the open canvas tab is adopted, not duplicated, and the ungrouped one that asked joins it.
+  r = await q.evaluate((id) => window.__deliver({ type: "katashiro-conv-open", id, canvasId: "cv_000000000abe", windowId: 999, reqId: "r1" }, "/canvas.html?id=cv_000000000abe"), convA);
   check(r && r.ok, "reopen A", r);
+  await until(q, () => { const m = window.__tm(); const c = m.tabs.find((t) => t.id === 900); const l = m.tabs.find((t) => t.id === 901); return c && l && c.groupId > 0 && l.groupId === c.groupId; }, "canvas 🗨️: the canvas tab that asked joins A's group");
   await until(q, () => window.__tm().tabs.some((t) => t.url === "https://agent.example/a"), "reopen: the agent's tab is opened again");
   await until(q, () => { const m = window.__tm(); const a = m.tabs.find((t) => t.url === "https://agent.example/a"); const c = m.tabs.find((t) => t.id === 900); return a && c && a.groupId > 0 && a.groupId === c.groupId; }, "reopen: back in one group with the canvas tab");
   model = await tm();
