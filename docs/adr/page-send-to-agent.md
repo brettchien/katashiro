@@ -1,6 +1,6 @@
 # ADR: 💬 send a web page's selection or element to the agent (right-click menu)
 
-- **Status:** Proposed 2026-10-21 (scope chosen by Brett 2026-10-21 17:29 TPE: right-click selected text, right-click an element; the 🎯 element-picker mode is out)
+- **Status:** Accepted 2026-10-21 (Brett: scope 17:29 TPE — right-click selected text, right-click an element, the 🎯 element-picker mode is out; Q1/Q3/Q4 17:36 TPE; Q2/Q5 and the review's Q6–Q8 17:38 TPE, §5)
 - **Date:** 2026-10-21
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** #175 (💬 on text selected in a chat message — the chip this reuses); [canvas](./canvas.md) §3.7
@@ -43,9 +43,10 @@ agent.**
   a frame, so a later `executeScript` can read what the content script kept — but only through a
   fixed key on `globalThis`: a content script's top-level `const` / `let` is not a property of
   `globalThis`.
-- Chrome's `page` context matches only when no more specific context does. With text selected in
-  an ordinary paragraph, a right-click shows only the `selection` item, not "this element"; to
-  ask about the element the user right-clicks it without a selection.
+- Chrome's `page` context matches only when no more specific context does: an item listing only
+  `page` would not show on a selection. The one item (§2.1) lists every context, so it always
+  shows; with text selected it asks about the text, so to ask about an element the user
+  right-clicks it without a selection.
 - Some sites show their own menu instead of Chrome's (`preventDefault` on `contextmenu`: Google
   Docs / Sheets, Figma, many web apps). There Chrome's menu never appears (§5 Q5).
 - `file://` pages: an extension can script them only when the user has turned on "Allow access to
@@ -54,18 +55,19 @@ agent.**
 
 ## 2. Decision
 
-### 2.1 Two menu items, Chrome's own context menu
+### 2.1 One menu item, Chrome's own context menu (Q1)
 
 `background.js` registers (on `onInstalled` and `onStartup`, `contextMenus.removeAll` first):
 
 | id | title | contexts |
 |---|---|---|
-| `katashiro-ask-selection` | 💬 問 agent 選取的文字 | `selection` |
-| `katashiro-ask-element` | 💬 問 agent 這個元素 | `page`, `link`, `image`, `video`, `audio`, `editable`, `frame` |
+| `katashiro-ask` | 💬 Ask agent | `selection`, `page`, `link`, `image`, `video`, `audio`, `editable`, `frame` |
 
 New manifest permission: **`contextMenus`**. `scripting` and `<all_urls>` are already there.
-With text selected on a link both items show (`link` is more specific than `page`); with text
-selected in a paragraph only the selection item does (§1.2). Each does its own thing. Not on Katashiro's own
+One item, in English (Brett 17:36 TPE: "I think we only need one, `💬 Ask agent`"). With a single
+item Chrome shows it at the top level of the menu, not in a submenu under the extension's name.
+What it asks about is decided at the click: **`info.selectionText` not empty → the selection**
+(§2.2 step 2), **else the element** right-clicked (step 3). Not on Katashiro's own
 pages (`documentUrlPatterns` limited to `http://*/*`, `https://*/*`, `file:///*`): the canvas has
 its own 💬, the panel has #175.
 
@@ -77,13 +79,13 @@ its own 💬, the panel has #175.
    (in a `try`, as the canvas's 🗨️ does, `canvas.js`). Whether the panel is already open cannot be
    known without `runtime.getContexts`, which is async and would lose the gesture; opening an open
    panel is harmless.
-2. **Selection** (`katashiro-ask-selection`): `scripting.executeScript` into `info.frameId` with the
+2. **Selection** (`info.selectionText` not empty): `scripting.executeScript` into `info.frameId` with the
    same reader as `get_selection` (focused text field first, never a password field; else
    `window.getSelection()`), so line breaks survive and a selection in a text field works. Capped
    at 20 KB, the #175 / canvas cap. Script refused (a page Chrome does not let extensions script:
    Chrome Web Store, another extension's page, the PDF viewer; a `file://` page without file
    access) → `info.selectionText`.
-3. **Element** (`katashiro-ask-element`): a **content script** `page/ctx-target.js`
+3. **Element** (no selection): a **content script** `page/ctx-target.js`
    (`all_frames`, `match_about_blank`, `run_at: document_start`, isolated world) registers one
    `contextmenu` listener on `window` in the **capture** phase, so a page handler cannot stop it
    first. It records only **trusted** events (`event.isTrusted`): a page can `dispatchEvent` a
@@ -104,8 +106,8 @@ its own 💬, the panel has #175.
    **What the user typed stays out.** Never an `<input>`'s value, never anything of a password
    field (its `name` only). No `text` for a `<textarea>` (its `innerText` is its content), for an
    element that is or is inside `contenteditable` (a mail being composed), or for an `<input>`:
-   `name` only. To ask about what is in a text field, the user selects it and uses the selection
-   item — an explicit choice. No `outerHTML`: it adds markup and attributes the agent can read with
+   `name` only. To ask about what is in a text field, the user selects it and right-clicks the
+   selection — an explicit choice. No `outerHTML`: it adds markup and attributes the agent can read with
    `snapshot` / `get_text` when it needs them (the token concern is §2.7's).
 
    **The selector is a hint, not an address.** Built from `#id` (via `CSS.escape`) else a
@@ -226,7 +228,7 @@ quote survives a reload, and `chat_history` frames it as
   `executeScript` on a menu click.
 - **What the user typed into the page** stays out of an element description: no input values,
   no text of a `<textarea>` or `contenteditable` (§2.2). Password fields: never their value (as
-  `get_selection`). A text field's content reaches the agent only through the selection item —
+  `get_selection`). A text field's content reaches the agent only as a selection —
 and then its first 500 chars are kept in the history excerpt (§2.6), like any selection: the
 user selected it and pressed Enter, so this is accepted.
 - **URLs and tokens.** A URL can carry a secret (a magic link, an OAuth `code=`, a signed
@@ -285,28 +287,24 @@ user selected it and pressed Enter, so this is accepted.
   chip), on a page that dispatches its own synthetic `contextmenu` (the target is still the real
   one), and with the tab closed / navigated before Enter.
 
-## 5. Open questions
+## 5. Decisions (formerly open questions)
 
-- **Q1 — menu titles.** `💬 問 agent 選取的文字` / `💬 問 agent 這個元素`, or under one `Katashiro`
-  parent item? (Chrome groups an extension's items under its name when there is more than one
-  anyway.)
-- **Q2 — the content script on every page.** Needed for "any element" (§1.2). Accept, or make it
-  opt-in in Settings (off → link / image only)?
-- **Q3 — element text cap.** 500 chars of visible text: enough to recognise a table row or a card;
-  a whole `<main>` would be cut. Or let the agent `get_text` it?
-- **Q4 — the focus.** The chip cannot take the keyboard focus (§1.2). Is "click into the panel,
-  then type" acceptable, or should the menu click also focus the panel window
-  (`chrome.windows.update` does not focus a side panel; there may be no API for it)?
-- **Q5 — sites with their own context menu** (§1.2: Docs, Sheets, Figma). Chrome's menu never shows
-  there. Proposal: a `commands` keyboard shortcut (no default key; the user sets one in
-  `chrome://extensions/shortcuts`) that does the selection item when there is a selection, else
-  the element item on the last right-clicked target — the recorder still sees the trusted
-  `contextmenu` even when the page shows its own menu. Whether a shortcut counts as a gesture for
-  `sidePanel.open` is to be checked in real Chrome. Canvas-rendered editors (Docs) have no DOM
-  selection, so only the element item helps there. A shortcut has no `info.frameId`, so the
-  recorder would also keep the time of each right-click; the shortcut takes the newest target
-  across the tab's frames, and only if it is recent (e.g. < 2 min), so an old right-click is
-  never taken as the target. Or leave such sites out?
-- (Raised in review, decided above: a tab closed or navigated before Enter — §2.4; a tab in the
-  group of a conversation not in this panel — §2.3, not moved; `file://` without file access —
-  §2.2.)
+- **Q1 — the menu (Brett 2026-10-21 17:36 TPE).** One item, `💬 Ask agent`, in English; a
+  selection if there is one, else the element (§2.1).
+- **Q2 — the content script on every page (17:38 TPE, as proposed).** On by default on every page,
+  no Settings switch: "any element" needs it (§1.2), and off it would leave only links and images.
+- **Q3 — element text cap (17:36 TPE).** 500 chars of visible text; for more the agent reads the
+  element with `get_text`.
+- **Q4 — the focus (17:36 TPE).** Accepted: the focus stays in the page and the user clicks into
+  the panel to type (§2.4).
+- **Q5 — sites with their own context menu (17:38 TPE, as proposed).** No other way in for now:
+  on Docs, Sheets, Figma and the like, the user selects text and asks the agent in the chat to read
+  it with `get_selection`. A keyboard shortcut (`commands`, the last trusted right-click target,
+  a gesture check in real Chrome) can come later if it is missed.
+- **Q6 — the tab closed or navigated before Enter (17:38 TPE, as proposed).** Sent as read at the
+  click, with a note; the working tab only if the tab is still open (§2.4).
+- **Q7 — a tab in the group of a conversation not open in this panel (17:38 TPE, as proposed).**
+  To the conversation on screen; the tab is not moved into any group (§2.3).
+- **Q8 — `file://` without file access (17:38 TPE, as proposed).** The menu still shows; a selection
+  falls back to `info.selectionText`; an element cannot be read, and the panel says to turn on
+  "Allow access to file URLs" for Katashiro (§2.2).
