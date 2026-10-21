@@ -32,4 +32,28 @@ export default [
       t.check(!/it is a resend/.test(p3.text), "the next message carries no resend line", p3.text.slice(0, 200));
     },
   },
+  {
+    name: "a manual reconnect mid-turn: the turn is cancelled on the old socket and resent on the new one",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      const sid = await h.sessionOf(ctx, "Alpha");
+      gw.hold = true;
+      await h.send(panel, "a slow question");
+      await gw.waitPrompt((p) => p.sessionId === sid && /a slow question/.test(p.userText));
+      const n = gw.prompts.length;
+      // The roster chip's R2 click (shown on an unhealthy link) calls connect() on the conn.
+      await panel.evaluate(() => room.find((c) => c.enabled).connect());
+      await gw.waitFor(() => gw.cancels.includes(sid), "session/cancel on the old socket");
+      t.ok("the turn was cancelled before the old socket closed");
+      const p2 = await gw.waitPrompt((p) => p.sessionId === sid, { since: n, ms: 15000 });
+      t.check(/it is a resend, not a duplicate/.test(p2.text) && /a slow question/.test(p2.userText), "resent at once on the new socket, with the resend line", p2.text.slice(0, 300));
+      const shown = await h.visibleText(panel);
+      t.check(/連線中斷：Fake/.test(shown), "the chat says it will be resent", shown.slice(-300));
+      gw.endTurn(sid, "end_turn", "the answer");
+      await h.idle(panel);
+      t.check(/the answer/.test(await h.visibleText(panel)), "the resent turn's reply arrives");
+      t.check(await panel.evaluate(() => room.find((c) => c.enabled).pendingReqs.size) === 0, "nothing of the old socket is left pending (no timeout later)");
+    },
+  },
 ];
