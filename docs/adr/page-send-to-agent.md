@@ -47,10 +47,16 @@ agent.**
   `page` would not show on a selection. The one item (§2.1) lists every context, so it always
   shows; with text selected it asks about the text, so to ask about an element the user
   right-clicks it without a selection.
+- **macOS selects the word under the pointer on a right-click** (Blink
+  `ShouldSelectOnContextualMenuClick()`, Mac only), on the `mousedown`, before `contextmenu`. So
+  on a Mac a right-click on paragraph text with nothing selected arrives with
+  `info.selectionText` = that one word: going by `selectionText` alone, "ask about this
+  paragraph / table row" would send a single word. Whether there was a selection has to be read
+  before the press (§2.2 step 3).
 - Some sites show their own menu instead of Chrome's (`preventDefault` on `contextmenu`: Google
   Docs / Sheets, Figma, many web apps). There Chrome's menu never appears (§5 Q5).
 - `file://` pages: an extension can script them only when the user has turned on "Allow access to
-  file URLs" for it. Off, the menu items still show, but nothing can be read (§2.2).
+  file URLs" for it. Off, the menu item still shows, but nothing can be read (§2.2).
 - Katashiro does not run in incognito (`"incognito": "not_allowed"`, #109).
 
 ## 2. Decision
@@ -66,8 +72,11 @@ agent.**
 New manifest permission: **`contextMenus`**. `scripting` and `<all_urls>` are already there.
 One item, in English (Brett 17:36 TPE: "I think we only need one, `💬 Ask agent`"). With a single
 item Chrome shows it at the top level of the menu, not in a submenu under the extension's name.
-What it asks about is decided at the click: **`info.selectionText` not empty → the selection**
-(§2.2 step 2), **else the element** right-clicked (step 3). Not on Katashiro's own
+What it asks about is decided at the click: **a selection made before the right-click → the
+selection** (§2.2 step 2), **else the element** right-clicked (step 3). "Before the right-click"
+is what the recorder saw at the press (step 3), not `info.selectionText`, which on a Mac also holds
+the word the right-click itself selected (§1.2); `info.selectionText` decides only when the
+recorder saw no press. Not on Katashiro's own
 pages (`documentUrlPatterns` limited to `http://*/*`, `https://*/*`, `file:///*`): the canvas has
 its own 💬, the panel has #175.
 
@@ -79,7 +88,8 @@ its own 💬, the panel has #175.
    (in a `try`, as the canvas's 🗨️ does, `canvas.js`). Whether the panel is already open cannot be
    known without `runtime.getContexts`, which is async and would lose the gesture; opening an open
    panel is harmless.
-2. **Selection** (`info.selectionText` not empty): `scripting.executeScript` into `info.frameId` with the
+2. **Selection** (`info.selectionText` not empty, and the recorder's `hadSelection` is not
+   `false` — step 3): `scripting.executeScript` into `info.frameId` with the
    same reader as `get_selection` (focused text field first, never a password field; else
    `window.getSelection()`), so line breaks survive and a selection in a text field works. Capped
    at 20 KB, the #175 / canvas cap. Script refused (a page Chrome does not let extensions script:
@@ -91,8 +101,21 @@ its own 💬, the panel has #175.
    first. It records only **trusted** events (`event.isTrusted`): a page can `dispatchEvent` a
    synthetic `contextmenu` from its own handler to swap the recorded target, and the user would
    then send B believing it was A. It keeps the target (`composedPath()[0]`, so an element inside
-   an open shadow root is the real one) as a `WeakRef` under a fixed `globalThis` key (§1.2). At
-   the click, `executeScript` into `info.frameId` (same isolated world) reads it, checks
+   an open shadow root is the real one) as a `WeakRef` under a fixed `globalThis` key (§1.2).
+
+   It also records **whether there was a selection before the press**: a trusted capture
+   `mousedown` listener on `window`, for a context-menu press (`button === 2`, or `button === 0`
+   with `ctrlKey` on a Mac), notes `hadSelection` — a non-collapsed `window.getSelection()`, or a
+   focused text field with `selectionStart !== selectionEnd` — before the browser's default
+   action selects a word (§1.2). The next trusted `contextmenu` takes that note and stores it next
+   to the target, then clears it; a `contextmenu` with no press before it (the keyboard's menu key,
+   Shift+F10) stores `hadSelection: null`. At the click: `hadSelection === false` → the element,
+   even when `info.selectionText` is not empty (the Mac's word); `true` → the selection; `null` or
+   no record → `info.selectionText` decides, as in §2.1. If the user had already selected A and
+   right-clicks another element B, the selection is still there, so A is sent — §1.2's "to ask
+   about an element, right-click it without a selection", and the chip says 「選取的文字」.
+
+   At the click, `executeScript` into `info.frameId` (same isolated world) reads it, checks
    `isConnected` (an SPA may have re-rendered it away → treated as no target) and describes it:
 
    ```
@@ -280,12 +303,17 @@ user selected it and pressed Enter, so this is accepted.
   prompt and the working tab. A synthesized `info` tests neither the recorder's `isTrusted` check
   nor the user gesture `sidePanel.open` needs. The recorder can still be tested in E2E: a
   puppeteer right-click goes through CDP input and is trusted, a page `dispatchEvent` is not and
-  must leave the target unchanged. The gesture is real-Chrome only.
+  must leave the target unchanged. The gesture is real-Chrome only. Unit tests also cover the
+  selection-or-element choice (`hadSelection` false / true / null × `selectionText` empty or
+  not), and E2E checks a puppeteer right-click with and without a selection records `hadSelection`
+  (CDP input does not reproduce the Mac's word selection, so that part is real-Chrome only).
 - Real Chrome: right-click on a page, in an iframe, in a shadow root, on a link, on an image, in a
   text field and a contenteditable, on a page opened before the update (the reload notice), on a
   `file://` page with file access off, with the panel closed (it opens — the gesture — and gets the
   chip), on a page that dispatches its own synthetic `contextmenu` (the target is still the real
-  one), and with the tab closed / navigated before Enter.
+  one), and with the tab closed / navigated before Enter. **macOS**: right-click (and Ctrl+click)
+  on paragraph text with no selection → the element, not the word; with a selection → the
+  selection; the keyboard menu key.
 
 ## 5. Decisions (formerly open questions)
 
