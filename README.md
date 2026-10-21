@@ -10,6 +10,7 @@ are using.
   your agents, with history that survives a reload. A conversation keeps working while you look at
   another; archived ones reopen from the 🗂️ gallery. Paste screenshots or drop files into the chat.
   Right-click a web page → **💬 Ask agent** to ask about the text you selected or the element you clicked.
+  ⚡ (or Ctrl/⌘+/, or `/` in the composer) stops a reply, resets the agent's session or switches its model.
 - **Let the agent use the browser** — 53 `katashiro.*` tools: read the page, click, type, fill forms,
   navigate, manage tabs, point things out to you, ask you multiple-choice questions. Writes stay
   off until you allow them.

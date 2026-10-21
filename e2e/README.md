@@ -73,6 +73,10 @@ real ones.
 | `chat-ask-selection.mjs` | 💬 on text selected in a chat message | the 💬 shows inside the messages area; the chip quotes the selection and focuses the input; the prompt's ↩ header names it and the selection follows the text as fenced data; the sent quote and `chat_history` keep it; none across two messages or on a timestamp |
 | `page-ask-agent.mjs` | 💬 Ask agent on a web page | ADR page-send-to-agent: the service worker's real `onClicked` handler with a synthesized `info` after a real (CDP, trusted) right-click; the chip, the working tab, the exact prompt (host line + fence), the 📄 quote, the history record (no query, no selector), `chat_history`; a page's synthetic `contextmenu` changes nothing; `hadSelection` with and without a selection; a shadow-root element (no selector), an input (no value) |
 | | navigated / closed before Enter, unreadable pages | §2.4: the host line says so (no selector); a `chrome://` page: the menu's `linkUrl`, else the reload notice; `file://` per the file-access switch; the panel closed at the click picks the target up from `storage.session` when it opens |
+| `command-menu.mjs` | ⚡ / ⏹ in one slot | the two swap at the same position (send does not move); Esc does not stop a reply; Ctrl+/ while replying lists Cancel first, pre-selected; Ctrl+. and ⚡ → c send `session/cancel` and no prompt |
+| | typed `/` | `/` opens the menu, `/r` filters to Reset session, Esc keeps the text; `/help`, `/agents`, `/etc/hosts`, `/tmp foo` stay with "No such command" and nothing is sent; ` /tmp is full` goes out as a message with its header |
+| | Reset session, Switch model | ⚡ → r: a Katashiro card first, then exactly `/reset` (no header) and a muted 🔄 line, never the gateway's text; Ctrl+/ → m: `/models` → a card of the gateway's list (current ✅) → `/model set 3`; typed `/model set 2` switches with no card; typed `/reset` asks; `chat_history` shows none of it |
+| | reset while replying, attachments | the reply is cancelled first and `/reset` waits for it (the fake gateway answers a busy session with -32001); a message queued meanwhile goes out after the reset; Switch model is refused while replying; a staged image refuses a command with a hint |
 | `user-image-open.mjs` | a pasted image | the image reaches the prompt; its chat thumbnail (zoom-in cursor) opens it full size in a new tab, on every click |
 | `agent-per-conversation.mjs` | two agents, two fake gateways | ADR agent-per-conversation: the ＋ agent picker (未連線 for an unconnected agent); both stream at once into their own lists; the chip follows the conversation on screen; Y's handshake opens no session for X's conversation (§2.7 `Conn.cur`); archiving an agent's last conversation closes its socket |
 | | migration, URL edit, removal | the old `activeAgentUrl` binds the conversation and stays in storage.sync; a URL edit rebinds both copies and drops the old session; removing the agent in use leaves the conversation read-only; adding the URL back revives it |
@@ -101,6 +105,9 @@ Each scenario gets a fresh browser, profile and gateway from `startSession()` (`
   `reloadExtension`.
 - Gateway: `gw.hold = true`, `waitPrompt(pred, { since })`, `chunk`, `endTurn(sid, reason, text)`,
   `openPrompts`, `cancels`, `poolBusy`, `callTool(sid, name, args)` and `FakeGateway.text(r)`.
+  A prompt that is exactly `/reset`, `/models` or `/model set <N|name>` is answered at once with
+  openab's own text (never held, not in `prompts`; it lands in `gw.commands`), and refused with
+  -32001 while that session has a prompt open; `gw.models` / `gw.currentModel` are the list it shows.
 
 The agent only calls tools inside a turn: open one first (`gw.hold = true`, `send`, `waitPrompt`).
 A known product bug: mark the scenario `xfail: "#<issue> — why"` with `xfailChecks` matching the

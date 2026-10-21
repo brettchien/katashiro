@@ -1,0 +1,12 @@
+{
+  "_source": "The OpenAB gateway's own replies to raw slash commands over ACP (one agent_message_chunk, then stopReason end_turn). `modelsNoOptions` was recorded from a real gateway (openab 0.5.4, ws://127.0.0.1:8080/acp, a fresh session/new then session/prompt \"/models\", 2026-10-22); the others are built exactly as openab-core src/gateway.rs builds them (handle_config_command: \"🔧 Available {label}s:\", \"  {i}. {name}{ ✅}\", \"\\nUsage: /{label} set <number or name>\" joined by \\n; \"✅ Switched to **{name}**\"; the /reset and /cancel strings). The model names are examples.",
+  "modelsNoOptions": "⚠️ No model options available. Start a conversation first.",
+  "modelsList": "🔧 Available models:\n  1. Default (recommended)\n  2. Opus ✅\n  3. Sonnet\n  4. Haiku\n  5. Opus (1M context)\n\nUsage: /model set <number or name>",
+  "modelSetOk": "✅ Switched to **Sonnet**",
+  "modelSetFailed": "❌ Failed to switch: session not found",
+  "modelSetInvalidNumber": "⚠️ Invalid number. Use 1–5.",
+  "resetOk": "🔄 Session reset. Start a new conversation!",
+  "resetDropped": "🔄 Session reset. Dropped 2 buffered message(s). Start a new conversation!",
+  "resetNoSession": "⚠️ No active session to reset.",
+  "cancelOk": "🛑 Cancel signal sent."
+}
