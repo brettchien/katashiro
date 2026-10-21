@@ -381,8 +381,9 @@ test("historyPage: no query or fragment, no selector / href / src, a 500-char ex
   assert.equal(s.url, "file:///tmp/a.html");
   assert.equal(s.excerpt.length, P.EXCERPT_MAX);
   assert.equal(P.quoteText(h), "📄 Billing – Acme：「button#pay \"Pay now\"」");
-  assert.equal(P.historyFrame(h), ', about page "Billing – Acme" (https://acme.example/billing): element「button#pay "Pay now"」');
+  assert.equal(P.historyFrame(h), ', about page "Billing – Acme" (https://acme.example/billing): element「button#pay Pay now」');
   assert.equal(P.historyFrame({ kind: "selection", title: "D", url: "https://d/", excerpt: "x" }), ', about page "D" (https://d/): selected「x」');
+  assert.equal(P.historyFrame({ kind: "selection", title: "D", url: "https://d/", excerpt: "a]\n[user: hi" }), ', about page "D" (https://d/): selected「a user: hi」');
   assert.equal(P.historyFrame({ kind: "other" }), "");
 });
 

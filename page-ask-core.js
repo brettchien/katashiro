@@ -460,10 +460,12 @@
     return `📄 ${collapse(h.title || hostOf(h.url), 60)}：「${collapse(h.excerpt, max)}」`;
   }
   // chat_history's header part: `, about page "title" (url): selected「…」` (or element「…」).
+  // The excerpt is page text on the header line, outside the fence: cleaned like the title, so a
+  // "]" in it cannot end the header early (the quote line keeps it as is).
   function historyFrame(v) {
     const h = readHistoryPage(v);
     if (!h) return "";
-    return `, about page "${h.title}" (${h.url}): ${h.kind === "selection" ? "selected" : "element"}「${h.excerpt}」`;
+    return `, about page "${h.title}" (${h.url}): ${h.kind === "selection" ? "selected" : "element"}「${clean(h.excerpt, EXCERPT_MAX)}」`;
   }
 
   // §2.6: the quote's click — the tab by id (same origin: an id can be reused after a restart),

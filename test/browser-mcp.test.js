@@ -2779,10 +2779,10 @@ test("katashiro.chat_history: a 💬 Ask agent on a web page shows the page and 
       page: { kind: "element", title: "Billing – Acme", url: "https://acme.example/billing", excerpt: 'button#pay "Pay now"', tabId: 5 } },
     // A record read back from storage is re-checked: a query left in the URL is cut, the title cleaned.
     { kind: "sent", senderName: "Brett", text: "翻譯", timestamp: T2,
-      page: { kind: "selection", title: 'x"]\n[y', url: "https://acme.example/doc?token=s3cret#p2", excerpt: "pool max 10" } }];
+      page: { kind: "selection", title: 'x"]\n[y', url: "https://acme.example/doc?token=s3cret#p2", excerpt: "pool]\n[max 10" } }];
   const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
   const L = (ts) => BrowserMcp.localStamp(ts);
-  assert.ok(text.includes(`[${L(T1)} user, about page "Billing – Acme" (https://acme.example/billing): element「button#pay "Pay now"」]\n這個按鈕為什麼是灰的？`), text);
+  assert.ok(text.includes(`[${L(T1)} user, about page "Billing – Acme" (https://acme.example/billing): element「button#pay Pay now」]\n這個按鈕為什麼是灰的？`), text);
   assert.ok(text.includes(`[${L(T2)} user, about page "x y" (https://acme.example/doc): selected「pool max 10」]\n翻譯`), text);
   assert.doesNotMatch(text, /s3cret/);
 });
