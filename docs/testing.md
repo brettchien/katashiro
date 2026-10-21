@@ -249,6 +249,14 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     menu key (no press) → Chrome's selection text decides.
   - A tab in the group of a conversation open in this panel → that conversation (switched to); a tab
     in another window's conversation's group → the conversation on screen, and the tab is not moved.
+- **Read receipt (Brett 2026-10-22).** `npm run e2e -- read-receipt` covers queued vs sent, a
+  background conversation, pool-busy + 重試, a resend and a reload against the fake gateway. With a
+  real agent: send a message: a small gray **read** shows beside its time at once (next to the ↩ on
+  hover), in the same muted gray as the time. While it replies, send two more: they show no tag
+  until the reply ends, then both get it together (one batched turn). Reload the panel: every tag is
+  still there. Messages from before this version show **read**. Send while the gateway's pool is full: no tag
+  beside the 重試 error; 重試 once there is room: the tag appears. Turn Wi-Fi off and send: no tag
+  until it reconnects and the message goes out. Ask the agent to read `chat_history`: no `read` anywhere in it.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent

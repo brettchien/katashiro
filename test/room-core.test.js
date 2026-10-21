@@ -600,3 +600,44 @@ test("backoff × A′: a blip's immediate retry is well inside the 2 min run win
   for (let i = 0; i < 4; i++) { failures = RoomCore.reconnectFailuresAfter({ failures, opened: false }); waited += RoomCore.reconnectDelay(failures, mid); }
   assert.ok(DETECT + waited > QUICK, String(DETECT + waited));
 });
+
+// --- read receipt -----------------------------------------------------------
+test("isReadRecord: a user message is read once flagged, unread while flagged false", () => {
+  assert.equal(RoomCore.isReadRecord({ kind: "sent", read: true }), true);
+  assert.equal(RoomCore.isReadRecord({ kind: "sent", read: false }), false);
+});
+
+test("isReadRecord: a user message stored before the receipt (no flag) counts as read", () => {
+  assert.equal(RoomCore.isReadRecord({ kind: "sent", text: "old" }), true);
+});
+
+test("isReadRecord: only the user's own messages have a receipt", () => {
+  assert.equal(RoomCore.isReadRecord({ kind: "received", read: true }), false);
+  assert.equal(RoomCore.isReadRecord({ kind: "received" }), false);
+  assert.equal(RoomCore.isReadRecord({ kind: "error" }), false);
+  assert.equal(RoomCore.isReadRecord(null), false);
+  assert.equal(RoomCore.isReadRecord(undefined), false);
+});
+
+test("turnReachedAgent: a resolved turn and a timed-out turn on a live socket were received", () => {
+  assert.equal(RoomCore.turnReachedAgent("ok", false), true);
+  assert.equal(RoomCore.turnReachedAgent("cancel", false), true);
+});
+
+test("turnReachedAgent: pool-busy and a requeue after a dropped socket were not", () => {
+  assert.equal(RoomCore.turnReachedAgent("busy", true), false);   // the busy line itself is a chunk
+  assert.equal(RoomCore.turnReachedAgent("requeue", true), false); // re-marked when resent
+});
+
+test("turnReachedAgent: an error counts only if anything of the turn came back", () => {
+  assert.equal(RoomCore.turnReachedAgent("error", false), false);
+  assert.equal(RoomCore.turnReachedAgent("error", true), true);
+});
+
+test("turnReachedAgent: every promptFailureAction outcome is decided", () => {
+  for (const dead of [true, false]) for (const open of [true, false]) {
+    const a = RoomCore.promptFailureAction(dead, open);
+    assert.equal(typeof RoomCore.turnReachedAgent(a, false), "boolean", a);
+  }
+  assert.equal(RoomCore.turnReachedAgent("something else", true), false);
+});
