@@ -3,17 +3,17 @@
 // check chain) and ⏹, the ↩ reply target and its chip, the 💬 Ask agent on a web page target, and
 // the chat-selection 💬. Moved verbatim out of sidepanel.js (plan B, step 3); no logic change.
 //
-// Classic script, loaded by sidepanel.html after conversations.js and BEFORE canvas-glue.js, cards.js
-// and sidepanel.js; all scripts share one global scope. Load-order rule: this file holds
-// declarations only. Its top level must not run anything that touches a name declared in a
-// later-loaded file (DOM refs, room state, …) — that would be a TDZ ReferenceError at load. Its
-// initializers are plain values only (literals, [], new Set(), Promise.resolve()). Function bodies may use names from any file,
-// later-loaded ones included (sendMessage calls closeCmdMenu in cards.js and postUserText in
-// sidepanel.js): they only run once every script has loaded. The wiring that runs at load (the
-// drop, input, paste, keydown, send, ⏹, focus, selectionchange listeners, the page-ask onMessage
-// listener, the 💬 pill) and the DOM refs it reads (attach-preview, the drop zone, reply-chip, the
-// input's placeholder) stay in sidepanel.js, at the spot these sections came from, so their order is
-// unchanged.
+// Classic script, loaded by sidepanel.html after conn.js and conversations.js and BEFORE
+// canvas-glue.js, cards.js and sidepanel.js; all scripts share one global scope. Load-order rule:
+// this file holds declarations only. Its top level must not run anything that touches a name
+// declared in a later-loaded file (DOM refs, room state, …) — that would be a TDZ ReferenceError at
+// load. Its initializers are plain values only (literals, [], new Set(), Promise.resolve()).
+// Function bodies may use names from any file, later-loaded ones included (sendMessage calls
+// closeCmdMenu in cards.js and postUserText in sidepanel.js): they only run once every script has
+// loaded. The wiring that runs at load (the drop, input, paste, keydown, send, ⏹, focus,
+// selectionchange listeners, the page-ask onMessage listener, the 💬 pill) and the DOM refs it reads
+// (attach-preview, the drop zone, reply-chip, the input's placeholder) stay in sidepanel.js, at the
+// spot these sections came from, so their order is unchanged.
 
 // --- Pasted-image staging ----------------------------------------------------
 // Screenshots pasted into the composer are staged as ACP image content blocks and previewed
