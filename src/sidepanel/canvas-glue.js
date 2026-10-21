@@ -4,13 +4,13 @@
 // tab, group tabs, restore / switch / archive). Moved verbatim out of sidepanel.js (plan B, step 2);
 // no logic change.
 //
-// Classic script, loaded by sidepanel.html after composer-ui.js and BEFORE cards.js and sidepanel.js;
-// all scripts share one global scope. Load-order rule: this file holds declarations only. Its top
-// level must not run anything that touches a name declared in sidepanel.js or a later-loaded file
-// (DOM refs, room state, …) — that would be a TDZ ReferenceError at load. Its initializers use only
-// src/core/ factories (CanvasStore, CanvasMirror). Function bodies may use names from any file,
-// later-loaded ones included (confirmEvictCard calls confirmCard in cards.js): they only run once
-// every script has loaded. The wiring that runs at load (chrome.storage / chrome.tabs /
+// Classic script, loaded by sidepanel.html after conversations.js and composer-ui.js and BEFORE
+// cards.js and sidepanel.js; all scripts share one global scope. Load-order rule: this file holds
+// declarations only. Its top level must not run anything that touches a name declared in
+// sidepanel.js or a later-loaded file (DOM refs, room state, …) — that would be a TDZ ReferenceError
+// at load. Its initializers use only src/core/ factories (CanvasStore, CanvasMirror). Function bodies
+// may use names from any file, later-loaded ones included (confirmEvictCard calls confirmCard in
+// cards.js): they only run once every script has loaded. The wiring that runs at load (chrome.storage / chrome.tabs /
 // chrome.runtime listeners, the moved-canvas notes read, the Settings and 🗂️ buttons and their DOM
 // refs) stays in sidepanel.js, at the spot these sections came from, so its order is unchanged.
 
