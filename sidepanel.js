@@ -518,10 +518,18 @@ class Conn {
       this.lastSocketEnd = reason === "heartbeat" ? "unclean" : "clean";
     }
     if (this.ws) {
+      // A reconnect mid-turn (the roster chip's R2 click): stop the turn server-side first, as
+      // disconnect() does, so its resend below does not meet it still running (no-op if not open).
+      if (this.ws.readyState === WebSocket.OPEN) this.cancelTurn();
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
     }
-    this.clearStalePrompts();                            // onclose is detached: forget its turns here
+    // onclose is detached: settle the old socket's requests here, as it would. An in-flight turn is
+    // requeued and resent on the new socket (as after a drop), instead of timing out ~10 min later
+    // with the new socket open — the "cancel" path, which would session/cancel whatever turn runs
+    // then and leave a stale prompt that never answers (#182 review: Jellyfish).
+    this.rejectAllPending("connection closed");
+    this.clearStalePrompts();                            // their answers can only come on the old socket
     clearTimeout(this.reconnectTimer);
     this.online = false;
     this.initialized = false;
@@ -1081,8 +1089,7 @@ class Conn {
     this.missedProbes = d.missedProbes;
     if (d.reconnect) {
       this.stopHeartbeat();
-      this.rejectAllPending("connection closed");        // fail-fast the now-confirmed-dead socket
-      this.connect("heartbeat");                         // teardown + re-handshake (resume re-declares tunnel)
+      this.connect("heartbeat");                         // teardown (fails the dead socket's requests) + re-handshake (resume re-declares tunnel)
     }
   }
 
