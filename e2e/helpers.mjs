@@ -39,16 +39,28 @@ export async function until(page, fn, what, arg, ms = 10000) {
 // Answered after PAGE_DELAY_MS: a page that finishes loading while new_tab is still grouping the
 // tab makes new_tab wait out its 8 s load bound (#149), so the
 // pages load a little slower than that bookkeeping, as real pages do.
+// `web.serve(path, html)`: a case's own page at `path` (the query is ignored), answered at once.
 const PAGE_DELAY_MS = 700;
 export async function startWebServer() {
+  const routes = new Map();
   const server = http.createServer(async (req, res) => {
+    const own = routes.get(req.url.split(/[?#]/)[0]);
+    if (own != null) {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(own);
+      return;
+    }
     const name = decodeURIComponent((req.url.match(/^\/page\/([^?#]*)/) || [])[1] || "index");
     await sleep(PAGE_DELAY_MS);
     res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     res.end(`<!doctype html><title>${name}</title><h1>Page ${name}</h1><p>Body of ${name}.</p>`);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  return { origin: `http://127.0.0.1:${server.address().port}`, close: () => new Promise((r) => server.close(() => r())) };
+  return {
+    origin: `http://127.0.0.1:${server.address().port}`,
+    serve: (p, html) => { routes.set(p, html); },
+    close: () => new Promise((r) => server.close(() => r())),
+  };
 }
 
 // --- the browser ------------------------------------------------------------------------------

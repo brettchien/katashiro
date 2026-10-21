@@ -19,13 +19,14 @@
 // Dual target: loaded as a classic <script> in sidepanel.html (exposes globalThis.BrowserMcp)
 // and require()'d by the node test suite (module.exports). No bundler, no MIME concerns.
 // Uses canvas-tabs.js (loaded before it in sidepanel.html) for the Split View tab rules it shares
-// with canvas_open beside (#90).
+// with canvas_open beside (#90), and page-ask-core.js (also loaded before it) for the selection
+// reader get_selection shares with 💬 Ask agent on a page and the page targets chat_history frames.
 (function (root, factory) {
   const isNode = typeof module !== "undefined" && module.exports;
-  const mod = factory(isNode ? require("./canvas-tabs.js") : root.CanvasTabs);
+  const mod = factory(isNode ? require("./canvas-tabs.js") : root.CanvasTabs, isNode ? require("./page-ask-core.js") : root.PageAskCore);
   if (isNode) module.exports = mod; // node (test)
   else root.BrowserMcp = mod; // extension global
-})(typeof globalThis !== "undefined" ? globalThis : this, function (CanvasTabs) {
+})(typeof globalThis !== "undefined" ? globalThis : this, function (CanvasTabs, PageAskCore) {
   "use strict";
 
   /**
@@ -2292,26 +2293,9 @@
       async call(_args, ctx) {
         const results = await ctx.chrome.scripting.executeScript({
           target: { tabId: ctx.tab.id, allFrames: true },
-          func: (max) => {
-            const describe = (n) => {
-              const el = n && (n.nodeType === 1 ? n : n.parentElement);
-              if (!el) return "";
-              const name = el.getAttribute("aria-label") || el.getAttribute("name") || "";
-              return el.tagName.toLowerCase() + (el.id ? "#" + el.id : "") + (name ? ` "${name}"` : "");
-            };
-            // window.getSelection() is blind to selections inside <input>/<textarea>; read those off
-            // the focused field's selection range instead. Never out of a password field.
-            const a = document.activeElement;
-            if (a && (a instanceof HTMLTextAreaElement || (a instanceof HTMLInputElement && a.type !== "password")) &&
-                typeof a.selectionStart === "number" && a.selectionEnd > a.selectionStart) {
-              return { text: a.value.slice(a.selectionStart, a.selectionEnd).slice(0, max), within: describe(a), url: location.href };
-            }
-            const s = window.getSelection();
-            const text = s ? s.toString() : "";
-            if (!text.trim()) return { text: "" };
-            const range = s.rangeCount ? s.getRangeAt(0) : null;
-            return { text: text.slice(0, max), within: describe(range && range.commonAncestorContainer), url: location.href };
-          },
+          // The reader 💬 Ask agent on a page uses too (page-ask-core.js): a focused text field first,
+          // never a password field; else window.getSelection().
+          func: PageAskCore.readSelection,
           args: [SELECTION_MAX]
         });
         const hits = (results || []).filter((r) => r && r.result && r.result.text);
@@ -3487,7 +3471,8 @@
         "Read this conversation's own chat transcript in the Katashiro side panel: user messages, " +
         "your replies, and error notices — oldest first, each stamped with the " +
         "user's local time as ISO 8601 with milliseconds and offset, framed exactly like the [time " +
-        "sender] prompt headers, and for a reply the message it answers (↩ time sender; \", selected「…」\" when the user asked about text they selected in it); to answer " +
+        "sender] prompt headers, and for a reply the message it answers (↩ time sender; \", selected「…」\" when the user asked about text they selected in it), " +
+        "and for a question about a web page what it was about (\", about page \"title\" (url): selected「…」\" or \"element「…」\"); to answer " +
         "one, copy its time exactly, milliseconds included, into a \"↩ <time>\" line. Use it to " +
         "recover context after your session was restarted (e.g. a fresh session with no memory of " +
         "the conversation the user can still see). Read-only. It returns only this conversation, never " +
@@ -3524,10 +3509,13 @@
             ? ` ↩ ${localStamp(m.replyTo.timestamp)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` +
               // 💬 on a selection: what was selected (the record keeps an excerpt), as in the prompt header.
               (typeof m.replyTo.selection === "string" && m.replyTo.selection ? `, selected「${m.replyTo.selection}」` : "") : "";
+          // 💬 Ask agent on a web page: the page and what was asked about (the record's excerpt; its
+          // URL has no query or fragment), as `, about page "title" (url): selected「…」` / element「…」.
+          const pg = m.page ? PageAskCore.historyFrame(m.page) : "";
           let text = m.text == null ? "" : String(m.text);
           if (text.length > maxChars) text = `${text.slice(0, maxChars)}… [${text.length - maxChars} more chars]`;
           // Same framing as the prompt headers: a [time sender (↩ time sender)] line, then the body.
-          return `[${when} ${who}${m.kind === "error" ? " error" : ""}${re}]\n${text}`;
+          return `[${when} ${who}${m.kind === "error" ? " error" : ""}${re}${pg}]\n${text}`;
         });
         const head = `${lines.length} of ${all.length} message${all.length === 1 ? "" : "s"}, oldest first. Each starts with a [time sender] line ` +
           `(ISO 8601 with milliseconds, the user's local time — the same header the prompts carry); ↩ marks the message it answers.`;

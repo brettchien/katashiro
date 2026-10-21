@@ -9,6 +9,7 @@ are using.
 - **Chat beside any page** — up to 3 open conversations (across all windows), each bound to one of
   your agents, with history that survives a reload. A conversation keeps working while you look at
   another; archived ones reopen from the 🗂️ gallery. Paste screenshots or drop files into the chat.
+  Right-click a web page → **💬 Ask agent** to ask about the text you selected or the element you clicked.
 - **Let the agent use the browser** — 53 `katashiro.*` tools: read the page, click, type, fill forms,
   navigate, manage tabs, point things out to you, ask you multiple-choice questions. Writes stay
   off until you allow them.
@@ -94,6 +95,7 @@ Details: [docs/tools.md → Act mode](docs/tools.md#act-mode--writes-are-off-by-
 | `storage`, `unlimitedStorage` | Settings (synced), chat history, sessions, and canvases with their versions and images (local; canvases have their own 200 MB budget). |
 | `scripting`, `<all_urls>` | Page tools read and act on the active tab. Writes still need act mode. |
 | `tabs`, `tabGroups` | Tab tools, and one tab group per conversation for its canvases and working tabs. |
+| `contextMenus` | **💬 Ask agent** in the right-click menu of a web page: asks about the selection or the element right-clicked (nothing is sent until you press Enter). A small content script remembers the last element you right-clicked; it sends nothing anywhere. |
 | `notifications` | `katashiro.notify`, and alerts from a conversation you are not looking at: a question waits for you, or a reply finished or failed. |
 | `sessions` (optional) | Only for `katashiro.reopen_tab`; off until you allow it in Settings. |
 

@@ -20,7 +20,7 @@ dev tooling only (puppeteer-core for the headless smokes); see
 ## Project structure
 
 - `manifest.json`: Manifest V3, with the Side Panel API.
-- `background.js`: Service worker; opens the side panel from the toolbar icon, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
+- `background.js`: Service worker; opens the side panel from the toolbar icon, registers the right-click **💬 Ask agent** item and hands what was right-clicked to the panel, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
 - `sidepanel.html` / `sidepanel.css`: The side panel's layout and styles.
 - `sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
 - `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
@@ -33,6 +33,8 @@ dev tooling only (puppeteer-core for the headless smokes); see
 - `jev-grounding.js`: Optional Jev (TypeSafe) decision helper behind `assert`, `click_text` and `type_text` (BYO OpenRouter key).
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
+- `page/ctx-target.js`: The one manifest content script (every page and frame) — remembers the target of the last trusted right-click, and whether text was selected before it, for **💬 Ask agent**.
+- `page-ask-core.js`: The pure half of 💬 Ask agent on a web page — the menu, the selection-or-element choice, the in-page reader / element describer / selector builder (also `get_selection`'s reader), the payload and its checks, the conversation choice, the chip, the prompt block and the history record. See [`docs/adr/page-send-to-agent.md`](docs/adr/page-send-to-agent.md).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`; for the canvas frame only, `reveal.js`, Milkdown crepe and `@mermaid-js/tiny`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
 - `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [README → Agent skills](README.md#-agent-skills)).
 - `canvas.html` / `canvas.js` (with `canvas-core.js`, `canvas-store.js`, `canvas-tabs.js`, `canvas-mirror.js` and the sandboxed `canvas-frame.html`): canvases, one tab each. `canvas-gallery.html` / `canvas-gallery.js` (with `canvas-gallery-core.js`): the canvas gallery. See [`docs/adr/canvas.md`](docs/adr/canvas.md).
