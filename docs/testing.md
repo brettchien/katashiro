@@ -217,6 +217,14 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   Send two short messages within one second (e.g. `` ` `` then `2`) and ask the agent to answer the
   first: its quote shows the first, not the second (headers carry milliseconds,
   `[2026-10-12T14:54:11.234+08:00 user]`, and a `↩` with milliseconds matches only that message; a miscopied one falls back to its second only when that second holds a single message).
+- **💬 on a chat selection:** drag over a few words of an agent reply: a 💬 shows just below the
+  selection's end (above it near the bottom of the list), and follows it while you scroll; it goes
+  away when the selection is cleared or scrolled out of view. Click it: the chip reads 💬 針對 … 選取的文字：「…」
+  and the input has the focus; ✕ / Esc cancel as for ↩. Send a question: your message's quote
+  reads 選取：「…」 and the agent answers about that text (ask it to repeat the selection it got).
+  Select inside a code block and across a line break: the selection arrives whole. No 💬 for a
+  selection across two messages, over a name or time, in a reply still streaming, or in a
+  conversation whose agent was removed. Reload the panel: the quote still shows the selection.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
