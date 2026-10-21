@@ -2,7 +2,7 @@
 // capability gate and the prompt blocks sent over ACP.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const Composer = require("../composer.js");
+const Composer = require("../src/core/composer.js");
 
 test("canImage reads initialize → agentCapabilities.promptCapabilities.image", () => {
   assert.equal(Composer.canImage({ agentCapabilities: { promptCapabilities: { image: true } } }), true);

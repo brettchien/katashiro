@@ -301,7 +301,7 @@ const STUB = String.raw`
   window.confirm = () => true;
 })();`;
 
-const inject = { "/sidepanel.html": '<script src="vendor/markdown-it.iife.js">', "/canvas-gallery.html": '<script src="canvas-store.js">' };
+const inject = { "/sidepanel.html": '<script src="vendor/markdown-it.iife.js">', "/canvas-gallery.html": '<script src="src/core/canvas-store.js">' };
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/__stub.js") { res.writeHead(200, { "content-type": "text/javascript" }); res.end(STUB); return; }

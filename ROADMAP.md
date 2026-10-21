@@ -44,7 +44,7 @@ Every capability below is a variation on those two directions.
 
 ## Phase 0 — Current state ✅
 
-Shipped today (see `sidepanel.js`):
+Shipped today (see `src/sidepanel/sidepanel.js`):
 
 - WebSocket + ACP (JSON-RPC 2.0) transport: `initialize` → `session/new` / `session/resume`.
 - Per-agent persisted sessions (`acpSessionByUrl`), auto-reconnect (5 s), resume-or-fresh fallback.
@@ -53,7 +53,7 @@ Shipped today (see `sidepanel.js`):
   that pile up while an agent is busy are batched — the next round sends the whole backlog as one
   turn (`RoomCore.batchPrompts`), Discord-style, rather than one turn per queued message.
 - LINE-style chat UI. **Since shipped:** agent/user messages render as markdown → DOMPurify-sanitized
-  HTML (`markdown.js`, syntax highlight + copy-code), plus chat history persistence + ACP session
+  HTML (`src/core/markdown.js`, syntax highlight + copy-code), plus chat history persistence + ACP session
   resume, stop/cancel, stick-to-bottom auto-scroll, and a two-badge roster status (connection badge
   ●/◐/○/◌ + browser badge 🌐/⚠️) backed by a liveness heartbeat that reconnects a dead socket (see
   `docs/adr/browser-tunnel-liveness.md`). Streaming stays `textContent`; the finalized message is the

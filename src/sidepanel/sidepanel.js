@@ -5523,7 +5523,7 @@ function notifyWaitingCard(id) {
   const title = ConvCore.displayTitle(convIndex[id], id);
   const nid = `${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:conv:${id}:${Date.now()}-${++waitingNotifySeq}`;
   try {
-    const p = chrome.notifications.create(nid, { type: "basic", iconUrl: "icon128.png", title: "Katashiro：有問題等你回答", message: `「${title}」裡有一張卡片還沒回答。點這裡回到那段對話。` });
+    const p = chrome.notifications.create(nid, { type: "basic", iconUrl: "icons/icon128.png", title: "Katashiro：有問題等你回答", message: `「${title}」裡有一張卡片還沒回答。點這裡回到那段對話。` });
     if (p && typeof p.catch === "function") p.catch(() => {});
   } catch (_) { /* notifications off: the ❓ on the tab still shows it */ }
 }
@@ -5536,7 +5536,7 @@ function notifyTurnDone(id, agentName, failed = false) {
   const nid = `${BrowserMcp.NOTIFY_ID_PREFIX}${panelWindowId}:conv:${id}:${Date.now()}-${++waitingNotifySeq}`;
   try {
     const p = chrome.notifications.create(nid, {
-      type: "basic", iconUrl: "icon128.png",
+      type: "basic", iconUrl: "icons/icon128.png",
       title: failed ? "Katashiro：背景對話的回覆失敗了" : "Katashiro：背景對話回覆完了",
       message: `「${title}」：${agentName} ${failed ? "這一輪沒有完成" : "回覆完了"}。點這裡回到那段對話。`,
     });

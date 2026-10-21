@@ -24,7 +24,7 @@ import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = (await import("node:module")).createRequire(import.meta.url);
-const CanvasStore = require("../canvas-store.js");
+const CanvasStore = require("../src/core/canvas-store.js");
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };

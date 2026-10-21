@@ -29,11 +29,11 @@ jobs:
         with:
           node-version: "22"
 
-      # Parse every runtime script, including the ones no test imports (background.js, page/).
+      # Parse every runtime script, including the ones no test imports (src/background.js, src/page/).
       - name: Syntax check
         run: |
           set -euo pipefail
-          for f in *.js page/*.js; do node --check "$f"; done
+          find src -name "*.js" -print0 | xargs -0 -n1 node --check
           for f in scripts/*.sh skills/*/scripts/*.sh; do bash -n "$f"; done
 
       - name: Test

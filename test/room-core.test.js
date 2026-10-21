@@ -3,7 +3,7 @@
 // `node --test` with no DOM/WebSocket.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const RoomCore = require("../room-core.js");
+const RoomCore = require("../src/core/room-core.js");
 
 test("batchPrompts joins a backlog into one blank-line-separated prompt, order preserved", () => {
   assert.equal(RoomCore.batchPrompts(["first", "second", "third"]), "first\n\nsecond\n\nthird");
@@ -472,7 +472,7 @@ test("avatarTone: a stable tone per agent id, in range, the same for live and re
 });
 
 test("sidepanel.css: avatar colour comes from the tone class, never the row position", () => {
-  const css = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "sidepanel.css"), "utf8");
+  const css = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "src/sidepanel/sidepanel.css"), "utf8");
   assert.doesNotMatch(css, /nth-child\([^)]*\)\s*\.avatar/);
   for (let i = 1; i < RoomCore.AVATAR_TONES; i++) assert.match(css, new RegExp(`\\.avatar\\.tone-${i}\\s*\\{[^}]*background:`));
 });

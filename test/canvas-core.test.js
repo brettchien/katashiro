@@ -2,7 +2,7 @@
 // filtering, error clipping and the load gate.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const C = require("../canvas-core.js");
+const C = require("../src/core/canvas-core.js");
 
 const frameWindow = {};
 const ok = (data) => C.acceptFrameMessage({ source: frameWindow, data }, { frameWindow, nonce: "n1" });
@@ -762,7 +762,7 @@ test("markRanges: the marked copy renders to the same blocks and text (markdown-
   for (const f of ["../vendor/markdown-it.iife.js", "../vendor/highlight.iife.js"]) {
     new Function(fs.readFileSync(path.join(__dirname, f), "utf8")).call(globalThis);
   }
-  const { md } = require("../markdown.js");
+  const { md } = require("../src/core/markdown.js");
   const blocks = (html) => (html.match(/<(h[1-6]|p|li|tr|pre|hr|blockquote|table)\b/g) || []).join(",");
   const text = (html) => html.replace(/<[^>]*>/g, "").replace(/[\u1A1E\u1A1F\u1AA8]/g, "");
   const doc = [

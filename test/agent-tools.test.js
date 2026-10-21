@@ -1,7 +1,7 @@
 // agent-tools.test.js — the gateway-forwarded tool_call / tool_call_update → pill mapping.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const AgentTools = require("../agent-tools.js");
+const AgentTools = require("../src/core/agent-tools.js");
 
 const apply = AgentTools.applyToolCallUpdate;
 

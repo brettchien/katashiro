@@ -41,14 +41,8 @@ jobs:
           cat build-info.json
           # Runtime files only — no test/, docs/, *.md, or .git.
           zip -r "katashiro-${VERSION}.zip" \
-            manifest.json background.js build-info.json \
-            sidepanel.html sidepanel.css sidepanel.js \
-            browser-mcp.js page-ask-core.js command-core.js room-core.js agent-tools.js composer.js confirm-core.js ask-core.js conv-core.js markdown.js jev-grounding.js \
-            canvas.html canvas.css canvas.js canvas-core.js canvas-store.js canvas-tabs.js canvas-mirror.js \
-            canvas-gallery.html canvas-gallery.css canvas-gallery.js canvas-gallery-core.js conv-picker.js \
-            canvas-frame.html canvas-frame.css canvas-frame.js canvas-slides.css \
-            page vendor \
-            icon.png icon16.png icon32.png icon48.png icon128.png \
+            manifest.json build-info.json \
+            *.html src vendor icons \
             -x "*.md"
           # The licenses ship with the code (MIT, and the vendored libraries' notices).
           zip "katashiro-${VERSION}.zip" LICENSE THIRD_PARTY_NOTICES.md

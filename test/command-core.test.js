@@ -4,7 +4,7 @@
 // format change on the openab side must fail here, not silently fall back to raw text).
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const C = require("../command-core.js");
+const C = require("../src/core/command-core.js");
 const F = require("./fixtures/openab-slash-replies.json");
 
 const ids = (items) => items.map((c) => c.id);

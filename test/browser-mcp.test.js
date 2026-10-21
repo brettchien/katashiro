@@ -7,7 +7,7 @@
 // chrome API calls the tools make. This exercises the same code path the extension uses.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const BrowserMcp = require("../browser-mcp.js");
+const BrowserMcp = require("../src/mcp/browser-mcp.js");
 
 // --- mocks ------------------------------------------------------------------
 
@@ -544,7 +544,7 @@ test("katashiro.type injects the walker, then types via selector fallback", asyn
     d
   );
   // first call injects the vendored lib + walker; the act call carries [ref, snapshotId, selector, text]
-  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "src/page/a11y-walker.js"]);
   const act = calls.executeScript.find((c) => Array.isArray(c.args) && c.args.includes("hello"));
   assert.deepEqual(act.args, [null, null, "#q", "hello"]);
 });
@@ -562,7 +562,7 @@ test("katashiro.click resolves a ref and returns the post-action snapshot", asyn
   assert.match(res.content[0].text, /clicked ref e5/);
   assert.match(res.content[0].text, /# snapshot [0-9]+/); // snapshot-after-action appended
   // walker injected; act call carries [ref, snapshotId, selector, ...]
-  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.deepEqual(calls.executeScript[0].files, ["vendor/dom-accessibility-api.iife.js", "src/page/a11y-walker.js"]);
   assert.ok(calls.executeScript.some((c) => Array.isArray(c.args) && c.args[0] === "e5"));
 });
 
@@ -1226,7 +1226,7 @@ test("snapshot injects the vendored a11y engine + walker, then returns the tree 
   assert.match(res.content[0].text, /\[ref=e1\]/);
   // It injected the vendored lib + walker as files, then ran a func to build the snapshot.
   const filesInj = calls.executeScript.find((c) => c.files);
-  assert.deepEqual(filesInj.files, ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"]);
+  assert.deepEqual(filesInj.files, ["vendor/dom-accessibility-api.iife.js", "src/page/a11y-walker.js"]);
   assert.ok(calls.executeScript.some((c) => typeof c.func === "function"), "runs the snapshot func");
 });
 
@@ -2833,7 +2833,7 @@ test("katashiro.notify creates a basic notification tagged with the panel's wind
   assert.equal(res.isError, undefined);
   assert.equal(created.length, 1);
   assert.ok(created[0].id.startsWith(`${BrowserMcp.NOTIFY_ID_PREFIX}7:`));
-  assert.deepEqual(created[0].o, { type: "basic", iconUrl: "icon128.png", title: "Build", message: "images ready" });
+  assert.deepEqual(created[0].o, { type: "basic", iconUrl: "icons/icon128.png", title: "Build", message: "images ready" });
   assert.match(res.content[0].text, /notification sent: Build — images ready/);
 });
 
@@ -3071,7 +3071,7 @@ test("localStamp: local date-time with milliseconds and the UTC offset — the p
   const ts = new Date(2026, 9, 10, 16, 5, 12).getTime() + 34;
   assert.match(BrowserMcp.localStamp(ts), /^2026-10-10T16:05:12\.034[+-]\d{2}:\d{2}$/);
   assert.equal(Date.parse(BrowserMcp.localStamp(ts)), ts);
-  assert.equal(BrowserMcp.localStamp(ts), require("../room-core.js").msgTime(ts));
+  assert.equal(BrowserMcp.localStamp(ts), require("../src/core/room-core.js").msgTime(ts));
 });
 
 test("katashiro.chat_history marks a reply with the time and sender it answers", async () => {
@@ -3088,7 +3088,7 @@ test("katashiro.chat_history marks a reply with the time and sender it answers",
 
 // --- canvas (ADR docs/adr/canvas.md, MVP) -------------------------------------------
 
-const CanvasStore = require("../canvas-store.js");
+const CanvasStore = require("../src/core/canvas-store.js");
 
 function withCanvas(d, opts = {}) {
   const data = {};

@@ -3,7 +3,7 @@
 // parsing, and the fail-open contract (no token / bad response / throw → null).
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const Jev = require("../jev-grounding.js");
+const Jev = require("../src/core/jev-grounding.js");
 
 test("buildDecisionRequest targets the decisions endpoint with the model + state + questions", () => {
   const q = { ok: { type: "noul", instructions: "Did it work?" } };

@@ -14,7 +14,7 @@ const path = require("node:path");
 for (const f of ["../vendor/markdown-it.iife.js", "../vendor/highlight.iife.js"]) {
   new Function(fs.readFileSync(path.join(__dirname, f), "utf8")).call(globalThis);
 }
-const { md, DP_CONFIG } = require("../markdown.js");
+const { md, DP_CONFIG } = require("../src/core/markdown.js");
 
 test("markdown-it renders GFM tables and inline formatting", () => {
   assert.match(md.render("**b**"), /<strong>b<\/strong>/);
@@ -100,7 +100,7 @@ test("```mermaid fences keep their text as code, tagged language-mermaid for the
 });
 
 // --- Source lines (ADR canvas §3.7, Ask agent) ---------------------------------------------------
-const C = require("../canvas-core.js");
+const C = require("../src/core/canvas-core.js");
 const lineTags = (html) => Array.from(html.matchAll(/<(\w+) data-line-start="(\d+)" data-line-end="(\d+)"/g)).map((m) => [m[1], +m[2], +m[3]]);
 
 test("source lines: only with env.sourceLines — the chat renders without them", () => {
@@ -159,7 +159,7 @@ test("source lines of a slide are offset by where it starts in the deck text", (
 });
 
 // --- The user's own messages keep their line breaks (mdUser, breaks:true) ------------------------
-const { mdUser } = require("../markdown.js");
+const { mdUser } = require("../src/core/markdown.js");
 
 test("user messages: each typed newline is a <br> (Shift+Enter lines stay lines)", () => {
   assert.equal(mdUser.render("a\nb\nc"), "<p>a<br>\nb<br>\nc</p>\n");

@@ -299,7 +299,7 @@
     try {
       const u = new URL(sender.url);
       // protocol + host, not u.origin: that is "null" for chrome-extension: outside Chrome (tests).
-      return `${u.protocol}//${u.host}` === String(origin).replace(/\/$/, "") && u.pathname === "/background.js";
+      return `${u.protocol}//${u.host}` === String(origin).replace(/\/$/, "") && u.pathname === "/src/background.js";
     } catch (_) { return false; }
   }
 

@@ -4,7 +4,7 @@
 // history record.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const P = require("../page-ask-core.js");
+const P = require("../src/core/page-ask-core.js");
 
 // --- a fake DOM, just enough for describeElement / buildSelector ------------------------------------
 // CSS.escape (CSSOM §2.1.1), as Chrome implements it.
@@ -273,11 +273,11 @@ test("buildPayload: an element in a frame says the frame URL and has no selector
 // --- the panel ------------------------------------------------------------------------------------
 test("fromServiceWorker: only our own service worker", () => {
   const o = { runtimeId: "abc", origin: "chrome-extension://abc" };
-  assert.equal(P.fromServiceWorker({ id: "abc", url: "chrome-extension://abc/background.js" }, o), true);
+  assert.equal(P.fromServiceWorker({ id: "abc", url: "chrome-extension://abc/src/background.js" }, o), true);
   assert.equal(P.fromServiceWorker({ id: "abc", url: "chrome-extension://abc/sidepanel.html" }, o), false);      // another panel
-  assert.equal(P.fromServiceWorker({ id: "abc", url: "chrome-extension://abc/background.js", tab: { id: 1 } }, o), false);
-  assert.equal(P.fromServiceWorker({ id: "evil", url: "chrome-extension://evil/background.js" }, o), false);
-  assert.equal(P.fromServiceWorker({ id: "abc", url: "https://acme.example/background.js" }, o), false);
+  assert.equal(P.fromServiceWorker({ id: "abc", url: "chrome-extension://abc/src/background.js", tab: { id: 1 } }, o), false);
+  assert.equal(P.fromServiceWorker({ id: "evil", url: "chrome-extension://evil/src/background.js" }, o), false);
+  assert.equal(P.fromServiceWorker({ id: "abc", url: "https://acme.example/src/background.js" }, o), false);
   assert.equal(P.fromServiceWorker({ id: "abc" }, o), false);
   assert.equal(P.fromServiceWorker(null, o), false);
 });

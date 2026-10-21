@@ -23,7 +23,7 @@
 // reader get_selection shares with 💬 Ask agent on a page and the page targets chat_history frames.
 (function (root, factory) {
   const isNode = typeof module !== "undefined" && module.exports;
-  const mod = factory(isNode ? require("./canvas-tabs.js") : root.CanvasTabs, isNode ? require("./page-ask-core.js") : root.PageAskCore);
+  const mod = factory(isNode ? require("../core/canvas-tabs.js") : root.CanvasTabs, isNode ? require("../core/page-ask-core.js") : root.PageAskCore);
   if (isNode) module.exports = mod; // node (test)
   else root.BrowserMcp = mod; // extension global
 })(typeof globalThis !== "undefined" ? globalThis : this, function (CanvasTabs, PageAskCore) {
@@ -94,7 +94,7 @@
   // The vendored a11y engine + the walker, injected into the tab's isolated world. Idempotent: the
   // walker keeps any existing per-frame registry and re-defines its globals, so injecting on every
   // snapshot/ref-resolving call is safe and self-heals after a page reload.
-  const WALKER_FILES = ["vendor/dom-accessibility-api.iife.js", "page/a11y-walker.js"];
+  const WALKER_FILES = ["vendor/dom-accessibility-api.iife.js", "src/page/a11y-walker.js"];
 
   // One snapshot generation per snapshot call, shared across all frames of the page so a ref's
   // snapshotId is comparable regardless of which frame it lives in. Seeded from the clock so a
@@ -3601,7 +3601,7 @@
         try {
           await notifications.create(id, {
             type: "basic",
-            iconUrl: "icon128.png",
+            iconUrl: "icons/icon128.png",
             title: title || "Katashiro",
             message
           });

@@ -2,7 +2,7 @@
 // per-conversation index, and that the lock really serializes concurrent writers.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const CanvasStore = require("../canvas-store.js");
+const CanvasStore = require("../src/core/canvas-store.js");
 
 function memStorage() {
   const data = {};
@@ -266,10 +266,10 @@ function loadBackground(storage, { failImport = false } = {}) {
   sandbox.crypto = globalThis.crypto;
   sandbox.importScripts = (f) => {
     if (failImport) throw new Error(`NetworkError: Failed to load ${f}`);
-    vm.runInContext(fs.readFileSync(path.join(__dirname, "..", f), "utf8"), sandbox);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", f), "utf8"), sandbox);   // relative to the worker, src/background.js
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8"), sandbox);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src/background.js"), "utf8"), sandbox);
   return bg;
 }
 

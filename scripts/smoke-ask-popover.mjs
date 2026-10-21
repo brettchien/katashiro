@@ -100,7 +100,7 @@ const server = http.createServer((req, res) => {
   if (url.pathname === "/canvas-frame.html") headers["content-security-policy"] = sandboxCsp;
   if (url.pathname === "/canvas.html") {
     res.writeHead(200, headers);
-    res.end(fs.readFileSync(file, "utf8").replace('<script src="canvas-store.js">', '<script src="__stub.js"></script><script src="canvas-store.js">'));
+    res.end(fs.readFileSync(file, "utf8").replace('<script src="src/core/canvas-store.js">', '<script src="__stub.js"></script><script src="src/core/canvas-store.js">'));
     return;
   }
   res.writeHead(200, headers);

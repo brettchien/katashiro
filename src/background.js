@@ -3,7 +3,7 @@
 // worker (#113 review): the side panel behavior and the listeners still get set up, and the
 // cleanup just reports that it cannot run.
 try {
-  importScripts("canvas-store.js");
+  importScripts("core/canvas-store.js");
 } catch (e) {
   console.warn("Katashiro: canvas-store.js failed to load; the incognito canvas cleanup is off:", e);
 }
@@ -12,7 +12,7 @@ try {
 // history:<windowId> into conv:<id> + window:<windowId>. Same rule as above: a failure to load
 // must not kill the worker; a panel runs the migration itself on load anyway.
 try {
-  importScripts("confirm-core.js", "conv-core.js");
+  importScripts("core/confirm-core.js", "core/conv-core.js");
 } catch (e) {
   console.warn("Katashiro: conv-core.js failed to load; conversations migrate when a panel opens:", e);
 }
@@ -21,7 +21,7 @@ try {
 // in-page collector (also injected into the right-clicked frame) and the payload. A failure to load
 // leaves the menu out; everything else still runs.
 try {
-  importScripts("page-ask-core.js");
+  importScripts("core/page-ask-core.js");
 } catch (e) {
   console.warn("Katashiro: page-ask-core.js failed to load; the 💬 Ask agent menu is off:", e);
 }
@@ -156,7 +156,7 @@ async function collectPageAsk(info, tab) {
   if (!fileNoAccess) {
     try {
       const target = { tabId: tab.id, frameIds: [frameId] };
-      await chrome.scripting.executeScript({ target, files: ["page-ask-core.js"] });
+      await chrome.scripting.executeScript({ target, files: ["src/core/page-ask-core.js"] });
       const [r] = await chrome.scripting.executeScript({
         target,
         func: (o) => (globalThis.PageAskCore ? globalThis.PageAskCore.collectInPage(o) : null),

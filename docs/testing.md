@@ -64,7 +64,7 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
 
 ## Notes
 
-- The side panel must stay open (the tunnel and tool execution live in `sidepanel.js`).
+- The side panel must stay open (the tunnel and tool execution live in `src/sidepanel/sidepanel.js`).
 - No separate demo page is needed — the extension **is** the client. For a headless protocol
   check of the tunnel without a browser, see `scripts/acp-ws-smoke.py` (tunnel section) in the
   openab repo, which drives the gateway with a mock extension.
