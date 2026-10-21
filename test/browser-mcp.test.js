@@ -2759,6 +2759,18 @@ test("katashiro.chat_history returns the transcript oldest first, numbered, with
   assert.doesNotMatch(text, /#\d+ /);                          // no #N counters (they read like PR numbers)
 });
 
+test("katashiro.chat_history: a reply to a 💬 selection shows what was selected", async () => {
+  const { deps: d } = deps();
+  const quoted = { id: "c:1", senderName: "Orca", timestamp: HISTORY[1].timestamp, text: "xxx" };
+  d.chatHistory = () => [HISTORY[1],
+    { kind: "sent", senderName: "Brett", text: "why?", timestamp: Date.UTC(2026, 9, 10, 7, 3, 0), replyTo: { ...quoted, selection: "pool max 10" } },
+    { kind: "sent", senderName: "Brett", text: "ok", timestamp: Date.UTC(2026, 9, 10, 7, 4, 0), replyTo: quoted }];
+  const text = (await callTool(d, "katashiro.chat_history")).content[0].text;
+  const L = (ts) => BrowserMcp.localStamp(ts);
+  assert.ok(text.includes(`[${L(Date.UTC(2026, 9, 10, 7, 3, 0))} user ↩ ${L(quoted.timestamp)} Orca, selected「pool max 10」]\nwhy?`));
+  assert.ok(text.includes(`[${L(Date.UTC(2026, 9, 10, 7, 4, 0))} user ↩ ${L(quoted.timestamp)} Orca]\nok`));
+});
+
 test("katashiro.chat_history: limit keeps the most recent N, maxChars truncates per message", async () => {
   const { deps: d } = deps();
   d.chatHistory = () => HISTORY;

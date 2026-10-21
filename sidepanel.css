@@ -1724,3 +1724,20 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .conv-picker-option:disabled { opacity: 0.5; cursor: default; }
 .conv-picker-cancel { align-self: flex-end; text-align: center; }
 .conv-picker-status { color: #fca5a5; font-size: 12px; }
+
+/* 💬 beside text selected in a chat message (sidepanel.js selAskPill): makes it the reply target. */
+.sel-ask-pill {
+  position: fixed;
+  z-index: 50;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 7px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.sel-ask-pill:hover { background: rgba(255, 255, 255, 0.14); }
+.sel-ask-pill[hidden] { display: none; }

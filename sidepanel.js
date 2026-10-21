@@ -2079,6 +2079,7 @@ function afterShow() {
   updateRoster();
   updateStopButton();
   renderConvTabs();
+  scheduleSelAsk();                                      // a 💬 on the old conversation's selection goes
 }
 
 function showConversation(id) {
@@ -3591,8 +3592,8 @@ function postUserText(text, images, replyTo, files) {
   // keeps its message boundaries and a reply says what it answers (RoomCore.framePrompt).
   const framed = RoomCore.framePrompt({
     timestamp: sentAt, senderName: "user",
-    replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text },
-  }, Composer.expandAttachments(text, files));
+    replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text, selection: replyTo.selection },
+  }, RoomCore.withSelection(Composer.expandAttachments(text, files), replyTo && replyTo.selection));
 
   // A conversation's only recipient is its own agent (agent-per-conversation §2.7), and only while
   // this window wants it connected (`enabled`, user intent: a Conn reconnecting still queues, and
@@ -5135,7 +5136,7 @@ function openLightbox(src, caption) {
 // --- reply-to ------------------------------------------------------------------------------------
 // ↩ on a message → a quote chip above the input; the next send answers it (framed in the prompt as
 // "↩ HH:MM:SS sender「excerpt」"). The chip shows who/when/what; ✕ or Esc cancels.
-let replyTarget = null;                                  // { id, senderName, timestamp, text } or null
+let replyTarget = null;                                  // { id, senderName, timestamp, text, selection? } or null
 const replyChip = document.getElementById("reply-chip");
 
 // How a sender appears to the agent: the user's own messages are "user" (the panel calls them "You").
@@ -5151,8 +5152,11 @@ function setReplyTarget(t) {
   if (!replyTarget) return;
   const label = document.createElement("span");
   label.className = "reply-chip-text";
-  label.textContent = `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
-  label.title = RoomCore.excerpt(replyTarget.text, 400);
+  const sel = replyTarget.selection;
+  label.textContent = sel
+    ? `💬 針對 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)} 選取的文字：「${RoomCore.excerpt(sel, 60)}」`
+    : `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
+  label.title = RoomCore.excerpt(sel || replyTarget.text, 400);
   label.addEventListener("click", () => jumpToMessage(replyTarget && replyTarget.id));
   const x = document.createElement("button");
   x.type = "button";
@@ -5169,7 +5173,10 @@ function replyQuoteEl(replyTo) {
   const q = document.createElement("div");
   q.className = "reply-quote";
   const when = Number.isFinite(replyTo.timestamp) ? RoomCore.uiTime(replyTo.timestamp) : "?";
-  q.textContent = `↩ ${replyTo.senderName || "?"} ${when}：${RoomCore.excerpt(replyTo.text, 80)}`;
+  // A 💬 selection quotes the selected text, not the whole message.
+  q.textContent = replyTo.selection
+    ? `↩ ${replyTo.senderName || "?"} ${when} 選取：「${RoomCore.excerpt(replyTo.selection, 80)}」`
+    : `↩ ${replyTo.senderName || "?"} ${when}：${RoomCore.excerpt(replyTo.text, 80)}`;
   if (!replyTo.id) q.classList.add("missing");
   q.title = "跳到原訊息";
   q.addEventListener("click", () => jumpToMessage(replyTo.id));
@@ -5189,6 +5196,80 @@ function attachReplyButton(contentEl, target) {
   (ts || contentEl).appendChild(b);
 }
 
+// 💬 on text selected in a chat message (the chat's counterpart of the canvas's 💬 Ask agent): a
+// small 💬 beside the selection makes it the reply target — the chip says 💬 針對…選取的文字 — and
+// focuses the input; the request is typed there and sent as usual (Enter, attachments and Esc work
+// as for ↩). The agent gets the ↩ header with the selection's excerpt, and the whole selection as
+// data after the text (RoomCore.withSelection). Only within one finished message's bubble: a
+// selection across messages, in a streaming reply, or outside the bubbles shows nothing.
+const selAskPill = document.createElement("button");
+selAskPill.type = "button";
+selAskPill.className = "sel-ask-pill";
+selAskPill.textContent = "💬";
+selAskPill.title = "針對選取的文字問 agent";
+selAskPill.hidden = true;
+document.body.appendChild(selAskPill);
+let selAsk = null;                                       // { target, text } while the 💬 is shown
+
+function chatSelection() {
+  const sel = document.getSelection();
+  if (!sel || sel.isCollapsed || sel.rangeCount !== 1) return null;
+  const range = sel.getRangeAt(0);
+  const elOf = (n) => (n && n.nodeType === 1 ? n : n && n.parentElement);
+  const a = elOf(range.startContainer), b = elOf(range.endContainer);
+  const bubble = a && a.closest(".bubble");
+  if (!bubble || bubble !== (b && b.closest(".bubble")) || !messagesList.contains(bubble)) return null;
+  const row = bubble.closest(".message[data-msg-id]");
+  const conv = currentConv;
+  if (!row || !conv || !row.parentElement || row.parentElement !== chatList) return null;
+  if (convAgentMissing(conversationId)) return null;     // read-only conversation: nothing can be sent
+  const rec = (conv.messages || []).find((m) => m.id === row.dataset.msgId);
+  if (!rec || rec.kind === "error") return null;         // still streaming (no record yet), or trimmed
+  const text = sel.toString();
+  if (!text.trim()) return null;
+  const rects = range.getClientRects();
+  const last = rects.length ? rects[rects.length - 1] : range.getBoundingClientRect();
+  return { target: { id: rec.id, senderName: rec.senderName, timestamp: rec.timestamp, text: rec.text }, text, last };
+}
+
+function updateSelAsk() {
+  const s = chatSelection();
+  const box = messagesList.getBoundingClientRect();
+  // Beside the selection's end, inside the messages area; hidden once that end scrolls out of view.
+  if (!s || s.last.bottom < box.top || s.last.top > box.bottom) { selAsk = null; selAskPill.hidden = true; return; }
+  selAsk = { target: s.target, text: s.text };
+  selAskPill.hidden = false;
+  const w = selAskPill.offsetWidth || 28, h = selAskPill.offsetHeight || 24;
+  let top = s.last.bottom + 4;
+  if (top + h > box.bottom) top = Math.max(box.top, s.last.top - h - 4);
+  const left = Math.min(Math.max(box.left + 4, s.last.right - w / 2), box.right - w - 4);
+  selAskPill.style.left = `${left}px`;
+  selAskPill.style.top = `${top}px`;
+}
+
+let selAskFrame = 0;
+function scheduleSelAsk() {
+  if (selAskFrame) return;
+  selAskFrame = requestAnimationFrame(() => { selAskFrame = 0; updateSelAsk(); });
+}
+document.addEventListener("selectionchange", scheduleSelAsk);
+messagesList.addEventListener("scroll", scheduleSelAsk, { passive: true });
+window.addEventListener("resize", scheduleSelAsk);
+// mousedown would clear the selection before the click lands.
+selAskPill.addEventListener("mousedown", (e) => e.preventDefault());
+selAskPill.addEventListener("click", () => {
+  // Re-checked on click: the shown 💬 may be stale (the conversation switched without a
+  // selectionchange, the message was trimmed). mousedown kept the selection, so it is still there.
+  const s = chatSelection();
+  if (!s) { selAsk = null; selAskPill.hidden = true; return; }
+  const { target, text } = s;
+  selAsk = null;
+  selAskPill.hidden = true;
+  const sel = document.getSelection();
+  if (sel) sel.removeAllRanges();
+  setReplyTarget({ ...target, selection: text });        // focuses the input
+});
+
 // The recorded message an ISO stamp names, as a reply target: exactly that millisecond when the
 // stamp has one (headers carry ms, #62 follow-up), else the second rule (RoomCore.findByStamp).
 function findMessageByTime(stamp) {
@@ -5206,7 +5287,9 @@ function replyTargetFor(stamp) {
 
 // What a history record keeps of the message a reply answers.
 function recordReplyTo(t) {
-  return { id: t.id, senderName: t.senderName, timestamp: t.timestamp, text: RoomCore.excerpt(t.text) };
+  const r = { id: t.id, senderName: t.senderName, timestamp: t.timestamp, text: RoomCore.excerpt(t.text) };
+  if (typeof t.selection === "string" && t.selection.trim()) r.selection = RoomCore.excerpt(t.selection, 500);
+  return r;
 }
 
 // Render an agent's reply. Plain text → the markdown sink as before. With "↩ time" marker lines,

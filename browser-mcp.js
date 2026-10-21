@@ -3487,7 +3487,7 @@
         "Read this conversation's own chat transcript in the Katashiro side panel: user messages, " +
         "your replies, and error notices — oldest first, each stamped with the " +
         "user's local time as ISO 8601 with milliseconds and offset, framed exactly like the [time " +
-        "sender] prompt headers, and for a reply the message it answers (↩ time sender); to answer " +
+        "sender] prompt headers, and for a reply the message it answers (↩ time sender; \", selected「…」\" when the user asked about text they selected in it); to answer " +
         "one, copy its time exactly, milliseconds included, into a \"↩ <time>\" line. Use it to " +
         "recover context after your session was restarted (e.g. a fresh session with no memory of " +
         "the conversation the user can still see). Read-only. It returns only this conversation, never " +
@@ -3521,7 +3521,9 @@
           const when = Number.isFinite(m.timestamp) ? localStamp(m.timestamp) : "?";
           const who = m.kind === "sent" ? "user" : (m.senderName || "?");
           const re = m.replyTo && Number.isFinite(m.replyTo.timestamp)
-            ? ` ↩ ${localStamp(m.replyTo.timestamp)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` : "";
+            ? ` ↩ ${localStamp(m.replyTo.timestamp)} ${m.replyTo.senderName === "You" ? "user" : (m.replyTo.senderName || "?")}` +
+              // 💬 on a selection: what was selected (the record keeps an excerpt), as in the prompt header.
+              (typeof m.replyTo.selection === "string" && m.replyTo.selection ? `, selected「${m.replyTo.selection}」` : "") : "";
           let text = m.text == null ? "" : String(m.text);
           if (text.length > maxChars) text = `${text.slice(0, maxChars)}… [${text.length - maxChars} more chars]`;
           // Same framing as the prompt headers: a [time sender (↩ time sender)] line, then the body.
