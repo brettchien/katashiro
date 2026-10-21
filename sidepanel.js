@@ -173,10 +173,7 @@ class SessionState {
     this.promptQueue = [];
     this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
-    this.lastPrompt = null;                              // last turn's text, for retry (never the host line)
-    this.lastImages = [];                                // …and its images, so a retry re-sends them
     this.queuedMsgIds = [];                              // read receipt: user messages waiting in promptQueue
-    this.lastMsgIds = [];                                // …and those of the last turn, for retry
     this.turnHeard = false;                              // a session/update or tunnel call arrived for the turn in flight
     this.staleTurns = 0;                                 // timed-out turns (socket open) not answered yet
     this.stream = null;                                  // { bubble, text } while streaming
@@ -524,6 +521,7 @@ class Conn {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
     }
+    this.clearStalePrompts();                            // onclose is detached: forget its turns here
     clearTimeout(this.reconnectTimer);
     this.online = false;
     this.initialized = false;
@@ -628,6 +626,7 @@ class Conn {
       this.ws.close();
       this.ws = null;
     }
+    this.clearStalePrompts();                            // onclose is detached: forget its turns here
     this.online = false;
     this.initialized = false;
     this.socketGen++;
@@ -861,9 +860,10 @@ class Conn {
       if (st.pendingImages.length) st.promptQueue.push("");
     }
     if (!text && images.length === 0) return;            // nothing sendable — stay idle
-    st.lastPrompt = text;                                // remember for retry (the whole batch, no host line)
-    st.lastImages = images;
-    st.lastMsgIds = msgIds;
+    // Kept for this turn's error bubble's 重試 (the whole batch, no host line): that turn exactly,
+    // not "the last one" — a pool-busy turn flushes the queue at once, so a later turn may have gone
+    // out before 重試 is clicked (#180 review: Jellyfish).
+    const turn = { text, images, msgIds };
     st.turnActive = true;
     st.turnHeard = false;
     // Read receipt: set as the batch goes out in session/prompt (the gateway answers that request
@@ -904,7 +904,7 @@ class Conn {
           renderConvTabs();
           st.stream.text = "";                           // drop the line: finalize removes the empty row
           this.finalizeStream(undefined, st);
-          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryLast(st)));
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryTurn(st, turn)));
           if (st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
           this.flushQueue(st);
           return;
@@ -965,12 +965,12 @@ class Conn {
           const why = /\(max\)/.test(String(err))
             ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
             : `回合 ${RoomCore.TURN_IDLE_TIMEOUT_MS / 60000} 分鐘沒有任何動靜`;
-          this.inState(st, () => appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast(st)));
+          this.inState(st, () => appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryTurn(st, turn)));
         } else {
           this.finalizeStream("error", st);              // render any partial reply, then a distinct
           // §5: the pool is shared with Discord and usercron; "pool exhausted" is said plainly and
           // never retried automatically — 重試 is the user's call.
-          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryLast(st))); // error bubble
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryTurn(st, turn))); // error bubble
         }
         // Q9: a background turn that ended badly is said too (a requeued one has not ended).
         if (action !== "requeue" && st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
@@ -1013,16 +1013,17 @@ class Conn {
   // Re-send the last turn (after an error / stop). If the socket isn't live, reconnect first and
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
-  retryLast(st = this.cur) {
+  // 重試 on a failed turn's error bubble: re-send exactly that turn ({ text, images, msgIds }).
+  retryTurn(st, turn) {
     // Its conversation must still be open (P2: on screen or not — the button is in its own list) and
     // bound to this agent. A stale error bubble of a Conn that is no longer wanted (its last
     // conversation archived) must NOT `connect()` it (review: Orca, the C2 race; §2.7).
     if (!st || this.states.get(st.convId) !== st) return;
     if (!this.enabled || convAgentUrl(st.convId) !== this.agent.url) return;
-    if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
-    st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
-    st.queuedMsgIds.push(...st.lastMsgIds);              // read receipt: tagged when the retry goes out
-    st.pendingImages.push(...st.lastImages);
+    if ((!turn.text && turn.images.length === 0) || st.turnActive) return;
+    st.promptQueue.push(turn.text || "");                // "" still carries an image-only turn
+    st.queuedMsgIds.push(...turn.msgIds);                // read receipt: tagged when the retry goes out
+    st.pendingImages.push(...turn.images);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized) this.openSession(st);   // flushes once ready
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }
@@ -1081,7 +1082,6 @@ class Conn {
     if (d.reconnect) {
       this.stopHeartbeat();
       this.rejectAllPending("connection closed");        // fail-fast the now-confirmed-dead socket
-      this.clearStalePrompts();
       this.connect("heartbeat");                         // teardown + re-handshake (resume re-declares tunnel)
     }
   }

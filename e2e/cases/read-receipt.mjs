@@ -129,6 +129,27 @@ export default [
     },
   },
   {
+    name: "重試 on an earlier pool-busy turn re-sends that turn, not a later one, and tags its message",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const sid = await h.namedConversation(ctx, panel, "Alpha", { fresh: false });
+      const errorsOnScreen = () => panel.evaluate(() => Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelectorAll(".error-bubble").length);
+      gw.poolBusy = true;
+      await h.send(panel, "busy one");
+      await h.until(null, async () => (await errorsOnScreen()) >= 1, "the first error bubble");
+      await h.send(panel, "busy two");
+      await h.until(null, async () => (await errorsOnScreen()) >= 2, "the second error bubble");
+      gw.poolBusy = false;
+      const since = gw.prompts.length;
+      await panel.evaluate(() => Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelectorAll(".error-bubble .retry-btn")[0].click());
+      const p = await gw.waitPrompt((x) => x.sessionId === sid, { since });
+      t.check(/busy one/.test(p.userText) && !/busy two/.test(p.userText), "the first bubble's 重試 sends the first turn", p.userText);
+      await h.idle(panel);
+      t.check((await readOf(panel, "busy one")) === "read", "its message is read now");
+      t.check((await readOf(panel, "busy two")) === "", "the later one is still unread", await sentRows(panel, "busy two"));
+    },
+  },
+  {
     name: "a socket dropped mid-turn: the resent message keeps its read tag",
     async run(ctx, t) {
       const { gw, panel } = ctx;
