@@ -2079,6 +2079,7 @@ function afterShow() {
   updateRoster();
   updateStopButton();
   renderConvTabs();
+  scheduleSelAsk();                                      // a 💬 on the old conversation's selection goes
 }
 
 function showConversation(id) {
@@ -5257,8 +5258,11 @@ window.addEventListener("resize", scheduleSelAsk);
 // mousedown would clear the selection before the click lands.
 selAskPill.addEventListener("mousedown", (e) => e.preventDefault());
 selAskPill.addEventListener("click", () => {
-  if (!selAsk) return;
-  const { target, text } = selAsk;
+  // Re-checked on click: the shown 💬 may be stale (the conversation switched without a
+  // selectionchange, the message was trimmed). mousedown kept the selection, so it is still there.
+  const s = chatSelection();
+  if (!s) { selAsk = null; selAskPill.hidden = true; return; }
+  const { target, text } = s;
   selAsk = null;
   selAskPill.hidden = true;
   const sel = document.getSelection();
