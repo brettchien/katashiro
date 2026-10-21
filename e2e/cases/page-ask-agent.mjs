@@ -173,7 +173,8 @@ export default [
       await rightClick(page, "#card");
       const inp = await menuClick(ctx, tabId, { editable: true });
       t.check(inp && inp.element && inp.element.name === "Card number" && !JSON.stringify(inp).includes("4111"), "an input: its name only, never its value", inp && inp.element);
-      // ✕ cancels.
+      // ✕ cancels (once the input's chip has landed — the menu click fills it asynchronously).
+      await waitChip(panel, "Card number");
       await panel.evaluate(() => document.querySelector("#reply-chip .reply-chip-cancel").click());
       t.check(await chipText(panel) === null, "✕ cancels the chip");
     },
