@@ -25,6 +25,8 @@ The manifest and the four extension pages (`sidepanel.html`, `canvas.html`, `can
 - `src/background.js`: Service worker; opens the side panel from the toolbar icon, registers the right-click **💬 Ask agent** item and hands what was right-clicked to the panel, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
 - `sidepanel.html` / `src/sidepanel/sidepanel.css`: The side panel's layout and styles.
 - `src/sidepanel/sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
+- `src/sidepanel/canvas-glue.js`: The side panel's canvas glue — canvas store and folder mirror, opening and finding canvas tabs, the canvas tab group + Split View, one tab group per conversation. Loaded before `sidepanel.js`; declarations only.
+- `src/sidepanel/cards.js`: The side panel's chat cards — the 🔒 confirm card, the ask_user card, the ⚡ command menu and its commands. Loaded before `sidepanel.js`; declarations only.
 - `src/mcp/browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
 - `src/core/room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
 - `src/core/conv-core.js`: Pure multi-conversation logic — storage layout, the open set (at most 3 across windows), adoption after a browser restart, titles, agent binding. See [`docs/adr/multi-conversation.md`](docs/adr/multi-conversation.md) and [`docs/adr/agent-per-conversation.md`](docs/adr/agent-per-conversation.md).
