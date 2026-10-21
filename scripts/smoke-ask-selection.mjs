@@ -33,7 +33,7 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
 const HOST = `<!doctype html><meta charset="utf-8"><body style="margin:0">
 <div style="height:40px">header</div>
 <iframe id="f" sandbox="allow-scripts allow-modals" src="/canvas-frame.html#nonce0" style="display:block;margin-left:30px;width:900px;height:500px;border:0"></iframe>
-<script src="/canvas-core.js"></script>
+<script src="/src/core/canvas-core.js"></script>
 <script>
   window.__msgs = [];
   addEventListener("message", (e) => { if (e.data && e.data.nonce === "nonce0") __msgs.push(e.data); });

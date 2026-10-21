@@ -5,7 +5,7 @@ reaches *into* the browser. OpenAB opens a tunnel over the existing `/acp` WebSo
 MCP to us — we are the **server**, the agent is the client. That is the only way to reach a
 browser tab, which no outside process can dial into.
 
-`browser-mcp.js` is meant to be read as the reference implementation. If you want to serve your
+`src/mcp/browser-mcp.js` is meant to be read as the reference implementation. If you want to serve your
 own tools this way, you need exactly three things:
 
 1. **Declare the server** in your `session/new` params, alongside any normal MCP servers:
@@ -37,7 +37,7 @@ that was never granted a tunnel to it.
 
 Two conventions worth copying:
 
-- **One registry, not two lists.** `TOOLS` in `browser-mcp.js` holds each tool's schema *and*
+- **One registry, not two lists.** `TOOLS` in `src/mcp/browser-mcp.js` holds each tool's schema *and*
   its implementation in the same entry, and the `tools/list` payload is derived from it. A tool
   cannot be advertised without an implementation, or implemented without being discoverable.
 - **Namespace your tool names.** Ours are `katashiro.*`. A bare `browser.*` collided with a

@@ -4,7 +4,7 @@
 // `history:<windowId>` — including runs cut short at every storage step and a downgrade round trip.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const C = require("../conv-core.js");
+const C = require("../src/core/conv-core.js");
 
 const ID = (n) => `c_${String(n).padStart(12, "0")}`;
 const DAY = 864e5;
@@ -211,7 +211,7 @@ test("A′ reconnectHintDecision: each case of the rule", () => {
 });
 
 test("U2 + reply hint: the host line before the batch keeps batchWithReplyHint's endsWith strip working on a retry", () => {
-  const R = require("../room-core.js");
+  const R = require("../src/core/room-core.js");
   const a = R.framePrompt({ timestamp: 1, senderName: "user" }, "one");
   const b = R.framePrompt({ timestamp: 2, senderName: "user" }, "two");
   const batch = R.batchWithReplyHint([a, b]);                  // what a turn keeps for 重試 (no host line)
@@ -562,7 +562,7 @@ test("pushRefusal: open in another live window with its panel closed vs archived
 });
 
 // --- §7.1 deleting a conversation ----------------------------------------------------------------
-const CanvasStore = require("../canvas-store.js");
+const CanvasStore = require("../src/core/canvas-store.js");
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const PNG2 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 

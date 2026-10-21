@@ -2,7 +2,7 @@
 // cannot add lines to the card, 2 minutes without an answer declines, the first decision wins.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const C = require("../confirm-core.js");
+const C = require("../src/core/confirm-core.js");
 
 // Built from code points so this file holds no invisible characters.
 const ch = (...cps) => String.fromCodePoint(...cps);

@@ -3,7 +3,7 @@
 // counts only visible time.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const A = require("../ask-core.js");
+const A = require("../src/core/ask-core.js");
 
 // Built from code points so this file holds no invisible characters.
 const ch = (...cps) => String.fromCodePoint(...cps);

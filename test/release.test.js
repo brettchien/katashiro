@@ -1,8 +1,8 @@
 // release.test.js — the release zip must ship every file the extension loads.
 //
-// release.yml packages an explicit file list (runtime files only). A script added to
-// sidepanel.html but not to that list works from a git checkout and breaks only in the
-// release zip — which is how v2.4.0 shipped without jev-grounding.js.
+// release.yml packages runtime files only: manifest.json, the root *.html pages and the src/,
+// vendor/ and icons/ directories. A script loaded from anywhere else works from a git checkout
+// and breaks only in the release zip — which is how v2.4.0 shipped without jev-grounding.js.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -19,8 +19,10 @@ function zipEntries() {
 }
 
 function shipped(entries, file) {
-  // A directory entry (e.g. `page`, `vendor`) covers everything beneath it.
-  return entries.some((e) => file === e || file.startsWith(e + "/"));
+  // A directory entry (e.g. `src`, `vendor`) covers everything beneath it; a root glob like
+  // `*.html` (the shell expands it in the repo root) covers the matching top-level files.
+  return entries.some((e) => file === e || file.startsWith(e + "/") ||
+    (e.startsWith("*.") && !file.includes("/") && file.endsWith(e.slice(1))));
 }
 
 test("release zip includes every script sidepanel.html loads", () => {
@@ -30,13 +32,14 @@ test("release zip includes every script sidepanel.html loads", () => {
   for (const s of scripts) assert.ok(shipped(entries, s), `${s} is loaded by sidepanel.html but missing from the release zip`);
 });
 
-test("release zip includes the manifest's entry points and icons", () => {
+test("release zip includes the manifest's entry points, content scripts and icons", () => {
   const entries = zipEntries();
   const manifest = JSON.parse(read("manifest.json"));
   const files = [
     "manifest.json",
     manifest.background.service_worker,
     manifest.side_panel.default_path,
+    ...manifest.content_scripts.flatMap((c) => c.js || []),
     ...Object.values(manifest.icons),
     ...Object.values(manifest.action.default_icon),
   ];
@@ -57,7 +60,7 @@ test("release zip includes the canvas pages and everything they load (ADR canvas
 
 test("release zip includes the vendor files canvas-frame.js loads on demand (Milkdown, mermaid)", () => {
   const entries = zipEntries();
-  const refs = [...read("canvas-frame.js").matchAll(/"(vendor\/[^"]+)"/g)].map((m) => m[1]);
+  const refs = [...read("src/canvas/canvas-frame.js").matchAll(/"(vendor\/[^"]+)"/g)].map((m) => m[1]);
   assert.ok(refs.includes("vendor/mermaid/mermaid.tiny.js"), "canvas-frame.js no longer loads mermaid?");
   for (const r of refs) {
     assert.ok(fs.existsSync(path.join(root, r)), `${r} is loaded by canvas-frame.js but not in the repo`);
@@ -67,9 +70,11 @@ test("release zip includes the vendor files canvas-frame.js loads on demand (Mil
 
 test("release zip includes every script the service worker importScripts (conv-core.js, …)", () => {
   const entries = zipEntries();
-  const calls = [...read("background.js").matchAll(/importScripts\(([^)]*)\)/g)];
-  const files = calls.flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
-  assert.ok(files.includes("conv-core.js"), "background.js no longer loads conv-core.js?");
+  // importScripts resolves against the worker's own URL (src/background.js), not the extension root.
+  const worker = JSON.parse(read("manifest.json")).background.service_worker;
+  const calls = [...read(worker).matchAll(/importScripts\(([^)]*)\)/g)];
+  const files = calls.flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((x) => path.posix.join(path.posix.dirname(worker), x[1])));
+  assert.ok(files.includes("src/core/conv-core.js"), "background.js no longer loads conv-core.js?");
   for (const f of files) {
     assert.ok(fs.existsSync(path.join(root, f)), `${f} is imported by background.js but not in the repo`);
     assert.ok(shipped(entries, f), `${f} is imported by background.js but missing from the release zip`);

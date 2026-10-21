@@ -2,7 +2,7 @@
 // title / content search with NFKC + case folding, the content-read cap, and formatting.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const G = require("../canvas-gallery-core.js");
+const G = require("../src/core/canvas-gallery-core.js");
 
 const NOW = new Date(2026, 9, 11, 12, 0, 0).getTime();    // local time, so formats are TZ-independent
 const meta = (o) => ({
@@ -134,7 +134,7 @@ test("mermaid canvases: their own icon and label, and their source is searchable
 });
 
 test("buildRows: with CanvasStore.footprint the size is the whole version history (§3.5, §3.6)", () => {
-  const CanvasStore = require("../canvas-store.js");
+  const CanvasStore = require("../src/core/canvas-store.js");
   const history = [{ v: 2, bytes: 1024 }, { v: 3, bytes: 1024 }, { v: 4, bytes: 2048 }];
   const [r] = G.buildRows([meta({ id: "cv_000000000001", version: 4, bytes: 2048, history })], { now: NOW, footprint: CanvasStore.footprint });
   assert.equal(r.bytes, 4096);
@@ -171,7 +171,7 @@ test("buildRows: the 對話 column shows the conversation's title when known (mu
 });
 
 test("conversationDeleteSummary: that conversation's canvases, stored versions, distinct images, bytes, mirrored", () => {
-  const CanvasStore = require("../canvas-store.js");
+  const CanvasStore = require("../src/core/canvas-store.js");
   const metas = [
     { id: "cv_000000000001", conversationId: "c_a", version: 3, bytes: 10, history: [{ v: 1, bytes: 5 }, { v: 2, bytes: 6 }, { v: 3, bytes: 10 }] },
     { id: "cv_000000000002", conversationId: "c_a", kind: "image", version: 2, bytes: 120, file: { folder: "f" },

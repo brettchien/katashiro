@@ -2,7 +2,7 @@
 // beside refusals, two canvases, and moving a canvas tab back after a split.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const T = require("../canvas-tabs.js");
+const T = require("../src/core/canvas-tabs.js");
 
 const BASE = "chrome-extension://abc/canvas.html";
 const NONE = T.TAB_GROUP_NONE;

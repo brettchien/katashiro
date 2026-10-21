@@ -15,35 +15,37 @@ dev tooling only (puppeteer-core for the headless smokes); see
 2. Open `chrome://extensions/` and enable **Developer mode**.
 3. Click **Load unpacked** and select the project folder.
 4. Edit the source, then hit the **↻ reload** button on the extension card to
-   pick up changes. Reload the Side Panel to re-run `sidepanel.js`.
+   pick up changes. Reload the Side Panel to re-run `src/sidepanel/sidepanel.js`.
 
 ## Project structure
 
+The manifest and the four extension pages (`sidepanel.html`, `canvas.html`, `canvas-gallery.html`, `canvas-frame.html`) stay at the repo root, so the unpacked folder and the canvas tab URLs never change; their scripts and styles live under `src/` — `src/core/` (pure logic, also `require`d by the Node tests), `src/mcp/`, `src/sidepanel/`, `src/canvas/`, `src/page/` (scripts injected into web pages) and the service worker `src/background.js` (its `importScripts` paths are relative to `src/`).
+
 - `manifest.json`: Manifest V3, with the Side Panel API.
-- `background.js`: Service worker; opens the side panel from the toolbar icon, registers the right-click **💬 Ask agent** item and hands what was right-clicked to the panel, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
-- `sidepanel.html` / `sidepanel.css`: The side panel's layout and styles.
-- `sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
-- `browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
-- `room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
-- `conv-core.js`: Pure multi-conversation logic — storage layout, the open set (at most 3 across windows), adoption after a browser restart, titles, agent binding. See [`docs/adr/multi-conversation.md`](docs/adr/multi-conversation.md) and [`docs/adr/agent-per-conversation.md`](docs/adr/agent-per-conversation.md).
-- `composer.js`: Pure rules for pasted images and dropped files — what to intercept, type and size limits, and how text + attachments become an ACP `session/prompt`. See [`docs/adr/chat-attachments.md`](docs/adr/chat-attachments.md).
-- `agent-tools.js`: Maps the agent's own tool-call updates (ACP `tool_call` / `tool_call_update`) to tool-strip pills.
-- `ask-core.js`: The pure half of `katashiro.ask_user` — question rules, how a card settles, its visible-time clock, the answer text. See [`docs/adr/ask-user.md`](docs/adr/ask-user.md).
-- `confirm-core.js`: The pure half of the panel's 🔒 confirm card — text rules and the one-shot decision state machine.
-- `command-core.js`: The pure half of the ⚡ command menu — its entries, keys and shortcuts, what counts as a typed command, when one is refused, and parsing the OpenAB gateway's `/reset`, `/models` and `/model set` replies (formats pinned by `test/fixtures/openab-slash-replies.json`). See [docs/features.md → ⚡ Commands](docs/features.md).
-- `jev-grounding.js`: Optional Jev (TypeSafe) decision helper behind `assert`, `click_text` and `type_text` (BYO OpenRouter key).
-- `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
-- `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
-- `page/ctx-target.js`: The one manifest content script (every page and frame) — remembers the target of the last trusted right-click, and whether text was selected before it, for **💬 Ask agent**.
-- `page-ask-core.js`: The pure half of 💬 Ask agent on a web page — the menu, the selection-or-element choice, the in-page reader / element describer / selector builder (also `get_selection`'s reader), the payload and its checks, the conversation choice, the chip, the prompt block and the history record. See [`docs/adr/page-send-to-agent.md`](docs/adr/page-send-to-agent.md).
+- `src/background.js`: Service worker; opens the side panel from the toolbar icon, registers the right-click **💬 Ask agent** item and hands what was right-clicked to the panel, and on install / update / browser start runs the conversation-storage migration, finishes conversation deletes a closed gallery tab left half done, and removes canvases older versions stored for incognito windows.
+- `sidepanel.html` / `src/sidepanel/sidepanel.css`: The side panel's layout and styles.
+- `src/sidepanel/sidepanel.js`: The side panel — WebSocket connections, storage, reconnects, message rendering.
+- `src/mcp/browser-mcp.js`: The MCP server we serve back to the agent over the ACP tunnel — tool registry, schemas, and DOM tool bodies. See [Serving an MCP server over reverse MCP-over-ACP](docs/mcp-over-acp.md).
+- `src/core/room-core.js`: Pure panel logic — prompt framing and batching, heartbeat and reconnect decisions, roster status.
+- `src/core/conv-core.js`: Pure multi-conversation logic — storage layout, the open set (at most 3 across windows), adoption after a browser restart, titles, agent binding. See [`docs/adr/multi-conversation.md`](docs/adr/multi-conversation.md) and [`docs/adr/agent-per-conversation.md`](docs/adr/agent-per-conversation.md).
+- `src/core/composer.js`: Pure rules for pasted images and dropped files — what to intercept, type and size limits, and how text + attachments become an ACP `session/prompt`. See [`docs/adr/chat-attachments.md`](docs/adr/chat-attachments.md).
+- `src/core/agent-tools.js`: Maps the agent's own tool-call updates (ACP `tool_call` / `tool_call_update`) to tool-strip pills.
+- `src/core/ask-core.js`: The pure half of `katashiro.ask_user` — question rules, how a card settles, its visible-time clock, the answer text. See [`docs/adr/ask-user.md`](docs/adr/ask-user.md).
+- `src/core/confirm-core.js`: The pure half of the panel's 🔒 confirm card — text rules and the one-shot decision state machine.
+- `src/core/command-core.js`: The pure half of the ⚡ command menu — its entries, keys and shortcuts, what counts as a typed command, when one is refused, and parsing the OpenAB gateway's `/reset`, `/models` and `/model set` replies (formats pinned by `test/fixtures/openab-slash-replies.json`). See [docs/features.md → ⚡ Commands](docs/features.md).
+- `src/core/jev-grounding.js`: Optional Jev (TypeSafe) decision helper behind `assert`, `click_text` and `type_text` (BYO OpenRouter key).
+- `src/core/markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
+- `src/page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).
+- `src/page/ctx-target.js`: The one manifest content script (every page and frame) — remembers the target of the last trusted right-click, and whether text was selected before it, for **💬 Ask agent**.
+- `src/core/page-ask-core.js`: The pure half of 💬 Ask agent on a web page — the menu, the selection-or-element choice, the in-page reader / element describer / selector builder (also `get_selection`'s reader), the payload and its checks, the conversation choice, the chip, the prompt block and the history record. See [`docs/adr/page-send-to-agent.md`](docs/adr/page-send-to-agent.md).
 - `vendor/`: Prebuilt, eval-free IIFE bundles (MV3 `script-src 'self'`): `dom-accessibility-api`, `markdown-it`, `dompurify`, `highlight.js`; for the canvas frame only, `reveal.js`, Milkdown crepe and `@mermaid-js/tiny`. Rebuild steps in [`vendor/BUILD.md`](vendor/BUILD.md).
 - `skills/`: Agent skills that ship with Katashiro — install them into your agent (see [README → Agent skills](README.md#-agent-skills)).
-- `canvas.html` / `canvas.js` (with `canvas-core.js`, `canvas-store.js`, `canvas-tabs.js`, `canvas-mirror.js` and the sandboxed `canvas-frame.html`): canvases, one tab each. `canvas-gallery.html` / `canvas-gallery.js` (with `canvas-gallery-core.js`): the canvas gallery. See [`docs/adr/canvas.md`](docs/adr/canvas.md).
+- `canvas.html` / `src/canvas/canvas.js` (with `src/core/canvas-core.js`, `src/core/canvas-store.js`, `src/core/canvas-tabs.js`, `src/core/canvas-mirror.js` and the sandboxed `canvas-frame.html`): canvases, one tab each. `canvas-gallery.html` / `src/canvas/canvas-gallery.js` (with `src/core/canvas-gallery-core.js`): the canvas gallery. See [`docs/adr/canvas.md`](docs/adr/canvas.md).
 - `test/`: `node --test` suites. No Chrome required; `chrome.*`, `crypto`, and the socket are mocked.
 - `scripts/`: smoke tests in a real headless Chrome (`smoke-*.mjs`, run by `npm run smoke`), the two-session ACP check against a real gateway (`acp-two-sessions.mjs`, see [docs/testing.md](docs/testing.md#p2-prerequisite-two-session-test)), the release build stamp, and vendor rebuild helpers.
 - `e2e/`: end-to-end tests of the real extension and side panel against a fake ACP gateway (`npm run e2e`; see [`e2e/README.md`](e2e/README.md)).
 - `docs/adr/`: the design decisions behind each feature (canvas, multi-conversation, agent per conversation, ask_user, attachments, tunnel liveness, …).
-- `icon*.png`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
+- `icons/`: The extension icon set — `icon16/32/48/128.png` (manifest icons + toolbar) plus `icon.png` (side-panel brand logo). Cyberpunk digital paper-doll with neon circuitry.
 
 
 ## Running the tests
@@ -83,7 +85,7 @@ checks that a diagram error notice in the canvas header belongs to the render it
 ## Code style
 
 - Vanilla JS, no framework. Match the surrounding style (2-space indent, `const`/`let`, small focused functions).
-- Render agent- or network-sourced text via `textContent` — **except the chat message body**, which is markdown and may reach `innerHTML` **only** through the single `renderMarkdown`/DOMPurify sink (`markdown.js`). No other `innerHTML` of remote data.
+- Render agent- or network-sourced text via `textContent` — **except the chat message body**, which is markdown and may reach `innerHTML` **only** through the single `renderMarkdown`/DOMPurify sink (`src/core/markdown.js`). No other `innerHTML` of remote data.
 - Keep comments in English; user-facing UI strings may be Traditional Chinese.
 - **No secrets.** Never commit tokens, keys, or private endpoints. `ws://localhost:8080/acp` is the only endpoint placeholder.
 
@@ -91,7 +93,7 @@ checks that a diagram error notice in the canvas header belongs to the render it
 
 - **Design first.** A feature that changes behaviour beyond one module gets an ADR in
   [`docs/adr/`](docs/adr/) before the code (see the existing ones for the shape).
-- **A new browser tool** is one entry in `TOOLS` in `browser-mcp.js`: schema and implementation
+- **A new browser tool** is one entry in `TOOLS` in `src/mcp/browser-mcp.js`: schema and implementation
   together, so `tools/list` is derived from it. Name it `katashiro.<verb>`, and:
   - mark `write: true` if it acts on a page or on tabs on the user's behalf (act mode gates it);
     side-panel features — canvases, `notify`, `ask_user` — are not writes, even when they open a tab;

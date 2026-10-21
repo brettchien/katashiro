@@ -9,7 +9,7 @@ side panel. The E2E cases here do:
   version pinned in `package.json` `config.chromeVersion`, new headless — not
   `chrome-headless-shell`, which cannot load extensions), a fresh profile per scenario.
 - **The real side panel**: opened the way the user does, a click on the toolbar icon (CDP
-  `Extensions.triggerAction`; `background.js` sets `openPanelOnActionClick`). Puppeteer attaches to
+  `Extensions.triggerAction`; `src/background.js` sets `openPanelOnActionClick`). Puppeteer attaches to
   the side panel's own page target.
 - **A fake gateway** (`fake-gateway.mjs`): a Node WebSocket server speaking the ACP subset
   Katashiro uses, scriptable per test: hold a prompt, stream chunks into any session, end a turn,

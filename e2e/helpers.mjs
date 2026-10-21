@@ -101,7 +101,7 @@ export const controlUrl = (ctx) => ctx.ext(`e2e/control.html?n=${++controlSeq}`)
 
 /** (Re)find the extension's service worker, its id and a control page. After a reload too. */
 export async function attachExtension(ctx) {
-  const swTarget = await ctx.browser.waitForTarget((t) => t.type() === "service_worker" && t.url().endsWith("/background.js"), { timeout: 15000 });
+  const swTarget = await ctx.browser.waitForTarget((t) => t.type() === "service_worker" && t.url().endsWith("/src/background.js"), { timeout: 15000 });
   ctx.extId = new URL(swTarget.url()).host;
   ctx.swTarget = swTarget;
   ctx.ext = (p) => `chrome-extension://${ctx.extId}/${p}`;

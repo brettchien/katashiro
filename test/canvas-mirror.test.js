@@ -3,8 +3,8 @@
 // incognito leftovers (noMirror), and catch-up — on a fake FileSystemDirectoryHandle.
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const CanvasStore = require("../canvas-store.js");
-const M = require("../canvas-mirror.js");
+const CanvasStore = require("../src/core/canvas-store.js");
+const M = require("../src/core/canvas-mirror.js");
 
 function memStorage() {
   const data = {};

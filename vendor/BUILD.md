@@ -28,7 +28,7 @@ getRole, isInaccessible, isDisabled }`.
 
 The chat markdown pipeline (ADR `docs/adr/chat-markdown-rendering.md`): `markdownit` renders
 message markdown → HTML, `DOMPurify` sanitizes it. Both exposed as browser globals (`markdownit`,
-`DOMPurify`) and consumed by `markdown.js`'s `renderMarkdown` sink.
+`DOMPurify`) and consumed by `src/core/markdown.js`'s `renderMarkdown` sink.
 
 **DOMPurify is a *security* dependency** (ADR §3.1): mXSS bypasses are found and patched
 periodically, so a frozen bundle accrues latent XSS. Pin exact versions, watch cure53 / GHSA
@@ -48,7 +48,7 @@ Exposed as the global `hljs`. **Curated language subset** — ~a dozen common la
 - Source: `highlight.js@11.12.0` (BSD-3-Clause), core + registered languages:
   `javascript, typescript, python, rust, go, bash, shell, json, yaml, xml, css, sql, diff`.
 - Rebuild: `scripts/vendor-build/build.sh` — the language list is `scripts/vendor-build/entry-hljs.js`.
-  (Token colors live in `sidepanel.css` — a self-hosted GitHub-dark-ish `.hljs-*` subset, no CDN.)
+  (Token colors live in `src/sidepanel/sidepanel.css` — a self-hosted GitHub-dark-ish `.hljs-*` subset, no CDN.)
 - Verified: eval-free (grep → 0); `hljs.listLanguages()` = the 13 registered above; `hljs.highlight`
   emits `<span class="hljs-…">` tokens.
 
@@ -63,7 +63,7 @@ Slides in the canvas (ADR `docs/adr/canvas.md` §3.3), loaded only by the sandbo
 - **Why dracula**: most bundled themes `@import` Google Fonts (blocked by the sandbox CSP, which
   would report violations) or embed ~570 KB of data: fonts; dracula has no `@import` and no
   `url()`, and uses system fonts. Our palette and CJK fonts are layered on top in
-  `canvas-slides.css`.
+  `src/canvas/canvas-slides.css`.
 - No markdown plugin: the canvas splits slides itself and renders each through markdown-it +
   DOMPurify (ADR §3.3), so reveal only receives sanitized `<section>`s.
 - Verified: eval-free (`grep -cE '\beval\(|Function\('` → 0).
