@@ -2,14 +2,16 @@
 // command menu with its commands and command cards. Moved verbatim out of sidepanel.js (plan B,
 // step 1); no logic change.
 //
-// Classic script, loaded by sidepanel.html BEFORE sidepanel.js; all scripts share one global scope.
-// Load-order rule: this file holds declarations only. Its top level must not run anything that
-// touches a name declared in sidepanel.js (DOM refs, room state, …) — that would be a TDZ
-// ReferenceError at load. Function bodies are fine: they run later, after sidepanel.js has loaded.
+// Classic script, loaded by sidepanel.html after composer-ui.js and canvas-glue.js and BEFORE
+// sidepanel.js; all scripts share one global scope. Load-order rule: this file holds declarations
+// only. Its top level must not run anything that touches a name declared in sidepanel.js (DOM refs,
+// room state, …) — that would be a TDZ ReferenceError at load. Function bodies may use names from
+// any file, sidepanel.js included: they only run once every script has loaded.
 // The wiring that runs at load (the ⚡ button and outside-click listeners, the ask card's
 // visibilitychange listener) stays in sidepanel.js, at the spot these sections came from, as do the
-// sending / canvas-message code that sat in the command section and the notifications + message ids
-// that sat at the end of the ask section (not cards).
+// sending / canvas-message code that sat in the command section (its sendMessage / afterPageSend
+// later moved to composer-ui.js) and the notifications + message ids that sat at the end of the ask
+// section (not cards).
 
 // --- ⚡ command menu and commands (command-core.js) ------------------------------------------------
 // Cancel / Reset session / Switch model. Opened by ⚡ (the slot ⏹ takes while a reply runs), by
