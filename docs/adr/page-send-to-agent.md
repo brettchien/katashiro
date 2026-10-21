@@ -326,8 +326,9 @@ user selected it and pressed Enter, so this is accepted.
 - **Q4 — the focus (17:36 TPE).** Accepted: the focus stays in the page and the user clicks into
   the panel to type (§2.4).
 - **Q5 — sites with their own context menu (17:38 TPE, as proposed).** No other way in for now:
-  on Docs, Sheets, Figma and the like, the user selects text and asks the agent in the chat to read
-  it with `get_selection`. A keyboard shortcut (`commands`, the last trusted right-click target,
+  these sites have no entry point. Asking in the chat for `get_selection` helps only where the page
+  has a real DOM selection; canvas-rendered editors (Docs, Sheets, Figma) have none, so it reads
+  nothing there. A keyboard shortcut (`commands`, the last trusted right-click target,
   a gesture check in real Chrome) can come later if it is missed.
 - **Q6 — the tab closed or navigated before Enter (17:38 TPE, as proposed).** Sent as read at the
   click, with a note; the working tab only if the tab is still open (§2.4).
