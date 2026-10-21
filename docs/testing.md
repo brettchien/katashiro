@@ -225,6 +225,30 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   Select inside a code block and across a line break: the selection arrives whole. No 💬 for a
   selection across two messages, over a name or time, in a reply still streaming, or in a
   conversation whose agent was removed. Reload the panel: the quote still shows the selection.
+- **💬 Ask agent on a web page (ADR page-send-to-agent §4).** `npm run e2e -- page-ask` covers the
+  handler path with a synthesized menu `info` (the chip, the prompt, the working tab, the history,
+  a page's synthetic `contextmenu`, the panel opened afterwards); these need real Chrome:
+  - The menu shows one **💬 Ask agent** at the top level (not under Katashiro's name) on http / https
+    / file pages, and not on Katashiro's own pages (canvas, gallery, panel).
+  - **With the panel closed**, right-click a page → 💬 Ask agent: the panel opens (the user gesture)
+    and shows the chip 📄 針對〈title〉的元素 … ; the input flashes, its placeholder reads 點這裡輸入問題
+    until you click into it; type and press Enter.
+  - Right-click: plain paragraph text, an element in an **iframe** (prompt says `frame: <url>`, no
+    selector), an element in a **shadow root** (`in a shadow root`), a **link** (🔗 host/…), an
+    **image** (`src:`), a **text field** and a **contenteditable** (name only, no text — then select
+    some text in it and right-click the selection: it is sent).
+  - A tab opened **before** installing / updating Katashiro: right-click an element → 這個頁面讀不到右鍵點到的元素（重新載入頁面再試一次）;
+    reload it and try again.
+  - A **file://** page with *Allow access to file URLs* off: an element → 要讀本機檔案頁面，請在擴充功能設定開啟「允許存取檔案網址」;
+    a selection still works (Chrome's selection text).
+  - A page that dispatches its own synthetic `contextmenu`: the target is still what you right-clicked.
+  - Close the tab, or navigate it, between the click and Enter: the prompt says
+    `(the tab has since been closed)` / `(the tab has since navigated to …)`.
+  - **macOS**: right-click (and Ctrl+click) on paragraph text with nothing selected → the element
+    (the paragraph), not the word under the pointer; with a selection → the selection; the keyboard
+    menu key (no press) → Chrome's selection text decides.
+  - A tab in the group of a conversation open in this panel → that conversation (switched to); a tab
+    in another window's conversation's group → the conversation on screen, and the tab is not moved.
 - **Confirm card (#80):** ask an agent to `canvas_delete` a canvas. A 🔒 card with an amber double
   border appears in its turn, with 允許 / 拒絕; while it waits, other agents keep replying (nothing
   freezes). Open the canvas in a tab first and the card says so. Click 拒絕 → 已拒絕 and the agent
