@@ -1571,6 +1571,7 @@ loadConfig().then(async (r) => {
     updateRoster();
     markPanelReady();
     pickUpReopenRequest();
+    pickUpPageAsk();
   }
 );
 
@@ -1874,7 +1875,7 @@ function recordMessage(rec) {
 
 function replayMessage(rec) {
   if (rec.kind === "error") appendErrorMessage(rec.senderName, rec.text, null); // no retry on restore
-  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || null });
+  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || (rec.page ? { page: rec.page } : null) });
 }
 
 // Other panels write conv:index too (titles, archive, reopen): follow it, keeping this panel's own
@@ -2100,8 +2101,8 @@ function showConversation(id) {
   if (conv.unread) { conv.unread = false; renderConvTabs(); }   // P2 §5: ● goes once it is on screen
   stickToBottom = conv.stick !== false;
   if (stickToBottom) scrollToBottom(); else messagesList.scrollTop = conv.scrollTop;
-  // A reply chip quotes a message of the conversation it was set in.
-  if (replyTarget && !String(replyTarget.id || "").startsWith(`${id}:`)) setReplyTarget(null);
+  // A reply chip quotes a message of the conversation it was set in (a page target: was set for).
+  if (replyTarget && (replyTarget.page ? replyTarget.convId !== id : !String(replyTarget.id || "").startsWith(`${id}:`))) setReplyTarget(null);
   if (switching) restoreDraft(conv);
   if (convAgentMissing(id)) noteAgentMissing(conv); else conv.missingNoted = false;
   afterShow();
@@ -3252,10 +3253,13 @@ function noteAgentMissing(conv) {
   appendSystemMessage(ConvCore.AGENT_REMOVED_TEXT, conv);
 }
 const messageInputPlaceholder = messageInput.placeholder;
+// 💬 Ask agent on a page (§2.4): the panel cannot take the keyboard focus from the page, so until
+// the input gets it the placeholder says to click there (clearPageAskHint).
+let pageAskHint = false;
 function updateSendEnabled() {
   const missing = convAgentMissing(conversationId);      // agent-per-conversation §2.6: read-only
   messageInput.disabled = missing;
-  messageInput.placeholder = missing ? "agent 已移除：這段對話無法再傳訊息" : messageInputPlaceholder;
+  messageInput.placeholder = missing ? "agent 已移除：這段對話無法再傳訊息" : pageAskHint ? PageAskCore.INPUT_HINT : messageInputPlaceholder;
   sendBtn.disabled = missing || stagingPending > 0
     || (messageInput.value.trim().length === 0 && stagedImages.length === 0 && stagedFiles.length === 0);
 }
@@ -3540,6 +3544,14 @@ messagesList.addEventListener("click", (e) => {
   }
 });
 
+// Sends waiting for a page target's tab check (§2.4), in order: null when none is pending.
+let pageSendChain = null;
+function afterPageSend(fn) {
+  const p = (pageSendChain || Promise.resolve()).then(fn).catch((e) => console.warn("katashiro: send failed:", e));
+  pageSendChain = p;
+  p.then(() => { if (pageSendChain === p) pageSendChain = null; });
+}
+
 // Send a user turn to the on-screen conversation's agent, under a [time user (↩ quoted)] header
 // (RoomCore.framePrompt; the gateway adds its own sender_context on top).
 function sendMessage() {
@@ -3555,10 +3567,26 @@ function sendMessage() {
   if (capError) { appendSystemMessage(capError); return; }
   const replyTo = replyTarget;                           // what this message answers (or null)
   setReplyTarget(null);
-  if (!postUserText(text, images, replyTo, files).length) appendSystemMessage("訊息沒有送出：這段對話的 agent 目前沒有連線（看上方 chip 的狀態，或稍後再送）。");
-  // Q6 (multi-conversation §4.3): at the send — never mid-turn — bring the conversation's working
-  // tab to the front if the user is looking at another tab.
-  switchToWorkingTab(conversationId).catch(() => {});
+  const post = (pageAt) => {
+    if (!postUserText(text, images, replyTo, files, pageAt).length) appendSystemMessage("訊息沒有送出：這段對話的 agent 目前沒有連線（看上方 chip 的狀態，或稍後再送）。");
+    // Q6 (multi-conversation §4.3): at the send — never mid-turn — bring the conversation's working
+    // tab to the front if the user is looking at another tab.
+    switchToWorkingTab(conversationId).catch(() => {});
+  };
+  // 💬 Ask agent on a page (ADR page-send-to-agent §2.4): at Enter, look at the tab again — closed,
+  // or navigated to another document, is said in the prompt. That look is async, so this send (and
+  // any typed right after it) waits for it, in order; a plain send with none pending goes at once.
+  if (replyTo && replyTo.page) {
+    const cid = conversationId;
+    afterPageSend(async () => {
+      const at = PageAskCore.tabStateAtSend(replyTo.page, await getTab(replyTo.page.tabId));
+      if (conversationId !== cid) { appendSystemMessage("訊息沒有送出：送出前切換了對話，請再送一次。"); return; }
+      post(at);
+    });
+  } else if (pageSendChain) {
+    const cid = conversationId;
+    afterPageSend(() => { if (conversationId === cid) post(); else appendSystemMessage("訊息沒有送出：送出前切換了對話，請再送一次。"); });
+  } else post();
 
   messageInput.value = "";
   messageInput.style.height = "auto";
@@ -3572,10 +3600,12 @@ function sendMessage() {
 // input box and the canvas's Send to agent / Send error (which compose their text in the canvas tab,
 // §3.7). `files` (optional): dropped text files, expanded after the text in what the agent
 // receives. Returns the agents it was enqueued to ([] or [its agent]).
-function postUserText(text, images, replyTo, files) {
+function postUserText(text, images, replyTo, files, pageAt) {
   images = images || [];
   files = files || [];
   if (!currentConv) return [];
+  // 💬 Ask agent on a page: not a ↩ (that names a chat message); the page target follows the text.
+  const page = replyTo && replyTo.page ? replyTo.page : null;
   // Q4 (ADR ask-user §2.3): a message instead of answering closes the open ask cards OF THIS
   // CONVERSATION (multi-conversation §3.8); nothing is sent for them, this message goes out as usual.
   supersedePendingAsks(conversationId);
@@ -3586,14 +3616,18 @@ function postUserText(text, images, replyTo, files) {
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
     files: files.map((f) => ({ name: f.name, size: f.size })), // chips only; content is never kept
-    replyTo,
+    replyTo: page ? { page: PageAskCore.historyPage(page) } : replyTo,
   });
   // What the agent receives: a [time sender (↩ quoted)] header + the text, so a batched backlog
   // keeps its message boundaries and a reply says what it answers (RoomCore.framePrompt).
-  const framed = RoomCore.framePrompt({
-    timestamp: sentAt, senderName: "user",
-    replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text, selection: replyTo.selection },
-  }, RoomCore.withSelection(Composer.expandAttachments(text, files), replyTo && replyTo.selection));
+  // A page target (§2.5): the plain [time user] header, the text, then the page as fenced data.
+  const framed = page
+    ? RoomCore.framePrompt({ timestamp: sentAt, senderName: "user", replyTo: null },
+      PageAskCore.withPageTarget(Composer.expandAttachments(text, files), page, pageAt || {}))
+    : RoomCore.framePrompt({
+      timestamp: sentAt, senderName: "user",
+      replyTo: replyTo && { timestamp: replyTo.timestamp, senderName: promptName(replyTo.senderName), text: replyTo.text, selection: replyTo.selection },
+    }, RoomCore.withSelection(Composer.expandAttachments(text, files), replyTo && replyTo.selection));
 
   // A conversation's only recipient is its own agent (agent-per-conversation §2.7), and only while
   // this window wants it connected (`enabled`, user intent: a Conn reconnecting still queues, and
@@ -5146,18 +5180,29 @@ function promptName(name) {
 
 function setReplyTarget(t) {
   replyTarget = t || null;
+  if (!(replyTarget && replyTarget.page)) clearPageAskHint();
   if (!replyChip) return;
   replyChip.replaceChildren();
   replyChip.hidden = !replyTarget;
   if (!replyTarget) return;
   const label = document.createElement("span");
   label.className = "reply-chip-text";
+  const page = replyTarget.page;
   const sel = replyTarget.selection;
-  label.textContent = sel
-    ? `💬 針對 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)} 選取的文字：「${RoomCore.excerpt(sel, 60)}」`
-    : `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
-  label.title = RoomCore.excerpt(sel || replyTarget.text, 400);
-  label.addEventListener("click", () => jumpToMessage(replyTarget && replyTarget.id));
+  if (page) {
+    // 💬 Ask agent on a page (§2.4): what the chip carries was read at the click; it does not
+    // watch the tab. A click brings the tab forward, as the sent message's 📄 quote does.
+    const h = PageAskCore.historyPage(page);
+    label.textContent = PageAskCore.chipText(page);
+    label.title = RoomCore.excerpt(page.kind === "selection" ? page.selection : h.excerpt, 400);
+    label.addEventListener("click", () => activatePageTab(h, replyTarget && replyTarget.convId));
+  } else {
+    label.textContent = sel
+      ? `💬 針對 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)} 選取的文字：「${RoomCore.excerpt(sel, 60)}」`
+      : `↩ 回覆 ${replyTarget.senderName || "?"} ${RoomCore.uiTime(replyTarget.timestamp)}：「${RoomCore.excerpt(replyTarget.text, 60)}」`;
+    label.title = RoomCore.excerpt(sel || replyTarget.text, 400);
+    label.addEventListener("click", () => jumpToMessage(replyTarget && replyTarget.id));
+  }
   const x = document.createElement("button");
   x.type = "button";
   x.className = "reply-chip-cancel";
@@ -5181,6 +5226,107 @@ function replyQuoteEl(replyTo) {
   q.title = "跳到原訊息";
   q.addEventListener("click", () => jumpToMessage(replyTo.id));
   return q;
+}
+
+// --- 💬 Ask agent on a web page (ADR docs/adr/page-send-to-agent.md) ------------------------------
+// Chrome's own context menu on a web page → the service worker (background.js) opens this panel,
+// collects the selection or the right-clicked element, and hands it here (a runtime message, and
+// storage.session for a panel only now opening). The panel picks the conversation (§2.3), makes
+// the tab its working tab, and puts the page target in the reply chip — nothing is sent until the
+// user types and presses Enter (§2.4); the agent then gets the text and the page as fenced data (§2.5).
+
+// The sent message's 📄 quote (§2.6); a click brings that tab forward if it is still open.
+function pageQuoteEl(page, convId) {
+  const q = document.createElement("div");
+  q.className = "reply-quote page-quote";
+  q.textContent = PageAskCore.quoteText(page);
+  q.title = `${page.url}\n（點一下切到那個分頁）`;
+  q.addEventListener("click", () => activatePageTab(page, convId));
+  return q;
+}
+
+// The tab a page target came from: by id (same origin), else a tab of the conversation's group with
+// the same origin and path (PageAskCore.quoteTab). Nothing when it is gone.
+async function activatePageTab(page, convId) {
+  if (!page) return;
+  let tabs = [];
+  try { tabs = await chrome.tabs.query({}); } catch (_) { return; }
+  const groupId = convId ? await liveGroupId(convId).catch(() => null) : null;
+  const tab = PageAskCore.quoteTab({ tabs, tabId: page.tabId, url: page.url, groupId });
+  if (!tab) return;
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId !== panelWindowId) await chrome.windows.update(tab.windowId, { focused: true });
+  } catch (_) { /* closed meanwhile */ }
+}
+
+// §2.4: flash the input once; the placeholder says to click there until the input has the focus.
+function hintPageAskInput() {
+  messageInput.classList.remove("page-ask-flash");
+  void messageInput.offsetWidth;                         // restart the animation
+  messageInput.classList.add("page-ask-flash");
+  if (document.hasFocus() && document.activeElement === messageInput) return;
+  pageAskHint = true;
+  updateSendEnabled();
+}
+function clearPageAskHint() {
+  if (!pageAskHint) return;
+  pageAskHint = false;
+  updateSendEnabled();
+}
+messageInput.addEventListener("focus", clearPageAskHint);
+messageInput.addEventListener("animationend", () => messageInput.classList.remove("page-ask-flash"));
+
+// One page target per request id: the message and the stored copy both arrive for an open panel.
+const handledPageAsks = new Set();
+async function handlePageAsk(p) {
+  if (handledPageAsks.has(p.reqId)) return;
+  handledPageAsks.add(p.reqId);
+  const k = `${PageAskCore.HANDOFF_KEY_PREFIX}${panelWindowId}`;
+  try {
+    const got = await chrome.storage.session.get(k);
+    if (got[k] && got[k].reqId === p.reqId) await chrome.storage.session.remove(k);
+  } catch (_) { /* no storage.session */ }
+  const notice = PageAskCore.noticeText(p);              // nothing readable (§2.2 step 3, Q8)
+  if (notice) { appendSystemMessage(notice); return; }
+  // §2.3: the tab's group's conversation if it is open in this panel, else the one on screen.
+  const openGroups = await Promise.all([...convs.keys()].map(async (id) => ({ id, groupId: await liveGroupId(id).catch(() => null) })));
+  const pick = PageAskCore.chooseConversation({
+    groupId: p.groupId, openGroups, currentId: currentConv ? conversationId : null, agentMissing: (id) => convAgentMissing(id),
+  });
+  if (pick.error) { appendSystemMessage(pick.error === "agent-removed" ? ConvCore.AGENT_REMOVED_TEXT : PageAskCore.NO_CONVERSATION_TEXT); return; }
+  if (pick.switchTo) switchConversation(pick.id);        // P2: never blocked, a running reply continues behind
+  if (conversationId !== pick.id) return;
+  // §4.3: the agent's page tools act on this tab next. Never moved into a group (Q7, §4.1).
+  noteWorkingTab(pick.id, p.tabId).catch(() => {});
+  setReplyTarget({ page: p, convId: pick.id });          // replaces a ↩ / 💬 chip: one target per message
+  hintPageAskInput();
+}
+
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (!msg || msg.type !== PageAskCore.MSG_TYPE) return false;
+  // §2.3 / §2.7: only from our own service worker (not another panel or extension page).
+  if (!PageAskCore.fromServiceWorker(sender, { runtimeId: chrome.runtime.id, origin: new URL(chrome.runtime.getURL("")).origin })) return false;
+  const p = PageAskCore.acceptPayload(msg);
+  if (!p) return false;
+  panelReady.then(() => { if (String(p.windowId) === String(panelWindowId)) handlePageAsk(p); });
+  return false;
+});
+
+// A panel opened by the menu click itself: the service worker left the page target in
+// storage.session (written by the service worker, so it is not a page's word) — taken if < 60 s old.
+async function pickUpPageAsk() {
+  if (panelWindowId == null) return;
+  const k = `${PageAskCore.HANDOFF_KEY_PREFIX}${panelWindowId}`;
+  let r = null;
+  try { r = (await chrome.storage.session.get(k))[k]; } catch (_) { return; }
+  if (!r) return;
+  const p = PageAskCore.handoffFresh(r, Date.now()) ? PageAskCore.acceptPayload(r) : null;
+  if (!p || String(p.windowId) !== String(panelWindowId)) {
+    try { await chrome.storage.session.remove(k); } catch (_) { /* best effort */ }
+    return;
+  }
+  handlePageAsk(p);
 }
 
 function attachReplyButton(contentEl, target) {
@@ -5353,7 +5499,10 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
     content.appendChild(nameEl);
   }
 
-  if (replyTo) content.appendChild(replyQuoteEl(replyTo));
+  // 💬 Ask agent on a page: the 📄 quote (the history's page, re-checked), not a ↩ quote.
+  const page = replyTo && replyTo.page ? PageAskCore.readHistoryPage(replyTo.page) : null;
+  if (page) content.appendChild(pageQuoteEl(page, targetConvId()));
+  else if (replyTo) content.appendChild(replyQuoteEl(replyTo));
 
   const bubble = document.createElement("div");
   bubble.className = "bubble";
@@ -5395,7 +5544,8 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   outList().appendChild(msgDiv);
   recordMessage({
     kind: isMe ? "sent" : "received", id, senderId, senderName, timestamp,
-    replyTo: replyTo ? recordReplyTo(replyTo) : undefined,
+    replyTo: replyTo && !page ? recordReplyTo(replyTo) : undefined,
+    page: page || undefined,                             // §2.6: kind, title, url (no query), excerpt, tabId
     // images are memory-only; a shown image's caption (rendered as a figcaption) is kept as text
     text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0, files),
   });
