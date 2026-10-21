@@ -107,7 +107,7 @@ export default [
 
       // chat_history frames it (the URL without its query and fragment).
       const hist = FakeGateway.text(await gw.callTool(sid, "katashiro.chat_history", {})).text;
-      t.check(hist.includes(` user, about page "Billing – Acme" (${ctx.web.origin}/ask/billing): element「button#pay "Pay now"」]\n這個按鈕為什麼是灰的？`), "chat_history says what was asked about", hist.slice(-400));
+      t.check(hist.includes(` user, about page "Billing – Acme" (${ctx.web.origin}/ask/billing): element「button#pay Pay now」]\n這個按鈕為什麼是灰的？`), "chat_history says what was asked about", hist.slice(-400));
       t.check(!hist.includes("s3cret"), "chat_history keeps no query");
       gw.endTurn(sid, "end_turn", "Because the form is incomplete.");
       gw.hold = false;
