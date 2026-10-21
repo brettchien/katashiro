@@ -105,6 +105,51 @@ export default [
     },
   },
   {
+    name: "a turn that only drove the browser tunnel, then failed, was received: the tag stays; one that sent nothing loses it",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const sid = await h.namedConversation(ctx, panel, "Alpha", { fresh: false });
+      gw.hold = true;
+      // No session/update at all: the agent's only sign is a tool call on the tunnel (#180 review nit 1).
+      await h.send(panel, "check the history");
+      await gw.waitPrompt((p) => p.sessionId === sid && /check the history/.test(p.userText));
+      const r = await gw.callTool(sid, "katashiro.chat_history", { limit: 1 });
+      t.check(!r.error, "the tool call went through", r);
+      gw.failTurn(sid, "Internal error");
+      await h.until(panel, () => !!Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden)?.querySelector(".error-bubble"), "the error bubble");
+      t.check((await readOf(panel, "check the history")) === "read", "still read: the agent was working on it", await sentRows(panel, "check the history"));
+      await h.until(null, async () => (await storedSent(ctx, "Alpha")).find((m) => /check the history/.test(m.text || ""))?.read !== false, "stored read");
+
+      // The same failure with nothing heard: never reached the agent, as far as we know.
+      await h.send(panel, "silent then failed");
+      await gw.waitPrompt((p) => p.sessionId === sid && /silent then failed/.test(p.userText));
+      gw.failTurn(sid, "Internal error");
+      await h.until(panel, () => Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden)?.querySelectorAll(".error-bubble").length >= 2, "the second error bubble");
+      t.check((await readOf(panel, "silent then failed")) === "", "no tag: nothing of the turn came back", await sentRows(panel, "silent then failed"));
+    },
+  },
+  {
+    name: "重試 on an earlier pool-busy turn re-sends that turn, not a later one, and tags its message",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const sid = await h.namedConversation(ctx, panel, "Alpha", { fresh: false });
+      const errorsOnScreen = () => panel.evaluate(() => Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelectorAll(".error-bubble").length);
+      gw.poolBusy = true;
+      await h.send(panel, "busy one");
+      await h.until(null, async () => (await errorsOnScreen()) >= 1, "the first error bubble");
+      await h.send(panel, "busy two");
+      await h.until(null, async () => (await errorsOnScreen()) >= 2, "the second error bubble");
+      gw.poolBusy = false;
+      const since = gw.prompts.length;
+      await panel.evaluate(() => Array.from(document.querySelectorAll(".conv-messages")).find((e) => !e.hidden).querySelectorAll(".error-bubble .retry-btn")[0].click());
+      const p = await gw.waitPrompt((x) => x.sessionId === sid, { since });
+      t.check(/busy one/.test(p.userText) && !/busy two/.test(p.userText), "the first bubble's 重試 sends the first turn", p.userText);
+      await h.idle(panel);
+      t.check((await readOf(panel, "busy one")) === "read", "its message is read now");
+      t.check((await readOf(panel, "busy two")) === "", "the later one is still unread", await sentRows(panel, "busy two"));
+    },
+  },
+  {
     name: "a socket dropped mid-turn: the resent message keeps its read tag",
     async run(ctx, t) {
       const { gw, panel } = ctx;

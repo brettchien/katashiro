@@ -509,6 +509,15 @@
   // promptFailureAction ("requeue": the socket dropped and the batch waits again, re-marked when
   // it is resent; "cancel": timed out on a live socket, so it was received; "error": rejected —
   // received only if anything of the turn came back, `heard`).
+  // Does activity on a session count as "the turn in flight was heard"? Only while a turn is in
+  // flight, and not while an earlier turn we gave up on (timed out on a live socket: session/cancel
+  // sent, the next turn flushed at once) may still be running server-side: ACP updates carry no turn
+  // id, so its late updates and tunnel calls would read as the new turn's (#180 review: Jellyfish).
+  // `staleTurns`: how many such turns of the session have not answered yet.
+  function turnActivityCounts(turnActive, staleTurns) {
+    return !!turnActive && !staleTurns;
+  }
+
   function turnReachedAgent(outcome, heard) {
     if (outcome === "ok" || outcome === "cancel") return true;
     if (outcome === "error") return !!heard;
@@ -542,6 +551,7 @@
     batchWithReplyHint,
     isReadRecord,
     turnReachedAgent,
+    turnActivityCounts,
     nextUniqueMs,
     splitReplySegments,
     replyParts,

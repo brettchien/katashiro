@@ -173,11 +173,9 @@ class SessionState {
     this.promptQueue = [];
     this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
-    this.lastPrompt = null;                              // last turn's text, for retry (never the host line)
-    this.lastImages = [];                                // …and its images, so a retry re-sends them
     this.queuedMsgIds = [];                              // read receipt: user messages waiting in promptQueue
-    this.lastMsgIds = [];                                // …and those of the last turn, for retry
-    this.turnHeard = false;                              // a session/update arrived for the turn in flight
+    this.turnHeard = false;                              // a session/update or tunnel call arrived for the turn in flight
+    this.staleTurns = 0;                                 // timed-out turns (socket open) not answered yet
     this.stream = null;                                  // { bubble, text } while streaming
     this.skippedToolCalls = null;                        // katashiro tool calls seen this turn
     this.lastTurnActivityAt = 0;                         // ts of the last sign of life of its turn
@@ -205,6 +203,7 @@ class Conn {
     this.online = false;
     this.nextReqId = 1;
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
+    this.stalePrompts = new Map();                       // session/prompt id given up on (still open) -> SessionState
     this.canImage = false;                               // initialize → promptCapabilities.image
     // Router state, shared by the socket: every declared instance (one per conversation) +
     // connectionId → instance. The tunnel a frame arrives on names its conversation (§3.9).
@@ -496,6 +495,12 @@ class Conn {
     });
   }
 
+  // Turns given up on while the socket stayed open (stalePrompts) are forgotten with the socket.
+  clearStalePrompts() {
+    for (const st of this.stalePrompts.values()) st.staleTurns = 0;
+    this.stalePrompts.clear();
+  }
+
   rejectAllPending(reason) {
     for (const { reject } of this.pendingReqs.values()) reject(reason);
     this.pendingReqs.clear();
@@ -516,6 +521,7 @@ class Conn {
       this.ws.onclose = null;                            // stale socket must not trigger reconnect
       this.ws.close();
     }
+    this.clearStalePrompts();                            // onclose is detached: forget its turns here
     clearTimeout(this.reconnectTimer);
     this.online = false;
     this.initialized = false;
@@ -581,6 +587,7 @@ class Conn {
         this.mcpState.mcpConnectionId = null;
         this.setBrowserAttached(false);
         this.rejectAllPending("connection closed");
+        this.clearStalePrompts();                        // their answers can only come on this socket
         // Never reached onopen this attempt ⇒ the WS upgrade was rejected (bad/missing token)
         // or the server is unreachable. Probe to tell which, and surface it in the UI.
         if (!this.openedThisAttempt && this.enabled) this.probe();
@@ -619,6 +626,7 @@ class Conn {
       this.ws.close();
       this.ws = null;
     }
+    this.clearStalePrompts();                            // onclose is detached: forget its turns here
     this.online = false;
     this.initialized = false;
     this.socketGen++;
@@ -743,13 +751,21 @@ class Conn {
     // Turn activity (pushes the turn's idle deadline out): any update for a session — text, tool
     // events, or whatever else the gateway sends — and the agent driving that session's browser
     // tunnel (the connection names the server, the server its conversation, §3.9).
+    // Both also mean the turn reached the agent (its read receipt), unless they may be an earlier,
+    // timed-out turn's (RoomCore.turnActivityCounts).
     if (msg.method === "session/update" && msg.params) {
       const st = this.stateBySession(msg.params.sessionId);
-      if (st) { st.lastTurnActivityAt = this.lastRecvAt; st.turnHeard = true; }
+      if (st) { st.lastTurnActivityAt = this.lastRecvAt; if (RoomCore.turnActivityCounts(st.turnActive, st.staleTurns)) st.turnHeard = true; }
     } else if (msg.method === "mcp/message") {
       const server = this.mcpState.connections && msg.params && this.mcpState.connections[msg.params.connectionId];
       const st = server && this.stateOfServer(server);
-      if (st) st.lastTurnActivityAt = this.lastRecvAt;
+      if (st) { st.lastTurnActivityAt = this.lastRecvAt; if (RoomCore.turnActivityCounts(st.turnActive, st.staleTurns)) st.turnHeard = true; }
+    }
+    // The late answer of a turn we gave up on: that turn is over, its session's activity counts again.
+    if (msg.id !== undefined && this.stalePrompts.has(msg.id) && (msg.result !== undefined || msg.error !== undefined)) {
+      const st = this.stalePrompts.get(msg.id);
+      this.stalePrompts.delete(msg.id);
+      st.staleTurns = Math.max(0, st.staleTurns - 1);
     }
 
     // Response to one of our requests.
@@ -844,9 +860,10 @@ class Conn {
       if (st.pendingImages.length) st.promptQueue.push("");
     }
     if (!text && images.length === 0) return;            // nothing sendable — stay idle
-    st.lastPrompt = text;                                // remember for retry (the whole batch, no host line)
-    st.lastImages = images;
-    st.lastMsgIds = msgIds;
+    // Kept for this turn's error bubble's 重試 (the whole batch, no host line): that turn exactly,
+    // not "the last one" — a pool-busy turn flushes the queue at once, so a later turn may have gone
+    // out before 重試 is clicked (#180 review: Jellyfish).
+    const turn = { text, images, msgIds };
     st.turnActive = true;
     st.turnHeard = false;
     // Read receipt: set as the batch goes out in session/prompt (the gateway answers that request
@@ -868,6 +885,7 @@ class Conn {
     if (hinted) sent = ConvCore.withReconnectHint(sent);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
+    const promptId = this.nextReqId;                     // the id acpRequest gives this session/prompt
     this.acpRequest("session/prompt", {
       sessionId: st.acpSessionId,
       prompt: Composer.promptBlocks(sent, images),
@@ -886,7 +904,7 @@ class Conn {
           renderConvTabs();
           st.stream.text = "";                           // drop the line: finalize removes the empty row
           this.finalizeStream(undefined, st);
-          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryLast(st)));
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText("pool exhausted"), () => this.retryTurn(st, turn)));
           if (st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
           this.flushQueue(st);
           return;
@@ -939,16 +957,20 @@ class Conn {
           if (hinted) st.hintPending = false;            // the prompt was received
           if (resent) st.resendPending = false;
           if (st.acpSessionId) this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
+          // It may still run (and update) while the next turn flushes below: until it answers,
+          // its session's activity does not count as the next turn heard.
+          this.stalePrompts.set(promptId, st);
+          st.staleTurns++;
           this.finalizeStream(undefined, st);
           const why = /\(max\)/.test(String(err))
             ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
             : `回合 ${RoomCore.TURN_IDLE_TIMEOUT_MS / 60000} 分鐘沒有任何動靜`;
-          this.inState(st, () => appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryLast(st)));
+          this.inState(st, () => appendErrorMessage(this.name, `${why}（連線仍在）—— 已取消，未自動重送以免重複。需要就點重試。`, () => this.retryTurn(st, turn)));
         } else {
           this.finalizeStream("error", st);              // render any partial reply, then a distinct
           // §5: the pool is shared with Discord and usercron; "pool exhausted" is said plainly and
           // never retried automatically — 重試 is the user's call.
-          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryLast(st))); // error bubble
+          this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryTurn(st, turn))); // error bubble
         }
         // Q9: a background turn that ended badly is said too (a requeued one has not ended).
         if (action !== "requeue" && st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
@@ -991,16 +1013,17 @@ class Conn {
   // Re-send the last turn (after an error / stop). If the socket isn't live, reconnect first and
   // queue the turn so it flushes once the handshake completes — otherwise a retry on a dead/closed
   // socket would silently no-op (ADR tunnel-liveness R3, the reported "retry does nothing").
-  retryLast(st = this.cur) {
+  // 重試 on a failed turn's error bubble: re-send exactly that turn ({ text, images, msgIds }).
+  retryTurn(st, turn) {
     // Its conversation must still be open (P2: on screen or not — the button is in its own list) and
     // bound to this agent. A stale error bubble of a Conn that is no longer wanted (its last
     // conversation archived) must NOT `connect()` it (review: Orca, the C2 race; §2.7).
     if (!st || this.states.get(st.convId) !== st) return;
     if (!this.enabled || convAgentUrl(st.convId) !== this.agent.url) return;
-    if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
-    st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
-    st.queuedMsgIds.push(...st.lastMsgIds);              // read receipt: tagged when the retry goes out
-    st.pendingImages.push(...st.lastImages);
+    if ((!turn.text && turn.images.length === 0) || st.turnActive) return;
+    st.promptQueue.push(turn.text || "");                // "" still carries an image-only turn
+    st.queuedMsgIds.push(...turn.msgIds);                // read receipt: tagged when the retry goes out
+    st.pendingImages.push(...turn.images);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized) this.openSession(st);   // flushes once ready
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }

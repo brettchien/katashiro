@@ -641,3 +641,10 @@ test("turnReachedAgent: every promptFailureAction outcome is decided", () => {
   }
   assert.equal(RoomCore.turnReachedAgent("something else", true), false);
 });
+
+test("turnActivityCounts: activity counts only for a turn in flight with no earlier turn still running", () => {
+  assert.equal(RoomCore.turnActivityCounts(true, 0), true);
+  assert.equal(RoomCore.turnActivityCounts(false, 0), false);   // between turns
+  assert.equal(RoomCore.turnActivityCounts(true, 1), false);    // a timed-out turn may still be updating
+  assert.equal(RoomCore.turnActivityCounts(true, undefined), true);
+});

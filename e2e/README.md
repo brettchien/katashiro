@@ -88,6 +88,8 @@ real ones.
 | `reconnect-resend.mjs` | a socket dropped mid-turn | agent-per-conversation §7 I8: the requeued resend carries the resend line (and only it); the partial reply stays; the chat says it was cut |
 | `read-receipt.mjs` | the gray **read** tag | a message in the running turn is tagged, one queued behind it is not (and is stored `read: false`) until its turn goes out — also in a background conversation; the tag stays after the turn and across a panel reload, a record without the flag (older version) shows it, one stored unread does not; neither the prompt nor `chat_history` carries it |
 | | pool-busy, 重試, a dropped socket | a pool-busy turn leaves no tag (stored unread), 重試 adds it; the message resent after a mid-turn socket drop is tagged after the resend |
+| | a failed turn | a turn whose only sign was a tool call on the browser tunnel, then a JSON-RPC error: still read (the agent was working on it); the same error with nothing heard: no tag |
+| | 重試 on an earlier turn | two pool-busy turns: the first error bubble's 重試 re-sends the first turn (not the later one) and tags only its message |
 | `reload-tab-group.mjs` | **xfail (#139)** | after an extension reload, a conversation's next tab must join its existing group: today a second group with the same title is made |
 
 ## Adding a case

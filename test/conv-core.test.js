@@ -214,7 +214,7 @@ test("U2 + reply hint: the host line before the batch keeps batchWithReplyHint's
   const R = require("../room-core.js");
   const a = R.framePrompt({ timestamp: 1, senderName: "user" }, "one");
   const b = R.framePrompt({ timestamp: 2, senderName: "user" }, "two");
-  const batch = R.batchWithReplyHint([a, b]);                  // what is stored as lastPrompt (no host line)
+  const batch = R.batchWithReplyHint([a, b]);                  // what a turn keeps for 重試 (no host line)
   const sent = C.withReconnectHint(batch);
   assert.ok(sent.startsWith(C.RECONNECT_HINT) && sent.endsWith(R.REPLY_HINT));
   // A retry of the stored copy batched with a newer message still carries exactly one reply hint.

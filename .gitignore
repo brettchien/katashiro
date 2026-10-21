@@ -5,5 +5,5 @@ build-info.json
 scripts/vendor-build/node_modules/
 
 # Dev tooling (package.json): npm deps and the pinned headless Chrome for the smokes.
-node_modules/
-.cache/
+node_modules
+.cache
