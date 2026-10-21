@@ -189,6 +189,16 @@ export class FakeGateway {
     for (const t of this.prompts) if (!t.done && t.sessionId === sid) this.finish(t, stopReason);
   }
 
+  /** Fail the open prompt(s) of one session with a JSON-RPC error (no stopReason). */
+  failTurn(sid, message = "Internal error") {
+    for (const t of this.prompts) {
+      if (t.done || t.sessionId !== sid) continue;
+      t.done = true;
+      t.stopReason = "error";
+      this.send(t.ws, { jsonrpc: "2.0", id: t.id, error: { code: -32603, message } });
+    }
+  }
+
   openPrompts(sid) { return this.prompts.filter((t) => !t.done && (sid == null || t.sessionId === sid)); }
 
   /** Wait for a session/prompt matching `pred` (default: any) that arrived after `since` prompts. */

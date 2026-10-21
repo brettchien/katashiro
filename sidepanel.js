@@ -177,7 +177,8 @@ class SessionState {
     this.lastImages = [];                                // …and its images, so a retry re-sends them
     this.queuedMsgIds = [];                              // read receipt: user messages waiting in promptQueue
     this.lastMsgIds = [];                                // …and those of the last turn, for retry
-    this.turnHeard = false;                              // a session/update arrived for the turn in flight
+    this.turnHeard = false;                              // a session/update or tunnel call arrived for the turn in flight
+    this.staleTurns = 0;                                 // timed-out turns (socket open) not answered yet
     this.stream = null;                                  // { bubble, text } while streaming
     this.skippedToolCalls = null;                        // katashiro tool calls seen this turn
     this.lastTurnActivityAt = 0;                         // ts of the last sign of life of its turn
@@ -205,6 +206,7 @@ class Conn {
     this.online = false;
     this.nextReqId = 1;
     this.pendingReqs = new Map();                        // id -> { resolve, reject }
+    this.stalePrompts = new Map();                       // session/prompt id given up on (still open) -> SessionState
     this.canImage = false;                               // initialize → promptCapabilities.image
     // Router state, shared by the socket: every declared instance (one per conversation) +
     // connectionId → instance. The tunnel a frame arrives on names its conversation (§3.9).
@@ -496,6 +498,12 @@ class Conn {
     });
   }
 
+  // Turns given up on while the socket stayed open (stalePrompts) are forgotten with the socket.
+  clearStalePrompts() {
+    for (const st of this.stalePrompts.values()) st.staleTurns = 0;
+    this.stalePrompts.clear();
+  }
+
   rejectAllPending(reason) {
     for (const { reject } of this.pendingReqs.values()) reject(reason);
     this.pendingReqs.clear();
@@ -581,6 +589,7 @@ class Conn {
         this.mcpState.mcpConnectionId = null;
         this.setBrowserAttached(false);
         this.rejectAllPending("connection closed");
+        this.clearStalePrompts();                        // their answers can only come on this socket
         // Never reached onopen this attempt ⇒ the WS upgrade was rejected (bad/missing token)
         // or the server is unreachable. Probe to tell which, and surface it in the UI.
         if (!this.openedThisAttempt && this.enabled) this.probe();
@@ -743,13 +752,21 @@ class Conn {
     // Turn activity (pushes the turn's idle deadline out): any update for a session — text, tool
     // events, or whatever else the gateway sends — and the agent driving that session's browser
     // tunnel (the connection names the server, the server its conversation, §3.9).
+    // Both also mean the turn reached the agent (its read receipt), unless they may be an earlier,
+    // timed-out turn's (RoomCore.turnActivityCounts).
     if (msg.method === "session/update" && msg.params) {
       const st = this.stateBySession(msg.params.sessionId);
-      if (st) { st.lastTurnActivityAt = this.lastRecvAt; st.turnHeard = true; }
+      if (st) { st.lastTurnActivityAt = this.lastRecvAt; if (RoomCore.turnActivityCounts(st.turnActive, st.staleTurns)) st.turnHeard = true; }
     } else if (msg.method === "mcp/message") {
       const server = this.mcpState.connections && msg.params && this.mcpState.connections[msg.params.connectionId];
       const st = server && this.stateOfServer(server);
-      if (st) st.lastTurnActivityAt = this.lastRecvAt;
+      if (st) { st.lastTurnActivityAt = this.lastRecvAt; if (RoomCore.turnActivityCounts(st.turnActive, st.staleTurns)) st.turnHeard = true; }
+    }
+    // The late answer of a turn we gave up on: that turn is over, its session's activity counts again.
+    if (msg.id !== undefined && this.stalePrompts.has(msg.id) && (msg.result !== undefined || msg.error !== undefined)) {
+      const st = this.stalePrompts.get(msg.id);
+      this.stalePrompts.delete(msg.id);
+      st.staleTurns = Math.max(0, st.staleTurns - 1);
     }
 
     // Response to one of our requests.
@@ -868,6 +885,7 @@ class Conn {
     if (hinted) sent = ConvCore.withReconnectHint(sent);
     const startedAt = Date.now();
     st.lastTurnActivityAt = startedAt;
+    const promptId = this.nextReqId;                     // the id acpRequest gives this session/prompt
     this.acpRequest("session/prompt", {
       sessionId: st.acpSessionId,
       prompt: Composer.promptBlocks(sent, images),
@@ -939,6 +957,10 @@ class Conn {
           if (hinted) st.hintPending = false;            // the prompt was received
           if (resent) st.resendPending = false;
           if (st.acpSessionId) this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
+          // It may still run (and update) while the next turn flushes below: until it answers,
+          // its session's activity does not count as the next turn heard.
+          this.stalePrompts.set(promptId, st);
+          st.staleTurns++;
           this.finalizeStream(undefined, st);
           const why = /\(max\)/.test(String(err))
             ? `回合超過 ${RoomCore.TURN_MAX_TIMEOUT_MS / 60000} 分鐘上限`
@@ -1059,6 +1081,7 @@ class Conn {
     if (d.reconnect) {
       this.stopHeartbeat();
       this.rejectAllPending("connection closed");        // fail-fast the now-confirmed-dead socket
+      this.clearStalePrompts();
       this.connect("heartbeat");                         // teardown + re-handshake (resume re-declares tunnel)
     }
   }

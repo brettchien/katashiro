@@ -250,7 +250,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - A tab in the group of a conversation open in this panel → that conversation (switched to); a tab
     in another window's conversation's group → the conversation on screen, and the tab is not moved.
 - **Read receipt (Brett 2026-10-22).** `npm run e2e -- read-receipt` covers queued vs sent, a
-  background conversation, pool-busy + 重試, a resend and a reload against the fake gateway. With a
+  background conversation, pool-busy + 重試, a failed turn (tunnel call vs nothing heard), a resend
+  and a reload against the fake gateway. With a
   real agent: send a message: a small gray **read** shows beside its time at once (next to the ↩ on
   hover), in the same muted gray as the time. While it replies, send two more: they show no tag
   until the reply ends, then both get it together (one batched turn). Reload the panel: every tag is
