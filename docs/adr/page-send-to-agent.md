@@ -206,8 +206,9 @@ Not a `↩` header: `↩ <time>` names a chat message (`findByStamp`); a page is
 ### 2.6 In the chat and in `chat_history`
 
 The sent message shows a quote line above its bubble, `📄 <title>：「<excerpt>」`; a click
-activates that tab if it is still open (by `tabId`, then by URL in the conversation's group),
-else does nothing. The history record keeps `page: { kind, title, url, excerpt }` (excerpt ≤ 500
+activates that tab if it is still open (by `tabId`, then by a tab in the conversation's group
+whose URL has the same origin and path — the stored URL has no query, so an exact match would
+never find a page that had one), else does nothing. The history record keeps `page: { kind, title, url, excerpt }` (excerpt ≤ 500
 chars; no selector, no `href` / `src`; `url` **without its query and fragment**, §2.7), so the
 quote survives a reload, and `chat_history` frames it as
 `[time user, about page "title" (url): selected「excerpt」]` (or `element「…」`).
@@ -225,7 +226,9 @@ quote survives a reload, and `chat_history` frames it as
   `executeScript` on a menu click.
 - **What the user typed into the page** stays out of an element description: no input values,
   no text of a `<textarea>` or `contenteditable` (§2.2). Password fields: never their value (as
-  `get_selection`). A text field's content reaches the agent only through the selection item.
+  `get_selection`). A text field's content reaches the agent only through the selection item —
+and then its first 500 chars are kept in the history excerpt (§2.6), like any selection: the
+user selected it and pressed Enter, so this is accepted.
 - **URLs and tokens.** A URL can carry a secret (a magic link, an OAuth `code=`, a signed
   download) in its query; so can an `href`. Hiding them from the agent buys nothing — the page is
   the agent's working tab and its tools read the URL and every link anyway. What this design
@@ -300,7 +303,10 @@ quote survives a reload, and `chat_history` frames it as
   the element item on the last right-clicked target — the recorder still sees the trusted
   `contextmenu` even when the page shows its own menu. Whether a shortcut counts as a gesture for
   `sidePanel.open` is to be checked in real Chrome. Canvas-rendered editors (Docs) have no DOM
-  selection, so only the element item helps there. Or leave such sites out?
+  selection, so only the element item helps there. A shortcut has no `info.frameId`, so the
+  recorder would also keep the time of each right-click; the shortcut takes the newest target
+  across the tab's frames, and only if it is recent (e.g. < 2 min), so an old right-click is
+  never taken as the target. Or leave such sites out?
 - (Raised in review, decided above: a tab closed or navigated before Enter — §2.4; a tab in the
   group of a conversation not in this panel — §2.3, not moved; `file://` without file access —
   §2.2.)
