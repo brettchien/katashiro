@@ -5,19 +5,20 @@
 // the archive and agent pickers, the reopen request from the gallery or a canvas tab) and the tab
 // strip. Moved verbatim out of sidepanel.js (plan B, step 4); no logic change.
 //
-// Classic script, loaded by sidepanel.html BEFORE composer-ui.js, canvas-glue.js, cards.js and
-// sidepanel.js; all scripts share one global scope. Load-order rule: this file holds declarations
-// only. Its top level must not run anything that touches a name declared in a later-loaded file
-// (DOM refs, room state, …) — that would be a TDZ ReferenceError at load. Its initializers are plain
-// values (literals, new Map(), a Promise whose executor only sets markPanelReady) or arrow functions,
-// plus one pure src/core factory call (ConvCore.createConvStore: builds closures, no I/O; its
-// `canvases` getter reads canvasStore at call time). Function bodies may use names from any file,
-// later-loaded ones included (showConversation calls setReplyTarget in composer-ui.js, closeCmdMenu
-// in cards.js and scrollToBottom in sidepanel.js): they only run once every script has loaded. The
-// wiring that runs at load (the conv:index storage listener, the conv-archive / conv-open onMessage
-// listeners, the visibilitychange listener, the tab strip's 60 s timer) and the DOM refs it reads
-// (the lobby list, picker-dock, conv-tabs) stay in sidepanel.js, at the spot these sections came
-// from, so their order is unchanged.
+// Classic script, loaded by sidepanel.html after conn.js and BEFORE composer-ui.js, canvas-glue.js,
+// cards.js and sidepanel.js; all scripts share one global scope. Load-order rule: this file holds
+// declarations only. Its top level must not run anything that touches a name declared in a
+// later-loaded file (DOM refs, room state, …) — that would be a TDZ ReferenceError at load. Its
+// initializers are plain values (literals, new Map(), a Promise whose executor only sets
+// markPanelReady) or arrow functions, plus one pure src/core factory call
+// (ConvCore.createConvStore: builds closures, no I/O; its `canvases` getter reads canvasStore at
+// call time). Function bodies may use names from any file, later-loaded ones included
+// (showConversation calls setReplyTarget in composer-ui.js, closeCmdMenu in cards.js and
+// scrollToBottom in sidepanel.js): they only run once every script has loaded. The wiring that runs
+// at load (the conv:index storage listener, the conv-archive / conv-open onMessage listeners, the
+// visibilitychange listener, the tab strip's 60 s timer) and the DOM refs it reads (the lobby list,
+// picker-dock, conv-tabs) stay in sidepanel.js, at the spot these sections came from, so their
+// order is unchanged.
 
 // --- Conversations (ADR docs/adr/multi-conversation.md, MVP §3) ----------------
 // The side panel is a plain extension page: closing it tears down the DOM, losing the scrollback.
