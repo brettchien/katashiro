@@ -1350,6 +1350,89 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .stop-btn:hover { background: rgba(220, 38, 38, 0.3); color: #fecaca; }
 .stop-btn[hidden] { display: none; }
 
+/* ⚡ / ⏹ share one fixed slot beside send: exactly one shows, so swapping never moves the layout. */
+.cmd-slot { flex: none; width: 40px; height: 40px; display: flex; }
+.cmd-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  padding: 0;
+  font-size: 17px;
+  line-height: 1;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: var(--transition-smooth);
+}
+.cmd-btn:hover, .cmd-btn[aria-expanded="true"] { background: rgba(79, 70, 229, 0.25); border-color: rgba(129, 140, 248, 0.55); }
+.cmd-btn[hidden] { display: none; }
+
+/* The command menu: a popup above the composer (command-core.js has the entries and keys). */
+.chat-input-area { position: relative; }
+.cmd-menu {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(100% + 4px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg-tertiary);
+  border: 1px solid rgba(129, 140, 248, 0.45);
+  border-radius: 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+.cmd-menu[hidden] { display: none; }
+.cmd-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.cmd-item.selected { background: rgba(79, 70, 229, 0.35); }
+.cmd-item-label { flex: none; font-weight: 600; }
+.cmd-item-desc { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmd-item-key {
+  flex: none;
+  min-width: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-align: center;
+}
+
+/* A command hint (No such command, …): muted, one line above the input. */
+.composer-hint { margin: 0 16px 4px; font-size: 12px; color: var(--text-secondary); }
+.composer-hint[hidden] { display: none; }
+
+/* A command the user ran (/reset, /models, /model set N): muted, on the user's side, never a bubble. */
+.message.command { align-self: flex-end; max-width: 80%; animation: fadeIn 0.4s ease-out; }
+.command-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 8px;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+}
+
 /* Jump-to-latest — floats just above the input while the user is scrolled up */
 .chat-container { position: relative; }
 .jump-latest {
@@ -1583,6 +1666,15 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .ask-card.answered .ask-card-result { color: #a5b4fc; }
 .ask-card.unanswered .ask-card-result { color: var(--text-secondary); }
 .ask-card:not(.pending) { border-color: rgba(129, 140, 248, 0.3); border-left-color: rgba(129, 140, 248, 0.5); }
+/* A command card (⚡ Reset session / Switch model): the ask card's layout, but Katashiro's own — a
+   neutral grey accent instead of the agent's indigo, and a ⚡ head. The current model is marked. */
+.message.system:has(> .ask-card.command-card) { align-self: stretch; }
+.message.system > .ask-card.command-card { flex: 1 1 auto; min-width: 0; }
+.ask-card.command-card { border-color: rgba(156, 163, 175, 0.45); border-left-color: #9ca3af; background: rgba(156, 163, 175, 0.08); }
+.ask-card.command-card .ask-card-head { color: var(--text-secondary); }
+.ask-card.command-card .ask-card-option.current { border-color: var(--accent-success); }
+.ask-card.command-card:not(.pending) { border-color: rgba(156, 163, 175, 0.3); border-left-color: rgba(156, 163, 175, 0.5); }
+.ask-card.command-card.answered .ask-card-result { color: var(--text-primary); }
 
 /* GFM task lists in chat bubbles (markdown.js). */
 .bubble li.task-list-item { list-style: none; }

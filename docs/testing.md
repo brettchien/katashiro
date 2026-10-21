@@ -584,6 +584,34 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   and trailing spaces inside a code block are kept (`canvas_read` shows the stored text).
   Esc leaves edit mode with one press, also with the cursor in a table cell and the pointer resting
   on the table (#104); with the slash menu (`/`) or the link editor open, Esc only closes it.
+- **⚡ command menu (features.md → ⚡ Commands)** — real Chrome, a real gateway (E2E: `command-menu.mjs`
+  covers the panel logic against a fake one; these are what it cannot see):
+  - **Shortcuts reach the panel:** click in the composer and press **Ctrl+/** (⌘+/ on a Mac): the menu
+    opens and Chrome does nothing of its own (no help page, no extension shortcut, no find bar). Ask
+    for a long answer and press **Ctrl/⌘+.**: the reply stops (partial reply kept). Press **Esc**
+    during a reply: it does **not** stop (it only clears a ↩ quote / closes the menu). With
+    another extension or an OS shortcut bound to Ctrl+/ or Ctrl+., note which one wins.
+  - **⚡ / ⏹ swap:** idle, ⚡ shows beside send; send a message: ⏹ appears in exactly the same place
+    (nothing shifts, the composer keeps its width), and ⚡ comes back when the reply ends. Click ⏹
+    mid-reply: stops at once, no menu. The tab bar's ⏹ (a background conversation) is unchanged.
+  - **Menu keys:** type `/`: the menu opens above the input; `/r` leaves Reset session only, Esc closes
+    it with `/r` still typed. ⚡ then `m`: Switch model runs without typing anything in the composer;
+    a draft in the composer stays.
+  - **Switch model:** ⚡ → Switch model on a conversation that has had at least one turn: a card
+    lists the gateway's models with the current one ✅ (on a brand-new session the gateway says
+    "⚠️ No model options available. Start a conversation first." — shown as is). Pick another:
+    "✅ Switched to <name>"; ask the agent which model it is (or look at the gateway log) to confirm.
+    Type `/model set 1` + Enter: switches back with no card.
+  - **Reset, then the tools still work (not yet verified on a real gateway):** in a conversation where
+    the agent has used a browser tool (e.g. "what is the title of this tab?"), ⚡ → Reset session →
+    Reset session: "🔄 Session reset — …"; ask the agent what you talked about: it does not know. Then
+    ask it to read the page title again: the `katashiro.*` tools must still be there (the gateway's
+    `/reset` recreates the agent session; whether it keeps the MCP servers Katashiro declared at
+    `session/new` is the open question). If they are gone, note it: the fix would be a fresh
+    `session/new` after a reset (Phase 2). Also reset mid-reply: the reply stops first, then the reset.
+  - **Unknown commands:** `/help` + Enter: the text stays in the composer, "No such command" shows
+    above it, and nothing is sent (the gateway log shows no prompt); ` /help` (leading space) goes to
+    the agent as text.
 
 ## P2 prerequisite: two-session test
 

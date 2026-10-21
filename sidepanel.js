@@ -139,6 +139,7 @@ const ACP_CWD = "/home/agent";
 // (onclose rejects pending reqs, but a half-open connection never fires it), which would
 // otherwise wedge that conn's queue with turnActive stuck true.
 const ACP_REQUEST_TIMEOUT_MS = 60000;
+const COMMAND_TIMEOUT_MS = 30000;                         // a ⚡ command's raw prompt: the gateway answers it itself, at once
 // session/prompt times out on silence, not length (RoomCore.turnDeadline): TURN_IDLE_TIMEOUT_MS
 // after the last activity of the turn, or TURN_MAX_TIMEOUT_MS after its start.
 const TUNNEL_FRESH_MS = 60000;        // an inbound mcp/message keeps the tunnel "活躍" this long (§8.3)
@@ -178,6 +179,10 @@ class SessionState {
     this.skippedToolCalls = null;                        // katashiro tool calls seen this turn
     this.lastTurnActivityAt = 0;                         // ts of the last sign of life of its turn
     this.mcpServer = null;                               // this conversation's browser MCP server (§3.9)
+    // ⚡ commands (command-core.js): a command holds the session (no queued turn starts meanwhile);
+    // while its raw prompt is out, the gateway's reply text collects in commandChunks, not a bubble.
+    this.commandActive = false;
+    this.commandChunks = null;
   }
 }
 
@@ -770,6 +775,13 @@ class Conn {
     if (msg.method === "session/update" && msg.params && msg.params.update) {
       const sid = msg.params.sessionId;
       const st = sid ? this.stateBySession(sid) : this.cur;
+      // A raw command's reply (the gateway answers /reset, /models, /model set itself): collected for
+      // the command, never shown as the agent's reply.
+      if (st && !st.turnActive && st.commandChunks) {
+        const u = msg.params.update;
+        if (u.sessionUpdate === "agent_message_chunk" && u.content) st.commandChunks.push(u.content.text || "");
+        return;
+      }
       // Only into a turn in flight: a turn the user stopped whose agent kept going (§1.2) must not
       // grow a bubble that no turn will ever finalize.
       if (!st || !st.turnActive) {
@@ -799,6 +811,7 @@ class Conn {
   // Send the next queued turn if this session is idle and ready.
   flushQueue(st = this.cur) {
     if (!st || st.turnActive || st.promptQueue.length === 0) return;
+    if (st.commandActive) return;                        // a ⚡ command holds the session; it flushes when done
     // P2 (§5): any open conversation runs its turn, on screen or not. Concurrency is the open count
     // (at most 3, Q7); one turn per conversation, so -32001 Session busy cannot happen.
     if (this.states.get(st.convId) !== st) return;       // archived meanwhile
@@ -935,6 +948,27 @@ class Conn {
     for (const st of this.states.values()) {
       if (!st.turnActive || !st.acpSessionId || (convId && st.convId !== convId)) continue;
       this.socketSend({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId: st.acpSessionId } });
+    }
+  }
+
+  // A ⚡ command on the wire: `text` (exactly "/reset", "/models", "/model set N") as its own
+  // session/prompt — no [time user] header, no host line, not through the queue — because the
+  // gateway answers a slash command only when the prompt is exactly the command. Resolves with the
+  // gateway's reply chunks (CommandCore.replyText picks the text). The caller holds
+  // st.commandActive (so no queued turn starts meanwhile) and has waited for any turn of this
+  // session to end (the gateway refuses a second prompt on a busy session, -32001).
+  async runRawCommand(st, text) {
+    await this.openSession(st);
+    if (this.states.get(st.convId) !== st) throw new Error("conversation closed");
+    if (!(this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized && st.readyGen === this.socketGen && st.acpSessionId)) throw new Error("not connected");
+    if (st.turnActive) throw new Error("a reply is running");
+    const chunks = [];
+    st.commandChunks = chunks;
+    try {
+      await this.acpRequest("session/prompt", { sessionId: st.acpSessionId, prompt: [{ type: "text", text }] }, COMMAND_TIMEOUT_MS);
+      return chunks;
+    } finally {
+      if (st.commandChunks === chunks) st.commandChunks = null;
     }
   }
 
@@ -1374,6 +1408,10 @@ const messagesList = document.getElementById("messages-list");
 const messageInput = document.getElementById("message-input");
 const sendBtn = document.getElementById("send-btn");
 const stopBtn = document.getElementById("stop-btn");
+const cmdBtn = document.getElementById("cmd-btn");        // ⚡ — the stop button's slot while idle
+const cmdMenu = document.getElementById("cmd-menu");
+const composerHint = document.getElementById("composer-hint");
+let cmdMenuState = null;                                 // ⚡ menu while open: { via: "typed" | "button", query, items, selected }
 const jumpLatestBtn = document.getElementById("jump-latest");
 const statusIndicator = document.querySelector(".status-indicator");
 const settingsBtn = document.getElementById("settings-btn");
@@ -2103,7 +2141,7 @@ function showConversation(id) {
   if (stickToBottom) scrollToBottom(); else messagesList.scrollTop = conv.scrollTop;
   // A reply chip quotes a message of the conversation it was set in (a page target: was set for).
   if (replyTarget && (replyTarget.page ? replyTarget.convId !== id : !String(replyTarget.id || "").startsWith(`${id}:`))) setReplyTarget(null);
-  if (switching) restoreDraft(conv);
+  if (switching) { closeCmdMenu(); clearComposerHint(); restoreDraft(conv); }
   if (convAgentMissing(id)) noteAgentMissing(conv); else conv.missingNoted = false;
   afterShow();
   updateSendEnabled();
@@ -2870,6 +2908,7 @@ function clearChat() {
   if (!confirm("清除這段對話的聊天畫面？agent 端的對話記憶會保留，只清掉這段對話顯示的訊息。")) return;
   cancelPendingConfirms(conversationId);   // a confirm card leaving the screen is a "no" (#80)
   cancelPendingAsks(conversationId);       // …and an ask card closes unanswered, telling the agent nothing
+  closeCommandCards(conversationId);       // …and a ⚡ command card (it leaves with the list)
   chatList.replaceChildren();
   historyMessages.length = 0;
   shownImageChars = 0;           // the shown images left the DOM with the messages (an estimate across conversations)
@@ -3472,6 +3511,11 @@ document.addEventListener("dragend", () => setDropHighlight(false));
 // --- Message input -----------------------------------------------------------
 messageInput.addEventListener("input", () => {
   updateSendEnabled();
+  clearComposerHint();
+  // "/" first in the composer opens the command menu; letters after it filter (CommandCore.menuQuery).
+  const query = CommandCore.menuQuery(messageInput.value);
+  if (query !== null) openCmdMenu("typed", query, cmdMenuState && cmdMenuState.items[cmdMenuState.selected].id);
+  else if (cmdMenuState && cmdMenuState.via === "typed") closeCmdMenu();
   messageInput.style.height = "auto";
   messageInput.style.height = (messageInput.scrollHeight - 2) + "px";
 });
@@ -3507,6 +3551,12 @@ messageInput.addEventListener("paste", (e) => {
 });
 
 messageInput.addEventListener("keydown", (e) => {
+  // ⚡ command shortcuts (composer focused): Ctrl/⌘+/ toggles the menu, Ctrl/⌘+. stops the reply
+  // like ⏹. Esc never stops a reply: it closes the menu, else clears the ↩ quote (below).
+  const shortcut = CommandCore.composerShortcut(e);
+  if (shortcut === "menu") { e.preventDefault(); if (cmdMenuState) closeCmdMenu(); else openCmdMenu("button"); return; }
+  if (shortcut === "stop") { e.preventDefault(); stopReplyOnScreen(); return; }
+  if (cmdMenuState && !e.isComposing && cmdMenuKey(e)) return;
   if (e.key === "Escape" && replyTarget) {
     e.preventDefault();
     setReplyTarget(null);
@@ -3520,8 +3570,333 @@ messageInput.addEventListener("keydown", (e) => {
 
 sendBtn.addEventListener("click", sendMessage);
 
-// Stop every in-flight turn (each conn sends its own session/cancel).
-if (stopBtn) stopBtn.addEventListener("click", () => { if (conversationId) room.forEach((c) => c.cancelTurn(conversationId)); });
+// Stop the on-screen conversation's in-flight turn (each conn sends its own session/cancel). ⏹,
+// Ctrl/⌘+., the menu's Cancel and a typed /cancel all come here.
+function stopReplyOnScreen() { if (conversationId) room.forEach((c) => c.cancelTurn(conversationId)); }
+if (stopBtn) stopBtn.addEventListener("click", stopReplyOnScreen);
+
+// --- ⚡ command menu and commands (command-core.js) ------------------------------------------------
+// Cancel / Reset session / Switch model. Opened by ⚡ (the slot ⏹ takes while a reply runs), by
+// Ctrl/⌘+/, or by typing "/" first in the composer (then letters filter). A command never goes
+// through the prompt queue or gets the [time user] header: Cancel is session/cancel; Reset and
+// Switch model send the bare gateway command as their own prompt (Conn.runRawCommand) and turn the
+// gateway's plain-text answer into a Katashiro card or a muted system line. Commands, their cards
+// and results are not recorded in the conversation's history (like system notices): they vanish on
+// reload, and chat_history never shows them.
+
+const onScreenReplying = () => !!(conversationId && convReplying(conversationId));
+
+function showComposerHint(text) {
+  composerHint.textContent = text;
+  composerHint.hidden = !text;
+}
+function clearComposerHint() {
+  if (composerHint.hidden) return;
+  composerHint.hidden = true;
+  composerHint.textContent = "";
+}
+
+// `keep`: the entry to keep selected if it is still listed (a refresh while the user moves through it).
+function openCmdMenu(via, query = "", keep = null) {
+  const replying = onScreenReplying();
+  const items = CommandCore.menuItems({ replying, query });
+  if (!items.length) { closeCmdMenu(); return; }
+  clearComposerHint();
+  const kept = keep ? items.findIndex((c) => c.id === keep) : -1;
+  cmdMenuState = { via, query, items, replying, selected: kept >= 0 ? kept : 0 };   // replying: Cancel is first, so pre-selected
+  renderCmdMenu();
+}
+
+function closeCmdMenu() {
+  cmdMenuState = null;
+  cmdMenu.hidden = true;
+  cmdMenu.replaceChildren();
+  cmdBtn.setAttribute("aria-expanded", "false");
+}
+
+function renderCmdMenu() {
+  const m = cmdMenuState;
+  cmdMenu.replaceChildren(...m.items.map((c, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `cmd-item${i === m.selected ? " selected" : ""}`;
+    b.dataset.cmd = c.id;
+    b.setAttribute("role", "option");
+    b.setAttribute("aria-selected", String(i === m.selected));
+    const label = document.createElement("span");
+    label.className = "cmd-item-label";
+    label.textContent = c.label;
+    const desc = document.createElement("span");
+    desc.className = "cmd-item-desc";
+    desc.textContent = c.desc;
+    const key = document.createElement("span");
+    key.className = "cmd-item-key";
+    key.textContent = c.key;
+    b.append(label, desc, key);
+    b.addEventListener("mousedown", (e) => e.preventDefault());   // the composer keeps the focus
+    b.addEventListener("click", () => runCmdMenuItem(c.id));
+    return b;
+  }));
+  cmdMenu.hidden = false;
+  cmdBtn.setAttribute("aria-expanded", "true");
+}
+
+// The reply started or ended while the menu is open: re-order it (Cancel first while replying).
+function refreshCmdMenu() {
+  const m = cmdMenuState;
+  if (!m || m.replying === onScreenReplying()) return;
+  openCmdMenu(m.via, m.query);
+}
+
+// A key in the composer while the menu is open; true if the menu took it.
+function cmdMenuKey(e) {
+  const m = cmdMenuState;
+  const a = CommandCore.menuKey({ key: e.key, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, via: m.via, items: m.items });
+  if (a.type === "move") { m.selected = CommandCore.moveSelection(m.selected, a.delta, m.items.length); renderCmdMenu(); }
+  else if (a.type === "close") closeCmdMenu();
+  else if (a.type === "run") runCmdMenuItem(a.id || m.items[m.selected].id);
+  else {
+    // Opened by ⚡ / Ctrl+/: typing anything else closes it (the text is the user's draft). Opened
+    // by typing "/": the input handler re-filters.
+    if (m.via !== "typed" && e.key.length === 1 && !e.ctrlKey && !e.metaKey) closeCmdMenu();
+    return false;
+  }
+  e.preventDefault();
+  return true;
+}
+
+function runCmdMenuItem(id) {
+  const typed = cmdMenuState && cmdMenuState.via === "typed";
+  closeCmdMenu();
+  // A command picked from a typed "/re" consumes that text; from ⚡ the draft stays.
+  if (runCommand({ id }) && typed) clearComposer();
+}
+
+function clearComposer() {
+  messageInput.value = "";
+  messageInput.style.height = "auto";
+  updateSendEnabled();
+}
+
+/**
+ * Run a command ({ id } from CommandCore.parseCommand or the menu) for the conversation on screen.
+ * → true if it started (the caller may clear a typed command), false if refused with a hint.
+ */
+function runCommand(cmd) {
+  if (cmd.id === "cancel") {
+    if (!onScreenReplying()) { showComposerHint(CommandCore.TEXT.nothingToStop); return false; }
+    stopReplyOnScreen();
+    return true;
+  }
+  const c = currentConv && !convAgentMissing(conversationId) ? connOfConv(conversationId) : null;
+  const st = c && c.enabled ? c.stateFor(conversationId) : null;
+  const why = CommandCore.blocker(cmd.id, {
+    connected: !!(st && c.ws && c.ws.readyState === WebSocket.OPEN && c.initialized),
+    replying: onScreenReplying(),
+    staged: stagedImages.length + stagedFiles.length + stagingPending,
+    quoted: !!replyTarget,
+    running: !!(st && st.commandActive),
+  });
+  if (why) { showComposerHint(why); return false; }
+  clearComposerHint();
+  if (cmd.id === "reset") confirmReset(c, st);
+  else if (cmd.id === "model") pickModel(c, st);
+  else if (cmd.id === "model-set") setModel(c, st, cmd.arg);
+  return true;
+}
+
+// Hold the session for a command: no queued turn starts until it is done; then the queue (messages
+// typed meanwhile) flushes as usual.
+async function withCommandHold(c, st, fn) {
+  st.commandActive = true;
+  try { return await fn(); } finally {
+    st.commandActive = false;
+    if (c.states.get(st.convId) === st) c.flushQueue(st);
+  }
+}
+
+async function waitTurnEnd(st, ms = 15000) {
+  const end = Date.now() + ms;
+  while (st.turnActive) {
+    if (Date.now() > end) throw new Error("the reply did not stop");
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
+
+const errText = (err) => String((err && err.message) || err);
+
+// The command as sent (muted, on the user's side). Not recorded, like system notices.
+function appendCommandEcho(text, conv) {
+  const list = conv ? conv.listEl : outList();
+  if (!list) return;
+  const row = document.createElement("div");
+  row.className = "message command";
+  const inner = document.createElement("div");
+  inner.className = "command-text";
+  inner.textContent = text;
+  row.appendChild(inner);
+  list.appendChild(row);
+  if (list === chatList) maybeScroll();
+}
+
+// A Katashiro card for a command (the ask card's look, grey and ⚡: Katashiro's own, not the agent's).
+// `onPick(i)` → Promise<string | null>: the result line, or null to leave the card open (refused
+// with a hint). Closed unanswered when the user sends a message or opens another command card in
+// that conversation. Memory-only, like ask and confirm cards.
+const pendingCommandCards = new Map();                   // card element → { convId, close }
+function commandCard({ conv, title, question, detail, options, onPick }) {
+  for (const [, e] of [...pendingCommandCards]) if (e.convId === conv.id) e.close("Closed");
+  const card = document.createElement("div");
+  card.className = "ask-card command-card pending";
+  card.setAttribute("role", "group");
+  card.setAttribute("aria-label", title);
+  const head = document.createElement("div");
+  head.className = "ask-card-head";
+  const icon = document.createElement("span");
+  icon.className = "ask-card-icon";
+  icon.textContent = "⚡";
+  const name = document.createElement("span");
+  name.className = "ask-card-title";
+  name.textContent = `Katashiro · ${title}`;
+  name.title = "Katashiro's own card, not a message from the agent";
+  head.append(icon, name);
+  const q = document.createElement("div");
+  q.className = "ask-card-question";
+  q.textContent = question;
+  card.append(head, q);
+  if (detail) {
+    const d = document.createElement("div");
+    d.className = "ask-card-hint";
+    d.textContent = detail;
+    card.appendChild(d);
+  }
+  const controls = document.createElement("div");
+  controls.className = "ask-card-controls";
+  const opts = document.createElement("div");
+  opts.className = "ask-card-options";
+  controls.appendChild(opts);
+  const result = document.createElement("div");
+  result.className = "ask-card-result";
+  result.hidden = true;
+  card.append(controls, result);
+  const close = (text, answered = false) => {
+    if (!pendingCommandCards.delete(card)) return;
+    controls.remove();
+    card.className = `ask-card command-card ${answered ? "answered" : "unanswered"}`;
+    result.textContent = text;
+    result.hidden = false;
+  };
+  const buttons = options.map((o, i) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `ask-card-option${o.current ? " current" : ""}`;
+    b.textContent = o.label;
+    b.dataset.option = String(i);
+    b.addEventListener("click", async () => {
+      if (!pendingCommandCards.has(card)) return;
+      for (const x of buttons) x.disabled = true;
+      let text = null;
+      try { text = await onPick(i); } catch (err) { text = errText(err); }
+      if (text == null) { for (const x of buttons) x.disabled = false; return; }
+      close(text, true);
+    });
+    opts.appendChild(b);
+    return b;
+  });
+  pendingCommandCards.set(card, { convId: conv.id, close });
+  const row = document.createElement("div");
+  row.className = "message system";
+  row.appendChild(card);
+  if (conv.listEl) { conv.listEl.appendChild(row); if (conv.listEl === chatList) maybeScroll(); }
+  return card;
+}
+function closeCommandCards(convId) {
+  for (const [, e] of [...pendingCommandCards]) if (e.convId === convId) e.close("Closed");
+}
+
+// Reset session: a local confirm card; on yes, stop a running reply first, then the bare /reset.
+function confirmReset(c, st) {
+  const conv = convs.get(st.convId);
+  if (!conv) return;
+  commandCard({
+    conv,
+    title: "Reset session",
+    question: "Clear the agent's memory of this conversation?",
+    detail: `${c.name} starts a new session and forgets what was said here; the messages stay on screen.${st.turnActive ? " The reply in progress is stopped first." : ""}`,
+    options: [{ label: "Reset session" }, { label: "Keep" }],
+    onPick: async (i) => {
+      if (i !== 0) return "Kept the session";
+      if (st.commandActive) { showComposerHint(CommandCore.TEXT.commandRunning); return null; }
+      try {
+        const text = await withCommandHold(c, st, async () => {
+          if (st.turnActive) { c.cancelTurn(st.convId); await waitTurnEnd(st); }
+          appendCommandEcho(CommandCore.RESET_TEXT, conv);
+          return CommandCore.replyText(await c.runRawCommand(st, CommandCore.RESET_TEXT), CommandCore.parseResetReply);
+        });
+        // The new session never asked this conversation's open questions: close them.
+        if (CommandCore.parseResetReply(text)) closePendingAsks(c, "restart", st.convId);
+        appendSystemMessage(CommandCore.resetMessage(text), conv);
+        return "Reset session";
+      } catch (err) {
+        appendSystemMessage(`Reset failed: ${errText(err)}`, conv);
+        return "Reset failed";
+      }
+    },
+  });
+}
+
+// Switch model: the bare /models, its numbered list as a card (current ✅); a pick runs /model set N.
+// A text that is not the list (no models yet on a fresh session, a format change) is shown as is.
+async function pickModel(c, st) {
+  const conv = convs.get(st.convId);
+  if (!conv) return;
+  appendCommandEcho(CommandCore.MODELS_TEXT, conv);
+  let text;
+  try {
+    text = await withCommandHold(c, st, async () => CommandCore.replyText(await c.runRawCommand(st, CommandCore.MODELS_TEXT), CommandCore.parseModelList));
+  } catch (err) {
+    appendSystemMessage(`Switch model failed: ${errText(err)}`, conv);
+    return;
+  }
+  const list = CommandCore.parseModelList(text);
+  if (!list) { appendSystemMessage(text.trim() || CommandCore.TEXT.noReply, conv); return; }
+  commandCard({
+    conv,
+    title: "Switch model",
+    question: `Which model should ${c.name} use?`,
+    options: list.options.map((o) => ({ label: `${ConfirmCore.plainText(o.name, 80)}${o.current ? " ✅" : ""}`, current: o.current })),
+    onPick: async (i) => {
+      const why = CommandCore.blocker("model-set", { connected: true, replying: st.turnActive, running: st.commandActive });
+      if (why) { showComposerHint(why); return null; }
+      return setModel(c, st, String(list.options[i].n));
+    },
+  });
+}
+
+// /model set <N|name>, bare; → the muted result line (also the card's result).
+async function setModel(c, st, arg) {
+  const conv = convs.get(st.convId);
+  const wire = CommandCore.modelSetText(arg);
+  if (conv) appendCommandEcho(wire, conv);
+  let line;
+  try {
+    const text = await withCommandHold(c, st, async () => CommandCore.replyText(await c.runRawCommand(st, wire), CommandCore.parseSwitchReply));
+    line = CommandCore.switchMessage(text);
+  } catch (err) {
+    line = `Switch model failed: ${errText(err)}`;
+  }
+  if (conv) appendSystemMessage(line, conv);
+  return line;
+}
+
+cmdBtn.addEventListener("click", () => {
+  if (cmdMenuState) closeCmdMenu(); else openCmdMenu("button");
+  messageInput.focus();                                  // the menu's keys work from the composer
+});
+// A click anywhere else closes the menu (its own items keep the focus in the composer).
+document.addEventListener("mousedown", (e) => {
+  if (cmdMenuState && !cmdMenu.contains(e.target) && !cmdBtn.contains(e.target) && !sendBtn.contains(e.target) && e.target !== messageInput) closeCmdMenu();
+});
 
 // Panel closing: best-effort cancel any in-flight turn so the gateway stops the agent-core turn
 // instead of leaving it running to completion (whose reply is then dropped as stale). This is the
@@ -3555,6 +3930,17 @@ function afterPageSend(fn) {
 // Send a user turn to the on-screen conversation's agent, under a [time user (↩ quoted)] header
 // (RoomCore.framePrompt; the gateway adds its own sender_context on top).
 function sendMessage() {
+  // A command (CommandCore.parseCommand: "/" + a letter first, no leading space) is never sent as a
+  // message: ours run, anything else stays in the composer with a hint. With the typed menu open,
+  // send runs its selected entry, like Enter.
+  if (cmdMenuState && cmdMenuState.via === "typed") { runCmdMenuItem(cmdMenuState.items[cmdMenuState.selected].id); return; }
+  const cmd = CommandCore.parseCommand(messageInput.value);
+  if (cmd) {
+    closeCmdMenu();
+    if (cmd.id === "unknown") showComposerHint(CommandCore.TEXT.noSuchCommand);
+    else if (runCommand(cmd)) clearComposer();
+    return;
+  }
   if (!currentConv) { appendSystemMessage("目前沒有開著的對話：先封存一段，或從 🗂️ 總覽重新打開。"); return; }
   if (convAgentMissing(conversationId)) { appendSystemMessage(ConvCore.AGENT_REMOVED_TEXT); return; }
   const text = messageInput.value.trim();
@@ -3609,6 +3995,7 @@ function postUserText(text, images, replyTo, files, pageAt) {
   // Q4 (ADR ask-user §2.3): a message instead of answering closes the open ask cards OF THIS
   // CONVERSATION (multi-conversation §3.8); nothing is sent for them, this message goes out as usual.
   supersedePendingAsks(conversationId);
+  closeCommandCards(conversationId);                     // …and a ⚡ command card still waiting there
   maybeAutoTitle(currentConv, text);                     // §3.3: the first user message names it
   // Unique per ms in this panel: the header's milliseconds name exactly this message (#62 follow-up).
   const sentAt = uniqueMsgMs(Date.now());
@@ -5634,8 +6021,12 @@ function appendErrorMessage(senderName, text, onRetry) {
 
 // The stop button is shown while the conversation ON SCREEN is replying and stops only its turn
 // (P2 §5); a conversation replying in the background is stopped from its tab (⏹).
+// ⚡ takes the same slot while idle (one of the two always shows, so the layout never moves).
 function updateStopButton() {
-  if (stopBtn) stopBtn.hidden = !(conversationId && convReplying(conversationId));
+  const replying = !!(conversationId && convReplying(conversationId));
+  if (stopBtn) stopBtn.hidden = !replying;
+  if (cmdBtn) cmdBtn.hidden = replying && !!stopBtn;
+  refreshCmdMenu();
 }
 
 function scrollToBottom() {

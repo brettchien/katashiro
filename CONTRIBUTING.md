@@ -30,6 +30,7 @@ dev tooling only (puppeteer-core for the headless smokes); see
 - `agent-tools.js`: Maps the agent's own tool-call updates (ACP `tool_call` / `tool_call_update`) to tool-strip pills.
 - `ask-core.js`: The pure half of `katashiro.ask_user` — question rules, how a card settles, its visible-time clock, the answer text. See [`docs/adr/ask-user.md`](docs/adr/ask-user.md).
 - `confirm-core.js`: The pure half of the panel's 🔒 confirm card — text rules and the one-shot decision state machine.
+- `command-core.js`: The pure half of the ⚡ command menu — its entries, keys and shortcuts, what counts as a typed command, when one is refused, and parsing the OpenAB gateway's `/reset`, `/models` and `/model set` replies (formats pinned by `test/fixtures/openab-slash-replies.json`). See [docs/features.md → ⚡ Commands](docs/features.md).
 - `jev-grounding.js`: Optional Jev (TypeSafe) decision helper behind `assert`, `click_text` and `type_text` (BYO OpenRouter key).
 - `markdown.js`: The single sanitized `renderMarkdown` sink (markdown-it → DOMPurify) + copy-code and link/media hardening. See [`docs/adr/chat-markdown-rendering.md`](docs/adr/chat-markdown-rendering.md).
 - `page/a11y-walker.js`: Content-script injected into the page — builds the accessibility-tree snapshot and resolves element refs (`__katashiroResolve`).

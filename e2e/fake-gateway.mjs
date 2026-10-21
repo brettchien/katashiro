@@ -21,9 +21,15 @@
 //   await gw.callTool(sid, "katashiro.get_text", {})   → the MCP result (or { error })
 //
 // session/cancel ends only the named session's held prompt with stopReason "cancelled", like the
-// broker. Listens on 127.0.0.1 on a free port; the case seeds the panel's agent URL (gw.url),
+// broker. A prompt that is exactly a slash command openab answers itself (/reset, /models,
+// /model set <N|name>) gets openab's own text (gateway.rs; the strings are pinned in
+// test/fixtures/openab-slash-replies.json) and is never held; one sent while that session has a
+// prompt open is refused with -32001 Session busy, like acp_server.rs. Listens on 127.0.0.1 on a free port; the case seeds the panel's agent URL (gw.url),
 // so nothing collides with a real gateway on :8080.
 import { WebSocketServer } from "ws";
+import { readFileSync } from "node:fs";
+
+const SLASH = JSON.parse(readFileSync(new URL("../test/fixtures/openab-slash-replies.json", import.meta.url), "utf8"));
 
 // openab dispatch.rs on a full pool: "⚠️ " + format_user_error(e), sent as chat text, then end_turn
 // (ConvCore.isPoolBusyReply recognises exactly this).
@@ -46,6 +52,28 @@ export class FakeGateway {
     this.nextSession = 1;
     this.nextId = 50000;           // ids of gateway → client requests
     this.pending = new Map();      // id → { resolve }
+    this.commands = [];            // every slash command openab answered itself: { sessionId, text }
+    this.models = ["Default (recommended)", "Opus", "Sonnet", "Haiku", "Opus (1M context)"];
+    this.currentModel = 1;         // index into models (✅)
+  }
+
+  // openab gateway.rs: the reply to a prompt that is exactly a slash command, or null (not one).
+  slashReply(text) {
+    const t = text.trim();
+    if (t === "/reset") return SLASH.resetOk;
+    if (t === "/models" || t === "/model" || t === "/model list") {
+      const rows = this.models.map((m, i) => `  ${i + 1}. ${m}${i === this.currentModel ? " ✅" : ""}`);
+      return ["🔧 Available models:", ...rows, "\nUsage: /model set <number or name>"].join("\n");
+    }
+    const m = /^\/model set (.+)$/.exec(t);
+    if (m) {
+      const n = Number(m[1]);
+      const i = Number.isInteger(n) ? n - 1 : this.models.findIndex((x) => x.toLowerCase() === m[1].toLowerCase());
+      if (i < 0 || i >= this.models.length) return Number.isInteger(n) ? `⚠️ Invalid number. Use 1–${this.models.length}.` : SLASH.modelSetFailed;
+      this.currentModel = i;
+      return `✅ Switched to **${this.models[i]}**`;
+    }
+    return null;
   }
 
   async start() {
@@ -111,6 +139,15 @@ export class FakeGateway {
         // userText: what the user typed, without Katashiro's "[<time> user]" header line (and host lines).
         const userText = text.split("\n").filter((l) => !/^\[.*\]$/.test(l.trim())).join("\n").trim();
         const images = (p.prompt || []).filter((b) => b.type === "image").length;
+        const slash = this.slashReply(text);
+        if (slash !== null) {
+          if (this.openPrompts(p.sessionId).length) {
+            return this.send(ws, { jsonrpc: "2.0", id: m.id, error: { code: -32001, message: "Session busy: a prompt is already in progress" } });
+          }
+          this.commands.push({ sessionId: p.sessionId, text });
+          this.chunk(p.sessionId, slash);
+          return this.reply(ws, m.id, { stopReason: "end_turn" });
+        }
         const t = { id: m.id, sessionId: p.sessionId, text, userText, images, ws, at: Date.now(), done: false };
         this.prompts.push(t);
         if (this.poolBusy) {
