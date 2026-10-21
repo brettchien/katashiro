@@ -175,6 +175,9 @@ class SessionState {
     this.turnActive = false;
     this.lastPrompt = null;                              // last turn's text, for retry (never the host line)
     this.lastImages = [];                                // …and its images, so a retry re-sends them
+    this.queuedMsgIds = [];                              // read receipt: user messages waiting in promptQueue
+    this.lastMsgIds = [];                                // …and those of the last turn, for retry
+    this.turnHeard = false;                              // a session/update arrived for the turn in flight
     this.stream = null;                                  // { bubble, text } while streaming
     this.skippedToolCalls = null;                        // katashiro tool calls seen this turn
     this.lastTurnActivityAt = 0;                         // ts of the last sign of life of its turn
@@ -742,7 +745,7 @@ class Conn {
     // tunnel (the connection names the server, the server its conversation, §3.9).
     if (msg.method === "session/update" && msg.params) {
       const st = this.stateBySession(msg.params.sessionId);
-      if (st) st.lastTurnActivityAt = this.lastRecvAt;
+      if (st) { st.lastTurnActivityAt = this.lastRecvAt; st.turnHeard = true; }
     } else if (msg.method === "mcp/message") {
       const server = this.mcpState.connections && msg.params && this.mcpState.connections[msg.params.connectionId];
       const st = server && this.stateOfServer(server);
@@ -799,9 +802,12 @@ class Conn {
 
   // Queue a prompt for a conversation's session (the current one by default; an ask card's answer
   // goes to the session that asked, §3.8).
-  enqueue(text, images, st = this.cur) {
+  // `msgId`: the user's chat message this prompt carries, for its read receipt (none for an ask
+  // card's answer, which has no bubble of its own).
+  enqueue(text, images, st = this.cur, msgId = null) {
     if (!st) return;
     st.promptQueue.push(text);
+    if (msgId) st.queuedMsgIds.push(msgId);
     if (images && images.length) st.pendingImages.push(...images);
     // openSession, not flushQueue: a background conversation not yet resumed on this socket (e.g. a
     // relay after a reconnect) is opened first; one that is ready just flushes (review: Jellyfish, #143).
@@ -821,6 +827,7 @@ class Conn {
     // agent was busy while the user (or a relay) piled up several messages, they arrive together on
     // the next round — Discord-style — instead of dribbling out over N turns.
     const batch = st.promptQueue.splice(0);
+    const msgIds = st.queuedMsgIds.splice(0);            // read receipt: the user messages in it
     // The reply hint exactly once, at the end — also when a retried prompt (which carries it) is
     // batched with newer messages (#62).
     let text = RoomCore.batchWithReplyHint(batch);
@@ -839,7 +846,13 @@ class Conn {
     if (!text && images.length === 0) return;            // nothing sendable — stay idle
     st.lastPrompt = text;                                // remember for retry (the whole batch, no host line)
     st.lastImages = images;
+    st.lastMsgIds = msgIds;
     st.turnActive = true;
+    st.turnHeard = false;
+    // Read receipt: set as the batch goes out in session/prompt (the gateway answers that request
+    // only when the turn ends, so this is the earliest sign); cleared below if the turn never
+    // started. Only the ones this turn marked are cleared — a retry of a received turn keeps its tags.
+    const marked = setReadReceipts(st.convId, msgIds, true);
     st.skippedToolCalls = new Set();                     // katashiro tool calls seen this turn
     updateStopButton();
     renderConvTabs();
@@ -868,6 +881,7 @@ class Conn {
           // §5: the pool was full — openab says so as a chat line, not an error (ConvCore.isPoolBusyReply).
           // The turn never started: no record, no relay, the host line stays pending; error bubble + 重試.
           st.turnActive = false;
+          setReadReceipts(st.convId, marked, false);     // never reached the agent: no read tag
           updateStopButton();
           renderConvTabs();
           st.stream.text = "";                           // drop the line: finalize removes the empty row
@@ -895,6 +909,7 @@ class Conn {
         renderConvTabs();
         const socketOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
         const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
+        if (!RoomCore.turnReachedAgent(action, st.turnHeard)) setReadReceipts(st.convId, marked, false);
         if (action === "requeue") {
           // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
           // that rejects the in-flight turn with "connection closed"). Re-queue it — the
@@ -906,6 +921,7 @@ class Conn {
           // flag still stands, so the resend carries it again.
           const partial = !!(st.stream && st.stream.text);
           st.promptQueue.unshift(text);
+          st.queuedMsgIds.unshift(...msgIds);            // waiting again: read once the resend goes out
           st.pendingImages.unshift(...images);           // the images never landed either
           st.resendPending = true;
           this.finalizeStream(undefined, st);
@@ -983,6 +999,7 @@ class Conn {
     if (!this.enabled || convAgentUrl(st.convId) !== this.agent.url) return;
     if ((!st.lastPrompt && st.lastImages.length === 0) || st.turnActive) return;
     st.promptQueue.push(st.lastPrompt || "");            // "" still carries an image-only turn
+    st.queuedMsgIds.push(...st.lastMsgIds);              // read receipt: tagged when the retry goes out
     st.pendingImages.push(...st.lastImages);
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized) this.openSession(st);   // flushes once ready
     else this.connect();                                 // reconnect; flushQueue runs after handshake
@@ -1913,7 +1930,7 @@ function recordMessage(rec) {
 
 function replayMessage(rec) {
   if (rec.kind === "error") appendErrorMessage(rec.senderName, rec.text, null); // no retry on restore
-  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || (rec.page ? { page: rec.page } : null) });
+  else appendMessage({ senderId: rec.senderId, senderName: rec.senderName, text: rec.text, timestamp: rec.timestamp, replyTo: rec.replyTo || (rec.page ? { page: rec.page } : null), read: RoomCore.isReadRecord(rec) });
 }
 
 // Other panels write conv:index too (titles, archive, reopen): follow it, keeping this panel's own
@@ -3999,7 +4016,7 @@ function postUserText(text, images, replyTo, files, pageAt) {
   maybeAutoTitle(currentConv, text);                     // §3.3: the first user message names it
   // Unique per ms in this panel: the header's milliseconds name exactly this message (#62 follow-up).
   const sentAt = uniqueMsgMs(Date.now());
-  appendMessage({
+  const msgId = appendMessage({
     senderId: myUserId, senderName: myUserName, text, timestamp: sentAt,
     images: images.map((i) => i.dataUrl),                // show what we sent (not persisted to history)
     files: files.map((f) => ({ name: f.name, size: f.size })), // chips only; content is never kept
@@ -4025,7 +4042,7 @@ function postUserText(text, images, replyTo, files, pageAt) {
   // user's past, not this new message: only a requeued prompt still waiting keeps it.
   const st = c.stateFor(conversationId);
   if (st && st.resendPending && !st.turnActive && !st.promptQueue.length) st.resendPending = false;
-  c.enqueue(framed, images);
+  c.enqueue(framed, images, undefined, msgId);
   return [c];
 }
 
@@ -5861,7 +5878,8 @@ function jumpToMessage(id) {
   setTimeout(() => row.classList.remove("flash"), 1500);
 }
 
-function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption, files }) {
+// → the row's message id. `read`: the user's message already reached the agent (a replayed record).
+function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption, files, read }) {
   const isMe = senderId === myUserId;
   const msgDiv = document.createElement("div");
   msgDiv.className = `message ${isMe ? "sent" : "received"}`;
@@ -5921,6 +5939,7 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
   const ts = document.createElement("div");
   ts.className = "timestamp";
   ts.textContent = formatTime(timestamp);
+  if (isMe && read) ts.appendChild(readTagEl());
   content.appendChild(ts);
 
   // A files-only message is quoted by its markers, not as an empty quote.
@@ -5935,10 +5954,42 @@ function appendMessage({ senderId, senderName, text, timestamp, images, replyTo,
     page: page || undefined,                             // §2.6: kind, title, url (no query), excerpt, tabId
     // images are memory-only; a shown image's caption (rendered as a figcaption) is kept as text
     text: Composer.historyText(text || historyCaption || "", Array.isArray(images) ? images.length : 0, files),
+    read: isMe ? !!read : undefined,                     // read receipt: set when a turn carrying it goes out
   });
   // The user's own message always pulls the view down (they expect to follow it); an incoming
   // relayed message only follows if they're already at the bottom.
   if (isMe && !scopeConv) scrollToBottom(); else maybeScroll();
+  return id;
+}
+
+// Read receipt: a small gray "read" beside the time of a user message the agent has received.
+function readTagEl() {
+  const tag = document.createElement("span");
+  tag.className = "read-tag";
+  tag.textContent = "read";
+  tag.title = "agent 已收到";
+  return tag;
+}
+
+// Set (on) or clear the read receipt of the user messages `ids` in conversation `convId`: the
+// stored record (persisted, so it survives a reload) and the row, if its list is built. Never
+// part of what the agent sees (prompt, chat_history). → the ids whose receipt changed.
+function setReadReceipts(convId, ids, on) {
+  const conv = convs.get(convId);
+  if (!conv || !ids || !ids.length) return [];
+  const changed = [];
+  for (const id of ids) {
+    const rec = conv.messages.find((m) => m && m.kind === "sent" && m.id === id);
+    if (!rec || RoomCore.isReadRecord(rec) === on) continue;   // cleared / trimmed, or already so
+    rec.read = on;
+    changed.push(id);
+    const ts = conv.listEl && conv.listEl.querySelector(`[data-msg-id="${CSS.escape(id)}"] > .message-content > .timestamp`);
+    const tag = ts && ts.querySelector(":scope > .read-tag");
+    if (ts && on && !tag) ts.insertBefore(readTagEl(), ts.querySelector(":scope > .reply-btn"));
+    else if (tag && !on) tag.remove();
+  }
+  if (changed.length) saveConv(conv);
+  return changed;
 }
 
 // System notices carry handshake error strings (remote-reachable) — same XSS sink, same

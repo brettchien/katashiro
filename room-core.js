@@ -496,6 +496,25 @@
     return text && (hadHint || needsReplyHint(items)) ? `${text}${suffix}` : text;
   }
 
+  // Read receipt: a user message's record says `read: true` once a turn carrying it was sent to
+  // the agent, `read: false` while it waits (or after that turn never started). A record from
+  // before the receipt existed has no `read` field: it was delivered as far as anyone knows, so it
+  // counts as read. Only the user's own messages ("sent") have a receipt.
+  function isReadRecord(rec) {
+    return !!rec && rec.kind === "sent" && rec.read !== false;
+  }
+
+  // Did the turn that carried a batch reach the agent? `outcome`: how session/prompt ended —
+  // "ok" (resolved), "busy" (openab's pool-busy chat line: the turn never started), or a
+  // promptFailureAction ("requeue": the socket dropped and the batch waits again, re-marked when
+  // it is resent; "cancel": timed out on a live socket, so it was received; "error": rejected —
+  // received only if anything of the turn came back, `heard`).
+  function turnReachedAgent(outcome, heard) {
+    if (outcome === "ok" || outcome === "cancel") return true;
+    if (outcome === "error") return !!heard;
+    return false;
+  }
+
   // #62: message ids are <conversationId>:<ms>; two messages finishing in the same ms (a split
   // reply's parts, two agents) must not share one. Returns t, or last + 1 if t is not after last.
   function nextUniqueMs(last, t) {
@@ -521,6 +540,8 @@
     AVATAR_TONES,
     avatarTone,
     batchWithReplyHint,
+    isReadRecord,
+    turnReachedAgent,
     nextUniqueMs,
     splitReplySegments,
     replyParts,

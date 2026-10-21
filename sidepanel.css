@@ -702,6 +702,11 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   margin-left: 4px;
   margin-right: 0;
 }
+/* Read receipt: the agent has received this message (a turn carrying it was sent). */
+.read-tag {
+  margin-left: 6px;
+  color: var(--text-muted);
+}
 
 .system-text {
   font-size: 11px;
