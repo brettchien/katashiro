@@ -46,6 +46,8 @@
     resetNothing: "🔄 Session reset — there was no active session to clear",
     // The gateway's own buffer (cancel_buffered_thread) held messages that /reset dropped unsent.
     resetDropped: (n) => ` (the gateway dropped ${n} message${n === 1 ? "" : "s"} it was still holding)`,
+    // Answers to the agent's ask cards still queued at a reset: the new session never asked them (#191 review d).
+    askAnswersDropped: (n) => `${n} queued answer${n === 1 ? "" : "s"} to the agent's questions ${n === 1 ? "was" : "were"} not sent — the new session never asked ${n === 1 ? "it" : "them"}`,
     switched: (name) => `✅ Switched to ${name}`,
     noReply: "The gateway sent no reply",
   });
@@ -210,13 +212,41 @@
    * The Reset session card's detail line, from the session's state NOW (the panel re-renders it while
    * the card waits — a reply that ends meanwhile drops its sentence, #179 review): `replying` the
    * conversation's turn is running, `queued` messages waiting in its prompt queue (they are sent after
-   * the reset, to the new session — unlike the gateway's own /reset, which drops its buffer).
+   * the reset, to the new session — unlike the gateway's own /reset, which drops its buffer);
+   * `answers` queued answers to the agent's ask cards (dropped at the reset, #191 review d).
    */
-  function resetDetail(name, { replying = false, queued = 0 } = {}) {
+  function resetDetail(name, { replying = false, queued = 0, answers = 0 } = {}) {
     let s = `${name} starts a new session and forgets what was said here; the messages stay on screen.`;
     if (replying) s += " The reply in progress is stopped first.";
     if (queued > 0) s += ` ${queued} queued message${queued === 1 ? "" : "s"} will be sent to the new session.`;
+    if (answers > 0) s += ` ${answers} queued answer${answers === 1 ? "" : "s"} to its questions will be dropped (the new session never asked ${answers === 1 ? "it" : "them"}).`;
     return s;
+  }
+
+  /**
+   * What a session's prompt queue holds, for the Reset card (#191 review c): `messages` = queued
+   * prompts with text that are not ask answers; `answers` = queued ask-card answers (`askAnswers`, a
+   * Set of their exact texts). An empty string is not a message: it only carries images left over
+   * from a turn that already went out (or an image-only retry of one), so it is not counted.
+   */
+  function queuedCounts(queue, askAnswers) {
+    let messages = 0, answers = 0;
+    for (const t of queue || []) {
+      if (askAnswers && askAnswers.has(t)) answers++;
+      else if (t) messages++;
+    }
+    return { messages, answers };
+  }
+
+  /** Split a prompt queue at a reset: `kept` (in order) and the number of ask answers `dropped`. */
+  function withoutAskAnswers(queue, askAnswers) {
+    const kept = [];
+    let dropped = 0;
+    for (const t of queue || []) {
+      if (askAnswers && askAnswers.has(t)) dropped++;
+      else kept.push(t);
+    }
+    return { kept, dropped };
   }
 
   /**
@@ -249,6 +279,7 @@
   return {
     COMMANDS, TEXT, RESET_TEXT, MODELS_TEXT, modelSetText,
     menuItems, menuQuery, menuKey, moveSelection, composerShortcut, parseCommand, blocker,
-    parseModelList, parseSwitchReply, parseResetReply, resetDetail, replyText, resetMessage, switchMessage,
+    parseModelList, parseSwitchReply, parseResetReply, resetDetail, queuedCounts, withoutAskAnswers,
+    replyText, resetMessage, switchMessage,
   };
 });
