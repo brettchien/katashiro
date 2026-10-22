@@ -122,12 +122,24 @@ test("release zip includes every file src/**/*.js names at runtime (files: [...]
     for (const m of text.matchAll(/\bgetURL\(\s*"([^"]+)"\s*\)/g)) note(m[1], js);
     // Catch-all: any path literal into the shipped directories, with or without a leading slash
     // (canvas-frame.js setting s.src = "vendor/mermaid/mermaid.tiny.js"; page-ask-core.js checking
-    // a sender pathname against "/src/background.js"), and any "/<page>.html" at the root
-    // (sidepanel.js fromOwnPage(sender, "/sidepanel.html")).
+    // a sender pathname against "/src/background.js"), and any root-level "/<name>.html|js|css|json"
+    // (sidepanel.js fromOwnPage(sender, "/sidepanel.html")). The root name may contain dots
+    // ("/canvas.v2.html"). The release zip packs only manifest.json, build-info.json and *.html at
+    // the root, so a "/x.js" / "/x.css" / "/x.json" hit is a real bug: it fails below with a
+    // message saying so. A root path without the leading slash ("x.js") is not caught here — it
+    // is indistinguishable from an ordinary string; the files:/getURL/iconUrl scans above cover
+    // the APIs that take one.
     for (const m of text.matchAll(/"\/?((?:src|vendor|icons)\/[\w./-]+)"/g)) if (PATH.test(m[1])) note(m[1], js);
-    for (const m of text.matchAll(/"\/([\w-]+\.html)"/g)) note(m[1], js);
+    for (const m of text.matchAll(/"\/([\w-][\w.-]*\.(?:html|js|css|json))"/g)) note(m[1], js);
   }
-  for (const [f, js] of found) assertShipped(entries, f, `named by ${js}`);
+  for (const [f, js] of found) {
+    // Root level: only manifest.json, build-info.json and *.html are packed (release.yml).
+    if (!f.includes("/")) {
+      assert.ok(f.endsWith(".html") || f === "manifest.json" || GENERATED.has(f),
+        `${f} is named by ${js} as a root-level file, but the release zip packs only manifest.json, build-info.json and *.html at the root — move it under src/ (or fix the path)`);
+    }
+    assertShipped(entries, f, `named by ${js}`);
+  }
   // Sanity: the scanner still sees the references this test was written for.
   for (const f of ["src/core/page-ask-core.js", "src/page/a11y-walker.js", "vendor/dom-accessibility-api.iife.js", "icons/icon128.png", "canvas.html", "vendor/mermaid/mermaid.tiny.js",
     "src/background.js", "sidepanel.html", "canvas-gallery.html"]) {
