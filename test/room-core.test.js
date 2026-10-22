@@ -201,6 +201,16 @@ test("DISCONNECTED_REASON is not a dead-probe reason (it must not read as \"reco
   assert.equal(typeof RoomCore.DISCONNECTED_REASON, "string");
   assert.equal(RoomCore.isDeadProbeReason(RoomCore.DISCONNECTED_REASON), false);
 });
+test("queueDroppedText: a conn turned off says its queue is not sent; takes back a promised resend (#190 review a, b)", () => {
+  const plain = RoomCore.queueDroppedText("Orca", false);
+  assert.match(plain, /^已中斷與 Orca 的連線：排隊中的訊息沒有送出，不會自動重送。/);
+  assert.doesNotMatch(plain, /重新連線後會重送/);
+  const promised = RoomCore.queueDroppedText("Orca", true);
+  assert.match(promised, /^已中斷與 Orca 的連線：上面說的「重新連線後會重送」不會發生/);
+  assert.match(promised, /不會自動重送/);
+  // Same closing advice as the in-flight turn's stopped line.
+  for (const t of [plain, promised]) assert.match(t, /需要的話，重新連線後再送一次。$/);
+});
 
 // --- config storage policy: don't clobber the Google-synced copy on reinstall --------------
 test("hasStoredConfig: agents list or legacy wsUrl count as stored; empty/missing do not", () => {
