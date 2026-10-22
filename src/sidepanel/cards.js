@@ -181,7 +181,9 @@ function appendCommandEcho(text, conv) {
 // `onPick(i)` → Promise<string | null>: the result line, or null to leave the card open (refused
 // with a hint). Closed unanswered when the user sends a message or opens another command card in
 // that conversation. Memory-only, like ask and confirm cards.
-const pendingCommandCards = new Map();                   // card element → { convId, close }
+// `detail`: a string, or a function → string re-run by refreshCommandCards() while the card waits
+// (its facts — a reply running, messages queued — can change before the user picks, #179 review).
+const pendingCommandCards = new Map();                   // card element → { convId, close, refresh }
 function commandCard({ conv, title, question, detail, options, onPick }) {
   for (const [, e] of [...pendingCommandCards]) if (e.convId === conv.id) e.close("Closed");
   const card = document.createElement("div");
@@ -202,10 +204,14 @@ function commandCard({ conv, title, question, detail, options, onPick }) {
   q.className = "ask-card-question";
   q.textContent = question;
   card.append(head, q);
+  let refresh = null;
   if (detail) {
     const d = document.createElement("div");
     d.className = "ask-card-hint";
-    d.textContent = detail;
+    if (typeof detail === "function") {
+      refresh = () => { d.textContent = detail(); };
+      refresh();
+    } else d.textContent = detail;
     card.appendChild(d);
   }
   const controls = document.createElement("div");
@@ -233,15 +239,18 @@ function commandCard({ conv, title, question, detail, options, onPick }) {
     b.addEventListener("click", async () => {
       if (!pendingCommandCards.has(card)) return;
       for (const x of buttons) x.disabled = true;
+      const e = pendingCommandCards.get(card);
+      const live = e.refresh;
+      e.refresh = null;                                  // picked: the line says what was decided on
       let text = null;
       try { text = await onPick(i); } catch (err) { text = errText(err); }
-      if (text == null) { for (const x of buttons) x.disabled = false; return; }
+      if (text == null) { e.refresh = live; if (live) live(); for (const x of buttons) x.disabled = false; return; }
       close(text, true);
     });
     opts.appendChild(b);
     return b;
   });
-  pendingCommandCards.set(card, { convId: conv.id, close });
+  pendingCommandCards.set(card, { convId: conv.id, close, refresh });
   const row = document.createElement("div");
   row.className = "message system";
   row.appendChild(card);
@@ -250,6 +259,10 @@ function commandCard({ conv, title, question, detail, options, onPick }) {
 }
 function closeCommandCards(convId) {
   for (const [, e] of [...pendingCommandCards]) if (e.convId === convId) e.close("Closed");
+}
+// Re-render the waiting cards' live detail lines (updateStopButton: a turn started or ended).
+function refreshCommandCards() {
+  for (const [, e] of pendingCommandCards) if (e.refresh) e.refresh();
 }
 
 // Reset session: a local confirm card; on yes, stop a running reply first, then the bare /reset.
@@ -260,7 +273,7 @@ function confirmReset(c, st) {
     conv,
     title: "Reset session",
     question: "Clear the agent's memory of this conversation?",
-    detail: `${c.name} starts a new session and forgets what was said here; the messages stay on screen.${st.turnActive ? " The reply in progress is stopped first." : ""}`,
+    detail: () => CommandCore.resetDetail(c.name, { replying: st.turnActive, queued: st.promptQueue.length }),
     options: [{ label: "Reset session" }, { label: "Keep" }],
     onPick: async (i) => {
       if (i !== 0) return "Kept the session";

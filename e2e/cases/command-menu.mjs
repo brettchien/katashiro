@@ -141,7 +141,7 @@ export default [
         await panel.keyboard.type(word);
         await panel.keyboard.press("Enter");
         s = await state(panel);
-        t.check(s.hint === "No such command — type / to see the commands" && s.input === word, `${word}: kept, with the hint`, s);
+        t.check(s.hint === "No such command — type / to see the commands, or start with a space to send it as text" && s.input === word, `${word}: kept, with the hint`, s);
       }
       await h.sleep(300);
       t.check(gw.prompts.length === sinceP && gw.commands.length === sinceC, "none of them was sent");
@@ -232,6 +232,7 @@ export default [
       await panel.keyboard.press("Enter");
       await h.until(panel, () => !!document.querySelector(".conv-messages:not([hidden]) .command-card.pending"), "the reset card");
       t.check((await card(panel)).text.includes("The reply in progress is stopped first."), "the card says the reply is stopped first");
+      t.check((await card(panel)).text.includes("1 queued message will be sent to the new session."), "the card says the queued message goes to the new session", await card(panel));
       await pickCard(panel, "Reset session");
       await h.until(null, () => gw.commands.some((x) => x.text === "/reset" && x.sessionId === sid), "/reset after the stop");
       t.check(gw.cancels.includes(sid), "the reply was cancelled first");
@@ -240,6 +241,27 @@ export default [
       t.check(q.at >= gw.log.find((l) => l.method === "session/prompt" && l.params.prompt[0].text === "/reset").at, "the queued message waited for the reset");
       gw.endTurn(sid, "end_turn", "ok");
       await h.idle(panel);
+
+      // The card's line is live: a reply that ends while the card waits drops "stopped first".
+      const since2 = gw.prompts.length;
+      await h.send(panel, "second");
+      await gw.waitPrompt((p) => p.sessionId === sid && p.userText === "second", { since: since2 });
+      await h.until(panel, () => !document.getElementById("stop-btn").hidden, "replying again");
+      await focusInput(panel);
+      await chord(panel, "/");
+      await panel.keyboard.press("ArrowDown");
+      await panel.keyboard.press("Enter");
+      await h.until(panel, () => !!document.querySelector(".conv-messages:not([hidden]) .command-card.pending"), "the reset card, while replying");
+      t.check((await card(panel)).text.includes("The reply in progress is stopped first."), "replying: the card says so");
+      gw.endTurn(sid, "end_turn", "ok");
+      await h.idle(panel);
+      await h.until(panel, () => {
+        const c = [...document.querySelectorAll(".conv-messages:not([hidden]) .command-card.pending")].pop();
+        return !!c && !c.textContent.includes("stopped first");
+      }, "the line drops the sentence once the reply ended");
+      const r = gw.commands.filter((x) => x.text === "/reset").length;
+      await pickCard(panel, "Keep");
+      t.check(gw.commands.filter((x) => x.text === "/reset").length === r, "Keep sends nothing (the live card)");
       gw.hold = false;
 
       // A pasted image pending: Reset and Switch model are refused, nothing sent.
