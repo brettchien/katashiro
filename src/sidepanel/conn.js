@@ -954,6 +954,7 @@ class Conn {
     st.promptQueue.push(turn.text || "");                // "" still carries an image-only turn
     st.queuedMsgIds.push(...turn.msgIds);                // read receipt: tagged when the retry goes out
     st.pendingImages.push(...turn.images);
+    refreshCommandCards();                               // the Reset card's queued count (#198 review n)
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.initialized) this.openSession(st);   // flushes once ready
     else this.connect();                                 // reconnect; flushQueue runs after handshake
   }
