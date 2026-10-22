@@ -619,7 +619,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
     `session/new` is the open question). If they are gone, note it: the fix would be a fresh
     `session/new` after a reset (Phase 2). Also reset mid-reply: the reply stops first, then the reset.
   - **Unknown commands:** `/help` + Enter: the text stays in the composer, "No such command" shows
-    above it, and nothing is sent (the gateway log shows no prompt); ` /help` (leading space) goes to
+    above it (with "start with a space to send it as text"), and nothing is sent (the gateway log
+    shows no prompt); ` /help` (leading space) goes to
     the agent as text.
 
 ## P2 prerequisite: two-session test

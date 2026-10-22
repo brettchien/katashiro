@@ -2099,6 +2099,7 @@ function updateStopButton() {
   if (stopBtn) stopBtn.hidden = !replying;
   if (cmdBtn) cmdBtn.hidden = replying && !!stopBtn;
   refreshCmdMenu();
+  refreshCommandCards();                                 // e.g. Reset's "the reply in progress is stopped first"
 }
 
 function scrollToBottom() {

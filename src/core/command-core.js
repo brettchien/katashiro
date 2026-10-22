@@ -34,7 +34,8 @@
 
   // Panel strings (English UI for the command feature, per Brett's brief).
   const TEXT = Object.freeze({
-    noSuchCommand: "No such command — type / to see the commands",
+    // A leading space makes the text an ordinary message (parseCommand reads the raw text).
+    noSuchCommand: "No such command — type / to see the commands, or start with a space to send it as text",
     nothingToStop: "Nothing to stop — the agent is not replying",
     notConnected: "Not connected to this conversation's agent",
     pendingAttachments: "Commands don't take attachments — send or remove them first",
@@ -43,6 +44,8 @@
     stopBeforeModel: "The agent is replying — stop it (⏹) before switching model",
     resetDone: "🔄 Session reset — the agent starts fresh; this chat stays on screen",
     resetNothing: "🔄 Session reset — there was no active session to clear",
+    // The gateway's own buffer (cancel_buffered_thread) held messages that /reset dropped unsent.
+    resetDropped: (n) => ` (the gateway dropped ${n} message${n === 1 ? "" : "s"} it was still holding)`,
     switched: (name) => `✅ Switched to ${name}`,
     noReply: "The gateway sent no reply",
   });
@@ -185,15 +188,35 @@
   }
 
   /**
-   * `/reset` → "🔄 Session reset. Start a new conversation!" (or "… Dropped N buffered message(s). …")
-   * → { ok: true, none: false }; "⚠️ No active session to reset." → { ok: true, none: true } (a fresh
-   * session: nothing to forget, which is what the user asked for); anything else → null (show it raw).
+   * `/reset` — the gateway's four answers (gateway.rs, `match (reset_session, dropped)`):
+   *   "🔄 Session reset. Start a new conversation!"                          → { ok, none: false, dropped: 0 }
+   *   "🔄 Session reset. Dropped N buffered message(s). Start a new conversation!" → { ok, none: false, dropped: N }
+   *   "⚠️ No active session to reset."                                       → { ok, none: true, dropped: 0 }
+   *   "🔄 Dropped N buffered message(s). No active session to reset."         → { ok, none: true, dropped: N }
+   * `none`: there was no session — a fresh one is what the user asked for, so it still counts as ok.
+   * Anything else → null (show it raw).
    */
   function parseResetReply(text) {
     const t = String(text == null ? "" : text).trim();
-    if (/^🔄 Session reset\. (Dropped \d+ buffered message\(s\)\. )?Start a new conversation!$/.test(t)) return { ok: true, none: false };
-    if (t === "⚠️ No active session to reset.") return { ok: true, none: true };
+    let m = /^🔄 Session reset\. (?:Dropped (\d+) buffered message\(s\)\. )?Start a new conversation!$/.exec(t);
+    if (m) return { ok: true, none: false, dropped: m[1] ? Number(m[1]) : 0 };
+    if (t === "⚠️ No active session to reset.") return { ok: true, none: true, dropped: 0 };
+    m = /^🔄 Dropped (\d+) buffered message\(s\)\. No active session to reset\.$/.exec(t);
+    if (m) return { ok: true, none: true, dropped: Number(m[1]) };
     return null;
+  }
+
+  /**
+   * The Reset session card's detail line, from the session's state NOW (the panel re-renders it while
+   * the card waits — a reply that ends meanwhile drops its sentence, #179 review): `replying` the
+   * conversation's turn is running, `queued` messages waiting in its prompt queue (they are sent after
+   * the reset, to the new session — unlike the gateway's own /reset, which drops its buffer).
+   */
+  function resetDetail(name, { replying = false, queued = 0 } = {}) {
+    let s = `${name} starts a new session and forgets what was said here; the messages stay on screen.`;
+    if (replying) s += " The reply in progress is stopped first.";
+    if (queued > 0) s += ` ${queued} queued message${queued === 1 ? "" : "s"} will be sent to the new session.`;
+    return s;
   }
 
   /**
@@ -213,7 +236,7 @@
   function resetMessage(text) {
     const r = parseResetReply(text);
     if (!r) return String(text || "").trim() || TEXT.noReply;
-    return r.none ? TEXT.resetNothing : TEXT.resetDone;
+    return (r.none ? TEXT.resetNothing : TEXT.resetDone) + (r.dropped ? TEXT.resetDropped(r.dropped) : "");
   }
 
   /** The muted system line for a /model set reply. */
@@ -226,6 +249,6 @@
   return {
     COMMANDS, TEXT, RESET_TEXT, MODELS_TEXT, modelSetText,
     menuItems, menuQuery, menuKey, moveSelection, composerShortcut, parseCommand, blocker,
-    parseModelList, parseSwitchReply, parseResetReply, replyText, resetMessage, switchMessage,
+    parseModelList, parseSwitchReply, parseResetReply, resetDetail, replyText, resetMessage, switchMessage,
   };
 });

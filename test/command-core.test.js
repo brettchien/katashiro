@@ -110,6 +110,7 @@ test("parseCommand: any other /word is unknown (never sent) — /help, /agents, 
 
 test("blocker: when a command is refused, and why", () => {
   assert.equal(C.blocker("unknown"), C.TEXT.noSuchCommand);
+  assert.match(C.TEXT.noSuchCommand, /start with a space to send it as text/, "the hint says how to send /xxx as a message (#179 review)");
   assert.equal(C.blocker("cancel", { replying: false }), C.TEXT.nothingToStop);
   assert.equal(C.blocker("cancel", { replying: true, staged: 2, quoted: true }), null, "Cancel sends no prompt: chips do not block it");
   assert.equal(C.blocker("reset", { staged: 1 }), C.TEXT.pendingAttachments);
@@ -171,15 +172,33 @@ test("parseSwitchReply / switchMessage", () => {
 });
 
 test("parseResetReply / resetMessage", () => {
-  assert.deepEqual(C.parseResetReply(F.resetOk), { ok: true, none: false });
-  assert.deepEqual(C.parseResetReply(F.resetDropped), { ok: true, none: false });
-  assert.deepEqual(C.parseResetReply(F.resetNoSession), { ok: true, none: true });
+  assert.deepEqual(C.parseResetReply(F.resetOk), { ok: true, none: false, dropped: 0 });
+  assert.deepEqual(C.parseResetReply(F.resetDropped), { ok: true, none: false, dropped: 2 });
+  assert.deepEqual(C.parseResetReply(F.resetNoSession), { ok: true, none: true, dropped: 0 });
+  assert.deepEqual(C.parseResetReply(F.resetNoSessionDropped), { ok: true, none: true, dropped: 2 }, "(Err, n): no session, buffer dropped");
+  assert.deepEqual(C.parseResetReply(F.resetNoSessionDropped.replace("2", "1")), { ok: true, none: true, dropped: 1 });
   assert.equal(C.resetMessage(F.resetOk), C.TEXT.resetDone);
   assert.equal(C.resetMessage(F.resetNoSession), C.TEXT.resetNothing);
+  assert.equal(C.resetMessage(F.resetDropped), C.TEXT.resetDone + C.TEXT.resetDropped(2));
+  assert.equal(C.resetMessage(F.resetNoSessionDropped), C.TEXT.resetNothing + C.TEXT.resetDropped(2));
+  assert.match(C.resetMessage(F.resetNoSessionDropped), /^🔄 Session reset — there was no active session to clear \(the gateway dropped 2 messages it was still holding\)$/);
+  assert.match(C.TEXT.resetDropped(1), /1 message it/);
+  assert.ok(!C.resetMessage(F.resetNoSessionDropped).includes("buffered message(s)"), "not the gateway's raw English");
+  assert.equal(C.parseResetReply("🔄 Dropped 2 buffered message(s)."), null);
+  assert.equal(C.parseResetReply("🔄 Dropped two buffered message(s). No active session to reset."), null);
   assert.ok(!C.resetMessage(F.resetOk).includes("Start a new conversation"), "not the gateway's raw English");
   assert.equal(C.parseResetReply("🔄 Session reset"), null);
   assert.equal(C.resetMessage("something else"), "something else");
   assert.equal(C.resetMessage(""), C.TEXT.noReply);
+});
+
+test("resetDetail: the Reset card's line, from the state now", () => {
+  const base = "Orca starts a new session and forgets what was said here; the messages stay on screen.";
+  assert.equal(C.resetDetail("Orca"), base);
+  assert.equal(C.resetDetail("Orca", { replying: true }), base + " The reply in progress is stopped first.");
+  assert.equal(C.resetDetail("Orca", { queued: 1 }), base + " 1 queued message will be sent to the new session.");
+  assert.equal(C.resetDetail("Orca", { replying: true, queued: 3 }), base + " The reply in progress is stopped first. 3 queued messages will be sent to the new session.");
+  assert.equal(C.resetDetail("Orca", { replying: false, queued: 0 }), base, "a reply that ended meanwhile drops its sentence");
 });
 
 test("replyText: the whole reply, or its last chunk when a stopped reply's stray chunk came first", () => {
