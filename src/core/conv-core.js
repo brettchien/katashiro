@@ -812,6 +812,10 @@
    * (the last three only for deleting, §7.1).
    */
   function createConvStore(deps) {
+    // Read only storage / lock here. sidepanel conversations.js calls this at load and passes
+    // `canvases` as a getter over canvasStore, which canvas-glue.js declares later: reading it (or
+    // any other dep) at creation would be a TDZ ReferenceError at panel load. Read deps.<x> at
+    // call time (conv-core.test.js pins this with throwing getters).
     const { storage, lock } = deps;
     const now = () => (deps.now ? deps.now() : Date.now());
     const getOne = async (k) => ((await storage.get(k)) || {})[k];
