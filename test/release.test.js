@@ -18,6 +18,25 @@ function zipEntries() {
   return m[1].replace(/\\\n/g, " ").trim().split(/\s+/);
 }
 
+// Every .js file under src/ (the scripts that name other files at runtime).
+function srcScripts(dir = "src") {
+  return fs.readdirSync(path.join(root, dir), { withFileTypes: true }).flatMap((d) => {
+    const p = path.posix.join(dir, d.name);
+    return d.isDirectory() ? srcScripts(p) : d.name.endsWith(".js") ? [p] : [];
+  });
+}
+
+// build-info.json is written by release.yml at package time (gitignored), so it is not in the repo.
+const GENERATED = new Set(["build-info.json"]);
+
+// The file exists in the repo and the release zip packs it. A moved file whose old path is still
+// referenced somewhere passes a deepEqual on the literal and fails only at runtime (#184).
+function assertShipped(entries, file, who) {
+  assert.ok(GENERATED.has(file) || fs.existsSync(path.join(root, file)), `${file} is ${who} but not in the repo`);
+  assert.ok(shipped(entries, file), `${file} is ${who} but missing from the release zip`);
+  assert.ok(!file.endsWith(".md"), `${file} is ${who} but release.yml excludes *.md from the zip`);
+}
+
 function shipped(entries, file) {
   // A directory entry (e.g. `src`, `vendor`) covers everything beneath it; a root glob like
   // `*.html` (the shell expands it in the repo root) covers the matching top-level files.
@@ -29,7 +48,8 @@ test("release zip includes every script sidepanel.html loads", () => {
   const entries = zipEntries();
   const scripts = [...read("sidepanel.html").matchAll(/<script src="([^"]+)"/g)].map((m) => m[1]);
   assert.ok(scripts.length > 0);
-  for (const s of scripts) assert.ok(shipped(entries, s), `${s} is loaded by sidepanel.html but missing from the release zip`);
+  const refs = [...read("sidepanel.html").matchAll(/<link rel="stylesheet" href="([^"]+)"/g)].map((m) => m[1]);
+  for (const s of [...scripts, ...refs]) assertShipped(entries, s, "loaded by sidepanel.html");
 });
 
 test("release zip includes the manifest's entry points, content scripts and icons", () => {
@@ -43,18 +63,18 @@ test("release zip includes the manifest's entry points, content scripts and icon
     ...Object.values(manifest.icons),
     ...Object.values(manifest.action.default_icon),
   ];
-  for (const f of files) assert.ok(shipped(entries, f), `${f} is referenced by manifest.json but missing from the release zip`);
+  for (const f of files) assertShipped(entries, f, "referenced by manifest.json");
 });
 
 test("release zip includes the canvas pages and everything they load (ADR canvas)", () => {
   const entries = zipEntries();
   const manifest = JSON.parse(read("manifest.json"));
   for (const page of ["canvas.html", "canvas-gallery.html", ...((manifest.sandbox && manifest.sandbox.pages) || [])]) {
-    assert.ok(shipped(entries, page), `${page} is missing from the release zip`);
+    assertShipped(entries, page, "a canvas page");
     const html = read(page);
     const refs = [...html.matchAll(/<(?:script src|link rel="stylesheet" href)="([^"]+)"/g)].map((m) => m[1]);
     assert.ok(refs.length > 0, `${page} loads nothing?`);
-    for (const r of refs) assert.ok(shipped(entries, r), `${r} is loaded by ${page} but missing from the release zip`);
+    for (const r of refs) assertShipped(entries, r, `loaded by ${page}`);
   }
 });
 
@@ -78,6 +98,31 @@ test("release zip includes every script the service worker importScripts (conv-c
   for (const f of files) {
     assert.ok(fs.existsSync(path.join(root, f)), `${f} is imported by background.js but not in the repo`);
     assert.ok(shipped(entries, f), `${f} is imported by background.js but missing from the release zip`);
+  }
+});
+
+test("release zip includes every file src/**/*.js names at runtime (files: [...], WALKER_FILES, iconUrl, getURL)", () => {
+  const entries = zipEntries();
+  // All of these resolve against the extension root: executeScript `files`, notification
+  // `iconUrl` (from root pages), chrome.runtime.getURL, and script/style src set from canvas-frame.html.
+  const PATH = /^[\w./-]+\.(?:js|css|html|json|png|svg)$/;
+  const strings = (text) => [...text.matchAll(/"([^"]*)"/g)].map((m) => m[1]).filter((x) => PATH.test(x));
+  const found = new Map();   // file -> first src script naming it
+  const note = (f, who) => { if (!found.has(f)) found.set(f, who); };
+  for (const js of srcScripts()) {
+    const text = read(js);
+    for (const m of text.matchAll(/\bfiles:\s*\[([^\]]*)\]/g)) strings(m[1]).forEach((f) => note(f, js));
+    for (const m of text.matchAll(/\bWALKER_FILES\s*=\s*\[([^\]]*)\]/g)) strings(m[1]).forEach((f) => note(f, js));
+    for (const m of text.matchAll(/\biconUrl:\s*"([^"]+)"/g)) note(m[1], js);
+    for (const m of text.matchAll(/\bgetURL\(\s*"([^"]+)"\s*\)/g)) note(m[1], js);
+    // Catch-all: any root-relative path literal into the shipped directories (e.g. canvas-frame.js
+    // setting s.src = "vendor/mermaid/mermaid.tiny.js").
+    for (const m of text.matchAll(/"((?:src|vendor|icons)\/[\w./-]+)"/g)) if (PATH.test(m[1])) note(m[1], js);
+  }
+  for (const [f, js] of found) assertShipped(entries, f, `named by ${js}`);
+  // Sanity: the scanner still sees the references this test was written for.
+  for (const f of ["src/core/page-ask-core.js", "src/page/a11y-walker.js", "vendor/dom-accessibility-api.iife.js", "icons/icon128.png", "canvas.html", "vendor/mermaid/mermaid.tiny.js"]) {
+    assert.ok(found.has(f), `scanner no longer finds ${f} in src/**/*.js?`);
   }
 });
 
