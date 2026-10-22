@@ -30,6 +30,9 @@ export default [
       await h.send(panel, "thanks");
       const p3 = await gw.waitPrompt((p) => p.sessionId === sid && /thanks/.test(p.userText));
       t.check(!/it is a resend/.test(p3.text), "the next message carries no resend line", p3.text.slice(0, 200));
+      // Sent once, resent once — never a third time (a triple resend was seen live before #183).
+      const story = gw.prompts.filter((p) => p.sessionId === sid && /tell me a long story/.test(p.userText)).length;
+      t.check(story === 2, "the dropped message went out exactly twice: the send and one resend", story);
     },
   },
   {
