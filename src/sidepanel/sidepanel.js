@@ -1527,11 +1527,6 @@ function formatTime(timestamp) {
   return `${hours}:${minutes} (TPE)`;
 }
 
-// Build message rows with createElement + textContent for everything EXCEPT the message body,
-// which is markdown → sanitized HTML via the single `renderMarkdown` sink (ADR §3.2). senderName
-// stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
-// handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
-// renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
 // --- canvas helpers / canvas folder mirror / canvas_view / canvas_gallery / canvas tab group + Split
 // View / one tab group per conversation: moved to canvas-glue.js; the load-time wiring stays here ----
 // Canvas folder mirror (runCanvasMirror, canvas-glue.js): a canvas change in storage queues a sync.
@@ -1899,6 +1894,11 @@ function jumpToMessage(id) {
   setTimeout(() => row.classList.remove("flash"), 1500);
 }
 
+// Build message rows with createElement + textContent for everything EXCEPT the message body,
+// which is markdown → sanitized HTML via the single `renderMarkdown` sink (ADR §3.2). senderName
+// stays textContent (never trusted to innerHTML). `text` is remote-controlled (agent output, or a
+// handshake error echoed from a malicious/MITM server), so it may reach innerHTML ONLY through
+// renderMarkdown — DOMPurify is the XSS guard that textContent used to be.
 // → the row's message id. `read`: the user's message already reached the agent (a replayed record).
 function appendMessage({ senderId, senderName, text, timestamp, images, replyTo, historyCaption, files, read }) {
   const isMe = senderId === myUserId;
