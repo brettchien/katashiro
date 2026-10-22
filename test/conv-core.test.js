@@ -51,6 +51,17 @@ function store(storage, { live = [], now = 1000 * DAY } = {}) {
 }
 const msg = (kind, text, timestamp) => ({ kind, text, timestamp, senderName: kind === "sent" ? "You" : "Orca" });
 
+test("createConvStore reads only storage / lock at creation (the side panel calls it at load)", () => {
+  // src/sidepanel/conversations.js passes `canvases` as a getter over canvasStore, declared later
+  // in canvas-glue.js: touching it (or any other dep) while creating the store is a TDZ
+  // ReferenceError at panel load that no other test sees.
+  const deps = { storage: fakeStorage(), lock: fakeLock().lock };
+  for (const k of ["canvases", "liveWindowIds", "randomUUID", "now", "lockIfAvailable", "sessionStorage"]) {
+    Object.defineProperty(deps, k, { get() { throw new ReferenceError(`deps.${k} read at creation`); } });
+  }
+  assert.doesNotThrow(() => C.createConvStore(deps));
+});
+
 // --- titles / times / guards ------------------------------------------------------------------
 
 test("autoTitle: sanitised like a confirm line, whitespace collapsed, 40 code points", () => {

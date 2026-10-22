@@ -4,9 +4,17 @@
 // sidepanel.js as classic scripts sharing one global scope. A top-level statement in a split file
 // that runs at load and touches a name declared in sidepanel.js or a later file (DOM refs, room
 // state, …) is a TDZ ReferenceError that only shows up in real Chrome. So, statically: the top level
-// of each split file may only be function / class / const / let / var declarations, and the
-// initializers may not call anything at load except the cases listed below. Function bodies, arrow
-// bodies and methods are skipped: they only run once every script has loaded.
+// of each split file may only be function / class / const / let / var declarations, and in the
+// initializers, the parts that run at load
+//   - may not call anything except the cases listed below (calls, `new`, `?.()`, `import()`, tags);
+//   - may only read names that already exist when the file runs: globals set by the scripts
+//     sidepanel.html loads before the split files (src/core/, vendor/), top-level names of the
+//     earlier split files, names declared earlier in the same file (function declarations: anywhere
+//     in it, they hoist), and BROWSER_GLOBALS.
+// Function bodies, arrow bodies and methods are skipped: they only run once every script has loaded.
+// Not covered: property reads that run a getter (`obj.lazy`), and what an allowlisted factory does
+// with its arguments (each ALLOWED entry says why it is safe; conv-core.test.js pins createConvStore).
+// Contextual keywords (get, set, of, static, async) are never checked as names; no split file uses them.
 //
 // No JS parser in devDependencies, so this uses a small tokenizer (strings, templates, regex
 // literals, comments) plus bracket matching. It is self-tested against the patterns it must catch.
@@ -28,7 +36,7 @@ const ALLOWED = [
   // The executor runs synchronously, but only stores the resolver (markPanelReady, declared just above).
   { file: "conversations.js", name: "panelReady", callee: "new Promise" },
   // src/core/conv-core.js factory: destructures storage / lock and returns closures; the
-  // `canvases` getter reads canvasStore (canvas-glue.js) at call time only.
+  // `canvases` getter reads canvasStore (canvas-glue.js) at call time only (conv-core.test.js pins it).
   { file: "conversations.js", name: "convStore", callee: "ConvCore.createConvStore" },
   // src/core/canvas-store.js factory: closures only; isOpen / confirmEvict run at call time.
   { file: "canvas-glue.js", name: "canvasStore", callee: "CanvasStore.createCanvasStore" },
@@ -37,6 +45,14 @@ const ALLOWED = [
   { file: "canvas-glue.js", name: "canvasMirror", callee: "CanvasMirror.createCanvasMirror" },
   { file: "canvas-glue.js", name: "canvasTitleSettle", callee: "CanvasMirror.createTitleSettle" },
 ];
+
+// Names a split file may read at load besides the ones the earlier scripts declare: browser /
+// language globals. Extension APIs and DOM globals only — never a name of ours.
+const BROWSER_GLOBALS = new Set(("window document navigator location console chrome crypto globalThis self " +
+  "Object Array Map Set WeakMap WeakSet Promise JSON Math Number String Boolean Symbol Date Error TypeError " +
+  "RangeError RegExp Intl URL URLSearchParams Blob File FileReader TextEncoder TextDecoder AbortController " +
+  "undefined NaN Infinity Node Element HTMLElement Event CustomEvent setTimeout clearTimeout setInterval " +
+  "clearInterval requestAnimationFrame queueMicrotask structuredClone performance").split(" "));
 
 const KEYWORDS = new Set(("break case catch class const continue debugger default delete do else export extends " +
   "finally for function if import in instanceof let new return super switch this throw try typeof var void " +
@@ -138,17 +154,52 @@ function matchBrackets(toks) {
   return match;
 }
 
-const isCallee = (p) => p && ((p.t === "name" && !KEYWORDS.has(p.v)) || (p.t === "punct" && (p.v === ")" || p.v === "]")) || p.t === "tmplEnd");
+const isP = (tk, ...vs) => !!tk && tk.t === "punct" && vs.includes(tk.v);
+const isN = (tk, ...vs) => !!tk && tk.t === "name" && vs.includes(tk.v);
+// `f(`, `a.b(`, `x)(`, `a[0](`, tag`…`, `f?.(` and `import(` are calls.
+const isCallee = (p) => !!p && ((p.t === "name" && (!KEYWORDS.has(p.v) || p.v === "import")) || isP(p, ")", "]", "?.") || p.t === "tmplEnd");
+// Statement keywords cannot start a method name in this code base (`if (x) {` is a statement).
+const STATEMENT_KEYWORDS = new Set("if for while switch catch with do try return throw".split(" "));
+// Literal names, never a read of a binding.
+const LITERAL_NAMES = new Set(["true", "false", "null", "this", "arguments"]);
 
-// Load-time calls in toks[from, to): everything outside function / arrow / method bodies.
-function loadTimeCalls(toks, match, from, to) {
+// Is toks[k] (a "(") the parameter list of a method / getter / setter, `name(…) {` or `[key](…) {`?
+// The name (or computed key) must itself follow `{` `,` `}` `;` `*` get set async static — not a
+// statement keyword: without a `;` (ASI), `let a\nif (x) { boom(); }` must not be read as a method.
+function isMethodParen(toks, match, k) {
+  if (!isP(toks[k], "(") || !isP(toks[match[k] + 1], "{")) return false;
+  const p = toks[k - 1];
+  let q;
+  if (p && p.t === "name" && !STATEMENT_KEYWORDS.has(p.v)) q = k - 2;
+  else if (p && p.t === "str") q = k - 2;
+  else if (isP(p, "]")) q = match[k - 1] - 1;
+  else return false;
+  const b = toks[q];
+  return !b || isP(b, "{", ",", "}", ";", "*") || isN(b, "get", "set", "async", "static");
+}
+
+// Load-time calls and name reads in toks[from, to): everything outside function / arrow / method
+// bodies. → { calls: [{ callee, pos }], reads: [{ name, pos }] }
+function loadTime(toks, match, from, to) {
   const calls = [];
+  const reads = [];
   const calleeText = (k) => {            // the member chain ending just before toks[k]
     let j = k - 1;
+    if (isP(toks[j], "?.")) j--;        // f?.()
     const parts = [];
-    while (j >= from && (toks[j].t === "name" || (toks[j].t === "punct" && (toks[j].v === "." || toks[j].v === "?.")))) parts.unshift(toks[j--].v);
+    while (j >= from && (toks[j].t === "name" || isP(toks[j], ".", "?."))) parts.unshift(toks[j--].v);
     if (!parts.length) return toks[k - 1].v === ")" ? "(…)" : toks[k - 1].v;
     return parts.join("");
+  };
+  // A name token that reads a binding (not a property, key, method name or arrow parameter).
+  const readsBinding = (k) => {
+    const tk = toks[k], prev = toks[k - 1], next = toks[k + 1];
+    if (tk.t !== "name" || KEYWORDS.has(tk.v) || LITERAL_NAMES.has(tk.v)) return false;
+    if (isP(prev, ".", "?.")) return false;                       // a.b
+    if (isP(prev, "{", ",") && isP(next, ":")) return false;      // { key: … }
+    if (isP(next, "=>")) return false;                            // x => …
+    if (isP(next, "(") && isMethodParen(toks, match, k + 1)) return false;   // { m() {} }
+    return true;
   };
   let k = from;
   while (k < to) {
@@ -166,17 +217,20 @@ function loadTimeCalls(toks, match, from, to) {
       const n = toks[k + 1];
       if (n.t === "punct" && n.v === "{") { k = match[k + 1] + 1; continue; }
       let j = k + 1;
+      let ternaries = 0;                    // `?` opened inside the body; a `:` beyond them ends it
       while (j < to) {
         const u = toks[j];
         if (u.t === "punct" && (u.v === "," || u.v === ";")) break;
         if ((u.t === "punct" && (u.v === ")" || u.v === "]" || u.v === "}")) || u.t === "tmplEnd") break;   // closes an outer bracket
+        if (isP(u, "?")) ternaries++;
+        if (isP(u, ":")) { if (!ternaries) break; ternaries--; }   // `c ? () => 1 : g()`
         if (match[j] > j) { j = match[j] + 1; continue; }
         j++;
       }
       k = j; continue;
     }
     // method / getter / setter in an object literal or class body: `name(…) {` — skip params + body
-    if (tk.t === "punct" && tk.v === "(" && toks[match[k] + 1] && toks[match[k] + 1].t === "punct" && toks[match[k] + 1].v === "{" ) {
+    if (isMethodParen(toks, match, k)) {
       k = match[match[k] + 1] + 1; continue;
     }
     if (tk.t === "name" && tk.v === "new") {
@@ -184,6 +238,7 @@ function loadTimeCalls(toks, match, from, to) {
       const parts = [];
       while (toks[j].t === "name" || (toks[j].t === "punct" && toks[j].v === ".")) parts.push(toks[j++].v);
       calls.push({ callee: `new ${parts.join("")}`, pos: tk.pos });
+      if (readsBinding(k + 1)) reads.push({ name: toks[k + 1].v, pos: toks[k + 1].pos });
       k = toks[j].t === "punct" && toks[j].v === "(" ? j + 1 : j;   // its arguments are still scanned
       continue;
     }
@@ -194,10 +249,12 @@ function loadTimeCalls(toks, match, from, to) {
       if (isCallee(prev)) calls.push({ callee: calleeText(k), pos: tk.pos });
     }
     if (tk.t === "tmpl" && isCallee(prev)) calls.push({ callee: `${calleeText(k)}\`…\``, pos: tk.pos });   // tagged template
+    if (readsBinding(k)) reads.push({ name: tk.v, pos: tk.pos });
     k++;
   }
-  return calls;
+  return { calls, reads };
 }
+const loadTimeCalls = (toks, match, from, to) => loadTime(toks, match, from, to).calls;
 
 // → [{ kind, name?, calls, pos }] for each top-level statement, or throws on anything that is not
 // a declaration.
@@ -218,7 +275,7 @@ function topLevel(src) {
       while (!(toks[p].t === "punct" && toks[p].v === "(")) p++;
       const body = match[p] + 1;
       if (!(toks[body].t === "punct" && toks[body].v === "{")) fail(k, "function without a body");
-      out.push({ kind: "function", name: toks[p - 1].v, calls: [], pos: tk.pos });
+      out.push({ kind: "function", name: toks[p - 1].v, calls: [], reads: [], pos: tk.pos });
       k = match[body] + 1; continue;
     }
     if (tk.t === "name" && tk.v === "class") {
@@ -230,18 +287,38 @@ function topLevel(src) {
         if (toks[m].t === "punct" && toks[m].v === "{" ) { m = match[m]; continue; }
         if (toks[m].t === "punct" && toks[m].v === "(") { m = match[m]; continue; }
         if (toks[m].t === "name" && toks[m].v === "static") fail(m, "static class member (runs at load)");
-        if (toks[m].t === "punct" && toks[m].v === "[") fail(m, "computed class key (runs at load)");
+        // `[` starts a computed key only where a member starts; `x = [1]` / `x = a[0]` is a field
+        // initializer, which runs per instance, not at load
+        if (isP(toks[m], "[")) {
+          const b = toks[m - 1];
+          if (isP(b, "{", ";", "}", "*") || isN(b, "get", "set", "async")) fail(m, "computed class key (runs at load)");
+          m = match[m]; continue;
+        }
       }
-      out.push({ kind: "class", name, calls: [], pos: tk.pos });
+      out.push({ kind: "class", name, calls: [], reads: [], pos: tk.pos });
       k = close + 1; continue;
     }
     if (tk.t === "name" && (tk.v === "const" || tk.v === "let" || tk.v === "var")) {
       let end = k + 1;
       while (end < toks.length && !(toks[end].t === "punct" && toks[end].v === ";")) end = match[end] > end ? match[end] + 1 : end + 1;
       if (end >= toks.length) fail(k, "declaration without a terminating ;");
-      // one declaration per statement here; `name =` or `name;` (destructuring is not used at top level)
+      // `name = …` or `name;`, possibly several, comma-separated (destructuring is not used at top level)
       if (toks[k + 1].t !== "name") fail(k, "destructuring declaration");
-      out.push({ kind: tk.v, name: toks[k + 1].v, calls: loadTimeCalls(toks, match, k + 1, end), pos: tk.pos });
+      const names = [toks[k + 1].v], namePos = [toks[k + 1].pos];
+      for (let j = k + 1; j < end; j = match[j] > j ? match[j] + 1 : j + 1) {
+        // without a `;` (ASI) the scan runs into the next statement: `let a\nif (x) { boom(); }`
+        if (j > k + 1 && toks[j].t === "name" && STATEMENT_KEYWORDS.has(toks[j].v) && !isP(toks[j - 1], ".", "?.")) fail(j, "statement after a declaration with no ; (runs at load)");
+        if (isP(toks[j], ",") && toks[j + 1].t === "name" && isP(toks[j + 2], "=", ",", ";")) { names.push(toks[j + 1].v); namePos.push(toks[j + 1].pos); }
+      }
+      const { calls, reads } = loadTime(toks, match, k + 1, end);
+      // a declarator name is not a read; an initializer may read the declarators before its own
+      // (`const a = 1, b = a;`), not its own or a later one
+      const ownReads = reads.filter((r) => {
+        if (namePos.includes(r.pos)) return false;
+        const at = namePos.filter((p) => p < r.pos).length - 1;       // the declarator r is in
+        return !names.slice(0, at).includes(r.name);
+      });
+      out.push({ kind: tk.v, name: names[0], names, calls, reads: ownReads, pos: tk.pos });
       k = end + 1; continue;
     }
     fail(k, "top-level statement that is not a declaration (runs at load)");
@@ -260,7 +337,13 @@ test("checker: flags executable top-level statements", () => {
     "class A { static x = f(); }",
     "class A { [f()]() {} }",
     "class A extends f() {}",
+    "class A { m() {} [f()]() {} }",
+    "class A { x = 1; get [f()]() {} }",
   ]) assert.throws(() => topLevel(src), /line 1:/, src);
+  // no `;` (ASI): the declaration must not swallow the next statement as a "method" (#193 review)
+  assert.throws(() => topLevel("let a\nif (x) { boom(); }\nconst z = 1;"), /line 2: statement after a declaration/);
+  assert.throws(() => topLevel("const a = 1\nfor (const k of ks) { boom(); }\n;"), /line 2: statement after a declaration/);
+  assert.throws(() => topLevel("let a\nwhile (x) { boom(); }\n;"), /line 2: statement after a declaration/);
 });
 
 test("checker: reports load-time calls in initializers", () => {
@@ -273,6 +356,15 @@ test("checker: reports load-time calls in initializers", () => {
   assert.deepEqual(calls("const a = { b: c() };"), ["c"]);
   assert.deepEqual(calls("let a = tag`x`;"), ["tag`…`"]);
   assert.deepEqual(calls("const a = async (x) => !!(await f(x)), b = g();"), ["g"]);
+  // #193 review: an arrow body in a ternary ends at the `:`; optional calls and import() are calls
+  assert.deepEqual(calls("const a = c ? () => 1 : g();"), ["g"]);
+  assert.deepEqual(calls("const a = c ? x => x : new Foo();"), ["new Foo"]);
+  assert.deepEqual(calls("const a = c ? () => (d ? 1 : 2) : g(), b = () => d ? h() : i();"), ["g"]);
+  assert.deepEqual(calls("const a = { k: c ? () => 1 : g() };"), ["g"]);
+  assert.deepEqual(calls("const a = f?.();"), ["f"]);
+  assert.deepEqual(calls("const a = o.f?.(1);"), ["o.f"]);
+  assert.deepEqual(calls("const a = import(\"./x.js\");"), ["import"]);
+  assert.deepEqual(calls("const o = { [f()]() {} };"), ["f"]);
 });
 
 test("checker: closures, methods and literals are not load-time calls", () => {
@@ -286,9 +378,72 @@ test("checker: closures, methods and literals are not load-time calls", () => {
   assert.deepEqual(calls("let a; // f()\n/* g() */ const b = 20 * 1024;"), []);
   assert.deepEqual(topLevel("async function f() { await g(); }\nclass C { m() { h(); } get x() { return 1; } }")
     .map((s) => s.kind), ["function", "class"]);
+  // an instance field initializer runs per instance, so its `[` is not a computed key (#193 review)
+  assert.deepEqual(topLevel("class C { x = [1]; y = a[0]; z = { k: [2] }; m() { return [3]; } }").map((s) => s.kind), ["class"]);
+  assert.deepEqual(calls("const o = { m(a) { f(a); }, \"q\"(b) { g(b); }, async *n() { h(); } };"), []);
 });
 
 // --- the real files ---------------------------------------------------------------------------
+// Globals the scripts sidepanel.html loads before the split files set (UMD `root.X = mod`, vendor
+// `globalThis.X=`, markdown.js `global.renderMarkdown = …`).
+const ROOT = path.join(__dirname, "..");
+const SIDEPANEL_SCRIPTS = [...fs.readFileSync(path.join(ROOT, "sidepanel.html"), "utf8")
+  .matchAll(/<script src="([\w./-]+\.js)"><\/script>/g)].map((m) => m[1]);
+const EARLIER_GLOBALS = new Set(SIDEPANEL_SCRIPTS.slice(0, SIDEPANEL_SCRIPTS.indexOf("src/sidepanel/conn.js"))
+  .flatMap((p) => [...fs.readFileSync(path.join(ROOT, p), "utf8").matchAll(/\b(?:root|global|globalThis)\.([A-Za-z_$][\w$]*)\s*=(?!=)/g)].map((m) => m[1])));
+
+// Names toks read at load that do not exist yet when the file runs. `known` = names that exist
+// before the file (earlier scripts + earlier split files); the file's own function declarations
+// hoist, its const / let / var / class only count from the statement after theirs.
+function unknownReads(src, known) {
+  const stmts = topLevel(src);
+  const have = new Set([...known, ...stmts.filter((s) => s.kind === "function").map((s) => s.name)]);
+  const bad = [];
+  for (const s of stmts) {
+    for (const r of s.reads) {
+      if (!BROWSER_GLOBALS.has(r.name) && !have.has(r.name)) bad.push(`${r.name} (line ${src.slice(0, r.pos).split("\n").length}, in ${s.name})`);
+    }
+    for (const n of s.names || [s.name]) have.add(n);
+  }
+  return bad;
+}
+
+test("checker: load-time reads of names that do not exist yet", () => {
+  const unknown = (src, known = []) => unknownReads(src, known).map((x) => x.split(" ")[0]);
+  // Jelly's #193 examples: plain read, spread, constructor argument
+  assert.deepEqual(unknown("const a = laterConst;"), ["laterConst"]);
+  assert.deepEqual(unknown("const a = [...laterSet];"), ["laterSet"]);
+  assert.deepEqual(unknown("const a = new Map(laterIterable);"), ["laterIterable"]);
+  assert.deepEqual(unknown("const a = b;\nconst b = 1;"), ["b"]);                       // same file, later
+  assert.deepEqual(unknown("const a = { k: c ? x : y, z };"), ["c", "x", "y", "z"]);
+  assert.deepEqual(unknown("const a = new Later();"), ["Later"]);
+  assert.deepEqual(unknown("const a = (later = 1);"), ["later"]);                    // writing a TDZ name throws too
+  assert.deepEqual(unknown("const a = b = 1;\nlet b;"), ["b"]);
+  // fine: earlier names, hoisted functions, browser globals, closures, keys, properties
+  assert.deepEqual(unknown("const b = 1;\nconst a = { k: b, m() { return later; }, get g() { return later; } };"), []);
+  assert.deepEqual(unknown("const a = f;\nfunction f() {}"), []);
+  assert.deepEqual(unknown("const a = new Map([[document.body, chrome.runtime.id]]);"), []);
+  assert.deepEqual(unknown("const a = () => later, b = (x = later) => x, c = x => later;"), []);
+  assert.deepEqual(unknown("const a = Core.make({ k: 1 });", ["Core"]), []);
+  assert.deepEqual(unknown("const a = 1, b = a;"), []);
+  assert.deepEqual(unknown("let a;\nconst b = a, c = c;"), ["c"]);
+});
+
+for (const [i, file] of SPLIT_FILES.entries()) {
+  test(`${file}: reads at load only names that already exist (earlier scripts, earlier in the file)`, () => {
+    const known = new Set(EARLIER_GLOBALS);
+    for (const earlier of SPLIT_FILES.slice(0, i)) {
+      for (const st of topLevel(fs.readFileSync(path.join(DIR, earlier), "utf8"))) for (const n of st.names || [st.name]) known.add(n);
+    }
+    const bad = unknownReads(fs.readFileSync(path.join(DIR, file), "utf8"), known);
+    assert.deepEqual(bad, [], `${file} reads names at load that are declared later (sidepanel.js / a later file) or nowhere — a TDZ / ReferenceError in Chrome`);
+  });
+}
+
+test("the earlier-scripts global list is what the split files rely on", () => {
+  for (const g of ["ConvCore", "CanvasStore", "CanvasMirror", "renderMarkdown", "DOMPurify"]) assert.ok(EARLIER_GLOBALS.has(g), g);
+});
+
 for (const file of SPLIT_FILES) {
   test(`${file}: top level is declarations only, no load-time calls outside the allowlist`, () => {
     const src = fs.readFileSync(path.join(DIR, file), "utf8");
