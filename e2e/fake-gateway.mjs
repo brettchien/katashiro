@@ -46,6 +46,7 @@ export class FakeGateway {
     this.cancels = [];             // sessionId of each session/cancel
     this.hold = false;             // keep prompts open (the test ends them)
     this.poolBusy = false;
+    this.refuse = false;           // drop every new socket at once (the gateway is down: the panel keeps reconnecting)
     this.replyText = (t) => `echo: ${t.userText.slice(0, 60)}`;   // the reply when not holding
     this.sessions = new Map();     // sessionId → { ws, acpId, connectionId, initialized }
     this.sockets = new Set();
@@ -85,6 +86,7 @@ export class FakeGateway {
     await new Promise((r) => this.wss.once("listening", r));
     this.url = `ws://127.0.0.1:${this.wss.address().port}/acp`;
     this.wss.on("connection", (ws) => {
+      if (this.refuse) { ws.terminate(); return; }
       this.sockets.add(ws);
       ws.on("close", () => this.sockets.delete(ws));
       ws.on("message", (data) => {

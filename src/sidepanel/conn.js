@@ -506,6 +506,10 @@ class Conn {
     this.socketGen++;
     this.alive = false;
     for (const st of this.states.values()) this.finalizeStream(undefined, st);
+    // Nothing flushes on a conn that is off: drop each idle session's queue now, and say so. A
+    // session with a turn in flight drops its queue in that turn's "stopped" catch, under the
+    // stopped line (its rejection above settles a few microtasks later).
+    for (const st of this.states.values()) if (!st.turnActive) this.dropQueued(st);
     // This agent's open ask_user cards close in EVERY conversation (§3.8): none of its sessions
     // will be flushed, so an answer would reach no session that asked.
     closePendingAsks(this);
@@ -704,6 +708,22 @@ class Conn {
     this.openSession(st);
   }
 
+  // A conn turned off never flushes again, so a session's queue would wait for nothing: messages
+  // typed while a turn ran (sent only if this same Conn were turned back on, unlike the stopped turn
+  // itself; lost on retarget / removal, which make a new Conn), and a turn requeued after a socket
+  // drop that the chat promised to resend. Drop it all and say so, like the stopped turn (#190
+  // review a, b). Read tags: queued messages were never marked (a requeued turn's were cleared).
+  dropQueued(st) {
+    if (!st.promptQueue.length && !st.pendingImages.length) return;
+    const promised = st.resendPending;
+    st.promptQueue.length = 0;
+    st.queuedMsgIds.length = 0;
+    st.pendingImages.length = 0;
+    st.resendPending = false;
+    this.inState(st, () => appendSystemMessage(RoomCore.queueDroppedText(this.name, promised)));
+    updateStopButton();                                  // refreshes the ⚡ cards' queued count too
+  }
+
   // Send the next queued turn if this session is idle and ready.
   flushQueue(st = this.cur) {
     if (!st || st.turnActive || st.promptQueue.length === 0) return;
@@ -832,6 +852,7 @@ class Conn {
           this.inState(st, () => appendSystemMessage(st.turnHeard
             ? `已中斷與 ${this.name} 的連線：這個回合停在一半，不會自動重送。需要的話，重新連線後再送一次。`
             : `已中斷與 ${this.name} 的連線：這則沒有收到回覆，不會自動重送。需要的話，重新連線後再送一次。`));
+          this.dropQueued(st);                           // what the user typed meanwhile is not sent either
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
           // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer

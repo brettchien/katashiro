@@ -116,6 +116,16 @@
     return "error";
   }
 
+  // The chat line when a conn turned off (disconnect(): disable, retarget, remove, a remote agents
+  // change) drops a conversation's queue: messages typed while a turn ran, and a turn requeued after
+  // a socket drop (`promisedResend`: the chat already said「重新連線後會重送」, so the line takes that
+  // back). Same wording as the in-flight turn's "stopped" line (#190 review a, b).
+  function queueDroppedText(name, promisedResend) {
+    return promisedResend
+      ? `已中斷與 ${name} 的連線：上面說的「重新連線後會重送」不會發生，等待中的訊息都沒有送出，也不會自動重送。需要的話，重新連線後再送一次。`
+      : `已中斷與 ${name} 的連線：排隊中的訊息沒有送出，不會自動重送。需要的話，重新連線後再送一次。`;
+  }
+
   // Turn timeout: a turn ends on silence, not on length. It times out `idleMs` after
   // the last sign of life (start, or the latest activity: a session/update for its session, or the
   // agent driving our MCP tunnel) — or at `maxMs` after the start, whichever comes first. A long
@@ -583,6 +593,7 @@
     isDeadProbeReason,
     promptFailureAction,
     DISCONNECTED_REASON,
+    queueDroppedText,
     turnDeadline,
     TURN_IDLE_TIMEOUT_MS,
     TURN_MAX_TIMEOUT_MS,
