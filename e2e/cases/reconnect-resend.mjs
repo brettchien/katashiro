@@ -56,4 +56,40 @@ export default [
       t.check(await panel.evaluate(() => room.find((c) => c.enabled).pendingReqs.size) === 0, "nothing of the old socket is left pending (no timeout later)");
     },
   },
+  {
+    name: "an agent turned off mid-turn: the turn ends at once as stopped, never promises a resend, never resends",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      const sid = await h.sessionOf(ctx, "Alpha");
+      gw.hold = true;
+      await h.send(panel, "a question for later");
+      await gw.waitPrompt((p) => p.sessionId === sid && /a question for later/.test(p.userText));
+      gw.chunk(sid, "Half an ");
+      await h.until(panel, () => document.body.innerText.includes("Half an"), "the partial reply on screen");
+      // Removing / retargeting the agent, or archiving its last open conversation, calls disconnect().
+      await panel.evaluate(() => { globalThis.__offConn = room.find((c) => c.enabled); globalThis.__offConn.disconnect(); });
+      await gw.waitFor(() => gw.cancels.includes(sid), "session/cancel before the socket closed");
+      // At once — not ~10 min later, when the turn's idle deadline would have fired.
+      await h.until(panel, () => document.body.innerText.includes("已中斷與 Fake 的連線"), "the stopped line", undefined, 5000);
+      const shown = await h.visibleText(panel);
+      t.check(/已中斷與 Fake 的連線：這個回合停在一半，不會自動重送/.test(shown), "the chat says the turn stopped and will not be resent", shown.slice(-300));
+      t.check(!/重新連線後會重送/.test(shown), "no promise of a resend", shown.slice(-300));
+      t.check(/Half an/.test(shown), "the part of the reply that arrived stays on screen");
+      const st = await panel.evaluate(() => {
+        const c = globalThis.__offConn;
+        const states = [...c.states.values()];
+        return { pending: c.pendingReqs.size, queued: states.reduce((n, s) => n + s.promptQueue.length, 0), active: states.some((s) => s.turnActive) };
+      });
+      t.check(st.pending === 0 && st.queued === 0 && !st.active, "nothing pending, nothing requeued, no turn active", JSON.stringify(st));
+      await h.idle(panel, "the stop button is gone");
+      // Turned back on: the stopped turn is not resent on the new socket; only the next message goes.
+      gw.hold = false;
+      const n = gw.prompts.length;
+      await panel.evaluate(() => globalThis.__offConn.connect());
+      await h.send(panel, "a new question");
+      const p2 = await gw.waitPrompt((p) => p.sessionId === sid, { since: n, ms: 15000 });
+      t.check(/a new question/.test(p2.userText) && !/a question for later/.test(p2.userText) && !/it is a resend/.test(p2.text), "after reconnecting, only the new message goes out", p2.text.slice(0, 300));
+    },
+  },
 ];

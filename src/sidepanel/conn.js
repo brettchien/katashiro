@@ -495,6 +495,11 @@ class Conn {
       this.ws.close();
       this.ws = null;
     }
+    // onclose is detached: settle the socket's requests here — but not as "connection closed",
+    // which means "reconnect and resend": this conn will not reconnect, so an in-flight turn must
+    // end as stopped, now, not requeue (or time out ~10 min later and requeue then) and promise a
+    // resend that never comes (#183 follow-up).
+    this.rejectAllPending(RoomCore.DISCONNECTED_REASON);
     this.clearStalePrompts();                            // onclose is detached: forget its turns here
     this.online = false;
     this.initialized = false;
@@ -795,7 +800,10 @@ class Conn {
         updateStopButton();
         renderConvTabs();
         const socketOpen = this.ws && this.ws.readyState === WebSocket.OPEN;
-        const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen);
+        // Turned off (disconnect()): its requests reject with DISCONNECTED_REASON; `!this.enabled`
+        // also covers a rejection that arrives later on a conn that is still off.
+        const stopped = !this.enabled || String(err) === RoomCore.DISCONNECTED_REASON;
+        const action = RoomCore.promptFailureAction(RoomCore.isDeadProbeReason(String(err)), socketOpen, stopped);
         if (!RoomCore.turnReachedAgent(action, st.turnHeard)) setReadReceipts(st.convId, marked, false);
         if (action === "requeue") {
           // The socket genuinely closed / half-opened (an explicit close, or a heartbeat teardown
@@ -815,6 +823,15 @@ class Conn {
           this.inState(st, () => appendSystemMessage(partial
             ? `連線中斷：${this.name} 上面的回覆不完整，重新連線後會重送你的訊息，請它重新回答。`
             : `連線中斷：${this.name} 的回覆沒有送到，重新連線後會重送你的訊息，請它重新回答。`));
+        } else if (action === "stopped") {
+          // The user turned this agent off (or removed / retargeted it) mid-turn: disconnect() sent
+          // session/cancel and closed the socket, and nothing reconnects it. Not requeued — a
+          // resend would wait for a reconnect that never comes — and no 重試 button: this Conn may
+          // be gone for good (retarget makes a new one), and a disabled one ignores retryTurn.
+          this.finalizeStream(undefined, st);
+          this.inState(st, () => appendSystemMessage(st.turnHeard
+            ? `已中斷與 ${this.name} 的連線：這個回合停在一半，不會自動重送。需要的話，重新連線後再送一次。`
+            : `已中斷與 ${this.name} 的連線：這則沒有收到回覆，不會自動重送。需要的話，重新連線後再送一次。`));
         } else if (action === "cancel") {
           // Socket still OPEN but the turn "timed out" — it is very likely still ALIVE server-side
           // (a long tool phase that outran the idle/prompt timer; cf. openab's text-only idle timer
@@ -841,8 +858,9 @@ class Conn {
           // never retried automatically — 重試 is the user's call.
           this.inState(st, () => appendErrorMessage(this.name, ConvCore.promptFailureText(String(err)), () => this.retryTurn(st, turn))); // error bubble
         }
-        // Q9: a background turn that ended badly is said too (a requeued one has not ended).
-        if (action !== "requeue" && st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
+        // Q9: a background turn that ended badly is said too (a requeued one has not ended; a stopped
+        // one is the user's own doing, like ⏹).
+        if (action !== "requeue" && action !== "stopped" && st.convId !== conversationId && this.states.get(st.convId) === st) notifyTurnDone(st.convId, this.name, true);
         this.flushQueue(st);
       });
   }
@@ -926,6 +944,7 @@ class Conn {
     this.acpRequest("katashiro/ping", {}, timeout)
       .then(() => this.markAlive(true))                  // gateway answered (unlikely to resolve, but alive)
       .catch((err) => {
+        if (String(err) === RoomCore.DISCONNECTED_REASON) return;   // turned off meanwhile: no verdict
         if (RoomCore.isDeadProbeReason(String(err))) this.onProbeTimeout();
         else this.markAlive(true);                       // an error reply (e.g. -32601) still proves liveness
       });

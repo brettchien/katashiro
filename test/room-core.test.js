@@ -189,6 +189,18 @@ test("promptFailureAction: non-dead reason → error (surface with retry), any s
   assert.equal(RoomCore.promptFailureAction(false, true), "error");
   assert.equal(RoomCore.promptFailureAction(false, false), "error");
 });
+test("promptFailureAction: a conn turned off (disconnect()) → stopped, never requeue (#183 follow-up)", () => {
+  // Whatever the reason and socket state: a requeue would wait for a reconnect that never comes.
+  for (const dead of [true, false]) for (const open of [true, false]) {
+    assert.equal(RoomCore.promptFailureAction(dead, open, true), "stopped", `dead=${dead} open=${open}`);
+  }
+  // Without the flag, the old policy is unchanged.
+  assert.equal(RoomCore.promptFailureAction(true, false, false), "requeue");
+});
+test("DISCONNECTED_REASON is not a dead-probe reason (it must not read as \"reconnect and resend\")", () => {
+  assert.equal(typeof RoomCore.DISCONNECTED_REASON, "string");
+  assert.equal(RoomCore.isDeadProbeReason(RoomCore.DISCONNECTED_REASON), false);
+});
 
 // --- config storage policy: don't clobber the Google-synced copy on reinstall --------------
 test("hasStoredConfig: agents list or legacy wsUrl count as stored; empty/missing do not", () => {
@@ -634,9 +646,14 @@ test("turnReachedAgent: an error counts only if anything of the turn came back",
   assert.equal(RoomCore.turnReachedAgent("error", true), true);
 });
 
+test("turnReachedAgent: a stopped turn (conn turned off) counts only if anything came back", () => {
+  assert.equal(RoomCore.turnReachedAgent("stopped", false), false);
+  assert.equal(RoomCore.turnReachedAgent("stopped", true), true);
+});
+
 test("turnReachedAgent: every promptFailureAction outcome is decided", () => {
-  for (const dead of [true, false]) for (const open of [true, false]) {
-    const a = RoomCore.promptFailureAction(dead, open);
+  for (const dead of [true, false]) for (const open of [true, false]) for (const stopped of [true, false]) {
+    const a = RoomCore.promptFailureAction(dead, open, stopped);
     assert.equal(typeof RoomCore.turnReachedAgent(a, false), "boolean", a);
   }
   assert.equal(RoomCore.turnReachedAgent("something else", true), false);
