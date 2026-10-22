@@ -65,6 +65,9 @@
   //       likely still running server-side, so re-sending would DUPLICATE it. Cancel + let the user
   //       retry; never auto-re-send into a live session.
   //   - anything else                → "error": a genuine failure to surface with a retry button.
+  //   - `stopped` (the conn was turned off: disconnect(), its requests rejected with
+  //       DISCONNECTED_REASON) → "stopped", whatever the reason or socket: nothing reconnects, so
+  //       a requeue would wait forever and "重新連線後會重送" would be false (#183 follow-up).
   // --- Config storage policy (Google-synced config) ---------------------------
   // Does a loaded config carry real, user-set data — as opposed to nothing, which means the caller
   // falls back to defaults? Same shape test the loader uses (agents list, or the legacy wsUrl).
@@ -102,7 +105,12 @@
     return "synced";
   }
 
-  function promptFailureAction(deadProbe, socketOpen) {
+  // The reason disconnect() rejects its socket's pending requests with. Not a dead-probe reason on
+  // purpose: a closed socket means "reconnect and resend", and this conn will not reconnect.
+  const DISCONNECTED_REASON = "disconnected";
+
+  function promptFailureAction(deadProbe, socketOpen, stopped = false) {
+    if (stopped) return "stopped";
     if (deadProbe && !socketOpen) return "requeue";
     if (deadProbe) return "cancel";
     return "error";
@@ -508,7 +516,8 @@
   // "ok" (resolved), "busy" (openab's pool-busy chat line: the turn never started), or a
   // promptFailureAction ("requeue": the socket dropped and the batch waits again, re-marked when
   // it is resent; "cancel": timed out on a live socket, so it was received; "error": rejected —
-  // received only if anything of the turn came back, `heard`).
+  // received only if anything of the turn came back, `heard`; "stopped": the conn was turned off
+  // mid-turn — likewise only if anything came back).
   // Does activity on a session count as "the turn in flight was heard"? Only while a turn is in
   // flight, and not while an earlier turn we gave up on (timed out on a live socket: session/cancel
   // sent, the next turn flushed at once) may still be running server-side: ACP updates carry no turn
@@ -520,7 +529,7 @@
 
   function turnReachedAgent(outcome, heard) {
     if (outcome === "ok" || outcome === "cancel") return true;
-    if (outcome === "error") return !!heard;
+    if (outcome === "error" || outcome === "stopped") return !!heard;
     return false;
   }
 
@@ -573,6 +582,7 @@
     batchPrompts,
     isDeadProbeReason,
     promptFailureAction,
+    DISCONNECTED_REASON,
     turnDeadline,
     TURN_IDLE_TIMEOUT_MS,
     TURN_MAX_TIMEOUT_MS,
