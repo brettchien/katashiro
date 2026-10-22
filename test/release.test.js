@@ -103,25 +103,34 @@ test("release zip includes every script the service worker importScripts (conv-c
 
 test("release zip includes every file src/**/*.js names at runtime (files: [...], WALKER_FILES, iconUrl, getURL)", () => {
   const entries = zipEntries();
-  // All of these resolve against the extension root: executeScript `files`, notification
-  // `iconUrl` (from root pages), chrome.runtime.getURL, and script/style src set from canvas-frame.html.
-  const PATH = /^[\w./-]+\.(?:js|css|html|json|png|svg)$/;
+  // All of these resolve against the extension root: executeScript `files`, chrome.runtime.getURL,
+  // script/style src set from canvas-frame.html, and leading-slash paths compared with a page or
+  // sender URL pathname ("/sidepanel.html", "/src/background.js"). `iconUrl` is relative to the
+  // calling page — assumed to be called only from root pages (sidepanel.html), so root-relative too.
+  // Only double-quoted literals are scanned (the repo style); a single-quoted or template-literal
+  // path is not seen by this test.
+  const PATH = /^\/?[\w.-][\w./-]*\.(?:js|css|html|json|png|svg)$/;
   const strings = (text) => [...text.matchAll(/"([^"]*)"/g)].map((m) => m[1]).filter((x) => PATH.test(x));
   const found = new Map();   // file -> first src script naming it
-  const note = (f, who) => { if (!found.has(f)) found.set(f, who); };
+  // "/x" and "x" name the same file in the extension root.
+  const note = (f, who) => { f = f.replace(/^\//, ""); if (!found.has(f)) found.set(f, who); };
   for (const js of srcScripts()) {
     const text = read(js);
     for (const m of text.matchAll(/\bfiles:\s*\[([^\]]*)\]/g)) strings(m[1]).forEach((f) => note(f, js));
     for (const m of text.matchAll(/\bWALKER_FILES\s*=\s*\[([^\]]*)\]/g)) strings(m[1]).forEach((f) => note(f, js));
     for (const m of text.matchAll(/\biconUrl:\s*"([^"]+)"/g)) note(m[1], js);
     for (const m of text.matchAll(/\bgetURL\(\s*"([^"]+)"\s*\)/g)) note(m[1], js);
-    // Catch-all: any root-relative path literal into the shipped directories (e.g. canvas-frame.js
-    // setting s.src = "vendor/mermaid/mermaid.tiny.js").
-    for (const m of text.matchAll(/"((?:src|vendor|icons)\/[\w./-]+)"/g)) if (PATH.test(m[1])) note(m[1], js);
+    // Catch-all: any path literal into the shipped directories, with or without a leading slash
+    // (canvas-frame.js setting s.src = "vendor/mermaid/mermaid.tiny.js"; page-ask-core.js checking
+    // a sender pathname against "/src/background.js"), and any "/<page>.html" at the root
+    // (sidepanel.js fromOwnPage(sender, "/sidepanel.html")).
+    for (const m of text.matchAll(/"\/?((?:src|vendor|icons)\/[\w./-]+)"/g)) if (PATH.test(m[1])) note(m[1], js);
+    for (const m of text.matchAll(/"\/([\w-]+\.html)"/g)) note(m[1], js);
   }
   for (const [f, js] of found) assertShipped(entries, f, `named by ${js}`);
   // Sanity: the scanner still sees the references this test was written for.
-  for (const f of ["src/core/page-ask-core.js", "src/page/a11y-walker.js", "vendor/dom-accessibility-api.iife.js", "icons/icon128.png", "canvas.html", "vendor/mermaid/mermaid.tiny.js"]) {
+  for (const f of ["src/core/page-ask-core.js", "src/page/a11y-walker.js", "vendor/dom-accessibility-api.iife.js", "icons/icon128.png", "canvas.html", "vendor/mermaid/mermaid.tiny.js",
+    "src/background.js", "sidepanel.html", "canvas-gallery.html"]) {
     assert.ok(found.has(f), `scanner no longer finds ${f} in src/**/*.js?`);
   }
 });
