@@ -125,4 +125,36 @@ export default [
       t.check(gw.prompts.length === n, "nothing more is sent", String(gw.prompts.length - n));
     },
   },
+  {
+    // #195 review k: the resend after a socket drop went out and is running when a message is
+    // queued and the agent turned off — that resend kept its promise, so the queue line is the plain one.
+    name: "a resend running with a message queued, then the agent turned off: the plain queue-dropped line, not the take-back",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      await h.renameCurrent(panel, "Alpha");
+      const sid = await h.sessionOf(ctx, "Alpha");
+      gw.hold = true;
+      await h.send(panel, "tell me again");
+      await gw.waitPrompt((p) => p.sessionId === sid && /tell me again/.test(p.userText));
+      const n = gw.prompts.length;
+      for (const ws of gw.sockets) ws.terminate();       // reconnects at once: the turn is resent
+      const p = await gw.waitPrompt((x) => /tell me again/.test(x.userText) && /it is a resend/.test(x.text), { since: n, ms: 15000 });
+      t.check(!!p, "the resend went out");
+      await h.until(panel, () => { const s = room.find((c) => c.enabled).cur; return s.turnActive && s.resendPending; }, "the resend runs");
+      await h.send(panel, "queued one");
+      await h.until(panel, () => room.find((c) => c.enabled).cur.promptQueue.length === 1, "a message queued behind the resend");
+      await panel.evaluate(() => { globalThis.__offConn = room.find((c) => c.enabled); globalThis.__offConn.disconnect(); });
+      await h.until(panel, (m) => document.body.innerText.includes(m), "the queue-dropped line", QUEUE_DROPPED, 5000);
+      const last = await panel.evaluate(() => {
+        const l = [...document.querySelectorAll(".conv-messages")].find((e) => !e.hidden);
+        const s = [...l.querySelectorAll(".system-text")];
+        return s.length ? s[s.length - 1].textContent : "";
+      });
+      t.check(last.startsWith(QUEUE_DROPPED), "the last line is the plain queue-dropped line", last);
+      t.check(!(await h.visibleText(panel)).includes(RESEND_TAKEN_BACK), "no take-back of a resend that went out", (await h.visibleText(panel)).slice(-400));
+      const st = await offState(panel);
+      t.check(empty(st), "nothing queued, no resend pending", JSON.stringify(st));
+      gw.hold = false;
+    },
+  },
 ];

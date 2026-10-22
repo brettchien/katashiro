@@ -199,6 +199,25 @@ test("resetDetail: the Reset card's line, from the state now", () => {
   assert.equal(C.resetDetail("Orca", { queued: 1 }), base + " 1 queued message will be sent to the new session.");
   assert.equal(C.resetDetail("Orca", { replying: true, queued: 3 }), base + " The reply in progress is stopped first. 3 queued messages will be sent to the new session.");
   assert.equal(C.resetDetail("Orca", { replying: false, queued: 0 }), base, "a reply that ended meanwhile drops its sentence");
+  assert.equal(C.resetDetail("Orca", { answers: 1 }), base + " 1 queued answer to its questions will be dropped (the new session never asked it).");
+  assert.equal(C.resetDetail("Orca", { queued: 2, answers: 2 }), base + " 2 queued messages will be sent to the new session. 2 queued answers to its questions will be dropped (the new session never asked them).");
+});
+
+test("queuedCounts: messages with text and ask answers apart; an image carrier \"\" is no message (#191 review c)", () => {
+  const ans = new Set(["[t user]\n↩ 回答 ask_1：Blue"]);
+  assert.deepEqual(C.queuedCounts([], ans), { messages: 0, answers: 0 });
+  assert.deepEqual(C.queuedCounts([""], ans), { messages: 0, answers: 0 }, "images left over from a sent turn");
+  assert.deepEqual(C.queuedCounts(["[t user]\nhi", "", "[t user]\n↩ 回答 ask_1：Blue"], ans), { messages: 1, answers: 1 });
+  assert.deepEqual(C.queuedCounts(["a", "b"]), { messages: 2, answers: 0 }, "no answer set");
+});
+
+test("withoutAskAnswers: drops the queued ask answers, keeps the rest in order (#191 review d)", () => {
+  const ans = new Set(["A1", "A2"]);
+  assert.deepEqual(C.withoutAskAnswers(["m1", "A1", "", "m2", "A2"], ans), { kept: ["m1", "", "m2"], dropped: 2 });
+  assert.deepEqual(C.withoutAskAnswers(["m1"], ans), { kept: ["m1"], dropped: 0 });
+  assert.deepEqual(C.withoutAskAnswers(["m1"]), { kept: ["m1"], dropped: 0 });
+  assert.equal(C.TEXT.askAnswersDropped(1), "1 queued answer to the agent's questions was not sent — the new session never asked it");
+  assert.equal(C.TEXT.askAnswersDropped(2), "2 queued answers to the agent's questions were not sent — the new session never asked them");
 });
 
 test("replyText: the whole reply, or its last chunk when a stopped reply's stray chunk came first", () => {

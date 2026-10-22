@@ -32,6 +32,7 @@ class SessionState {
     this.hintPending = false;                            // U2 (§3.5): the next accepted prompt carries the host line
     this.resendPending = false;                          // §7 I8: the next prompt is a resend after a mid-turn drop
     this.promptQueue = [];
+    this.askAnswers = new Set();                         // promptQueue items that are ask-card answers (dropped at a reset)
     this.pendingImages = [];                             // { mimeType, data(base64) } to ride the next turn
     this.turnActive = false;
     this.queuedMsgIds = [];                              // read receipt: user messages waiting in promptQueue
@@ -697,15 +698,30 @@ class Conn {
   // Queue a prompt for a conversation's session (the current one by default; an ask card's answer
   // goes to the session that asked, §3.8).
   // `msgId`: the user's chat message this prompt carries, for its read receipt (none for an ask
-  // card's answer, which has no bubble of its own).
-  enqueue(text, images, st = this.cur, msgId = null) {
+  // card's answer, which has no bubble of its own). `askAnswer`: it is an ask card's answer — a
+  // reset drops it while still queued (dropAskAnswers, #191 review d).
+  enqueue(text, images, st = this.cur, msgId = null, { askAnswer = false } = {}) {
     if (!st) return;
+    if (askAnswer) st.askAnswers.add(text);
     st.promptQueue.push(text);
     if (msgId) st.queuedMsgIds.push(msgId);
     if (images && images.length) st.pendingImages.push(...images);
     // openSession, not flushQueue: a background conversation not yet resumed on this socket (e.g. a
     // relay after a reconnect) is opened first; one that is ready just flushes (review: Jellyfish, #143).
     this.openSession(st);
+    refreshCommandCards();                               // the Reset card's queued count (#191 review c)
+  }
+
+  // At a reset: the queued answers to the old session's ask cards are not sent to the new session,
+  // which never asked them (#191 review d). → how many were dropped. An answer already batched into
+  // a turn that was requeued after a socket drop is part of that turn's text and goes with it.
+  dropAskAnswers(st) {
+    const { kept, dropped } = CommandCore.withoutAskAnswers(st.promptQueue, st.askAnswers);
+    st.askAnswers.clear();
+    if (!dropped) return 0;
+    st.promptQueue.splice(0, st.promptQueue.length, ...kept);
+    updateStopButton();                                  // refreshes the ⚡ cards' queued count too
+    return dropped;
   }
 
   // A conn turned off never flushes again, so a session's queue would wait for nothing: messages
@@ -718,6 +734,7 @@ class Conn {
     const promised = st.resendPending;
     st.promptQueue.length = 0;
     st.queuedMsgIds.length = 0;
+    st.askAnswers.clear();
     st.pendingImages.length = 0;
     st.resendPending = false;
     this.inState(st, () => appendSystemMessage(RoomCore.queueDroppedText(this.name, promised)));
@@ -738,6 +755,7 @@ class Conn {
     // the next round — Discord-style — instead of dribbling out over N turns.
     const batch = st.promptQueue.splice(0);
     const msgIds = st.queuedMsgIds.splice(0);            // read receipt: the user messages in it
+    st.askAnswers.clear();                               // the whole queue went out
     // The reply hint exactly once, at the end — also when a retried prompt (which carries it) is
     // batched with newer messages (#62).
     let text = RoomCore.batchWithReplyHint(batch);
@@ -839,6 +857,7 @@ class Conn {
           st.queuedMsgIds.unshift(...msgIds);            // waiting again: read once the resend goes out
           st.pendingImages.unshift(...images);           // the images never landed either
           st.resendPending = true;
+          refreshCommandCards();                         // updateStopButton above ran before the unshift (#191 review c)
           this.finalizeStream(undefined, st);
           this.inState(st, () => appendSystemMessage(partial
             ? `連線中斷：${this.name} 上面的回覆不完整，重新連線後會重送你的訊息，請它重新回答。`
@@ -848,6 +867,9 @@ class Conn {
           // session/cancel and closed the socket, and nothing reconnects it. Not requeued — a
           // resend would wait for a reconnect that never comes — and no 重試 button: this Conn may
           // be gone for good (retarget makes a new one), and a disabled one ignores retryTurn.
+          // A resend that went out is no longer pending: dropQueued must not take back a promise
+          // this very turn kept (#195 review k, like the cancel branch).
+          if (resent) st.resendPending = false;
           this.finalizeStream(undefined, st);
           this.inState(st, () => appendSystemMessage(st.turnHeard
             ? `已中斷與 ${this.name} 的連線：這個回合停在一半，不會自動重送。需要的話，重新連線後再送一次。`

@@ -273,20 +273,28 @@ function confirmReset(c, st) {
     conv,
     title: "Reset session",
     question: "Clear the agent's memory of this conversation?",
-    detail: () => CommandCore.resetDetail(c.name, { replying: st.turnActive, queued: st.promptQueue.length }),
+    detail: () => {
+      const { messages, answers } = CommandCore.queuedCounts(st.promptQueue, st.askAnswers);
+      return CommandCore.resetDetail(c.name, { replying: st.turnActive, queued: messages, answers });
+    },
     options: [{ label: "Reset session" }, { label: "Keep" }],
     onPick: async (i) => {
       if (i !== 0) return "Kept the session";
       if (st.commandActive) { showComposerHint(CommandCore.TEXT.commandRunning); return null; }
       try {
+        let droppedAnswers = 0;
         const text = await withCommandHold(c, st, async () => {
           if (st.turnActive) { c.cancelTurn(st.convId); await waitTurnEnd(st); }
           appendCommandEcho(CommandCore.RESET_TEXT, conv);
-          return CommandCore.replyText(await c.runRawCommand(st, CommandCore.RESET_TEXT), CommandCore.parseResetReply);
+          const reply = CommandCore.replyText(await c.runRawCommand(st, CommandCore.RESET_TEXT), CommandCore.parseResetReply);
+          // Still held (nothing flushed): its queued ask answers must not reach the new session (#191 review d).
+          if (CommandCore.parseResetReply(reply)) droppedAnswers = c.dropAskAnswers(st);
+          return reply;
         });
         // The new session never asked this conversation's open questions: close them.
         if (CommandCore.parseResetReply(text)) closePendingAsks(c, "restart", st.convId);
         appendSystemMessage(CommandCore.resetMessage(text), conv);
+        if (droppedAnswers) appendSystemMessage(CommandCore.TEXT.askAnswersDropped(droppedAnswers), conv);
         return "Reset session";
       } catch (err) {
         appendSystemMessage(`Reset failed: ${errText(err)}`, conv);
@@ -603,7 +611,7 @@ function askCard(spec, conn, st = conn.cur) {
   submit = (raw) => {
     const answer = AskCore.normalizeAnswer(spec, raw);
     if (!answer || !entry.ask.answer(answer)) return;
-    conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)), [], entry.state);
+    conn.enqueue(RoomCore.framePrompt({ timestamp: Date.now(), senderName: "user" }, AskCore.answerMessage(id, answer)), [], entry.state, null, { askAnswer: true });
   };
 
   // Asked in the turn (AskCore.canAsk guarantees one): the card sits in it, above the reply. P2 §5:

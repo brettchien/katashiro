@@ -284,4 +284,75 @@ export default [
       t.check(gw.commands.length === n, "nothing sent");
     },
   },
+  {
+    // #191 review c, d: the Reset card's queued count follows an ask answer queued while the card
+    // waits (enqueue) and a turn requeued after a socket drop (unshift); a queued ask answer is
+    // dropped at the reset with a line, the other queued message still goes to the new session.
+    name: "Reset card: live queued count (ask answer, requeue); queued ask answers are dropped at the reset",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const sid = await h.namedConversation(ctx, panel, "Asks", { fresh: false });
+      gw.hold = true;
+      const since = gw.prompts.length;
+      await h.send(panel, "ask me");
+      await gw.waitPrompt((p) => p.sessionId === sid && p.userText === "ask me", { since });
+      // Queued first: a message sent while an ask card waits would close it (Q4).
+      await h.send(panel, "queued meanwhile");
+      await gw.connectTunnel(sid);
+      const asked = FakeGateway.text(await gw.callTool(sid, "katashiro.ask_user", { question: "Which colour?", options: ["Red", "Blue"] }, 60000));
+      t.check(!asked.isError, "ask_user shows the card", asked);
+      await focusInput(panel);
+      await chord(panel, "/");
+      await panel.keyboard.press("ArrowDown");
+      await panel.keyboard.press("Enter");
+      await h.until(panel, () => !!document.querySelector(".conv-messages:not([hidden]) .command-card.pending"), "the reset card");
+      let c = await card(panel);
+      t.check(c.text.includes("1 queued message will be sent to the new session.") && !c.text.includes("queued answer"), "the card counts the queued message", c);
+      // Answering the ask while the card waits: its count follows (enqueue refreshes the card).
+      // (h.answerAsk would find the Reset card first: it is an .ask-card too.)
+      const answered = await panel.evaluate(() => {
+        const b = [...document.querySelectorAll(".conv-messages:not([hidden]) .ask-card.pending:not(.command-card) .ask-card-option")].find((x) => x.textContent.trim() === "Blue");
+        if (b) b.click();
+        return !!b;
+      });
+      t.check(answered, "the ask card answered");
+      await h.until(panel, () => {
+        const x = [...document.querySelectorAll(".conv-messages:not([hidden]) .command-card.pending")].pop();
+        return !!x && x.textContent.includes("1 queued answer to its questions will be dropped");
+      }, "the card counts the queued answer");
+      c = await card(panel);
+      t.check(c.text.includes("1 queued message will be sent to the new session."), "the answer is not counted as a message", c);
+      const n = gw.prompts.length;
+      await pickCard(panel, "Reset session");
+      await h.until(null, () => gw.commands.some((x) => x.text === "/reset" && x.sessionId === sid), "/reset after the stop");
+      await h.until(panel, () => document.body.innerText.includes("1 queued answer to the agent's questions was not sent — the new session never asked it"), "the line for the dropped answer");
+      const q = await gw.waitPrompt((p) => p.sessionId === sid && /queued meanwhile/.test(p.userText), { since: n });
+      t.check(!/回答 ask_/.test(q.text), "the queued message goes to the new session without the answer", q.text.slice(0, 300));
+      gw.endTurn(sid, "end_turn", "ok");
+      await h.idle(panel);
+      await h.sleep(500);
+      t.check(gw.prompts.slice(n).every((p) => !/回答 ask_/.test(p.text)), "the answer never reaches the new session", JSON.stringify(gw.prompts.slice(n).map((p) => p.text.slice(0, 120))));
+
+      // A turn requeued after a socket drop: the waiting card counts it (refresh after the unshift).
+      const since2 = gw.prompts.length;
+      await h.send(panel, "dropped turn");
+      await gw.waitPrompt((p) => p.sessionId === sid && p.userText === "dropped turn", { since: since2 });
+      await focusInput(panel);
+      await chord(panel, "/");
+      await panel.keyboard.press("ArrowDown");
+      await panel.keyboard.press("Enter");
+      await h.until(panel, () => !!document.querySelector(".conv-messages:not([hidden]) .command-card.pending"), "the reset card, while replying");
+      t.check(!(await card(panel)).text.includes("queued message"), "nothing queued yet", await card(panel));
+      gw.refuse = true;                                   // reconnects fail: the turn stays requeued
+      for (const ws of gw.sockets) ws.terminate();
+      await h.until(panel, () => document.body.innerText.includes("連線中斷：Fake"), "the requeue line");
+      await h.until(panel, () => {
+        const x = [...document.querySelectorAll(".conv-messages:not([hidden]) .command-card.pending")].pop();
+        return !!x && x.textContent.includes("1 queued message will be sent to the new session.") && !x.textContent.includes("stopped first");
+      }, "the card counts the requeued turn", 5000);
+      await pickCard(panel, "Keep");
+      gw.refuse = false;
+      gw.hold = false;
+    },
+  },
 ];
