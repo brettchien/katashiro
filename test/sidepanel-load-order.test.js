@@ -14,6 +14,7 @@
 // Function bodies, arrow bodies and methods are skipped: they only run once every script has loaded.
 // Not covered: property reads that run a getter (`obj.lazy`), and what an allowlisted factory does
 // with its arguments (each ALLOWED entry says why it is safe; conv-core.test.js pins createConvStore).
+// Contextual keywords (get, set, of, static, async) are never checked as names; no split file uses them.
 //
 // No JS parser in devDependencies, so this uses a small tokenizer (strings, templates, regex
 // literals, comments) plus bracket matching. It is self-tested against the patterns it must catch.
@@ -198,7 +199,6 @@ function loadTime(toks, match, from, to) {
     if (isP(prev, "{", ",") && isP(next, ":")) return false;      // { key: … }
     if (isP(next, "=>")) return false;                            // x => …
     if (isP(next, "(") && isMethodParen(toks, match, k + 1)) return false;   // { m() {} }
-    if (isP(next, "=")) return false;                             // declarator / assignment target
     return true;
   };
   let k = from;
@@ -417,6 +417,8 @@ test("checker: load-time reads of names that do not exist yet", () => {
   assert.deepEqual(unknown("const a = b;\nconst b = 1;"), ["b"]);                       // same file, later
   assert.deepEqual(unknown("const a = { k: c ? x : y, z };"), ["c", "x", "y", "z"]);
   assert.deepEqual(unknown("const a = new Later();"), ["Later"]);
+  assert.deepEqual(unknown("const a = (later = 1);"), ["later"]);                    // writing a TDZ name throws too
+  assert.deepEqual(unknown("const a = b = 1;\nlet b;"), ["b"]);
   // fine: earlier names, hoisted functions, browser globals, closures, keys, properties
   assert.deepEqual(unknown("const b = 1;\nconst a = { k: b, m() { return later; }, get g() { return later; } };"), []);
   assert.deepEqual(unknown("const a = f;\nfunction f() {}"), []);
