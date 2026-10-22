@@ -1,8 +1,8 @@
-// Katashiro side panel — canvas glue: the panel's canvas store and folder mirror, the canvas_* tool
-// helpers (normalize wait, goto / highlight / inject_css, show changes, compare, gallery), opening and
-// finding canvas tabs, the canvas tab group + Split View, and one tab group per conversation (working
-// tab, group tabs, restore / switch / archive). Moved verbatim out of sidepanel.js (plan B, step 2);
-// no logic change.
+// Katashiro side panel — canvas glue: the panel's canvas store and folder mirror, the canvas_*
+// tool helpers (normalize wait, goto / highlight / inject_css, show changes, compare, gallery),
+// opening and finding canvas tabs, the canvas tab group + Split View, and one tab group per
+// conversation (working tab, group tabs, restore / switch / archive). Moved verbatim out of
+// sidepanel.js (plan B, step 2); no logic change.
 //
 // Classic script, loaded by sidepanel.html after conn.js, conversations.js and composer-ui.js and
 // BEFORE cards.js and sidepanel.js; all scripts share one global scope. Load-order rule: this file
