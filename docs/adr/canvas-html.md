@@ -1,0 +1,202 @@
+# ADR: `html` canvas — implementation spec, with Archify as the first user
+
+- **Status:** Proposed 2026-10-27 (§6 questions open for Brett)
+- **Date:** 2026-10-27
+- **Author:** Brett Chien (drafted by Orca)
+- **Related:** [canvas](./canvas.md) §3.2 (isolation, `canvas-html-frame.html`, residual risk), §3.3
+  (kinds), §3.4 (agent tools), §6 Q2 (`html` on by default) and Q8 (click to run);
+  `katashiro.show_image` and its skill (bytes that skip the model); Archify
+  (<https://github.com/tt-a1i/archify>, Apache-2.0, v3.2.0 checked).
+
+> This ADR does not reopen the canvas ADR. `html` is decided there: its own frame, click to run,
+> `save`/`selection` refused, the load gate, the stated leak, the banner. It fills in what the
+> canvas ADR leaves for "phase 2": how the HTML gets into the frame, what the frame is allowed to
+> do, the size cap, and the agent-side path, using one real workload to settle the details.
+
+---
+
+## 1. Context
+
+### 1.1 Why now
+
+Archify is an agent skill that turns a typed JSON description (architecture, workflow, sequence,
+dataflow, lifecycle, ERD, class, tree, timeline, waterfall) or an answer (an "explainer" page)
+into **one standalone interactive HTML file**: pan and zoom, trace a route, focus a node,
+upstream/downstream reach, light and dark themes, PNG/SVG/WebM export. It is the kind of output
+the canvas ADR lists as what `html` is for (§3.3 "a collapsible timeline", "an animated
+explainer"), and it is the first case where a user has asked for it. Katashiro has no `html` kind
+yet (`KINDS` in `src/core/canvas-store.js` is `markdown`, `slides`, `image`, `mermaid`).
+
+### 1.2 What Archify output is (measured 2026-10-27 on v3.2.0)
+
+| Fact | Value | Why it matters here |
+|---|---|---|
+| Size of a native diagram | 0.83–0.88 MB (20 examples) | under the 2 MB text cap |
+| Size of an explainer page | 0.52–0.53 MB (4 examples) | under the cap |
+| Size of an Architecture Delta | 2.35 MB | **over** the 2 MB cap (§6 Q1) |
+| Script | 2 inline `<script>` blocks (≈ 1 KB + 451 KB), plus JSON data blocks | needs `'unsafe-inline'`: only `canvas-html-frame.html` |
+| Network | no `fetch`, XHR, `WebSocket`, `Worker`, `eval`, `new Function`; fonts are `url(data:…)` | works under `connect-src 'none'`, `worker-src 'none'`, `font-src data:` |
+| Storage | every `localStorage` access in `try/catch` (its comment names sandboxed frames) | an opaque origin throws; the viewer keeps working |
+| URL | reads `location.hash` with `URLSearchParams`, rewrites it with `history.replaceState` | the frame URL carries our nonce (§2.4) |
+| Static fallback | the diagram is one `<svg>` already in `<body>`, styled by `<style>` | the "not yet run" view can show the real diagram (§2.3) |
+| Links | one outbound `<a href>` (credit), 2 × `target="_blank"` | must go through `openLink`, or the load gate fires |
+| Export | `navigator.clipboard.writeText`, download links, `MediaRecorder` | blocked by plain `allow-scripts` (§6 Q2) |
+
+The CLI (`node archify/bin/archify.mjs`) has no dependencies besides Node ≥ 18. On the agent host
+(ECS, no Chrome) `deliver` and `check` pass. `finalize` stops at `browser-check` with
+`viewer/chrome-unavailable`, because that gate drives a local Chrome.
+
+### 1.3 Constraints that do not change
+
+- The agent must not emit the HTML as tool-call arguments: 0.85 MB is roughly 250 K output tokens.
+  The same rule as `show_image`: **the bytes skip the model**.
+- Everything in canvas §3.2 holds. In particular, the `html` frame only ever receives its own
+  canvas content, and nothing it posts is stored as the user's words.
+
+## 2. Decision
+
+### 2.1 Store and tools
+
+- `KINDS` gains `"html"`. It is **not** in `PATCH_KINDS`: an `html` canvas is replaced whole.
+  Archify, for one, edits its JSON and renders again; find/replace in a 450 KB minified script is
+  not a useful edit.
+- `canvas_open({kind:"html", title, content})` as for the other kinds. Content must be a UTF-8
+  string that parses as an HTML document (no other check: whatever it is, it runs only after a
+  click). Cap: §6 Q1.
+- **`canvas_read` on an `html` canvas does not return the full content by default.** It returns
+  `{version, author, at, bytes, sha256}` and the first 16 K characters, with a line saying it was
+  cut. `full: true` returns all of it. The agent's source of truth for an `html` canvas is its own
+  input (Archify's JSON), and an unasked 0.85 MB read would fill the context.
+- No editor, no `save`, no Send to agent diff, no 💬 on a selection, no `canvas_highlight`, no
+  compare: as the canvas ADR already says for `html` (§3.2, §3.7, §3.10). The glow on an agent
+  write is skipped too (there are no text blocks to compare).
+- Mirroring to the local folder writes `<slug>.html`, under the same rules as `.md`.
+
+### 2.2 Getting the file in: a script, not the model
+
+The `katashiro-show-image` skill already posts a local file to the OpenAB facade
+(`127.0.0.1:8848`) with `curl`, so 5 MB of image never goes through the model. The same pattern
+ships for canvases as **`skills/katashiro-canvas-file/scripts/canvas-file.sh <file> --kind html
+--title "…" [--id <canvasId>]`**: it reads the file, builds the `katashiro.canvas_open` arguments
+with `jq --rawfile`, calls the facade, and prints one line (`opened canvas cv_… v3 (html, 846 KB)`).
+With `--id` it writes a new revision of that canvas. The script works for any kind; `html` is the
+one that needs it.
+
+### 2.3 Before Run scripts: the static view (in `canvas-frame.html`)
+
+Per Q8, an `html` canvas first renders in `canvas-frame.html`, which runs no agent script. That
+view uses its own DOMPurify profile, not the markdown one:
+
+- `WHOLE_DOCUMENT`, then the frame shows the sanitized `<body>` inside a **shadow root** with the
+  document's `<style>` elements copied into it. That keeps the page's CSS away from the frame's
+  own, and lets Archify's pre-rendered SVG look like the real diagram.
+- Kept: `<style>`, `style` attributes, SVG. Removed: `<script>`, event handlers, `<form>`,
+  `<iframe>`, `<object>`, `<embed>`, `<meta http-equiv>`, `<base>`, `<link>`, `target`.
+  Images: `data:` and `blob:` only (the frame's CSP would block the rest anyway).
+- Links go through `openLink`, as everywhere in this frame.
+
+The header shows **▶ Run scripts** and a line under it: *"Shown without its scripts. Run scripts
+to make it interactive — this canvas's script can then send what it contains, and what you type
+into it, out of the browser."* `canvas-frame.html`'s meta CSP `script-src 'self'` is the backstop
+if the profile ever lets a script through.
+
+### 2.4 After Run scripts: `canvas-html-frame.html`
+
+- **Page:** `canvas-html-frame.html` is a sandbox page with one script of ours,
+  `src/canvas/canvas-html-frame.js`, and no other content. The manifest sandbox CSP gains
+  `'unsafe-inline'` in `script-src` (canvas §3.2 already plans it). `canvas-frame.html` keeps its
+  meta `script-src 'self'`, so the loosening reaches only this page.
+- **iframe:** `sandbox="allow-scripts"` (plus §6 Q2), `src="canvas-html-frame.html#k=<nonce>"`.
+  The key form `k=` matters: Archify parses the hash as `URLSearchParams` and ignores keys it does
+  not know. The frame reads the nonce once, before anything else runs.
+- **One render per load.** The frame posts `ready{nonce}`; the host posts
+  `render{nonce, kind:"html", content, version}` once. The frame then runs
+  `document.open(); document.write(content); document.close()`, which runs the page's inline
+  scripts in this document, under this page's CSP. `document.open` drops the listeners our script
+  added, so after `close()` our script adds back, in this order:
+  1. capture-phase `click` / `auxclick` on `window` → `openLink{url}` (Archify's credit link and
+     anything the page draws). This is a convenience: page script can stop it, and the load gate
+     is what actually holds;
+  2. `securitypolicyviolation` → `error{msg}` (capped, `textContent` only on the host, as §3.2);
+  3. then `rendered{version}`.
+  A second `render` is ignored. A new revision, or Run scripts again, is a host-caused reload with
+  a new nonce (§3.2), followed by a new `ready`.
+- **The load gate counts the `document.close()` load.** Chrome may fire the iframe's `load` event
+  again when a `document.open`/`close` pair finishes. If it does, the host expects exactly one such
+  load after each `render` it sent, and treats it as host-caused; any load beyond that is the
+  frame navigating away, as before. *To verify during implementation:* whether the event fires,
+  and that a self-navigation right after `render` is still caught.
+- **Deep links** (`#focus=…`, `#route=…`) are not supported in this version: the host does not
+  pass a fragment, and Archify's `replaceState` rewriting our hash is harmless (the nonce was
+  already read).
+- Messages accepted from this frame: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`.
+  Everything else is dropped, as in canvas §3.2.
+
+### 2.5 Agent side: Archify into a canvas
+
+A second skill, **`skills/katashiro-archify`**, sits on top of Archify's own skill (installed with
+`npx skills add tt-a1i/archify`; Katashiro does not vendor Archify):
+
+1. Author and render as Archify's skill says, in a scratch folder (`/tmp/archify/<slug>-<ts>/`).
+2. Run `finalize`. On a host with no Chrome, a run whose only failure is `browser-check` with
+   `viewer/chrome-unavailable` (and `validate`/`deliver`/`check` pass) is accepted, and the reply
+   says that the browser gate did not run. Any other failure is repaired as Archify's skill says.
+3. Upload with `canvas-file.sh <slug>.html --kind html --title "…"` (`--id` for a new revision).
+4. Optional visual check: `katashiro.screenshot` of the canvas tab. Before Run scripts it shows the
+   static SVG (§2.3), which is enough to check the layout. This stands in for Archify's
+   `browser-check` and is reported as an automated check, not a perceptual review.
+5. Tell the user to press ▶ Run scripts for pan/zoom, tracing and themes.
+
+The update check Archify's CLI does (a GET of its stable manifest) runs on the agent host, not in
+the browser. The HTML itself has none.
+
+## 3. Consequences
+
+### Positive
+
+- One frame design serves Archify and anything else that produces a standalone page (calculators,
+  sortable tables, explainers), which the canvas ADR already wanted.
+- The static view is useful by itself: most of the time an Archify diagram is read, not driven.
+- Nothing from Archify is vendored, so its weekly releases need nothing from Katashiro.
+
+### Negative / tradeoffs
+
+- After Run scripts the leak described in canvas §3.2 applies to this content: script can navigate
+  the frame with data in the URL, or use WebRTC. An Archify file is produced by a CLI, but
+  Katashiro cannot tell it apart from hand-written HTML, and the labels in it come from whatever
+  the agent read. It is treated like any other `html` canvas.
+- 0.85 MB a revision with the 10-version history is about 8.5 MB of the 200 MB budget per canvas.
+- Two new skills to keep in step with the tools.
+
+## 4. Alternatives considered
+
+- **A dedicated `archify` kind** (agent sends the JSON; `canvas-frame.html` runs a vendored Archify
+  renderer, no click, no agent script). Rejected for now: 19 renderer modules import Node built-ins
+  (`fs`, `path`, …), so it would be a port, not a vendor drop, and it would have to follow a fast
+  release cadence. Worth revisiting if Archify ships a browser build.
+- **Screenshot only** (agent renders to PNG, `show_image`). The agent host has no Chrome, and the
+  result loses everything interactive, which is Archify's point.
+- **Nested `srcdoc` iframe** instead of `document.write`. The sandbox CSP has `frame-src 'none'`,
+  and a second frame level adds a second load gate for no gain.
+
+## 5. Scope
+
+In: `html` kind, the two frames' parts described above, `canvas-file.sh`, `katashiro-archify`.
+Out: deep links into an Archify view, editing `html`, `canvas_patch` for `html`, print for `html`,
+any vendored Archify code.
+
+## 6. Open questions (for Brett)
+
+1. **Size cap for `html`.** Keep 2 MB for every kind (Archify's Delta view, 2.35 MB, does not fit),
+   or allow `html` up to 4 MB? *Recommended: 4 MB for `html` only; the other kinds keep 2 MB.*
+2. **Downloads and clipboard in the `html` frame.** Plain `allow-scripts` (canvas §3.2) blocks
+   Archify's PNG/SVG/WebM export and Copy.
+   - (a) Nothing extra: those buttons fail; the host's own screenshot still works.
+   - (b) `allow-downloads` after Run scripts: exports work; a download goes to disk, not the
+     network, and only after the click that runs the script. The clipboard stays closed
+     (writing it would let a page plant a command for the user to paste).
+   - (c) A host-mediated `download{name, mime, bytes}` message with a confirm card. More code, and
+     a new frame → host message with bytes.
+   *Recommended: (b).*
+3. **`canvas_read` default for `html`.** 16 K characters plus metadata, `full: true` for all of it
+   (§2.1)? Or full content like the other kinds? *Recommended: the 16 K default.*

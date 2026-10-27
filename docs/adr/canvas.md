@@ -295,7 +295,7 @@ below is built around that.
 | 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off; implementation spec: [canvas-html](./canvas-html.md) |
 | 3 → done (2026-10-11) | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` (and `slides`) |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
