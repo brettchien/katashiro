@@ -233,7 +233,8 @@ below is built around that.
     so only its rect is re-sent, never the text or where; refused from a compare tab), and
     `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
     refused from a compare tab, and acted on only in edit mode).
-  - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}` only. **`save`,
+  - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}`, and `openLink{url}`
+    (added by [canvas-html](./canvas-html.md) §2.4, for links the page draws) only. **`save`,
     `selection` and `undoState` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
     injection laundered into the user's voice.
@@ -255,7 +256,9 @@ below is built around that.
     'self'">`, so a DOMPurify bypass in markdown still cannot run script.
   - The host sets the iframe `sandbox` attribute per frame (flags from the attribute and the CSP
     both apply): `allow-scripts allow-modals` for `canvas-frame.html` (modals are needed to print,
-    §3.8, and no agent script runs there), and plain `allow-scripts` for `canvas-html-frame.html`.
+    §3.8, and no agent script runs there), and `allow-scripts allow-downloads` for
+    `canvas-html-frame.html` (`allow-downloads` added by [canvas-html](./canvas-html.md) §6 Q2, so
+    a page's own exports work after Run scripts; the clipboard stays closed).
   Chrome documents that a custom sandbox CSP must keep `sandbox` with `allow-scripts`. Its default
   is `sandbox allow-scripts allow-forms allow-popups allow-modals; script-src 'self' 'unsafe-inline'
   'unsafe-eval'; child-src 'self'` `[MV3-Sandbox]`, so ours is a strict tightening. To verify during
@@ -267,7 +270,9 @@ below is built around that.
 - `canvas-frame.html` (all of phase 1): no agent script runs, links go through `openLink`, and the
   load gate catches anything else. **Content has no way out except the allow-listed messages.**
 - `canvas-html-frame.html` (`html` kind, phase 2): **content can leave, and the ADR says so.** Agent
-  script can navigate the frame with data in the URL (the load gate notices only afterwards), and
+  script can navigate the frame with data in the URL (the load gate notices only afterwards, and
+  not at all if the response never commits, e.g. `204` or an attachment: see
+  [canvas-html](./canvas-html.md) §3), and
   can exfiltrate through WebRTC (`RTCPeerConnection` with a `stun:<data>.evil.com` ICE server
   reaches DNS/UDP; Chrome does not implement the CSP `webrtc` directive, and `connect-src` does not
   cover it). `<link rel=dns-prefetch>` has historically bypassed CSP; test it during
@@ -295,7 +300,7 @@ below is built around that.
 | 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off; implementation spec: [canvas-html](./canvas-html.md) |
 | 3 → done (2026-10-11) | `mermaid` | `@mermaid-js/tiny` 12.1.0 | also renders ```` ```mermaid ```` fences in `markdown` (and `slides`) |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
@@ -1102,7 +1107,8 @@ is silent, the conservative choice:
 ### 3.9 Data flow — where canvas data lives and who can reach it
 
 The diagrams show phase 1. Phase 2's `canvas-html-frame.html` sits beside `canvas-frame.html`
-with the same edges, but its allow-list has no `save`, `selection` or `openLink` (§3.2).
+with the same edges, but its allow-list has no `save` or `selection`; it does have `openLink`
+([canvas-html](./canvas-html.md) §2.4, §3.2).
 
 **Components** (who holds what):
 
