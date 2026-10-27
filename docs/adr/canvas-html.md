@@ -1,6 +1,6 @@
 # ADR: `html` canvas — implementation spec, with Archify as the first user
 
-- **Status:** Proposed 2026-10-27 (§6 questions open for Brett)
+- **Status:** Accepted 2026-10-28 (§6 decided by Brett)
 - **Date:** 2026-10-27
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [canvas](./canvas.md) §3.2 (isolation, `canvas-html-frame.html`, residual risk), §3.3
@@ -33,14 +33,14 @@ yet (`KINDS` in `src/core/canvas-store.js` is `markdown`, `slides`, `image`, `me
 |---|---|---|
 | Size of a native diagram | 0.83–0.88 MB (20 examples) | under the 2 MB text cap |
 | Size of an explainer page | 0.52–0.53 MB (4 examples) | under the cap |
-| Size of an Architecture Delta | 2.35 MB | **over** the 2 MB cap (§6 Q1) |
+| Size of an Architecture Delta | 2.35 MB | over the 2 MB text cap; fits the 4 MB `html` cap (§6 Q1) |
 | Script | 2 inline `<script>` blocks (≈ 1 KB + 451 KB), plus JSON data blocks | needs `'unsafe-inline'`: only `canvas-html-frame.html` |
 | Network | no `fetch`, XHR, `WebSocket`, `Worker`, `eval`, `new Function`; fonts are `url(data:…)` | works under `connect-src 'none'`, `worker-src 'none'`, `font-src data:` |
 | Storage | every `localStorage` access in `try/catch` (its comment names sandboxed frames) | an opaque origin throws; the viewer keeps working |
 | URL | reads `location.hash` with `URLSearchParams`, rewrites it with `history.replaceState` | the frame URL carries our nonce (§2.4) |
 | Static fallback | the diagram is one `<svg>` already in `<body>`, styled by `<style>` | the "not yet run" view can show the real diagram (§2.3) |
 | Links | one outbound `<a href>` (credit), 2 × `target="_blank"` | must go through `openLink`, or the load gate fires |
-| Export | `navigator.clipboard.writeText`, download links, `MediaRecorder` | blocked by plain `allow-scripts` (§6 Q2) |
+| Export | `navigator.clipboard.writeText`, download links, `MediaRecorder` | downloads need `allow-downloads`; Copy stays blocked (§6 Q2) |
 
 The CLI (`node archify/bin/archify.mjs`) has no dependencies besides Node ≥ 18. On the agent host
 (ECS, no Chrome) `deliver` and `check` pass. `finalize` stops at `browser-check` with
@@ -62,7 +62,7 @@ The CLI (`node archify/bin/archify.mjs`) has no dependencies besides Node ≥ 18
   not a useful edit.
 - `canvas_open({kind:"html", title, content})` as for the other kinds. Content must be a UTF-8
   string that parses as an HTML document (no other check: whatever it is, it runs only after a
-  click). Cap: §6 Q1.
+  click). Cap: **4 MB** for `html`; the other kinds keep 2 MB (§6 Q1).
 - **`canvas_read` on an `html` canvas does not return the full content by default.** It returns
   `{version, author, at, bytes, sha256}` and the first 16 K characters, with a line saying it was
   cut. `full: true` returns all of it. The agent's source of truth for an `html` canvas is its own
@@ -106,7 +106,9 @@ if the profile ever lets a script through.
   `src/canvas/canvas-html-frame.js`, and no other content. The manifest sandbox CSP gains
   `'unsafe-inline'` in `script-src` (canvas §3.2 already plans it). `canvas-frame.html` keeps its
   meta `script-src 'self'`, so the loosening reaches only this page.
-- **iframe:** `sandbox="allow-scripts"` (plus §6 Q2), `src="canvas-html-frame.html#k=<nonce>"`.
+- **iframe:** `sandbox="allow-scripts allow-downloads"` (§6 Q2),
+  `src="canvas-html-frame.html#k=<nonce>"`. The frame exists only after Run scripts, so a download
+  is possible only after that click. No clipboard permission: `navigator.clipboard` stays blocked.
   The key form `k=` matters: Archify parses the hash as `URLSearchParams` and ignores keys it does
   not know. The frame reads the nonce once, before anything else runs.
 - **One render per load.** The frame posts `ready{nonce}`; the host posts
@@ -165,7 +167,9 @@ the browser. The HTML itself has none.
   the frame with data in the URL, or use WebRTC. An Archify file is produced by a CLI, but
   Katashiro cannot tell it apart from hand-written HTML, and the labels in it come from whatever
   the agent read. It is treated like any other `html` canvas.
-- 0.85 MB a revision with the 10-version history is about 8.5 MB of the 200 MB budget per canvas.
+- 0.85 MB a revision with the 10-version history is about 8.5 MB of the 200 MB budget per canvas;
+  a canvas at the 4 MB cap keeps up to 40 MB.
+- Archify's Copy button fails (the clipboard stays closed, §6 Q2); its exports work.
 - Two new skills to keep in step with the tools.
 
 ## 4. Alternatives considered
@@ -185,18 +189,17 @@ In: `html` kind, the two frames' parts described above, `canvas-file.sh`, `katas
 Out: deep links into an Archify view, editing `html`, `canvas_patch` for `html`, print for `html`,
 any vendored Archify code.
 
-## 6. Open questions (for Brett)
+## 6. Decisions (Brett, 2026-10-28)
 
-1. **Size cap for `html`.** Keep 2 MB for every kind (Archify's Delta view, 2.35 MB, does not fit),
-   or allow `html` up to 4 MB? *Recommended: 4 MB for `html` only; the other kinds keep 2 MB.*
-2. **Downloads and clipboard in the `html` frame.** Plain `allow-scripts` (canvas §3.2) blocks
-   Archify's PNG/SVG/WebM export and Copy.
+1. **Size cap for `html`: 4 MB**, for `html` only; the other kinds keep 2 MB. Archify's Delta view
+   (2.35 MB) fits. Rejected: 2 MB for every kind.
+2. **Downloads and clipboard in the `html` frame: (b) `allow-downloads` after Run scripts** (§2.4).
+   Plain `allow-scripts` (canvas §3.2) blocks Archify's PNG/SVG/WebM export and Copy; with (b) the
+   exports work. A download goes to disk, not the network, and only after the click that runs the
+   script. The clipboard stays closed (writing it would let a page plant a command for the user to
+   paste). Rejected:
    - (a) Nothing extra: those buttons fail; the host's own screenshot still works.
-   - (b) `allow-downloads` after Run scripts: exports work; a download goes to disk, not the
-     network, and only after the click that runs the script. The clipboard stays closed
-     (writing it would let a page plant a command for the user to paste).
    - (c) A host-mediated `download{name, mime, bytes}` message with a confirm card. More code, and
      a new frame → host message with bytes.
-   *Recommended: (b).*
-3. **`canvas_read` default for `html`.** 16 K characters plus metadata, `full: true` for all of it
-   (§2.1)? Or full content like the other kinds? *Recommended: the 16 K default.*
+3. **`canvas_read` default for `html`: 16 K characters plus metadata**, `full: true` for all of it
+   (§2.1). Rejected: full content like the other kinds.
