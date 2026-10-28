@@ -41,12 +41,22 @@ test("notifications is a required permission (katashiro.notify)", () => {
   assert.ok(manifest.permissions.includes("notifications"));
 });
 
-test("canvas: the frame is a sandbox page with a no-network CSP; nothing is web-accessible", () => {
-  assert.deepEqual(manifest.sandbox.pages, ["canvas-frame.html"]);
+test("canvas: the frames are sandbox pages with a no-network CSP; nothing is web-accessible", () => {
+  // canvas-html-frame.html: an html canvas after Run scripts (canvas-html §2.4).
+  assert.deepEqual(manifest.sandbox.pages, ["canvas-frame.html", "canvas-html-frame.html"]);
   const csp = manifest.content_security_policy.sandbox;
-  assert.match(csp, /^sandbox allow-scripts allow-modals;/);        // allow-modals: print() for PDF export (§3.8)
-  assert.doesNotMatch(csp, /allow-same-origin|allow-popups|allow-forms|allow-top-navigation|allow-downloads/);
+  // allow-modals: print() for PDF export (§3.8); allow-downloads: an html canvas's own exports after
+  // Run scripts (canvas-html §6 Q2). The CSP is one policy for every sandbox page, so it is the loosest
+  // any frame needs; the iframe's sandbox attribute narrows each (both apply): canvas-frame.html never
+  // gets allow-downloads, canvas-html-frame.html never allow-modals.
+  assert.match(csp, /^sandbox allow-scripts allow-modals allow-downloads;/);
+  assert.doesNotMatch(csp, /allow-same-origin|allow-popups|allow-forms|allow-top-navigation/);
   assert.doesNotMatch(csp, /unsafe-eval/);
+  // 'unsafe-inline' scripts reach only canvas-html-frame.html: canvas-frame.html narrows itself with
+  // a meta CSP script-src 'self' (canvas §3.2).
+  assert.match(csp, /script-src 'self' 'unsafe-inline';/);
+  const frameHtml = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "canvas-frame.html"), "utf8");
+  assert.match(frameHtml, /<meta http-equiv="Content-Security-Policy" content="script-src 'self'">/);
   for (const d of ["default-src 'none'", "script-src 'self'", "connect-src 'none'", "frame-src 'none'",
     "worker-src 'none'", "form-action 'none'", "base-uri 'none'", "img-src data: blob:"]) {
     assert.ok(csp.includes(d), `sandbox CSP lacks ${d}`);

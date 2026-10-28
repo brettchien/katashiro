@@ -74,18 +74,36 @@
   // state, no selection, no editFailed (it offers "send to agent", which a compare tab never does).
   const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState", "armedKey"]);
 
+  // An html canvas before Run scripts (canvas-html §2.3; canvas §6 Q8): canvas-frame.html shows it
+  // without its scripts, as a view — no editor, no selection, no copy, no highlight, no slides.
+  const HTML_STATIC_TYPES = {
+    ready: FRAME_TYPES.ready, rendered: FRAME_TYPES.rendered, error: FRAME_TYPES.error, openLink: FRAME_TYPES.openLink,
+  };
+  // canvas-html-frame.html (canvas §3.2, canvas-html §2.4): agent script runs there, so only these,
+  // and nothing it sends is ever stored or sent on as the user's words.
+  const HTML_FRAME_TYPES = {
+    ready: () => true,
+    rendered: (m) => Number.isInteger(m.version),
+    error: (m) => typeof m.msg === "string",
+    openLink: (m) => typeof m.url === "string",
+  };
+  const FRAME_PROFILES = { canvas: FRAME_TYPES, htmlStatic: HTML_STATIC_TYPES, html: HTML_FRAME_TYPES };
+
   /**
    * Accept a message only if it comes from our frame's window, carries the current nonce, and is
-   * an allow-listed type with well-formed fields. Returns the message or null.
+   * an allow-listed type with well-formed fields. Returns the message or null. `profile`: which
+   * frame it is — "canvas" (canvas-frame.html, the default), "htmlStatic" (canvas-frame.html showing
+   * an html canvas without its scripts) or "html" (canvas-html-frame.html, agent script).
    */
-  function acceptFrameMessage(event, { frameWindow, nonce, readOnly }) {
+  function acceptFrameMessage(event, { frameWindow, nonce, readOnly, profile = "canvas" }) {
     if (!event || !frameWindow || event.source !== frameWindow) return null;
     const m = event.data;
     if (!m || typeof m !== "object" || typeof m.type !== "string") return null;
     if (!nonce || m.nonce !== nonce) return null;
-    if (!Object.prototype.hasOwnProperty.call(FRAME_TYPES, m.type)) return null;
+    const types = Object.prototype.hasOwnProperty.call(FRAME_PROFILES, profile) ? FRAME_PROFILES[profile] : null;
+    if (!types || !Object.prototype.hasOwnProperty.call(types, m.type)) return null;
     if (readOnly && READ_ONLY_REFUSED.has(m.type)) return null;
-    if (!FRAME_TYPES[m.type](m)) return null;
+    if (!types[m.type](m)) return null;
     return m;
   }
 
@@ -180,19 +198,58 @@
    * the frame navigated away (a link it should not have followed, a script that set location),
    * and the frame must be dropped before anything else is posted to it.
    */
+  // canvas-html §2.4: besides the counted loads, a SINGLE-USE expectation (`arm()`): it covers one
+  // load at most, and `disarm(token)` drops it unused (on rendered{}, or a timeout), so it never
+  // carries over to a later load — which would then pass for one of ours.
   function createLoadGate() {
     let expected = 0;
+    let armed = new Set();
+    let nextToken = 1;
     return {
       /** Call right before setting the iframe's src. */
       expect() { expected += 1; },
+      /** One load that may or may not come. → a token for disarm(). */
+      arm() { const t = nextToken++; armed.add(t); return t; },
+      /** Drop an armed expectation if it is still unused. → true if it was. */
+      disarm(token) { return armed.delete(token); },
       /** A new iframe replaces the old one: loads still owed to the removed frame never come. */
-      reset() { expected = 0; },
+      reset() { expected = 0; armed = new Set(); },
       /** Call on every iframe `load`; false = an unexpected navigation. */
       onLoad() {
         if (expected > 0) { expected -= 1; return true; }
+        if (armed.size) { armed.delete(armed.values().next().value); return true; }
         return false;
       },
     };
+  }
+
+  // The DOMPurify profile of an html canvas shown without its scripts (canvas-html §2.3), in
+  // canvas-frame.html. Not the mermaid one (SVG_DP adds foreignObject): use / animate / set /
+  // foreignObject stay dropped (DOMPurify's default for SVG, and named here so a later default
+  // change cannot bring them back). The whole document, so its <style>s survive (they are copied
+  // into the shadow root from this sanitized result), returned as DOM: the nodes are moved, never
+  // serialized and parsed again (mutation XSS lives in a second parse). After it, the frame drops
+  // `target` (markdown.js's global link hook adds it back to <a>) and any image source that is
+  // not data: / blob: (the frame's CSP would block it anyway).
+  const HTML_STATIC_DP = Object.freeze({
+    WHOLE_DOCUMENT: true, RETURN_DOM: true, SANITIZE_DOM: true,
+    USE_PROFILES: { html: true, svg: true, svgFilters: true },
+    FORBID_TAGS: ["script", "form", "iframe", "frame", "frameset", "object", "embed", "meta", "base", "link",
+      "foreignObject", "use", "animate", "animateMotion", "animateTransform", "set", "noscript", "template"],
+    FORBID_ATTR: ["target", "srcset", "action", "formaction", "ping"],
+  });
+  const IMAGE_SRC_OK = /^(data|blob):/i;
+  // A <style>'s "<" as the CSS escape \3C (the trailing space ends the escape and is consumed by it),
+  // so DOMPurify's mXSS check does not drop the whole sheet (canvas-frame.js renderHtmlStatic).
+  const cssEscapeLt = (css) => String(css).replace(/</g, "\\3C ");
+
+  // canvas_read on an html canvas (canvas-html §2.1, §6 Q3): the first HTML_READ_HEAD characters
+  // unless `full`. → { text, cut } (cut: characters left out).
+  const HTML_READ_HEAD = 16 * 1024;
+  function htmlReadView(content, full) {
+    const s = String(content == null ? "" : content);
+    if (full === true || s.length <= HTML_READ_HEAD) return { text: s, cut: 0 };
+    return { text: s.slice(0, HTML_READ_HEAD), cut: s.length - HTML_READ_HEAD };
   }
 
   function newNonce(cryptoObj) {
@@ -1013,5 +1070,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssEscapeLt, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

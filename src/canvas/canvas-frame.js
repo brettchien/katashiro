@@ -1,7 +1,7 @@
 // canvas-frame.js — renders one canvas inside the sandboxed canvas-frame.html (ADR §3.2–§3.3).
 //
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
-//  in:  render{nonce, kind, version, seq, content, normalizeText?}
+//  in:  render{nonce, kind, version, seq, content, normalizeText?}   (kind html: shown without its scripts, canvas-html §2.3)
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  in:  editCmd{cmd: "undo" | "redo"}       (the editor's own history: the edit-mode ↶ / ↷, §3.5)
@@ -25,6 +25,7 @@
   const deck = document.getElementById("deck");
   const pic = document.getElementById("pic");
   const editorRoot = document.getElementById("editor");
+  const htmlview = document.getElementById("htmlview");
 
   // --- Milkdown (§3.5), loaded on first use: normalizing an agent write, or the user's Edit. ---
   let milkdownLoad = null;
@@ -463,6 +464,42 @@
     pic.querySelector("img").alt = content.caption || "image";
     pic.querySelector("figcaption").textContent = content.caption || "";
   }
+  // html (canvas-html §2.3): the page without its scripts, in a shadow root so its CSS and ours
+  // stay apart. DOMPurify (HTML_STATIC_DP) parses and cleans the whole document and returns its
+  // <html> element; that element itself — head (with the sanitized <style>s), body, attributes such
+  // as data-theme — is moved into the shadow root. Nothing is serialized or parsed again.
+  // The meta CSP (script-src 'self') stands behind it: no script of the page can run here.
+  function renderHtmlStatic(content) {
+    htmlview.hidden = false;
+    document.body.classList.add("mode-html");
+    // DOMPurify drops a whole <style> whose text has "<" + a letter (its mXSS check; Archify's CSS has
+    // "on <html>" in a comment, which took 200 KB of CSS with it). In CSS a "<" only ever stands in a
+    // comment, a string or a url(), where the escape \3C means the same character, so it is escaped
+    // in the parsed node, before that check runs (uponSanitizeElement). Nothing is parsed again: a
+    // style element's text is never HTML, and the result is moved, not serialized.
+    const escapeStyleLt = (node) => {
+      if (node && node.nodeType === 1 && node.localName === "style" && !node.firstElementChild && node.textContent.includes("<")) {
+        node.textContent = CanvasCore.cssEscapeLt(node.textContent);
+      }
+    };
+    let root;
+    DOMPurify.addHook("uponSanitizeElement", escapeStyleLt);
+    try { root = DOMPurify.sanitize(String(content), CanvasCore.HTML_STATIC_DP); }
+    finally { DOMPurify.removeHook("uponSanitizeElement", escapeStyleLt); }
+    const all = [root, ...root.querySelectorAll("*")];
+    for (const el of all) {
+      el.removeAttribute("target");
+      for (const a of ["src", "href", "xlink:href"]) {
+        if (a !== "src" && !/^(image|feImage)$/.test(el.localName)) continue;
+        const v = a === "xlink:href" ? el.getAttributeNS("http://www.w3.org/1999/xlink", "href") : el.getAttribute(a);
+        if (v != null && !CanvasCore.IMAGE_SRC_OK.test(v.trim())) {
+          if (a === "xlink:href") el.removeAttributeNS("http://www.w3.org/1999/xlink", "href"); else el.removeAttribute(a);
+        }
+      }
+    }
+    const shadow = htmlview.shadowRoot || htmlview.attachShadow({ mode: "open" });
+    shadow.replaceChildren(root);
+  }
   const post = (msg) => window.parent.postMessage({ ...msg, nonce }, "*");
 
   // --- Showing what changed (§3.10) ---------------------------------------------------------
@@ -739,7 +776,9 @@
   }
 
   function onLinkClick(e) {
-    const a = e.target && e.target.closest ? e.target.closest("a, area") : null;
+    // composedPath: a click in the html view's shadow root reaches document retargeted to its host.
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [e.target];
+    const a = path.find((n) => n && n.nodeType === 1 && typeof n.matches === "function" && n.matches("a, area")) || null;
     if (!a) return;
     e.preventDefault();
     if (editing) return;                  // editing: a click places the cursor; nothing opens
@@ -748,7 +787,8 @@
     const href = a.getAttribute("href") || a.getAttributeNS("http://www.w3.org/1999/xlink", "href") || "";
     if (href.startsWith("#")) {
       // In-document anchor: scroll without navigating (a fragment change is not a load anyway).
-      const target = href.length > 1 && document.getElementById(decodeURIComponent(href.slice(1)));
+      const id = href.length > 1 ? decodeURIComponent(href.slice(1)) : "";
+      const target = id && (document.getElementById(id) || (htmlview.shadowRoot && htmlview.shadowRoot.getElementById(id)));
       if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
       return;
     }
@@ -1013,6 +1053,7 @@
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "mermaid") return renderMermaidCanvas(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "image") return renderImage(m.content);
+      if (m.kind === "html") return renderHtmlStatic(typeof m.content === "string" ? m.content : "");
       throw new Error(`unsupported kind: ${m.kind}`);
     }).then(async () => {
       if (gen !== renderGen) return;          // superseded while its diagrams rendered: the newer one reports

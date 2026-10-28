@@ -83,6 +83,16 @@ body {
 .canvas-notice { display: flex; align-items: center; gap: 8px; }
 .canvas-notice #canvas-notice { flex: 1 1 auto; }
 
+/* An html canvas (canvas-html §2.3): shown with or without its scripts. */
+.canvas-html-bar {
+  padding: 6px 16px;
+  background: rgba(96, 165, 250, 0.1);
+  border-bottom: 1px solid rgba(96, 165, 250, 0.35);
+  font-size: 13px;
+}
+.canvas-html-bar.running { background: rgba(245, 158, 11, 0.12); border-bottom-color: rgba(245, 158, 11, 0.4); color: var(--warn); }
+.canvas-html-bar[hidden] { display: none; }
+
 .canvas-main {
   flex: 1 1 auto;
   display: flex;

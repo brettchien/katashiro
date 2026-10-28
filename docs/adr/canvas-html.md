@@ -252,3 +252,43 @@ any vendored Archify code.
      a new frame → host message with bytes.
 3. **`canvas_read` default for `html`: 16 K characters plus metadata**, `full: true` for all of it
    (§2.1). Rejected: full content like the other kinds.
+
+## 7. As implemented (2026-10-28)
+
+- **The `document.close()` load, pinned:** in Chrome 155, `document.open`/`write`/`close` in
+  `canvas-html-frame.html` does **not** fire the iframe's `load` again. `e2e/cases/html-canvas.mjs`
+  counts the iframe's loads from the moment it is created (exactly one: the `src`), and `canvas.js`
+  hard-codes `HTML_WRITE_FIRES_LOAD = false`: the host never expects that load. The single-use
+  expectation of §2.4 point 2 is implemented (`createLoadGate().arm()` / `disarm()`, unit-tested)
+  and stays unused unless a later Chrome changes this; the e2e then fails and the constant flips.
+- **Host invariant, enforced in one place:** `toFrame()` drops every message while the html frame is
+  mounted; its one `render` goes out through `sendHtmlRender()`, once per nonce. The e2e checks the
+  page receives no message after its render (◐ 顯示變更 toggled meanwhile).
+- **Per-frame allow-lists** (`CanvasCore.acceptFrameMessage` `profile`): `canvas` (canvas-frame.html),
+  `htmlStatic` (canvas-frame.html showing an html canvas: `ready`, `rendered`, `error`, `openLink`
+  only) and `html` (canvas-html-frame.html: the same four, `rendered{version}` without `seq`).
+- **Static view, two findings from real Archify output:**
+  - DOMPurify drops a whole `<style>` whose text contains `<` followed by a letter (its mXSS check).
+    Archify's main sheet (200 KB) has "on `<html>`" in a comment, so the static view lost all its
+    CSS. An `uponSanitizeElement` hook, which runs before that check, rewrites each `<` in a
+    `<style>`'s text as the CSS escape `\3C ` (same meaning in a comment, a string or a `url()`;
+    `<` cannot appear anywhere else in CSS). The node's text is changed in place; nothing is parsed
+    again. After it, Archify's static view matches the run view except for what script draws.
+  - The sanitized document's `<html>` element itself (head with the `<style>`s, body, attributes
+    such as `data-theme`) is moved into the shadow root, so `html[data-theme=…]` and
+    `[data-theme]` rules match; `:root` rules do not (there is no root in a shadow tree).
+  - `SANITIZE_DOM` stays on, so an `id` that names a `document` property (`id="title"`,
+    `id="forms"`) is removed and CSS keyed on it does not apply in the static view.
+- **CSP violations after `close()` are reported:** e.g. a remote `<img>` blocked by `img-src`
+  loads after `close()`, when our listener is back, and comes back as `error{}`. Only violations
+  raised while `write()` runs the inline scripts are lost (§2.4).
+- **Header:** ▶ Run scripts becomes ⏹ Stop scripts while the scripts run (back to the static view).
+  A line under the header says which state the canvas is in and what running allows.
+- **Setting (canvas §6 Q2):** Settings → html 畫布 開/關 (`canvas:htmlEnabled`, on unless `false`).
+  Off: the store refuses `canvas_open` kind html, canvas tabs hide Run scripts, and a running frame
+  goes back to the static view.
+- **Download:** the header's ⬇ saves an html canvas as `.html` (from the host, not the frame).
+- **canvas_inject_css** is refused for an html canvas (it styles itself), like `canvas_highlight`.
+- **Mirror:** `<slug>.html`, conflict files `<slug>.katashiro-<time>.html`; the file record keeps
+  `ext: "html"` so every path check knows the extension.
+

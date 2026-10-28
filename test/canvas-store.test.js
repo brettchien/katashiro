@@ -108,8 +108,44 @@ test("limits: title required and ≤ 120, content a string ≤ 2 MB, kind markdo
   await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "x".repeat(121), content: "x" }), /121 chars/);
   await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", content: 5 }), /string/);
   await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", content: "é".repeat(CanvasStore.CONTENT_MAX_BYTES / 2 + 1) }), /capped/);
-  await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", kind: "html", content: "x" }), /not supported yet/);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", kind: "chart", content: "x" }), /not supported yet/);
   await assert.rejects(() => s.agentWrite({ conversationId: "", title: "t", content: "x" }), /conversation/);
+});
+
+test("html (canvas-html §2.1): 4 MB cap for html only, replaced whole (no patch), never edited by the user", async () => {
+  const { s } = store();
+  assert.equal(CanvasStore.HTML_MAX_BYTES, 4 * 1024 * 1024);
+  assert.equal(CanvasStore.contentCap("html"), CanvasStore.HTML_MAX_BYTES);
+  assert.equal(CanvasStore.contentCap("markdown"), CanvasStore.CONTENT_MAX_BYTES);
+  // 3 MB: over the 2 MB of the other kinds, under html's 4 MB
+  const big = `<!DOCTYPE html><p>${"x".repeat(3 * 1024 * 1024)}</p>`;
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Page", kind: "html", content: big });
+  const r = await s.read({ conversationId: "c", id, asAgent: true });
+  assert.equal(r.kind, "html");
+  assert.equal(r.content, big);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", kind: "markdown", content: big }), /capped at 2097152/);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", kind: "html", content: "é".repeat(CanvasStore.HTML_MAX_BYTES / 2 + 1) }), /an html canvas is capped at 4194304/);
+  // a new revision replaces it; kind cannot change
+  const v2 = await s.agentWrite({ conversationId: "c", id, baseVersion: 1, title: "Page", kind: "html", content: "<p>two</p>" });
+  assert.equal(v2.version, 2);
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Page", kind: "markdown", content: "x" }), /cannot change kind/);
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id, baseVersion: 2, edits: [{ find: "two", replace: "2" }] }), /only markdown, slides and mermaid/);
+  await assert.rejects(() => s.userSave({ id, baseVersion: 2, content: "<p>mine</p>" }), /cannot be edited/);
+  // no normalization step: an html write is stored as written
+  const meta = (await s.list({ conversationId: "c" })).find((m) => m.id === id);
+  assert.ok(meta);
+});
+
+test("html: turned off in Settings (canvas:htmlEnabled false) → canvas_open refuses kind html; other kinds unaffected", async () => {
+  const { s, storage } = store();
+  assert.equal(CanvasStore.htmlEnabled(undefined), true);
+  assert.equal(CanvasStore.htmlEnabled(true), true);
+  assert.equal(CanvasStore.htmlEnabled(false), false);
+  await storage.set({ [CanvasStore.HTML_ENABLED_KEY]: false });
+  await assert.rejects(() => s.agentWrite({ conversationId: "c", title: "t", kind: "html", content: "<p>x</p>" }), /turned off in Katashiro's Settings/);
+  await s.agentWrite({ conversationId: "c", title: "t", content: "# fine" });
+  await storage.set({ [CanvasStore.HTML_ENABLED_KEY]: true });
+  await s.agentWrite({ conversationId: "c", title: "t", kind: "html", content: "<p>x</p>" });
 });
 
 test("ids are validated and confined to their conversation", async () => {

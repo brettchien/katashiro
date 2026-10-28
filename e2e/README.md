@@ -94,6 +94,7 @@ real ones.
 | | 重試 on an earlier turn | two pool-busy turns: the first error bubble's 重試 re-sends the first turn (not the later one) and tags only its message |
 | `reload-tab-group.mjs` | an extension reload | #139: storage.session is cleared, the tab groups are not — the conversation's next tab (a canvas) joins its existing group, taken back by title; still one group |
 | `window-bound-tabs.mjs` | another window focused | #205: `new_tab` opens in the panel's window and joins the one group there; `get_text` reads that window's active tab; `switch_tab` to a tab in another window is refused; `tabs` tags `your window` |
+| `html-canvas.mjs` | an html canvas | canvas-html: the static view in a shadow root (its `<style>`s and SVG, no script / form / iframe / use / foreignObject / remote image / link target; a `<style>` with `<html>` in a comment survives); ▶ Run scripts runs it once in `canvas-html-frame.html` (`#k=` nonce, opaque origin) — **pins one iframe load** (`document.close()` fires none); no message after its render; links through the host's confirm; a CSP violation comes back as error; a new revision goes back to the static view; a self-navigation drops the frame; Settings off hides Run and refuses `canvas_open` |
 
 ## Adding a case
 

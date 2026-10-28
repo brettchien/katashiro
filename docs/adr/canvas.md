@@ -246,11 +246,13 @@ below is built around that.
 - **CSP, in two layers.** `content_security_policy.sandbox` is **one policy for every sandbox
   page**, so it is the loosest any frame needs:
   ```
-  sandbox allow-scripts allow-modals; default-src 'none'; script-src 'self' 'unsafe-inline';
+  sandbox allow-scripts allow-modals allow-downloads; default-src 'none'; script-src 'self' 'unsafe-inline';
   style-src 'self' 'unsafe-inline'; img-src data: blob:; font-src 'self' data:;
   connect-src 'none'; frame-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'
   ```
-  (`'unsafe-inline'` in `script-src` only from phase 2, when `canvas-html-frame.html` exists.)
+  (`'unsafe-inline'` in `script-src` and `allow-downloads` only from phase 2, when `canvas-html-frame.html`
+  exists: [canvas-html](./canvas-html.md) §6 Q2. A sandbox flag must be allowed by both the CSP and the
+  iframe's `sandbox` attribute, so `allow-downloads` reaches only the frame whose attribute has it.)
   Each page then tightens itself; a second policy can only add restrictions:
   - `canvas-frame.html` carries `<meta http-equiv="Content-Security-Policy" content="script-src
     'self'">`, so a DOMPurify bypass in markdown still cannot run script.

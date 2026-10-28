@@ -69,6 +69,8 @@ and install them **where the agent runs** (its machine or container), not where 
 | [`katashiro-ask-user`](skills/katashiro-ask-user/SKILL.md) | Ask you a multiple-choice question on a card, then **end its turn** and wait for your answer as a new message | The agent may sit waiting or poll for the answer instead of ending the turn |
 | [`katashiro-point-at`](skills/katashiro-point-at/SKILL.md) | Point at what it is explaining: glow an element or a canvas block, or emphasise several with temporary CSS | Works, but the agent rarely shows you where it means |
 | [`katashiro-guided-runbook`](skills/katashiro-guided-runbook/SKILL.md) | Walk you through an operation as a runbook canvas: you run every command, it marks the next step, checks your pasted output against Expected / Stop if, and keeps the execution log (resumes from the log after a reload) | The agent rebuilds the structure each time, may advance on output it never checked, and loses its place after a reload |
+| [`katashiro-canvas-file`](skills/katashiro-canvas-file/SKILL.md) | Put a file into a canvas — an html page, a long report, a deck, an image — through `scripts/canvas-file.sh`, which sends it straight to the OpenAB facade | The agent has to send the whole file as tool arguments — slow, costly, and an html page (often ~1 MB) fails |
+| [`katashiro-archify`](skills/katashiro-archify/SKILL.md) | Draw an interactive diagram with [Archify](https://github.com/tt-a1i/archify) and show it as an html canvas (needs Archify's own skill and `katashiro-canvas-file`) | No Archify diagrams in canvases |
 
 For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them from a checkout of this
 repo into the agent's skills directory:

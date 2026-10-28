@@ -40,6 +40,9 @@
   const compareBtn = document.getElementById("canvas-compare");
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
+  const runBtn = document.getElementById("canvas-run");
+  const htmlBar = document.getElementById("canvas-html-bar");
+  const htmlHint = document.getElementById("canvas-html-hint");
   // The compare tab's own way out (Brett, 2026-10-11): closing it ends the compare (§3.10).
   if (compareView) {
     endCompareBtn.hidden = false;
@@ -89,6 +92,20 @@
   let editUndo = { canUndo: false, canRedo: false };
   const mac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || "");
   const gate = CanvasCore.createLoadGate();
+  // html canvases (canvas-html §2.3–§2.4). frameProfile: which frame is mounted, and so which
+  // messages it may send (CanvasCore.acceptFrameMessage): "canvas" (canvas-frame.html), "htmlStatic"
+  // (canvas-frame.html showing an html canvas without its scripts) or "html" (canvas-html-frame.html,
+  // after ▶ Run scripts). htmlRun: the revision whose scripts run, while the html frame is mounted.
+  let frameProfile = "canvas";
+  let htmlRun = null;                 // { version, content } | null: the revision it was started on
+  let htmlRenderSent = false;         // the one render{} of this html frame's nonce went out
+  let htmlArm = null;                 // { token, timer }: the single-use expectation of the write's load
+  let htmlOn = true;                  // Settings → html 畫布 (CanvasStore.HTML_ENABLED_KEY)
+  // Pinned by e2e/cases/html-canvas.mjs (real Chrome 155): whether document.open/write/close in the
+  // html frame fires the iframe's `load` again. The host expects that load always or never — never
+  // "if it fires" at runtime (canvas-html §2.4).
+  const HTML_WRITE_FIRES_LOAD = false;
+  const HTML_ARM_MS = 5000;
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
   // tag: the render a render-error notice belongs to ({seq, version}); any other notice drops it.
@@ -165,14 +182,36 @@
     // To chat input (§3.7, Brett 2026-10-13): the same rule; disabled while the panel is asked.
     sendSelBtn.hidden = askBtn.hidden;
     sendSelBtn.disabled = toInputBusy;
-    downloadBtn.hidden = !textKind;
-    const ext = current && current.meta.kind === "mermaid" ? "mmd" : "md";
+    const isHtml = !!current && current.meta.kind === "html";
+    downloadBtn.hidden = !(textKind || isHtml);
+    const ext = isHtml ? "html" : current && current.meta.kind === "mermaid" ? "mmd" : "md";
     downloadBtn.textContent = `⬇ .${ext}`;
     downloadBtn.title = `下載成 .${ext}`;
     printBtn.hidden = !(textKind && !!frame && mode === "view");
     printBtn.disabled = (mode === "edit" && dirty) || !!printing;
     printBtn.title = printing ? "正在準備列印…" : printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
     editBtn.disabled = !!printing;
+    updateHtmlBar();
+  }
+
+  // ▶ Run scripts / ⏹ Stop scripts and the line under the header (canvas-html §2.3). Host text only.
+  function updateHtmlBar() {
+    const isHtml = !compareView && !!current && current.meta.kind === "html";
+    htmlBar.hidden = !isHtml;
+    runBtn.hidden = !isHtml || (!htmlOn && !htmlRun) || deleted;
+    if (!isHtml) return;
+    htmlBar.classList.toggle("running", !!htmlRun);
+    if (htmlRun) {
+      runBtn.textContent = "⏹ Stop scripts";
+      runBtn.title = "停止這個畫布的 script，回到不執行 script 的顯示";
+      htmlHint.textContent = `▶ 正在執行 v${htmlRun.version} 的 script：它可以把這個畫布的內容、和你在裡面輸入的東西送出瀏覽器。新的版本會回到不執行 script 的顯示，要再按一次 ▶ Run scripts。`;
+    } else if (!htmlOn) {
+      htmlHint.textContent = "html 畫布的 script 已在側邊欄的設定裡關閉（設定 → html 畫布），這裡只顯示不執行 script 的版本。";
+    } else {
+      runBtn.textContent = "▶ Run scripts";
+      runBtn.title = "執行這個版本的 script（只有這個版本；新的版本要再按一次）";
+      htmlHint.textContent = "目前不執行它的 script（Shown without its scripts）。按 ▶ Run scripts 才能互動；執行後，這個畫布的 script 可以把它的內容、和你在裡面輸入的東西送出瀏覽器。";
+    }
   }
 
   // --- Pushes into the prompt (§3.7) -----------------------------------------------------------
@@ -613,7 +652,8 @@
             title: String(c.meta.title).slice(0, TITLE_MAX), id: canvasId, version, kind: c.meta.kind, diagram,
             nowVersion: current ? current.meta.version : undefined,
           }),
-          data: CanvasCore.clipError(msg),
+          // An html canvas: host-composed text only, never the frame's message (canvas §3.7).
+          data: c.meta.kind === "html" ? null : CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
         if (r.ok) notice(`📤 已把錯誤送給 ${r.agent || "agent"}`); else if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`);
@@ -625,10 +665,12 @@
   downloadBtn.addEventListener("click", () => {
     if (!current) return;
     const mermaid = current.meta.kind === "mermaid";
-    const url = URL.createObjectURL(new Blob([current.content], { type: mermaid ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8" }));
+    const html = current.meta.kind === "html";
+    const type = html ? "text/html;charset=utf-8" : mermaid ? "text/plain;charset=utf-8" : "text/markdown;charset=utf-8";
+    const url = URL.createObjectURL(new Blob([current.content], { type }));
     const a = document.createElement("a");
     a.href = url;
-    a.download = CanvasCore.safeFileName(current.meta.title, mermaid ? "mmd" : "md");
+    a.download = CanvasCore.safeFileName(current.meta.title, html ? "html" : mermaid ? "mmd" : "md");
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   });
@@ -673,6 +715,8 @@
   function mountFrame(query) {
     if (!query) printing = null;              // any normal mount ends a print (§3.8)
     if (frame) frame.remove();
+    endHtmlRun();
+    frameProfile = current && current.meta.kind === "html" ? "htmlStatic" : "canvas";
     frameReady = false;
     renderFailed = "";                        // #96: a goto / highlight before the new frame's ready must not get the old failure
     disarm();                                 // its armKeys went to the old frame
@@ -692,8 +736,64 @@
     mainEl.appendChild(frame);
   }
 
+  // ▶ Run scripts (canvas-html §2.4): the html canvas's revision in canvas-html-frame.html — a
+  // host-caused load with a new nonce. allow-scripts allow-downloads (§6 Q2): no same-origin, popups,
+  // forms, modals or top navigation, and no clipboard.
+  function mountHtmlFrame() {
+    if (!current || current.meta.kind !== "html" || compareView) return;
+    printing = null;
+    if (frame) frame.remove();
+    endHtmlRun();
+    frameReady = false;
+    renderFailed = "";
+    rendered = false;
+    disarm();
+    askDispatch({ type: "reset" });
+    nonce = CanvasCore.newNonce();
+    frameProfile = "html";
+    htmlRun = { version: current.meta.version, content: current.content };
+    frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "allow-scripts allow-downloads");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.title = "canvas content (scripts running)";
+    frame.addEventListener("load", () => {
+      if (!gate.onLoad()) dropFrame("畫布內容嘗試離開這個頁面，已停止顯示。重新整理這個分頁即可重新載入。");
+    });
+    gate.reset();
+    gate.expect();
+    // #k=: Archify (the first user) reads the hash as URLSearchParams and ignores keys it does not know.
+    frame.src = `canvas-html-frame.html#k=${nonce}`;
+    mainEl.appendChild(frame);
+    notice("");
+    updateButtons();
+  }
+  function endHtmlRun() {
+    htmlRun = null;
+    htmlRenderSent = false;
+    if (htmlArm) { clearTimeout(htmlArm.timer); gate.disarm(htmlArm.token); htmlArm = null; }
+  }
+  // The one message this html frame ever gets (canvas-html §2.4 host invariant): render, answering
+  // the ready of its nonce. Nothing else is posted to it — toFrame() drops everything for it.
+  function sendHtmlRender() {
+    if (!frame || !frameReady || htmlRenderSent || !htmlRun) return;
+    htmlRenderSent = true;
+    if (HTML_WRITE_FIRES_LOAD) {
+      const token = gate.arm();
+      htmlArm = { token, timer: setTimeout(() => { gate.disarm(token); if (htmlArm && htmlArm.token === token) htmlArm = null; }, HTML_ARM_MS) };
+    }
+    frame.contentWindow.postMessage({ type: "render", nonce, kind: "html", content: htmlRun.content, version: htmlRun.version }, "*");
+  }
+  runBtn.addEventListener("click", () => {
+    if (!current || current.meta.kind !== "html" || compareView) return;
+    if (htmlRun) { mountFrame(); updateButtons(); return; }
+    if (!htmlOn) return;
+    mountHtmlFrame();
+  });
+
   function dropFrame(why) {
     printing = null;
+    endHtmlRun();
+    frameProfile = "canvas";
     if (frame) frame.remove();
     frame = null;
     frameReady = false;
@@ -719,6 +819,8 @@
 
   function toFrame(msg) {
     // '*' is the only target for an opaque-origin frame; the load gate is what makes it safe.
+    // Never to the html frame: it gets its one render from sendHtmlRender and nothing else (§2.4).
+    if (frameProfile === "html") return;
     if (frame && frameReady) frame.contentWindow.postMessage({ ...msg, nonce }, "*");
   }
 
@@ -727,7 +829,7 @@
   let awaitingNormalize = 0;
   let lastRenderedVersion = 0;        // §3.10: an agent version newer than this glows what changed
   async function sendRender() {
-    if (!frame || !frameReady || !current) return;
+    if (!frame || !frameReady || !current || frameProfile === "html") return;
     const c = current;
     let content;
     try { content = await renderPayload(c); } catch (e) { notice(CanvasCore.clipError(e.message)); return; }
@@ -745,7 +847,7 @@
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
     // Glow on every agent write (§3.10): the frame compares with what it showed before. With 顯示變更
     // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
-    if (c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) {
+    if (CanvasCore.textKind(c.meta.kind) && c.meta.author === "agent" && lastRenderedVersion && c.meta.version > lastRenderedVersion && !(showChanges && !comparing)) {
       msg.glowPrev = true;
       // A canvas_patch (#107): the frame glows exactly the changed text, falling back to the block diff.
       const ranges = CanvasCore.patchGlowRanges(c.meta);
@@ -833,6 +935,19 @@
       setShowChanges(!showChanges);
       chrome.storage.local.set({ [CanvasCore.SHOW_CHANGES_KEY]: showChanges }).catch(() => {});   // other canvas tabs follow
     });
+  }
+
+  // Settings → html 畫布 (canvas §6 Q2): off → html canvases show without their scripts only; a
+  // running one goes back to that view.
+  if (!compareView) {
+    const K = CanvasStore.HTML_ENABLED_KEY;
+    const apply = (v) => {
+      htmlOn = CanvasStore.htmlEnabled(v);
+      if (!htmlOn && htmlRun) mountFrame();
+      updateHtmlBar();
+    };
+    chrome.storage.local.get(K).then((got) => apply(got[K]), () => {});
+    chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) apply(changes[K].newValue); });
   }
 
   if (!compareView) {
@@ -1112,8 +1227,9 @@
   window.addEventListener("beforeunload", (e) => { if (mode === "edit" && dirty) { e.preventDefault(); e.returnValue = ""; } });
 
   window.addEventListener("message", (event) => {
-    const m = CanvasCore.acceptFrameMessage(event, { frameWindow: frame && frame.contentWindow, nonce, readOnly: compareView });
+    const m = CanvasCore.acceptFrameMessage(event, { frameWindow: frame && frame.contentWindow, nonce, readOnly: compareView, profile: frameProfile });
     if (!m) return;
+    if (frameProfile === "html") { onHtmlFrameMessage(m); return; }
     switch (m.type) {
       case "ready":
         frameReady = true;
@@ -1205,15 +1321,40 @@
         navigator.clipboard.writeText(m.text).then(() => reply(true), () => reply(false));
         break;
       }
-      case "openLink": {
-        const url = CanvasCore.safeLinkUrl(m.url);
-        if (!url) { notice("已擋下一個非 http(s) 的連結。"); break; }
-        // The full URL is shown before anything opens: canvas content is agent-authored.
-        if (window.confirm(`在新分頁開啟這個連結？\n\n${url}`)) chrome.tabs.create({ url, active: true });
+      case "openLink":
+        openLinkConfirm(m.url);
         break;
-      }
     }
   });
+
+  // canvas-html-frame.html (canvas-html §2.4): ready → its one render; rendered{version} ends the
+  // write's load expectation; error{} is shown as text, and 送給 agent 修 sends no frame text (canvas
+  // §3.7); openLink as everywhere. Agent script runs there: nothing it sends is stored or forwarded.
+  function onHtmlFrameMessage(m) {
+    switch (m.type) {
+      case "ready":
+        frameReady = true;
+        sendHtmlRender();
+        break;
+      case "rendered":
+        if (!htmlRun || m.version !== htmlRun.version) break;
+        if (htmlArm) { clearTimeout(htmlArm.timer); gate.disarm(htmlArm.token); htmlArm = null; }
+        rendered = true;
+        break;
+      case "error":
+        offerSendError(m.msg, false, { seq: 0, version: htmlRun ? htmlRun.version : undefined });
+        break;
+      case "openLink":
+        openLinkConfirm(m.url);
+        break;
+    }
+  }
+  function openLinkConfirm(raw) {
+    const url = CanvasCore.safeLinkUrl(raw);
+    if (!url) { notice("已擋下一個非 http(s) 的連結。"); return; }
+    // The full URL is shown before anything opens: canvas content is agent-authored.
+    if (window.confirm(`在新分頁開啟這個連結？\n\n${url}`)) chrome.tabs.create({ url, active: true });
+  }
 
   // Live updates: the panel writes a new version → re-read and re-render in place.
   // canvas_goto (from the side panel, same extension only): show slide N of THIS canvas. Answered
@@ -1327,6 +1468,7 @@
     }
     if (typeof msg.css !== "string" || !msg.css.trim() || msg.css.length > CSS_SHEET_MAX) { sendResponse({ ok: false, error: "css must be 1–20000 chars" }); return; }
     if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return; }
+    if (current && current.meta.kind === "html") { sendResponse({ ok: false, error: "an html canvas styles itself: rewrite it with canvas_open instead" }); return; }
     if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return; }
     if (agentSheets.length >= CSS_SHEETS_MAX) { sendResponse({ ok: false, error: `${CSS_SHEETS_MAX} stylesheets are already applied; clear them first` }); return; }
     agentSheets = [...agentSheets, msg.css];
@@ -1469,6 +1611,16 @@
     const prev = current;
     current = c;
     setHeader(c.meta);
+    // A new revision of an html canvas whose scripts run: back to the view without them; running
+    // the new one takes another click (canvas §6 Q8). The running frame is never re-rendered.
+    if (htmlRun) {
+      if (c.meta.version !== htmlRun.version) {
+        mountFrame();
+        updateButtons();
+        notice(`這個畫布更新成 v${c.meta.version}：已回到不執行 script 的顯示，要互動請再按 ▶ Run scripts。`);
+      }
+      return;
+    }
     if (mode === "edit") {
       if (prev && c.meta.version === prev.meta.version) return;      // e.g. normalization of the agent copy
       if (c.meta.version === ownSaveVersion) return;                  // our own save
