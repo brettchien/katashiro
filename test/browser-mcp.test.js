@@ -3181,6 +3181,37 @@ function withCanvas(d, opts = {}) {
   return { writes, data };
 }
 
+test("canvas-html: canvas_open takes kind html; canvas_read returns bytes + sha256 and the first 16 K characters unless full", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  withCanvas(d);
+  const schema = BrowserMcp.TOOLS["katashiro.canvas_open"].inputSchema.properties.kind.enum;
+  assert.ok(schema.includes("html"));
+  const page = `<!DOCTYPE html><html><body><script>var x = 1;</script>${"é".repeat(20000)}</body></html>`;
+  const r = await callTool(d, "katashiro.canvas_open", { title: "Page", kind: "html", content: page });
+  assert.equal(r.isError, undefined, r.content[0].text);
+  const id = /id (cv_[0-9a-f]+)/.exec(r.content[0].text)[1];
+  assert.doesNotMatch(r.content[0].text, /normaliz/);              // no editor normalization for html
+  const read = (await callTool(d, "katashiro.canvas_read", { id })).content[0].text;
+  const head = JSON.parse(read.split("\n")[0]);
+  assert.equal(head.kind, "html");
+  const bytes = Buffer.from(page, "utf8");
+  assert.equal(head.bytes, bytes.length);
+  assert.equal(head.sha256, require("node:crypto").createHash("sha256").update(bytes).digest("hex"));
+  const body = read.slice(read.indexOf("\n\n") + 2);
+  assert.ok(body.startsWith(page.slice(0, 16 * 1024)));
+  assert.match(body, new RegExp(`\\[cut: ${page.length - 16 * 1024} more characters — canvas_read with full: true`));
+  const full = (await callTool(d, "katashiro.canvas_read", { id, full: true })).content[0].text;
+  assert.equal(full.slice(full.indexOf("\n\n") + 2), page);
+  // a short page comes whole, with no cut line
+  const r2 = await callTool(d, "katashiro.canvas_open", { title: "Small", kind: "html", content: "<p>hi</p>" });
+  const id2 = /id (cv_[0-9a-f]+)/.exec(r2.content[0].text)[1];
+  const small = (await callTool(d, "katashiro.canvas_read", { id: id2 })).content[0].text;
+  assert.ok(small.endsWith("\n\n<p>hi</p>"));
+  // canvas_patch refuses it
+  const pr = await callTool(d, "katashiro.canvas_patch", { id: id2, baseVersion: 1, edits: [{ find: "hi", replace: "yo" }] });
+  assert.equal(pr.isError, true);
+});
+
 test("katashiro.canvas_open creates, then updates with baseVersion; not act-gated, no tab needed", async () => {
   const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
   const { writes } = withCanvas(d, { note: "opened in a background tab" });

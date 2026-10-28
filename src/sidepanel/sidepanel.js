@@ -1587,6 +1587,23 @@ if (canvasHistoryMaxInput) {
   });
 }
 
+// Settings → html 畫布 (canvas §6 Q2): on unless set to false. The store refuses canvas_open kind
+// html while it is off; canvas tabs show html canvases without their scripts only.
+const canvasHtmlOnBtn = document.getElementById("canvas-html-on");
+const canvasHtmlOffBtn = document.getElementById("canvas-html-off");
+if (canvasHtmlOnBtn && canvasHtmlOffBtn) {
+  const K = CanvasStore.HTML_ENABLED_KEY;
+  const show = (raw) => {
+    const on = CanvasStore.htmlEnabled(raw);
+    canvasHtmlOnBtn.classList.toggle("on", on);
+    canvasHtmlOffBtn.classList.toggle("on", !on);
+  };
+  chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
+  canvasHtmlOnBtn.addEventListener("click", () => { show(true); chrome.storage.local.set({ [K]: true }).catch(() => {}); });
+  canvasHtmlOffBtn.addEventListener("click", () => { show(false); chrome.storage.local.set({ [K]: false }).catch(() => {}); });
+  chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
+}
+
 const canvasFolderPickBtn = document.getElementById("canvas-folder-pick");
 const canvasFolderReconnectBtn = document.getElementById("canvas-folder-reconnect");
 const canvasFolderStopBtn = document.getElementById("canvas-folder-stop");

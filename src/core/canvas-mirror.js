@@ -145,14 +145,20 @@
     return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}T${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}Z`;
   }
 
-  /** `<slug>.katashiro-<YYYYMMDDTHHMMSSZ>[-N].md` — the file written beside an outside-edited one. */
-  function conflictFileName(slug, ms, n = 1) {
-    return `${slug}.katashiro-${stamp(ms)}${n > 1 ? `-${n}` : ""}.md`;
+  // The file's extension: .md for every kind but html, which is written as the page itself
+  // (canvas-html §2.1). Kept in the file record (`ext`) and every path ctx: a canvas never changes kind.
+  const fileExt = (kind) => (kind === "html" ? "html" : "md");
+  const extOf = (ctx) => (ctx && ctx.ext === "html" ? "html" : "md");
+
+  /** `<slug>.katashiro-<YYYYMMDDTHHMMSSZ>[-N].md` (.html for html) — the file written beside an outside-edited one. */
+  function conflictFileName(slug, ms, n = 1, ext = "md") {
+    return `${slug}.katashiro-${stamp(ms)}${n > 1 ? `-${n}` : ""}.${ext === "html" ? "html" : "md"}`;
   }
 
   const CONFLICT_TAIL_RE = /^\d{8}T\d{6}Z(-\d{1,3})?\.md$/;
+  const CONFLICT_TAIL_HTML_RE = /^\d{8}T\d{6}Z(-\d{1,3})?\.html$/;
 
-  function mdPath({ convSlug, slug }) { return [convSlug, `${slug}.md`]; }
+  function mdPath(ctx) { return [ctx.convSlug, `${ctx.slug}.${extOf(ctx)}`]; }
   function assetPath({ convSlug, slug }, name) { return [convSlug, `${slug}.assets`, name]; }
   function jsonPath({ id }) { return [".katashiro", `${id}.json`]; }
 
@@ -169,9 +175,9 @@
     if (segs.length === 2 && segs[0] === ".katashiro") return segs[1] === `${ctx.id}.json`;
     if (segs[0] !== ctx.convSlug) return false;
     if (segs.length === 2) {
-      if (segs[1] === `${ctx.slug}.md`) return true;
+      if (segs[1] === `${ctx.slug}.${extOf(ctx)}`) return true;
       const head = `${ctx.slug}.katashiro-`;
-      return segs[1].startsWith(head) && CONFLICT_TAIL_RE.test(segs[1].slice(head.length));
+      return segs[1].startsWith(head) && (extOf(ctx) === "html" ? CONFLICT_TAIL_HTML_RE : CONFLICT_TAIL_RE).test(segs[1].slice(head.length));
     }
     if (segs.length === 3) {
       return segs[1] === `${ctx.slug}.assets` && new RegExp(`^[0-9a-f]{64}\\.(${ASSET_EXTS.join("|")})$`).test(segs[2]);
@@ -584,14 +590,14 @@
         let slug = prev && prev.slugBase === slugBase && isValidSlug(prev.slug) && !taken.has(prev.slug) ? prev.slug : uniqueSlug(slugBase, taken);
         let same = prev && prev.slug === slug && prev.convSlug === convSlug;
         for (let n = 0; !same && n < SLUG_TRIES; n++) {
-          const ctx = { id, convSlug, slug };
+          const ctx = { id, convSlug, slug, ext: fileExt(cur.kind) };
           if ((await hashAt(dir, mdPath(ctx), ctx)) === null) break;
           taken.add(slug);
           slug = uniqueSlug(slugBase, taken);
           same = prev && prev.slug === slug && prev.convSlug === convSlug;
         }
         const file = {
-          folder: folderId, convSlug, convBase, slug, slugBase,
+          folder: folderId, convSlug, convBase, slug, slugBase, ...(cur.kind === "html" ? { ext: "html" } : {}),
           hash: same ? prev.hash : null,               // a new path: Katashiro never wrote there (a move sets it)
           syncedHash: null, jsonHash: prev ? prev.jsonHash || null : null,
           conflictName: null, conflictHash: null, state: prev ? prev.state : undefined,
@@ -626,8 +632,8 @@
     async function finishMove(id, dir, file) {
       const mv = file.move;
       const next = { ...file };
-      const from = { id, convSlug: mv.convSlug, slug: mv.slug };
-      const to = { id, convSlug: file.convSlug, slug: file.slug };
+      const from = { id, convSlug: mv.convSlug, slug: mv.slug, ext: file.ext };
+      const to = { id, convSlug: file.convSlug, slug: file.slug, ext: file.ext };
       if (!isValidSlug(from.convSlug) || !isValidSlug(from.slug)) return { file: next, from: null, oldMd: null };
       let oldMd = null;
       // The .md, if Katashiro ever wrote it: whatever is in it now (an outside edit moves with it).
@@ -691,7 +697,7 @@
       if (from.convSlug !== to.convSlug && isAllowedDir([from.convSlug], from)) await removeDirIfEmpty(dir, [from.convSlug]);
     }
 
-    // What goes to disk for this canvas: the .md text, and for an image canvas its asset.
+    // What goes to disk for this canvas: the .md text (an html canvas: the page as stored), and for an image canvas its asset.
     async function renderFile(meta, content, slug) {
       if (meta.kind === "mermaid") return { text: mermaidMarkdown(content) };
       if (meta.kind !== "image") return { text: String(content) };
@@ -758,7 +764,7 @@
           // until the user asks, or the file is back at its old path (then the usual rules apply:
           // ours → write, anything else → conflict file). "missing" is #95's state for the same thing.
           if (prev && (prev.state === "deleted" || prev.state === "missing") && !rewrite) {
-            const oldCtx = { id, convSlug: prev.convSlug, slug: prev.slug };
+            const oldCtx = { id, convSlug: prev.convSlug, slug: prev.slug, ext: prev.ext };
             const back = isValidSlug(prev.slug) && isValidSlug(prev.convSlug) &&
               (await hashAt(root.dir, mdPath(oldCtx), oldCtx)) !== null;
             if (!back) {
@@ -782,7 +788,7 @@
             file = await assignSlugs(id, root.dir, root.folderId, file, convBase);
             if (file.move) await runMove();
           }
-          const ctx = { id, convSlug: file.convSlug, slug: file.slug };
+          const ctx = { id, convSlug: file.convSlug, slug: file.slug, ext: file.ext };
           const out = await renderFile(meta, content, file.slug);
           const textBytes = utf8(out.text);
           const newHash = await sha256(textBytes);
@@ -840,7 +846,7 @@
             if (file.conflictName && isAllowedPath([file.convSlug, file.conflictName], ctx) &&
               (await hashAt(root.dir, [file.convSlug, file.conflictName], ctx)) === file.conflictHash) name = file.conflictName;
             for (let n = 1; !name && n <= 50; n++) {
-              const cand = conflictFileName(file.slug, now(), n);
+              const cand = conflictFileName(file.slug, now(), n, file.ext);
               if ((await hashAt(root.dir, [file.convSlug, cand], ctx)) === null) name = cand;
             }
             if (!name) throw new Error("no free name for the conflict file");

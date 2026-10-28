@@ -377,6 +377,36 @@ test("normalization hold: no canvas tab → written at once; slides and 重新�
   assert.equal(await readText(on.dir, "c/m.md"), "* b\n");
 });
 
+test("canvas-html §2.1: an html canvas is written as <slug>.html, the page as stored; its conflict files are .html too", async () => {
+  const env = setup();
+  const page = "<!DOCTYPE html><html><body><script>1</script><p>v1</p></body></html>";
+  const { id } = await env.store.agentWrite({ conversationId: "c_abc", title: "Arch Map", kind: "html", content: page });
+  assert.equal((await env.mirror.sync(id)).action, "write");
+  assert.equal(await readText(env.dir, "c_abc/arch-map.html"), page);
+  assert.equal((await env.meta(id)).file.ext, "html");
+  assert.ok(!listFiles(env.dir).some((f) => f.endsWith("arch-map.md")));
+  // edited outside → never overwritten; the new revision goes to a .katashiro-<time>.html
+  await writeText(env.dir, "c_abc/arch-map.html", "mine");
+  await env.store.agentWrite({ conversationId: "c_abc", id, baseVersion: 1, title: "Arch Map", kind: "html", content: "<p>v2</p>" });
+  const r = await env.mirror.sync(id);
+  assert.equal(r.action, "conflict");
+  assert.equal(r.conflictName, "arch-map.katashiro-20261010T120000Z.html");
+  assert.equal(await readText(env.dir, `c_abc/${r.conflictName}`), "<p>v2</p>");
+  // a markdown canvas with the same title in the same conversation takes the next slug, as before
+  const md = await env.store.agentWrite({ conversationId: "c_abc", title: "Arch Map", content: "# notes" });
+  await env.mirror.sync(md.id);
+  assert.equal(await readText(env.dir, "c_abc/arch-map-2.md"), "# notes");
+});
+
+test("isAllowedPath / conflictFileName for an html canvas (ctx.ext): its .html and .html conflict files, never its .md", () => {
+  const ctx = { id: "cv_000000000001", convSlug: "c_abc", slug: "page", ext: "html" };
+  for (const p of [["c_abc", "page.html"], ["c_abc", "page.katashiro-20261010T030405Z.html"], [".katashiro", "cv_000000000001.json"]]) assert.ok(M.isAllowedPath(p, ctx), p.join("/"));
+  for (const p of [["c_abc", "page.md"], ["c_abc", "page.katashiro-20261010T030405Z.md"], ["c_abc", "page.htm"]]) assert.ok(!M.isAllowedPath(p, ctx), p.join("/"));
+  assert.ok(!M.isAllowedPath(["c_abc", "page.html"], { ...ctx, ext: undefined }), "no ext = .md");
+  assert.equal(M.conflictFileName("page", Date.UTC(2026, 9, 10, 3, 4, 5), 2, "html"), "page.katashiro-20261010T030405Z-2.html");
+  assert.deepEqual(M.mdPath(ctx), ["c_abc", "page.html"]);
+});
+
 test("changed outside Katashiro: never overwritten; the latest goes to one conflict file per episode", async () => {
   const env = setup();
   const { id } = await env.store.agentWrite({ conversationId: "c_abc", title: "Plan", content: "v1\n" });

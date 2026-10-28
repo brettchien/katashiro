@@ -41,10 +41,14 @@
     <button id="canvas-send-sel" class="canvas-btn" data-icon="📨" type="button" title="把選取的文字放進聊天輸入框（不會送出）" hidden>📨 To chat input</button>
     <button id="canvas-download" class="canvas-btn" type="button" title="下載成 .md" hidden>⬇ .md</button>
     <button id="canvas-print" class="canvas-btn" type="button" title="列印／存成 PDF" hidden>🖨 PDF</button>
+    <!-- canvas-html §2.3–§2.4 (canvas §6 Q8): an html canvas runs its scripts only after this click, per revision. -->
+    <button id="canvas-run" class="canvas-btn primary" type="button" hidden>▶ Run scripts</button>
     <button id="canvas-delete" class="canvas-btn" type="button" title="刪除這個畫布" hidden>🗑 刪除</button>
     <span class="canvas-banner" title="Agent-generated content — Katashiro never asks for passwords or keys here.">Agent-generated content — Katashiro never asks for passwords or keys here.</span>
   </header>
   <div id="canvas-notice-bar" class="canvas-notice" hidden><span id="canvas-notice"></span><button id="canvas-notice-action" class="canvas-btn" type="button" hidden></button></div>
+  <!-- An html canvas: whether its scripts run, and what running them allows (canvas-html §2.3). Host text only. -->
+  <div id="canvas-html-bar" class="canvas-html-bar" hidden><span id="canvas-html-hint"></span></div>
   <main id="canvas-main" class="canvas-main"></main>
   <!-- Conflict view (§3.5): the user's unsaved text beside the latest. Plain <textarea> values, never HTML. -->
   <div id="canvas-conflict" class="canvas-conflict" hidden>

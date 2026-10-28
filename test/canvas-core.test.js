@@ -54,6 +54,68 @@ test("load gate: reset drops loads owed to a removed frame", () => {
   assert.equal(g.onLoad(), false);          // no leftover allowance from frame 1
 });
 
+test("load gate (canvas-html §2.4): an armed expectation covers one load at most, and disarm drops it unused", () => {
+  const g = C.createLoadGate();
+  g.expect();
+  assert.equal(g.onLoad(), true);           // the html frame's src
+  const t = g.arm();                        // render posted: the write's load may come
+  assert.equal(g.onLoad(), true);           // it came: used up
+  assert.equal(g.disarm(t), false);         // nothing left to drop
+  assert.equal(g.onLoad(), false);          // a later load is a navigation
+  const t2 = g.arm();
+  assert.equal(g.disarm(t2), true);         // rendered{} (or the timeout) first: dropped unused
+  assert.equal(g.onLoad(), false);          // never carries over to a later load
+  const t3 = g.arm();
+  g.reset();                                // a new frame
+  assert.equal(g.disarm(t3), false);
+  assert.equal(g.onLoad(), false);
+});
+
+test("frame profiles: htmlStatic takes only ready / rendered / error / openLink; html (agent script) the same four, never save or selection", () => {
+  const msg = (profile, data) => C.acceptFrameMessage({ source: frameWindow, data: { nonce: "n1", ...data } }, { frameWindow, nonce: "n1", profile });
+  for (const profile of ["htmlStatic", "html"]) {
+    assert.ok(msg(profile, { type: "ready" }), profile);
+    assert.ok(msg(profile, { type: "error", msg: "x" }), profile);
+    assert.ok(msg(profile, { type: "openLink", url: "https://a/" }), profile);
+    for (const type of ["save", "selection", "selectionRect", "dirty", "escape", "undoState", "copy", "highlighted", "armedKey", "slide", "printed", "diagramError", "editFailed"]) {
+      assert.equal(msg(profile, { type, content: "x", baseVersion: 1, text: "x", seq: 1, dirty: true, reqId: 1, ok: true, msg: "x", index: 1, total: 1 }), null, `${profile} ${type}`);
+    }
+  }
+  // rendered: the static view is canvas-frame.html (seq), the html frame sends the version only
+  assert.ok(msg("htmlStatic", { type: "rendered", version: 2, seq: 3 }));
+  assert.equal(msg("htmlStatic", { type: "rendered", version: 2 }), null);
+  assert.ok(msg("html", { type: "rendered", version: 2 }));
+  assert.equal(msg("html", { type: "rendered", version: "2" }), null);
+  assert.equal(msg("html", { type: "error" }), null);
+  assert.equal(msg("html", { type: "openLink", url: 5 }), null);
+  // an unknown profile accepts nothing; the default is canvas-frame.html's full list
+  assert.equal(msg("nope", { type: "ready" }), null);
+  assert.ok(msg(undefined, { type: "save", content: "x", baseVersion: 1 }));
+  // the nonce still has to match
+  assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { type: "ready", nonce: "other" } }, { frameWindow, nonce: "n1", profile: "html" }), null);
+});
+
+test("htmlReadView (canvas-html §6 Q3): the first 16 K characters unless full", () => {
+  assert.equal(C.HTML_READ_HEAD, 16 * 1024);
+  assert.deepEqual(C.htmlReadView("<p>x</p>"), { text: "<p>x</p>", cut: 0 });
+  const long = "a".repeat(C.HTML_READ_HEAD + 10);
+  assert.deepEqual(C.htmlReadView(long), { text: "a".repeat(C.HTML_READ_HEAD), cut: 10 });
+  assert.deepEqual(C.htmlReadView(long, true), { text: long, cut: 0 });
+});
+
+test("HTML_STATIC_DP (canvas-html §2.3): whole document as DOM, never the mermaid profile's foreignObject; use/animate/set and script stay out", () => {
+  const dp = C.HTML_STATIC_DP;
+  assert.ok(Object.isFrozen(dp));
+  assert.equal(dp.WHOLE_DOCUMENT, true);
+  assert.equal(dp.RETURN_DOM, true);
+  assert.notEqual(dp.RETURN_DOM_FRAGMENT, true);
+  assert.equal(dp.ADD_TAGS, undefined);
+  assert.equal(dp.HTML_INTEGRATION_POINTS, undefined);
+  for (const t of ["script", "form", "iframe", "object", "embed", "meta", "base", "link", "foreignObject", "use", "animate", "set"]) assert.ok(dp.FORBID_TAGS.includes(t), t);
+  assert.ok(dp.FORBID_ATTR.includes("target"));
+  assert.ok(C.IMAGE_SRC_OK.test("data:image/png;base64,AA") && C.IMAGE_SRC_OK.test("blob:x") && !C.IMAGE_SRC_OK.test("https://a/b.png"));
+});
+
 test("nonce: 32 hex chars, different each time", () => {
   const a = C.newNonce(require("node:crypto").webcrypto);
   const b = C.newNonce(require("node:crypto").webcrypto);

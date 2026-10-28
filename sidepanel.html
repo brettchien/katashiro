@@ -148,6 +148,16 @@
             <input type="number" id="canvas-history-max" class="agent-input" min="1" max="50" step="1" value="10">
           </div>
 
+          <!-- html canvases (ADR canvas §6 Q2, canvas-html): on by default; canvas:htmlEnabled in chrome.storage.local -->
+          <div class="input-group">
+            <label>html 畫布（agent 寫的互動網頁）</label>
+            <div class="mode-toggle">
+              <button id="canvas-html-on" class="mode-btn on" type="button">開</button>
+              <button id="canvas-html-off" class="mode-btn" type="button">關</button>
+            </div>
+            <span class="mode-hint">開著時，agent 可以開 html 畫布：先顯示不執行 script 的版本，你按 ▶ Run scripts 才會執行（每個版本按一次）。執行後，那個畫布的 script 可以把畫布內容、和你在裡面輸入的東西送出瀏覽器。關掉後，agent 不能再開 html 畫布，已經有的只顯示不執行 script 的版本。</span>
+          </div>
+
           <!-- Canvas folder mirror (ADR docs/adr/canvas.md §3.6): File System Access, handle in IndexedDB -->
           <div class="input-group">
             <label>畫布存到資料夾（選填）</label>

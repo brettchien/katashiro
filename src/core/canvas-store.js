@@ -35,7 +35,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   "use strict";
 
-  const KINDS = ["markdown", "slides", "image", "mermaid"];   // chart / html follow (mermaid moved up, Brett 2026-10-11)
+  const KINDS = ["markdown", "slides", "image", "mermaid", "html"];   // chart follows (mermaid moved up, Brett 2026-10-11; html: canvas-html ADR)
   // Text the agent can canvas_patch: a mermaid canvas is its diagram source (never edited by the user).
   const PATCH_KINDS = ["markdown", "slides", "mermaid"];
   const IMAGE_MIME_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"];
@@ -57,6 +57,13 @@
   }
   const TITLE_MAX = 120;
   const CONTENT_MAX_BYTES = 2 * 1024 * 1024; // §3.4: 2 MB text per canvas
+  // canvas-html §6 Q1 (Brett 2026-10-28): an html canvas may hold 4 MB (Archify's Delta view is 2.35 MB).
+  const HTML_MAX_BYTES = 4 * 1024 * 1024;
+  const contentCap = (kind) => (kind === "html" ? HTML_MAX_BYTES : CONTENT_MAX_BYTES);
+  // canvas §6 Q2: html canvases are on by default and the user can turn them off (Settings). false =
+  // off: canvas_open refuses kind html, and canvas tabs show html canvases without their scripts only.
+  const HTML_ENABLED_KEY = "canvas:htmlEnabled";
+  const htmlEnabled = (v) => v !== false;
   const ID_RE = /^cv_[0-9a-f]{12}$/;
 
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
@@ -381,7 +388,8 @@
       }
       if (typeof content !== "string") throw new Error("`content` must be a string");
       const bytes = utf8Bytes(content);
-      if (bytes > CONTENT_MAX_BYTES) throw new Error(`content is ${bytes} bytes; a canvas is capped at ${CONTENT_MAX_BYTES}`);
+      const cap = contentCap(k);
+      if (bytes > cap) throw new Error(`content is ${bytes} bytes; a${k === "html" ? "n html" : ""} canvas is capped at ${cap}`);
       return { title: t, kind: k, content, bytes };
     }
 
@@ -502,6 +510,9 @@
     async function agentWrite({ conversationId, id, baseVersion, title, kind, content, image, caption, confirmEvict: ask }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       const v = await validate({ title, kind, content, image, caption });
+      if (v.kind === "html" && !htmlEnabled(await getOne(HTML_ENABLED_KEY))) {
+        throw new Error("html canvases are turned off in Katashiro's Settings (畫布 → html 畫布); use another kind, or ask the user to turn them on");
+      }
       const at = now();
       // A history entry's image fields (§3.6: the footprint counts one image once per canvas).
       const img = v.image ? { image: v.image.hash, imageBytes: b64Bytes(v.image.data) } : null;
@@ -948,5 +959,5 @@
 
   return { createCanvasStore, incognitoLeftovers,
     historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint,
-    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
+    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, HTML_MAX_BYTES, HTML_ENABLED_KEY, htmlEnabled, contentCap, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
 });

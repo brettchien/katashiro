@@ -187,3 +187,7 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
   .ks-changed:not(pre), .ks-point:not(pre) { background-color: transparent !important; }
   .ks-note { display: none !important; }
 }
+
+/* An html canvas without its scripts (canvas-html §2.3): the page's own CSS lives in the shadow
+   root, so only the box is ours. */
+.htmlview { display: block; min-height: 100vh; }
