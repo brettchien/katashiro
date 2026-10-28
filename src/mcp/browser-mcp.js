@@ -1776,12 +1776,14 @@
         const all = await ctx.chrome.tabs.query({});
         const picked = await pickTabs(ctx.chrome, all, args.tabs);
         if (picked.error) return errText(picked.error);
-        // Grouping moves tabs into the group's window (an existing group's, else the current window):
-        // refuse if that would empty another window, which Chrome would then close.
+        // Grouping moves tabs into the group's window (an existing group's, else the side panel's
+        // window, #205): refuse if that would empty another window, which Chrome would then close.
         let targetWindowId = null;
         if (args.groupId != null) {
           const member = all.find((t) => t.groupId === args.groupId);
           if (member) targetWindowId = member.windowId;
+        } else if (Number.isInteger(ctx.windowId)) {
+          targetWindowId = ctx.windowId;
         } else if (ctx.chrome.windows && typeof ctx.chrome.windows.getCurrent === "function") {
           try { targetWindowId = (await ctx.chrome.windows.getCurrent()).id; } catch { /* unknown ⇒ strictest check */ }
         }
@@ -1792,6 +1794,7 @@
         }
         const opts = { tabIds: picked.tabs.map((p) => p.tab.id) };
         if (args.groupId != null) opts.groupId = args.groupId;
+        else if (Number.isInteger(targetWindowId) && targetWindowId === ctx.windowId) opts.createProperties = { windowId: targetWindowId };
         let groupId;
         try {
           groupId = await ctx.chrome.tabs.group(opts);

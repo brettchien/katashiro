@@ -2174,6 +2174,32 @@ test("group_tabs: refuses to empty another window (it would close, side panel an
   assert.equal((await call(own.deps, "katashiro.group_tabs", { tabs: [{ index: 0 }, { index: 1 }] })).isError, undefined);
 });
 
+test("#205 group_tabs: a new group goes to the panel's window (deps.windowId), not windows.getCurrent()", async () => {
+  // Panel in window 8 (getCurrent would say 7): window 8's only tab grouped there moves nothing out.
+  const p8 = deps({ tabsList: TABS3, currentWindowId: 7 });
+  p8.deps.windowId = 8;
+  assert.equal((await call(p8.deps, "katashiro.group_tabs", { tabs: [{ index: 2 }] })).isError, undefined);
+  assert.deepEqual(p8.calls.tabsGroup, [{ tabIds: [55], createProperties: { windowId: 8 } }]);
+  // Panel in window 7 (getCurrent would say 8): the same call would empty window 8 → refused.
+  const p7 = deps({ tabsList: TABS3, currentWindowId: 8 });
+  p7.deps.windowId = 7;
+  const res = await call(p7.deps, "katashiro.group_tabs", { tabs: [{ index: 2 }] });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /move every tab out of window 8/);
+  assert.equal(p7.calls.tabsGroup.length, 0);
+});
+
+test("#205 tab_update / split_tabs with no target take the active tab of the panel's window", async () => {
+  const t = deps({ tabsList: TABS3 });
+  t.deps.windowId = 7;
+  await call(t.deps, "katashiro.tab_update", { muted: true });
+  assert.deepEqual(t.calls.query.filter((q) => q.active), [{ active: true, windowId: 7 }]);
+  const s = deps({ tabsList: splitTabs() });
+  s.deps.windowId = 7;
+  await call(s.deps, "katashiro.split_tabs", { openUrl: "https://new/" });
+  assert.deepEqual(s.calls.query.filter((q) => q.active), [{ active: true, windowId: 7 }]);
+});
+
 test("group_tabs: one bad reference groups nothing; bad color / groupId refused", async () => {
   const { deps: d, calls } = deps({ tabsList: TABS3 });
   for (const args of [
