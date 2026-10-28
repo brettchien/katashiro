@@ -1,15 +1,12 @@
-// #139 (known bug, open): after the extension reloads, chrome.storage.session — where the panel
-// keeps conversation → tab group — is cleared, while the tab groups survive. The next tab Katashiro
-// groups for that conversation gets a second group with the same title. Marked xfail until Phase C
-// fixes it (the issue's proposed fix: adopt the one same-titled group in the window).
+// #139: after the extension reloads, chrome.storage.session — where the panel keeps conversation →
+// tab group — is cleared, while the tab groups survive. The conversation takes back the one group
+// in the window with its title and the group color, instead of making a second one.
 import * as h from "../helpers.mjs";
 import { FakeGateway } from "../fake-gateway.mjs";
 
 export default [
   {
     name: "after an extension reload, a conversation's next tab joins its existing group (one group only)",
-    xfail: "#139 — the group mapping lives in storage.session, which a reload clears",
-    xfailChecks: [/^one group titled Alpha, not two/, /^the canvas joined the group of the agent's page/],
     async run(ctx, t) {
       const { gw } = ctx;
       const sid = await h.namedConversation(ctx, ctx.panel, "Alpha", { fresh: false });

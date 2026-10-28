@@ -344,16 +344,40 @@ const canSplitTabs = () => typeof chrome.tabs.createSplit === "function";
 
 // A conversation's group id (taken explicitly, §3.10): in memory, mirrored to storage.session
 // (survives a panel reload, not a browser restart — group ids do not either). Always verified before reuse.
+// storage.session is also cleared by an extension reload or update, which the groups survive: with
+// nothing stored, an open conversation takes back its group by title (#139, adoptCanvasGroup) unless
+// `adopt: false`.
 const canvasGroupIds = new Map();                       // conversationId → groupId
 const canvasGroupKey = (conv) => `katashiro.canvasGroup.${conv}`;
-async function storedCanvasGroupId(conv) {
+async function storedCanvasGroupId(conv, { adopt = true } = {}) {
   if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);
   try {
     const k = canvasGroupKey(conv);
     const got = await chrome.storage.session.get(k);
     if (Number.isInteger(got[k])) canvasGroupIds.set(conv, got[k]);
   } catch (_) { /* no storage.session: memory only */ }
-  return canvasGroupIds.has(conv) ? canvasGroupIds.get(conv) : null;
+  if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);
+  return adopt ? adoptCanvasGroup(conv) : null;
+}
+// Which group a conversation already holds, never taking one back: for "is this group taken" and the
+// observers (refreshGroupTabs, a rename), which must not claim a group as a side effect (#139).
+const storedGroupIdOnly = (conv) => storedCanvasGroupId(conv, { adopt: false });
+// #139: the one group in the panel's window with this conversation's title and the group color,
+// not another open conversation's (CanvasTabs.adoptableGroupId). Two open conversations with the
+// same title: no telling whose it is, so neither takes it. → groupId | null
+async function adoptCanvasGroup(conv) {
+  if (!convs.has(conv) || typeof panelWindowId !== "number" || !canGroupTabs() || typeof chrome.tabGroups.query !== "function") return null;
+  const titleOf = (id) => canvasGroupTitle(id) || CanvasTabs.GROUP_TITLE;
+  const title = titleOf(conv);
+  for (const id of convs.keys()) if (id !== conv && titleOf(id) === title) return null;
+  let groups;
+  try { groups = await chrome.tabGroups.query({ windowId: panelWindowId }); } catch (_) { return null; }
+  const claimed = await CanvasTabs.otherGroupIds([...convs.keys()], conv, storedGroupIdOnly);
+  const gid = CanvasTabs.adoptableGroupId({ groups, windowId: panelWindowId, title, claimed });
+  if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);   // set meanwhile (a group was just made)
+  if (gid == null) return null;
+  await rememberCanvasGroupId(conv, gid);
+  return gid;
 }
 async function rememberCanvasGroupId(conv, groupId) {
   canvasGroupIds.set(conv, groupId);
@@ -363,7 +387,7 @@ async function rememberCanvasGroupId(conv, groupId) {
 const canvasGroupTitle = (conv) => ConvCore.displayTitle(convIndex[conv], conv);
 async function updateCanvasGroupTitle(conv) {
   if (!canGroupTabs()) return;
-  const gid = await storedCanvasGroupId(conv);
+  const gid = await storedGroupIdOnly(conv);
   if (gid == null) return;
   try { await chrome.tabGroups.update(gid, { title: canvasGroupTitle(conv) }); } catch (_) { /* gone, or cosmetic */ }
 }
@@ -392,10 +416,10 @@ async function addToCanvasGroup(tab, conv = conversationId) {
 // (new_tab). The GROUP is the membership: a tab the user drags out is theirs again.
 const canvasBase = () => chrome.runtime.getURL("canvas.html");
 
-// A conversation's group id if that group still exists, else null.
-async function liveGroupId(conv) {
+// A conversation's group id if that group still exists, else null. `adopt` as storedCanvasGroupId.
+async function liveGroupId(conv, { adopt = true } = {}) {
   if (!canGroupTabs()) return null;
-  const gid = await storedCanvasGroupId(conv);
+  const gid = await storedCanvasGroupId(conv, { adopt });
   if (gid == null) return null;
   try { await chrome.tabGroups.get(gid); return gid; } catch (_) { return null; }
 }
@@ -483,7 +507,7 @@ function scheduleAllGroupTabsRefresh() { for (const id of convs.keys()) schedule
 async function refreshGroupTabs(convId) {
   const conv = convs.get(convId);
   if (!conv || !canGroupTabs()) return;
-  const gid = await storedCanvasGroupId(convId);
+  const gid = await storedGroupIdOnly(convId);
   if (gid == null) return;
   let tabs;
   try { tabs = await chrome.tabs.query({ groupId: gid }); } catch (_) { return; }
@@ -495,14 +519,16 @@ async function refreshGroupTabs(convId) {
 
 // §4.4: a conversation comes back (browser-restart adoption, 重新打開): open its group's tabs again
 // in the background, adopting the ones already open (by URL) instead of opening them twice. Not
-// when its group still exists (a panel reload, a plain switch).
+// when its group still exists (a panel reload, a plain switch). Its stored group only: a same-titled
+// group (an archived conversation's, kept for an unsaved canvas tab) is reused by planGroupRestore
+// when that tab is one of the URLs, not taken back by title (#139) with the other tabs left closed.
 async function restoreGroupTabs(convId) {
   const conv = convs.get(convId);
   if (!conv || !conv.groupTabs.length || typeof panelWindowId !== "number") return;
-  if ((await liveGroupId(convId)) != null) return;
+  if ((await liveGroupId(convId, { adopt: false })) != null) return;
   await canvasTabQueue(async () => {
     const all = await chrome.tabs.query({});
-    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedCanvasGroupId);
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedGroupIdOnly);
     const plan = CanvasTabs.planGroupRestore({ urls: conv.groupTabs, tabs: all, windowId: panelWindowId, otherGroupIds: others });
     const ids = [...plan.adopt];
     for (const url of plan.open) {
@@ -531,7 +557,7 @@ function applyGroupSwitch() {
     if (!cur || !canGroupTabs() || typeof panelWindowId !== "number") return;
     const tabs = await chrome.tabs.query({ windowId: panelWindowId });
     const groupId = await storedCanvasGroupId(cur);
-    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedGroupIdOnly);
     const conv = convs.get(cur);
     const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
     const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });
@@ -569,7 +595,7 @@ async function closeConversationTabs(gid, title) {
   if (plan.needNewTab) await chrome.tabs.create({ windowId: win, active: true });
   if (plan.close.length) await chrome.tabs.remove(plan.close);
   if (plan.keep.length) {
-    try { await chrome.tabGroups.update(gid, { collapsed: true }); } catch (_) { /* cosmetic */ }
+    try { await chrome.tabGroups.update(gid, { collapsed: true, color: CanvasTabs.KEPT_GROUP_COLOR }); } catch (_) { /* cosmetic */ }
     appendSystemMessage(`「${title}」有 ${plan.keep.length} 個畫布分頁還有未儲存的修改（或沒有回應），沒有關掉；存好後可以自己關。`);
   }
 }

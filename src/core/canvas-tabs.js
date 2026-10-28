@@ -13,6 +13,9 @@
   // Until multi-conversation lands the group is titled "Canvas" (§6 Q5); one fixed color (§3.1).
   const GROUP_TITLE = "Canvas";
   const GROUP_COLOR = "blue";
+  // An archived conversation's group kept for an unsaved canvas tab (§4.5): another color, so a new
+  // conversation with the same title does not take it back (#139, adoptableGroupId).
+  const KEPT_GROUP_COLOR = "grey";
   const TAB_GROUP_NONE = -1;                             // chrome.tabGroups.TAB_GROUP_ID_NONE
   const SPLIT_NONE = -1;                                 // chrome.tabs.SPLIT_VIEW_ID_NONE
 
@@ -46,6 +49,21 @@
       if (g && (windowId == null || g.windowId === windowId)) return { action: "reuse", groupId: storedGroupId };
     }
     return { action: "create" };
+  }
+
+  /**
+   * #139: a conversation with no stored group id (storage.session is cleared when the extension
+   * reloads or updates; its tab groups are not) takes back the one group in `windowId` that looks
+   * like its own: its title, the group color, and not claimed by another conversation (`claimed`).
+   * None or several → null, and a new group is made as before. A group the user renamed or
+   * recolored is not taken back. → groupId | null
+   */
+  function adoptableGroupId({ groups, windowId, title, claimed }) {
+    if (typeof title !== "string" || !title) return null;
+    const taken = new Set(claimed || []);
+    const same = (groups || []).filter((g) => g && Number.isInteger(g.id) && g.id !== TAB_GROUP_NONE && g.windowId === windowId
+      && g.title === title && g.color === GROUP_COLOR && !taken.has(g.id));
+    return same.length === 1 ? same[0].id : null;
   }
 
   // Where to move `b` so it sits right after `a`: if b is before a, a shifts left once b is lifted
@@ -371,5 +389,5 @@
     return { close, keep, needNewTab };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
+  return { GROUP_TITLE, GROUP_COLOR, KEPT_GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adoptableGroupId, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
 });

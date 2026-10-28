@@ -412,6 +412,16 @@ still run only in the current conversation (§3.5); P2 lifts that.
   user opened are never pulled in; an agent acting on one only records it as the working tab
   (§4.3). A tab Chrome itself puts in the group (a link opened from a grouped tab) is in the group
   and is treated like the rest.
+- **An extension reload or update clears `storage.session`; the groups stay** (#139). An open
+  conversation with no stored group id takes back the one group in the panel's window with its
+  title and the group color that no other open conversation holds; none or several → a new group.
+  Two open conversations with the same title take back neither, and a group the user renamed or
+  recolored is not taken back, nor an archived conversation's group kept for an unsaved canvas tab
+  (§4.5 greys it). Only the paths that put a tab in the group take a group back; lookups that only
+  observe (which groups other conversations hold, refreshing `groupTabs`, a rename) use the stored
+  id only, so they never claim one for another conversation. Restoring a conversation's tabs (§4.4)
+  also goes by its stored id only. Known limit: a conversation renamed after a reload, before any
+  tab joined its group, no longer matches the old title and gets a new group.
 - **The group is the membership.** What is in the group belongs to the conversation; dragging a tab
   out of the group gives it back to the user: it is no longer tracked (§4.4) or closed on archive
   (§4.5). A tab is in at most one group, and Split View keeps both sides' group state consistent
@@ -487,8 +497,9 @@ still run only in the current conversation (§3.5); P2 lifts that.
   by §4.4 when it is reopened. Canvas content is not touched (closing a tab is not deleting).
 - **Never a tab with unsaved canvas edits.** Each canvas tab of the group is asked whether its editor
   is dirty (`katashiro-canvas-dirty`, answered only by that tab); a tab that says dirty, or does not
-  answer in time, stays open (in its group, collapsed) and the chat says how many were kept and why. A
-  save still in flight counts as dirty (the editor has already reported clean).
+  answer in time, stays open (in its group, collapsed and greyed so §4.1 does not take it back; §4.4
+  makes it the group color again on reopen) and the chat says how many were kept and why. A save
+  still in flight counts as dirty (the editor has already reported clean).
 - **Web pages are closed without asking — deliberate.** A page in the group (a form or document the
   agent opened with `new_tab`) is closed by `tabs.remove`, which skips its `beforeunload` prompt, so
   text typed into it and not submitted is lost. Its URL comes back by §4.4, its unsent input does not.
