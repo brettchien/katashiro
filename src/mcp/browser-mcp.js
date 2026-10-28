@@ -203,6 +203,11 @@
     "navigate) are refused. Reading (read_dom, screenshot) still works. Only the user can " +
     "change this, in the katashiro side panel under Settings → 瀏覽器寫入. Ask them to turn " +
     "it on rather than retrying.";
+  // #205: switch_tab to a tab outside the side panel's window.
+  const SWITCH_OTHER_WINDOW =
+    "that tab is in another window — your conversation works in its side panel's window (marked " +
+    "\"your window\" in tabs): page tools act on that window's active tab, so they could never reach " +
+    "this one. Open its URL there with new_tab, or ask the user to move the tab into this window.";
 
   // Supported-scheme check. katashiro declares <all_urls> host permissions and leaves enforcement
   // to Chrome: a page whose site access the user withheld simply fails the scripting call. We only
@@ -254,9 +259,18 @@
   // `pendingUrl` — so a url lookup right after opening it checks both.
   const tabUrlHas = (t, needle) => (t.url || "").includes(needle) || (t.pendingUrl || "").includes(needle);
 
-  // One tab by `url` substring | `index` | (neither, when allowed) the active tab.
+  // The active tab of the side panel's window (`windowId`, #205: a conversation works in its
+  // panel's window, not in whichever window the user focused last); without a known window, the
+  // last-focused window's. → tab | null
+  async function queryActiveTab(chrome, windowId) {
+    const q = Number.isInteger(windowId) ? { active: true, windowId } : { active: true, lastFocusedWindow: true };
+    const [tab] = await chrome.tabs.query(q);
+    return tab || null;
+  }
+
+  // One tab by `url` substring | `index` | (neither, when allowed) the active tab of `windowId`.
   // Returns { tab, index } or { error }.
-  async function pickTab(chrome, all, ref, allowActive = true) {
+  async function pickTab(chrome, all, ref, allowActive = true, windowId = null) {
     const r = ref || {};
     const needle = r.url != null ? String(r.url).trim() : "";
     if (needle) {
@@ -271,7 +285,7 @@
       return { tab: all[r.index], index: r.index };
     }
     if (!allowActive) return { error: "identify each tab by `index` (from tabs) or a `url` substring" };
-    const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const active = await queryActiveTab(chrome, windowId);
     if (!active) return { error: "no active browser tab" };
     const i = all.findIndex((t) => t.id === active.id);
     if (i < 0) return { error: "the active tab is not in the current tab list — call tabs and pass an index or url" };
@@ -1353,7 +1367,8 @@
         "List open browser tabs across every window: index, title, URL, which is active (*), and per " +
         "tab its window, pinned / audible / muted / discarded state, tab group and Split View (`split <id>`; " +
         "the two tabs of a split share the id, the lower index is the left pane). Optional filters: " +
-        "`windowId`, `url` substring. Read-only. katashiro's other tools act on the active tab; the " +
+        "`windowId`, `url` substring. Read-only. katashiro's other tools act on the active tab of your " +
+        "side panel's window (tagged `your window`); the " +
         "`[index]` shown is a live enumeration order across all windows (not a stable tab id) and a " +
         "filtered list keeps it — pass it to `switch_tab`, `close_tab` or `tab_update`, or use " +
         "`new_tab` to open one.",
@@ -1383,7 +1398,7 @@
         tabs.forEach((t, i) => {                         // i is the global index — never renumbered
           if (args.windowId != null && t.windowId !== args.windowId) return;
           if (needle && !tabUrlHas(t, needle)) return;
-          const tags = [`window ${t.windowId}`];
+          const tags = [`window ${t.windowId}${t.windowId === ctx.windowId ? " (your window)" : ""}`];
           if (t.pinned) tags.push("pinned");
           if (t.audible) tags.push("audible");
           if (t.mutedInfo && t.mutedInfo.muted) tags.push("muted");
@@ -1401,7 +1416,7 @@
 
     "katashiro.new_tab": {
       description:
-        "Open a new browser tab and, by default, switch to it so subsequent tools act on it. Pass a " +
+        "Open a new browser tab in your side panel's window and, by default, switch to it so subsequent tools act on it. Pass a " +
         "`url` to load a page; omit it for a blank New Tab page. Set `active: false` to open it in the " +
         "background without stealing focus. Returns the new tab's index plus — when it switched to a " +
         "scriptable http(s) page — the post-open snapshot. When your conversation is not on screen in " +
@@ -1427,6 +1442,8 @@
         const url = (args.url != null && String(args.url).trim() !== "") ? String(args.url).trim() : null;
         const created = { active: makeActive };
         if (url) created.url = url;
+        // #205: in the side panel's window, wherever the user is looking now.
+        if (Number.isInteger(ctx.windowId)) created.windowId = ctx.windowId;
         const tab = await ctx.chrome.tabs.create(created);
         // Multi-conversation P1b (§4.1, §4.3): the panel puts a tab the agent opened in the calling
         // conversation's tab group and makes it the working tab. Awaited, so the next page tool of a
@@ -1455,7 +1472,8 @@
         "Switch to (activate) an already-open tab so subsequent tools act on it. Identify it by " +
         "`index` from a fresh `tabs` listing, by `url` (the first tab whose URL contains this " +
         "substring — more stable than an index, which shifts as tabs open and close), or with " +
-        "`tab: \"working\"` for this conversation's working tab (the last tab you acted on here). Focuses the tab " +
+        "`tab: \"working\"` for this conversation's working tab (the last tab you acted on here). Only a tab in " +
+        "your side panel's window (`your window` in tabs) — page tools act there. Focuses the tab " +
         "and its window; returns the now-active tab plus, for a scriptable http(s) page, its snapshot. " +
         "When your conversation is not on screen in Katashiro it only selects one of your tab group's " +
         "tabs as your working tab (page tools then act there) and brings nothing forward. Gated by act mode.",
@@ -1503,6 +1521,11 @@
           const sel = `selected tab [${i}] as your working tab (not brought to the front: your conversation is not on screen) — ${target.title || "(untitled)"} — ${target.url || ""}`;
           if (pageOrigin(target.url)) return okText(`${sel}\n\n${await snapshotAfter(ctx.chrome, target.id)}`);
           return okText(sel);
+        }
+        // #205: page tools act on the active tab of the side panel's window, so a tab in another
+        // window could be brought to the front there but never acted on.
+        if (Number.isInteger(ctx.windowId) && target.windowId !== ctx.windowId) {
+          return errText(SWITCH_OTHER_WINDOW);
         }
         await ctx.chrome.tabs.update(target.id, { active: true });
         if (typeof ctx.onTabUsed === "function") { try { ctx.onTabUsed(target.id); } catch (_) { /* host bookkeeping only */ } }
@@ -1553,7 +1576,7 @@
           return errText("your conversation is not on screen: name the tab to close by `index` or `url` (one of your group's tabs)");
         } else {
           // No identifier: the active tab — same lookup the page-scoped tools use.
-          const [active] = await ctx.chrome.tabs.query({ active: true, lastFocusedWindow: true });
+          const active = await queryActiveTab(ctx.chrome, ctx.windowId);
           if (!active) return errText("no active browser tab to close");
           target = all.find((t) => t.id === active.id) || active;
         }
@@ -1662,7 +1685,7 @@
         }
         const all = await ctx.chrome.tabs.query({});
         if (!all.length) return errText("no open tabs");
-        const p = await pickTab(ctx.chrome, all, args);
+        const p = await pickTab(ctx.chrome, all, args, true, ctx.windowId);
         if (p.error) return errText(p.error);
         const done = [];
         try {
@@ -1911,7 +1934,7 @@
         if (!all.length) return errText("no open tabs");
         const picks = [];
         for (const ref of (refs.length ? refs : [undefined])) {
-          const p = await pickTab(ctx.chrome, all, ref, refs.length === 0);
+          const p = await pickTab(ctx.chrome, all, ref, refs.length === 0, ctx.windowId);
           if (p.error) return errText(p.error);
           picks.push(p);
         }
@@ -1985,7 +2008,7 @@
           if (!all.some((t) => t.splitViewId === args.splitViewId)) return errText(`no split ${args.splitViewId} — call tabs for the current splits`);
           id = args.splitViewId;
         } else {
-          const p = await pickTab(ctx.chrome, all, args);
+          const p = await pickTab(ctx.chrome, all, args, true, ctx.windowId);
           if (p.error) return errText(p.error);
           if (!inSplit(p.tab)) return errText(`tab [${p.index}] is not in a Split View`);
           id = p.tab.splitViewId;
@@ -3627,9 +3650,9 @@
     )
   );
 
-  // The currently active tab (the shikigami acts here).
-  async function activeTab(chrome) {
-    const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  // The currently active tab of the panel's window (the shikigami acts here).
+  async function activeTab(chrome, windowId) {
+    const tab = await queryActiveTab(chrome, windowId);
     if (!tab) throw new Error("no active browser tab");
     return tab;
   }
@@ -3772,7 +3795,7 @@
       if (!r || r.error) return errText((r && r.error) || "no tab of your own to act on");
       tab = r.tab;
     } else {
-      tab = await activeTab(chrome);
+      tab = await activeTab(chrome, deps.windowId);
     }
     // Supported-scheme check: chrome://, file://, etc. have no scriptable web origin. Host-permission
     // enforcement for real sites is left to Chrome (a withheld site fails the scripting call).

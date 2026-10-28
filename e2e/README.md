@@ -93,6 +93,7 @@ real ones.
 | | a failed turn | a turn whose only sign was a tool call on the browser tunnel, then a JSON-RPC error: still read (the agent was working on it); the same error with nothing heard: no tag |
 | | 重試 on an earlier turn | two pool-busy turns: the first error bubble's 重試 re-sends the first turn (not the later one) and tags only its message |
 | `reload-tab-group.mjs` | an extension reload | #139: storage.session is cleared, the tab groups are not — the conversation's next tab (a canvas) joins its existing group, taken back by title; still one group |
+| `window-bound-tabs.mjs` | another window focused | #205: `new_tab` opens in the panel's window and joins the one group there; `get_text` reads that window's active tab; `switch_tab` to a tab in another window is refused; `tabs` tags `your window` |
 
 ## Adding a case
 

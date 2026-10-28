@@ -29,6 +29,12 @@ test("planCanvasGroup: reuse a live group in this window, else create", () => {
   assert.deepEqual(T.planCanvasGroup({ storedGroupId: 3, groups: [{ id: 3, windowId: 8 }], windowId: 7 }), { action: "create" });
   assert.deepEqual(T.planCanvasGroup({ storedGroupId: null, groups: [], windowId: 7 }), { action: "create" });
   assert.deepEqual(T.planCanvasGroup({ storedGroupId: NONE, groups: [{ id: NONE, windowId: 7 }], windowId: 7 }), { action: "create" });
+  // #205: a tab outside the panel's window is not grouped, whatever is stored
+  assert.deepEqual(T.planCanvasGroup({ storedGroupId: 3, groups: [{ id: 3, windowId: 7 }], windowId: 8, homeWindowId: 7 }), { action: "none" });
+  assert.deepEqual(T.planCanvasGroup({ storedGroupId: null, groups: [], windowId: 8, homeWindowId: 7 }), { action: "none" });
+  assert.deepEqual(T.planCanvasGroup({ storedGroupId: 3, groups: [{ id: 3, windowId: 7 }], windowId: 7, homeWindowId: 7 }), { action: "reuse", groupId: 3 });
+  // the stored group was dragged to another window: a new one in the panel's window
+  assert.deepEqual(T.planCanvasGroup({ storedGroupId: 3, groups: [{ id: 3, windowId: 8 }], windowId: 7, homeWindowId: 7 }), { action: "create" });
   assert.equal(T.GROUP_TITLE, "Canvas");
   assert.equal(T.GROUP_COLOR, "blue");
 });

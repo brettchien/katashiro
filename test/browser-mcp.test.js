@@ -362,6 +362,54 @@ test("katashiro.switch_tab by url substring picks the first match", async () => 
   assert.match(res.content[0].text, /switched to tab \[1\] — Mail/);
 });
 
+// #205: a conversation works in its side panel's window (deps.windowId), not the last-focused one.
+test("#205 new_tab opens in the panel's window", async () => {
+  const { deps: d, calls } = deps({ createdTab: { id: 99, windowId: 7, url: "https://bg/" } });
+  d.windowId = 7;
+  await callTool(d, "katashiro.new_tab", { url: "https://bg/", active: false });
+  assert.deepEqual(calls.tabsCreate, [{ active: false, url: "https://bg/", windowId: 7 }]);
+});
+
+test("#205 switch_tab refuses a tab in another window; one in the panel's window still switches", async () => {
+  const tabsList = [
+    { id: 42, windowId: 7, url: "https://a/", title: "A" },
+    { id: 55, windowId: 8, url: "https://b/", title: "B" }
+  ];
+  const { deps: d, calls } = deps({ tabsList });
+  d.windowId = 7;
+  const res = await callTool(d, "katashiro.switch_tab", { index: 1 });
+  assert.equal(res.isError, true);
+  assert.match(res.content[0].text, /another window/);
+  assert.equal(calls.tabsUpdate.length, 0);
+  assert.equal(calls.windowsUpdate.length, 0);
+  const ok = await callTool(d, "katashiro.switch_tab", { index: 0 });
+  assert.equal(ok.isError, undefined);
+  assert.deepEqual(calls.tabsUpdate, [{ tabId: 42, upd: { active: true } }]);
+});
+
+test("#205 page tools and close_tab take the active tab of the panel's window", async () => {
+  const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://t/" }, { id: 43, windowId: 7, url: "https://u/" }] });
+  d.windowId = 7;
+  await callTool(d, "katashiro.get_text", {});
+  assert.deepEqual(calls.query.filter((q) => q.active), [{ active: true, windowId: 7 }]);
+  calls.query.length = 0;
+  await callTool(d, "katashiro.close_tab", {});
+  assert.deepEqual(calls.query.filter((q) => q.active), [{ active: true, windowId: 7 }]);
+  // no known window (older host): the last-focused window, as before
+  const { deps: d2, calls: c2 } = deps({});
+  await callTool(d2, "katashiro.get_text", {});
+  assert.deepEqual(c2.query.filter((q) => q.active), [{ active: true, lastFocusedWindow: true }]);
+});
+
+test("#205 tabs tags the panel's window", async () => {
+  const { deps: d } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }, { id: 55, windowId: 8, url: "https://b/" }] });
+  d.windowId = 7;
+  const text = (await callTool(d, "katashiro.tabs", {})).content[0].text;
+  assert.match(text, /\[0\].*window 7 \(your window\)/);
+  assert.match(text, /\[1\].*window 8\)/);
+  assert.doesNotMatch(text, /window 8 \(your window\)/);
+});
+
 test("katashiro.switch_tab with an out-of-range index is a clean error", async () => {
   const { deps: d, calls } = deps({ tabsList: [{ id: 42, windowId: 7, url: "https://a/" }] });
   const res = await BrowserMcp.handleMcpMessage(

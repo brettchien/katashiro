@@ -412,6 +412,12 @@ still run only in the current conversation (§3.5); P2 lifts that.
   user opened are never pulled in; an agent acting on one only records it as the working tab
   (§4.3). A tab Chrome itself puts in the group (a link opened from a grouped tab) is in the group
   and is treated like the rest.
+- **A conversation stays in its side panel's window** (#205, Brett 2026-10-28). Its group lives
+  only there: a tab in another window is never put in it, nor does it make a second group there.
+  "The active tab" for page tools and `close_tab` is the active tab of the panel's window, not of
+  the window the user focused last; `new_tab` opens there; `switch_tab` refuses a tab in another
+  window (page tools could never reach it) and `tabs` tags the panel's window `your window`.
+  Tools that name a tab (`close_tab`, `tab_update`, grouping tools by index / url) still reach any window.
 - **An extension reload or update clears `storage.session`; the groups stay** (#139). An open
   conversation with no stored group id takes back the one group in the panel's window with its
   title and the group color that no other open conversation holds; none or several → a new group.

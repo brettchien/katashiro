@@ -392,15 +392,18 @@ async function updateCanvasGroupTitle(conv) {
   try { await chrome.tabGroups.update(gid, { title: canvasGroupTitle(conv) }); } catch (_) { /* gone, or cosmetic */ }
 }
 
-// Put a tab in its conversation's canvas group in the tab's window: reuse the stored group if it
-// still exists there, else create one (titled after the conversation, fixed color). Returns the
-// group id, or null without tabGroups.
+// Put a tab in its conversation's canvas group in the panel's window: reuse the stored group if it
+// still exists there, else create one (titled after the conversation, fixed color). A tab in another
+// window is left alone (#205). Returns the group id, or null (not grouped, or no tabGroups).
 async function addToCanvasGroup(tab, conv = conversationId) {
   if (!canGroupTabs()) return null;
+  const home = typeof panelWindowId === "number" ? panelWindowId : null;
+  if (home != null && tab.windowId !== home) return null;   // before the lookup: never adopt for it
   const stored = await storedCanvasGroupId(conv);
   let groups = [];
   if (stored != null) { try { groups = [await chrome.tabGroups.get(stored)]; } catch (_) { /* gone */ } }
-  const plan = CanvasTabs.planCanvasGroup({ storedGroupId: stored, groups, windowId: tab.windowId });
+  const plan = CanvasTabs.planCanvasGroup({ storedGroupId: stored, groups, windowId: tab.windowId, homeWindowId: home });
+  if (plan.action === "none") return null;
   if (plan.action === "reuse") {
     await chrome.tabs.group({ groupId: plan.groupId, tabIds: [tab.id] });
     return plan.groupId;
