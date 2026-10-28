@@ -46,6 +46,9 @@ test("adoptableGroupId (#139): the one same-titled group of the group color in t
   // renamed or recolored by the user: not taken back
   assert.equal(pick([g(3, "Alpha notes")]), null);
   assert.equal(pick([g(3, "Alpha", { color: "red" })]), null);
+  // an archived conversation's group kept for an unsaved canvas (§4.5) is greyed: not taken back
+  assert.equal(pick([g(3, "Alpha", { color: T.KEPT_GROUP_COLOR })]), null);
+  assert.notEqual(T.KEPT_GROUP_COLOR, T.GROUP_COLOR);
   // another conversation's group is never taken; the one left counts alone
   assert.equal(pick([g(3, "Alpha")], { claimed: [3] }), null);
   assert.equal(pick([g(3, "Alpha"), g(4, "Alpha")], { claimed: [3] }), 4);

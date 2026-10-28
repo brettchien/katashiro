@@ -13,6 +13,9 @@
   // Until multi-conversation lands the group is titled "Canvas" (§6 Q5); one fixed color (§3.1).
   const GROUP_TITLE = "Canvas";
   const GROUP_COLOR = "blue";
+  // An archived conversation's group kept for an unsaved canvas tab (§4.5): another color, so a new
+  // conversation with the same title does not take it back (#139, adoptableGroupId).
+  const KEPT_GROUP_COLOR = "grey";
   const TAB_GROUP_NONE = -1;                             // chrome.tabGroups.TAB_GROUP_ID_NONE
   const SPLIT_NONE = -1;                                 // chrome.tabs.SPLIT_VIEW_ID_NONE
 
@@ -386,5 +389,5 @@
     return { close, keep, needNewTab };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adoptableGroupId, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
+  return { GROUP_TITLE, GROUP_COLOR, KEPT_GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adoptableGroupId, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
 });

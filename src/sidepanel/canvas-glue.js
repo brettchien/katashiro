@@ -359,6 +359,9 @@ async function storedCanvasGroupId(conv, { adopt = true } = {}) {
   if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);
   return adopt ? adoptCanvasGroup(conv) : null;
 }
+// Which group a conversation already holds, never taking one back: for "is this group taken" and the
+// observers (refreshGroupTabs, a rename), which must not claim a group as a side effect (#139).
+const storedGroupIdOnly = (conv) => storedCanvasGroupId(conv, { adopt: false });
 // #139: the one group in the panel's window with this conversation's title and the group color,
 // not another open conversation's (CanvasTabs.adoptableGroupId). Two open conversations with the
 // same title: no telling whose it is, so neither takes it. → groupId | null
@@ -369,7 +372,7 @@ async function adoptCanvasGroup(conv) {
   for (const id of convs.keys()) if (id !== conv && titleOf(id) === title) return null;
   let groups;
   try { groups = await chrome.tabGroups.query({ windowId: panelWindowId }); } catch (_) { return null; }
-  const claimed = await CanvasTabs.otherGroupIds([...convs.keys()], conv, (id) => storedCanvasGroupId(id, { adopt: false }));
+  const claimed = await CanvasTabs.otherGroupIds([...convs.keys()], conv, storedGroupIdOnly);
   const gid = CanvasTabs.adoptableGroupId({ groups, windowId: panelWindowId, title, claimed });
   if (canvasGroupIds.has(conv)) return canvasGroupIds.get(conv);   // set meanwhile (a group was just made)
   if (gid == null) return null;
@@ -384,7 +387,7 @@ async function rememberCanvasGroupId(conv, groupId) {
 const canvasGroupTitle = (conv) => ConvCore.displayTitle(convIndex[conv], conv);
 async function updateCanvasGroupTitle(conv) {
   if (!canGroupTabs()) return;
-  const gid = await storedCanvasGroupId(conv);
+  const gid = await storedGroupIdOnly(conv);
   if (gid == null) return;
   try { await chrome.tabGroups.update(gid, { title: canvasGroupTitle(conv) }); } catch (_) { /* gone, or cosmetic */ }
 }
@@ -504,7 +507,7 @@ function scheduleAllGroupTabsRefresh() { for (const id of convs.keys()) schedule
 async function refreshGroupTabs(convId) {
   const conv = convs.get(convId);
   if (!conv || !canGroupTabs()) return;
-  const gid = await storedCanvasGroupId(convId);
+  const gid = await storedGroupIdOnly(convId);
   if (gid == null) return;
   let tabs;
   try { tabs = await chrome.tabs.query({ groupId: gid }); } catch (_) { return; }
@@ -525,7 +528,7 @@ async function restoreGroupTabs(convId) {
   if ((await liveGroupId(convId, { adopt: false })) != null) return;
   await canvasTabQueue(async () => {
     const all = await chrome.tabs.query({});
-    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedCanvasGroupId);
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], convId, storedGroupIdOnly);
     const plan = CanvasTabs.planGroupRestore({ urls: conv.groupTabs, tabs: all, windowId: panelWindowId, otherGroupIds: others });
     const ids = [...plan.adopt];
     for (const url of plan.open) {
@@ -554,7 +557,7 @@ function applyGroupSwitch() {
     if (!cur || !canGroupTabs() || typeof panelWindowId !== "number") return;
     const tabs = await chrome.tabs.query({ windowId: panelWindowId });
     const groupId = await storedCanvasGroupId(cur);
-    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedCanvasGroupId);
+    const others = await CanvasTabs.otherGroupIds([...convs.keys()], cur, storedGroupIdOnly);
     const conv = convs.get(cur);
     const working = conv && conv.workingTab ? CanvasTabs.pickWorkingTab({ saved: conv.workingTab, tabs }) : null;
     const plan = CanvasTabs.planGroupSwitch({ tabs, groupId, otherGroupIds: others, workingTabId: working ? working.id : null });
@@ -592,7 +595,7 @@ async function closeConversationTabs(gid, title) {
   if (plan.needNewTab) await chrome.tabs.create({ windowId: win, active: true });
   if (plan.close.length) await chrome.tabs.remove(plan.close);
   if (plan.keep.length) {
-    try { await chrome.tabGroups.update(gid, { collapsed: true }); } catch (_) { /* cosmetic */ }
+    try { await chrome.tabGroups.update(gid, { collapsed: true, color: CanvasTabs.KEPT_GROUP_COLOR }); } catch (_) { /* cosmetic */ }
     appendSystemMessage(`「${title}」有 ${plan.keep.length} 個畫布分頁還有未儲存的修改（或沒有回應），沒有關掉；存好後可以自己關。`);
   }
 }
