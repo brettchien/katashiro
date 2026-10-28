@@ -412,6 +412,11 @@ still run only in the current conversation (§3.5); P2 lifts that.
   user opened are never pulled in; an agent acting on one only records it as the working tab
   (§4.3). A tab Chrome itself puts in the group (a link opened from a grouped tab) is in the group
   and is treated like the rest.
+- **An extension reload or update clears `storage.session`; the groups stay** (#139). An open
+  conversation with no stored group id takes back the one group in the panel's window with its
+  title and the group color that no other open conversation holds; none or several → a new group.
+  Two open conversations with the same title take back neither, and a group the user renamed or
+  recolored is not taken back. Restoring a conversation's tabs (§4.4) still goes by its stored id only.
 - **The group is the membership.** What is in the group belongs to the conversation; dragging a tab
   out of the group gives it back to the user: it is no longer tracked (§4.4) or closed on archive
   (§4.5). A tab is in at most one group, and Split View keeps both sides' group state consistent

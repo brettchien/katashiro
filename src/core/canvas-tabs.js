@@ -48,6 +48,21 @@
     return { action: "create" };
   }
 
+  /**
+   * #139: a conversation with no stored group id (storage.session is cleared when the extension
+   * reloads or updates; its tab groups are not) takes back the one group in `windowId` that looks
+   * like its own: its title, the group color, and not claimed by another conversation (`claimed`).
+   * None or several → null, and a new group is made as before. A group the user renamed or
+   * recolored is not taken back. → groupId | null
+   */
+  function adoptableGroupId({ groups, windowId, title, claimed }) {
+    if (typeof title !== "string" || !title) return null;
+    const taken = new Set(claimed || []);
+    const same = (groups || []).filter((g) => g && Number.isInteger(g.id) && g.id !== TAB_GROUP_NONE && g.windowId === windowId
+      && g.title === title && g.color === GROUP_COLOR && !taken.has(g.id));
+    return same.length === 1 ? same[0].id : null;
+  }
+
   // Where to move `b` so it sits right after `a`: if b is before a, a shifts left once b is lifted
   // out. null = already adjacent. Shared by canvas_open beside and katashiro.split_tabs (#90).
   function adjacentIndex(a, b) {
@@ -371,5 +386,5 @@
     return { close, keep, needNewTab };
   }
 
-  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
+  return { GROUP_TITLE, GROUP_COLOR, restorableUrl, groupTabUrls, otherGroupIds, planGroupRestore, pickWorkingTab, planGroupSwitch, planArchiveClose, TAB_GROUP_NONE, SPLIT_NONE, groupOf, inSplit, classifyTab, planCanvasGroup, adoptableGroupId, adjacentIndex, splitBlocker, planBeside, planRestore, compareTabUrl, isCompareTabFor, compareTabsFor, planCompare, compareTabProps, canvasTabUrl, pickCanvasTab, isGalleryTab, galleryUrl, openGalleryTab, requestConvOpen };
 });

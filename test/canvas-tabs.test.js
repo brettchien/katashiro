@@ -33,6 +33,28 @@ test("planCanvasGroup: reuse a live group in this window, else create", () => {
   assert.equal(T.GROUP_COLOR, "blue");
 });
 
+test("adoptableGroupId (#139): the one same-titled group of the group color in this window, else null", () => {
+  const g = (id, title, o = {}) => ({ id, title, color: "blue", windowId: 7, ...o });
+  const pick = (groups, o = {}) => T.adoptableGroupId({ groups, windowId: 7, title: "Alpha", claimed: [], ...o });
+  assert.equal(pick([g(3, "Alpha"), g(4, "Beta")]), 3);
+  // two candidates: no telling which → a new group
+  assert.equal(pick([g(3, "Alpha"), g(4, "Alpha")]), null);
+  // only in another window
+  assert.equal(pick([g(3, "Alpha", { windowId: 8 })]), null);
+  // one here, one in another window: the one here
+  assert.equal(pick([g(3, "Alpha", { windowId: 8 }), g(4, "Alpha")]), 4);
+  // renamed or recolored by the user: not taken back
+  assert.equal(pick([g(3, "Alpha notes")]), null);
+  assert.equal(pick([g(3, "Alpha", { color: "red" })]), null);
+  // another conversation's group is never taken; the one left counts alone
+  assert.equal(pick([g(3, "Alpha")], { claimed: [3] }), null);
+  assert.equal(pick([g(3, "Alpha"), g(4, "Alpha")], { claimed: [3] }), 4);
+  assert.equal(pick([]), null);
+  assert.equal(pick(undefined), null);
+  assert.equal(pick([g(3, "")], { title: "" }), null);
+  assert.equal(pick([g(NONE, "Alpha")]), null);
+});
+
 test("planBeside: a web page in a group pulls the canvas tab into that group, to be moved back", () => {
   const p = T.planBeside({ canvasTab: canvas({}), pageTab: tab({ id: 2, groupId: 9 }), canvasBase: BASE });
   assert.deepEqual(p, { ok: true, kind: "web", regroup: { groupId: 9 }, restore: { returnGroupId: 3, pageTabId: 2 } });
