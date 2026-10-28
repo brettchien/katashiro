@@ -41,9 +41,13 @@
   /**
    * The conversation's canvas group: reuse the stored id if that group still exists in this
    * window, else create one. `groups` are the tabGroups we could read (a stale id is simply absent).
-   * → { action: "reuse", groupId } | { action: "create" }
+   * #205: `homeWindowId` = the side panel's window, where the conversation's group lives: a tab in
+   * another window is not grouped ("none"), so it never makes a second group there nor moves the
+   * stored id away from the panel's window. null = not known, any window.
+   * → { action: "reuse", groupId } | { action: "create" } | { action: "none" }
    */
-  function planCanvasGroup({ storedGroupId, groups, windowId }) {
+  function planCanvasGroup({ storedGroupId, groups, windowId, homeWindowId = null }) {
+    if (Number.isInteger(homeWindowId) && windowId !== homeWindowId) return { action: "none" };
     if (Number.isInteger(storedGroupId) && storedGroupId !== TAB_GROUP_NONE) {
       const g = (groups || []).find((x) => x && x.id === storedGroupId);
       if (g && (windowId == null || g.windowId === windowId)) return { action: "reuse", groupId: storedGroupId };
