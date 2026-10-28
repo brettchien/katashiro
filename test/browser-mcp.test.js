@@ -3207,6 +3207,12 @@ test("canvas-html: canvas_open takes kind html; canvas_read returns bytes + sha2
   const id2 = /id (cv_[0-9a-f]+)/.exec(r2.content[0].text)[1];
   const small = (await callTool(d, "katashiro.canvas_read", { id: id2 })).content[0].text;
   assert.ok(small.endsWith("\n\n<p>hi</p>"));
+  // never half an emoji at the 16 K line (#207 review)
+  const r3 = await callTool(d, "katashiro.canvas_open", { title: "Emoji", kind: "html", content: "a".repeat(16 * 1024 - 1) + "😀" });
+  const id3 = /id (cv_[0-9a-f]+)/.exec(r3.content[0].text)[1];
+  const e = (await callTool(d, "katashiro.canvas_read", { id: id3 })).content[0].text;
+  const ebody = e.slice(e.indexOf("\n\n") + 2);
+  assert.ok(ebody.startsWith("a".repeat(16 * 1024 - 1) + "\n\n[cut: 2 more characters"), ebody.slice(16 * 1024 - 5, 16 * 1024 + 40));
   // canvas_patch refuses it
   const pr = await callTool(d, "katashiro.canvas_patch", { id: id2, baseVersion: 1, edits: [{ find: "hi", replace: "yo" }] });
   assert.equal(pr.isError, true);

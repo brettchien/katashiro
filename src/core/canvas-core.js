@@ -239,17 +239,85 @@
     FORBID_ATTR: ["target", "srcset", "action", "formaction", "ping"],
   });
   const IMAGE_SRC_OK = /^(data|blob):/i;
-  // A <style>'s "<" as the CSS escape \3C (the trailing space ends the escape and is consumed by it),
-  // so DOMPurify's mXSS check does not drop the whole sheet (canvas-frame.js renderHtmlStatic).
-  const cssEscapeLt = (css) => String(css).replace(/</g, "\\3C ");
+  /**
+   * A <style>'s text for the static view's shadow root (canvas-frame.js renderHtmlStatic), in one
+   * pass that knows CSS comments, strings and escapes (#207 review):
+   *  - every "<" goes, so DOMPurify's mXSS check (text with "<" + a letter) does not drop the whole
+   *    sheet: in a comment or a string, and outside them (an unquoted url(), a custom property value),
+   *    it becomes the escape \3C (same character; the space ends the escape and is consumed by it);
+   *    an escaped "\<" becomes \3C too (not "\\3C"); a top-level CDO "<!--" is dropped (CSS ignores it).
+   *  - `:root` in a selector becomes `html`: a shadow tree has no root, and the page's own <html>
+   *    element is what the frame moves into it (so `:root[data-theme=…] x` keeps matching).
+   * Strings and comments are otherwise kept as they are.
+   */
+  function cssForShadow(css) {
+    const s = String(css == null ? "" : css);
+    const n = s.length;
+    const LT = "\\3C ";
+    let out = "";
+    let i = 0;
+    while (i < n) {
+      const c = s[i];
+      if (c === "/" && s[i + 1] === "*") {                 // a comment, to its end
+        const end = s.indexOf("*/", i + 2);
+        const stop = end < 0 ? n : end + 2;
+        out += s.slice(i, stop).replace(/</g, LT);
+        i = stop;
+        continue;
+      }
+      if (c === '"' || c === "'") {                        // a string, to its quote (or a newline: a bad string)
+        out += c;
+        let j = i + 1;
+        while (j < n && s[j] !== c && s[j] !== "\n") {
+          if (s[j] === "\\") {
+            if (s[j + 1] === "<") { out += LT; j += 2; continue; }
+            out += s.slice(j, j + 2);
+            j += 2;
+            continue;
+          }
+          out += s[j] === "<" ? LT : s[j];
+          j += 1;
+        }
+        if (j < n && s[j] === c) { out += c; j += 1; }
+        i = j;
+        continue;
+      }
+      if (c === "\\") {                                   // an escape outside a string
+        if (s[i + 1] === "<") { out += LT; i += 2; continue; }
+        out += s.slice(i, i + 2);
+        i += 2;
+        continue;
+      }
+      if (c === "<") {
+        if (s.startsWith("<!--", i)) { i += 4; continue; }  // CDO: ignored at the top level of a sheet
+        out += LT;
+        i += 1;
+        continue;
+      }
+      if (c === ":" && s.startsWith(":root", i) && !/[\w-]/.test(s[i + 5] || "") && (i === 0 || /[\s,{}()>+~;]/.test(s[i - 1]))) {
+        out += "html";
+        i += 5;
+        continue;
+      }
+      out += c;
+      i += 1;
+    }
+    return out;
+  }
 
   // canvas_read on an html canvas (canvas-html §2.1, §6 Q3): the first HTML_READ_HEAD characters
   // unless `full`. → { text, cut } (cut: characters left out).
   const HTML_READ_HEAD = 16 * 1024;
+  // Never between the two halves of a surrogate pair (an emoji): one character fewer then (#207 review).
+  function headEnd(s) {
+    const c = s.charCodeAt(HTML_READ_HEAD - 1);
+    return c >= 0xd800 && c <= 0xdbff ? HTML_READ_HEAD - 1 : HTML_READ_HEAD;
+  }
   function htmlReadView(content, full) {
     const s = String(content == null ? "" : content);
     if (full === true || s.length <= HTML_READ_HEAD) return { text: s, cut: 0 };
-    return { text: s.slice(0, HTML_READ_HEAD), cut: s.length - HTML_READ_HEAD };
+    const end = headEnd(s);
+    return { text: s.slice(0, end), cut: s.length - end };
   }
 
   function newNonce(cryptoObj) {
@@ -1070,5 +1138,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssEscapeLt, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

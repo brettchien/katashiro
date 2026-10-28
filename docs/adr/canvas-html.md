@@ -270,13 +270,17 @@ any vendored Archify code.
 - **Static view, two findings from real Archify output:**
   - DOMPurify drops a whole `<style>` whose text contains `<` followed by a letter (its mXSS check).
     Archify's main sheet (200 KB) has "on `<html>`" in a comment, so the static view lost all its
-    CSS. An `uponSanitizeElement` hook, which runs before that check, rewrites each `<` in a
-    `<style>`'s text as the CSS escape `\3C ` (same meaning in a comment, a string or a `url()`;
-    `<` cannot appear anywhere else in CSS). The node's text is changed in place; nothing is parsed
-    again. After it, Archify's static view matches the run view except for what script draws.
+    CSS. An `uponSanitizeElement` hook, which runs before that check, rewrites the `<style>`'s text
+    with `CanvasCore.cssForShadow`, one pass that tracks comments, strings and escapes (#208): each
+    `<` becomes the CSS escape `\3C ` (same character), an escaped `\<` becomes `\3C ` too, and a
+    top-level CDO `<!--` is dropped (CSS ignores it; an escape would break the next rule). The
+    node's text is changed in place; nothing is parsed again. After it, Archify's static view matches
+    the run view except for what script draws. Known edge: a custom property value holding a bare
+    `<` delimiter now holds an escaped `<` identifier instead.
   - The sanitized document's `<html>` element itself (head with the `<style>`s, body, attributes
     such as `data-theme`) is moved into the shadow root, so `html[data-theme=…]` and
-    `[data-theme]` rules match; `:root` rules do not (there is no root in a shadow tree).
+    `[data-theme]` rules match. A shadow tree has no root, so the same pass maps `:root` in
+    selectors to `html` (#208).
   - `SANITIZE_DOM` stays on, so an `id` that names a `document` property (`id="title"`,
     `id="forms"`) is removed and CSS keyed on it does not apply in the static view.
 - **CSP violations after `close()` are reported:** e.g. a remote `<img>` blocked by `img-src`
@@ -288,6 +292,8 @@ any vendored Archify code.
   Off: the store refuses `canvas_open` kind html, canvas tabs hide Run scripts, and a running frame
   goes back to the static view.
 - **Download:** the header's ⬇ saves an html canvas as `.html` (from the host, not the frame).
+- **`canvas_read`'s 16 K head** never ends between the halves of a surrogate pair (#208).
+- **`canvas-file.sh`** refuses a text file that is not UTF-8 (checked with `iconv` when present).
 - **canvas_inject_css** is refused for an html canvas (it styles itself), like `canvas_highlight`.
 - **Mirror:** `<slug>.html`, conflict files `<slug>.katashiro-<time>.html`; the file record keeps
   `ext: "html"` so every path check knows the extension.

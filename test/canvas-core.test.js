@@ -101,6 +101,42 @@ test("htmlReadView (canvas-html §6 Q3): the first 16 K characters unless full",
   const long = "a".repeat(C.HTML_READ_HEAD + 10);
   assert.deepEqual(C.htmlReadView(long), { text: "a".repeat(C.HTML_READ_HEAD), cut: 10 });
   assert.deepEqual(C.htmlReadView(long, true), { text: long, cut: 0 });
+  // #207 review: never half an emoji — a surrogate pair across the 16 K line ends the head before it
+  const emoji = "a".repeat(C.HTML_READ_HEAD - 1) + "😀" + "b";
+  const v = C.htmlReadView(emoji);
+  assert.equal(v.text, "a".repeat(C.HTML_READ_HEAD - 1));
+  assert.equal(v.cut, 3);
+  assert.equal(v.text.length + v.cut, emoji.length);
+});
+
+test("cssForShadow (#207 review): every < escaped by context, CDO dropped, :root → html; strings / comments otherwise kept", () => {
+  const f = C.cssForShadow;
+  // the case that started it: Archify's comment
+  assert.equal(f("/* switch on <html> */ a{}"), "/* switch on \\3C html> */ a{}");
+  // strings: plain and escaped <, an escaped backslash before <
+  assert.equal(f('a::before{content:"<"}'), 'a::before{content:"\\3C "}');
+  assert.equal(f('a::before{content:"\\<"}'), 'a::before{content:"\\3C "}');
+  assert.equal(f('a::before{content:"\\\\<"}'), 'a::before{content:"\\\\\\3C "}');
+  assert.equal(f("a::before{content:'<b>'}"), "a::before{content:'\\3C b>'}");
+  // top-level CDO is ignored by CSS: dropped, not turned into an escape that would break the next rule
+  assert.equal(f("<!-- a{color:red} -->"), " a{color:red} -->");
+  // outside strings: an unquoted url(), a custom property value
+  assert.equal(f("b{background:url(data:image/svg+xml,<svg/>)}"), "b{background:url(data:image/svg+xml,\\3C svg/>)}");
+  assert.equal(f("x{--v:<foo>}"), "x{--v:\\3C foo>}");
+  // :root in selectors only
+  assert.equal(f(":root, svg { --x: 1 }"), "html, svg { --x: 1 }");
+  assert.equal(f(':root[data-theme="light"] .a{}'), 'html[data-theme="light"] .a{}');
+  assert.equal(f("a:not(:root){}"), "a:not(html){}");
+  assert.equal(f("@media (x){\n:root{--a:1}}"), "@media (x){\nhtml{--a:1}}");
+  assert.equal(f(".rooty:root2{}"), ".rooty:root2{}");
+  assert.equal(f('a{content:":root"}'), 'a{content:":root"}');
+  assert.equal(f("/* :root */"), "/* :root */");
+  // nothing to do: unchanged; no "<" + letter left for DOMPurify's mXSS check anywhere
+  assert.equal(f("a{color:red}"), "a{color:red}");
+  for (const t of ["/* <html> */", '"<x"', "<!-- <a", "x{--v:<a>}", "\\<b"]) assert.doesNotMatch(f(t), /<[\/\w!]/, t);
+  // an unterminated comment / string does not hang or throw
+  assert.equal(f("/* <a"), "/* \\3C a");
+  assert.equal(f('a{content:"<\nb{}'), 'a{content:"\\3C \nb{}');
 });
 
 test("HTML_STATIC_DP (canvas-html §2.3): whole document as DOM, never the mermaid profile's foreignObject; use/animate/set and script stay out", () => {

@@ -372,7 +372,10 @@
   const HTML_READ_HEAD = 16 * 1024;
   function htmlReadView(content, full) {
     if (full === true || content.length <= HTML_READ_HEAD) return { text: content, cut: 0 };
-    return { text: content.slice(0, HTML_READ_HEAD), cut: content.length - HTML_READ_HEAD };
+    // Never between the two halves of a surrogate pair (an emoji): one character fewer then.
+    const c = content.charCodeAt(HTML_READ_HEAD - 1);
+    const end = c >= 0xd800 && c <= 0xdbff ? HTML_READ_HEAD - 1 : HTML_READ_HEAD;
+    return { text: content.slice(0, end), cut: content.length - end };
   }
   async function sha256Hex(bytes) {
     const d = await globalThis.crypto.subtle.digest("SHA-256", bytes);
