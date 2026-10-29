@@ -273,14 +273,17 @@ any vendored Archify code.
     CSS. An `uponSanitizeElement` hook, which runs before that check, rewrites the `<style>`'s text
     with `CanvasCore.cssForShadow`, one pass that tracks comments, strings and escapes (#208): each
     `<` becomes the CSS escape `\3C ` (same character), an escaped `\<` becomes `\3C ` too, and a
-    top-level CDO `<!--` is dropped (CSS ignores it; an escape would break the next rule). The
+    top-level CDO `<!--` becomes a space (CSS ignores it; an escape would break the next rule, and
+    nothing at all could join `/<!--*` into a comment opener). The
     node's text is changed in place; nothing is parsed again. After it, Archify's static view matches
     the run view except for what script draws. Known edge: a custom property value holding a bare
     `<` delimiter now holds an escaped `<` identifier instead.
   - The sanitized document's `<html>` element itself (head with the `<style>`s, body, attributes
     such as `data-theme`) is moved into the shadow root, so `html[data-theme=…]` and
     `[data-theme]` rules match. A shadow tree has no root, so the same pass maps `:root` in
-    selectors to `html` (#208).
+    selectors (any case, also right after a comment, as in Bootstrap's `/*! … */:root`) to
+    `:is(html,:nth-child(0))` (#208): `:nth-child(0)` matches nothing and only keeps `:root`'s
+    (0,1,0) specificity, so `:root{…} html{…}` resolves as on the page.
   - `SANITIZE_DOM` stays on, so an `id` that names a `document` property (`id="title"`,
     `id="forms"`) is removed and CSS keyed on it does not apply in the static view.
 - **CSP violations after `close()` are reported:** e.g. a remote `<img>` blocked by `img-src`

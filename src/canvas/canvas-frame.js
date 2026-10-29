@@ -474,9 +474,9 @@
     document.body.classList.add("mode-html");
     // DOMPurify drops a whole <style> whose text has "<" + a letter (its mXSS check; Archify's CSS has
     // "on <html>" in a comment, which took 200 KB of CSS with it). CanvasCore.cssForShadow escapes
-    // each "<" as \3C (same character in CSS) and maps :root to html (no root in a shadow tree), in
-    // the parsed node, before that check runs (uponSanitizeElement). Nothing is parsed again: a style
-    // element's text is never HTML, and the result is moved, not serialized.
+    // each "<" as \3C (same character in CSS) and maps :root to :is(html,…) (no root in a shadow
+    // tree), in the parsed node, before that check runs (uponSanitizeElement). Nothing is parsed again:
+    // a style element's text is never HTML, and the result is moved, not serialized.
     const escapeStyleLt = (node) => {
       if (node && node.nodeType === 1 && node.localName === "style" && !node.firstElementChild) {
         const css = CanvasCore.cssForShadow(node.textContent);

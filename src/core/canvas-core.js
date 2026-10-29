@@ -245,9 +245,12 @@
    *  - every "<" goes, so DOMPurify's mXSS check (text with "<" + a letter) does not drop the whole
    *    sheet: in a comment or a string, and outside them (an unquoted url(), a custom property value),
    *    it becomes the escape \3C (same character; the space ends the escape and is consumed by it);
-   *    an escaped "\<" becomes \3C too (not "\\3C"); a top-level CDO "<!--" is dropped (CSS ignores it).
-   *  - `:root` in a selector becomes `html`: a shadow tree has no root, and the page's own <html>
-   *    element is what the frame moves into it (so `:root[data-theme=…] x` keeps matching).
+   *    an escaped "\<" becomes \3C too (not "\\3C"); a top-level CDO "<!--" becomes a space (CSS ignores
+   *    it; a space, not nothing, so "/<!--*" does not become a comment opener).
+   *  - `:root` in a selector (any case, also right after a comment or "*") becomes
+   *    `:is(html,:nth-child(0))`: a shadow tree has no root, and the page's own <html> element is
+   *    what the frame moves into it (so `:root[data-theme=…] x` keeps matching); :nth-child(0) matches
+   *    nothing and only keeps :root's (0,1,0) specificity, so `:root{} html{}` still resolve as before.
    * Strings and comments are otherwise kept as they are.
    */
   function cssForShadow(css) {
@@ -255,14 +258,16 @@
     const n = s.length;
     const LT = "\\3C ";
     let out = "";
+    const ROOT = ":is(html,:nth-child(0))";
     let i = 0;
+    let commentEnd = -1;                                   // where the last comment ended
     while (i < n) {
       const c = s[i];
       if (c === "/" && s[i + 1] === "*") {                 // a comment, to its end
         const end = s.indexOf("*/", i + 2);
         const stop = end < 0 ? n : end + 2;
         out += s.slice(i, stop).replace(/</g, LT);
-        i = stop;
+        i = commentEnd = stop;
         continue;
       }
       if (c === '"' || c === "'") {                        // a string, to its quote (or a newline: a bad string)
@@ -289,13 +294,14 @@
         continue;
       }
       if (c === "<") {
-        if (s.startsWith("<!--", i)) { i += 4; continue; }  // CDO: ignored at the top level of a sheet
+        if (s.startsWith("<!--", i)) { out += " "; i += 4; continue; }  // CDO: ignored at the top level of a sheet
         out += LT;
         i += 1;
         continue;
       }
-      if (c === ":" && s.startsWith(":root", i) && !/[\w-]/.test(s[i + 5] || "") && (i === 0 || /[\s,{}()>+~;]/.test(s[i - 1]))) {
-        out += "html";
+      if (c === ":" && s.slice(i, i + 5).toLowerCase() === ":root" && !/[\w-]/.test(s[i + 5] || "")
+          && (i === 0 || i === commentEnd || /[\s,{}()>+~;*]/.test(s[i - 1]))) {
+        out += ROOT;
         i += 5;
         continue;
       }

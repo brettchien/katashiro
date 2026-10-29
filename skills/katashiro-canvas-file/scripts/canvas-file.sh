@@ -61,14 +61,15 @@ if [ "$kind" = image ]; then
   esac
 fi
 
+size=$(wc -c < "$file" | tr -d ' ')
+[ "$size" -le "$MAX_BYTES" ] || { echo "error: $file is $size bytes; a $kind canvas is capped at $MAX_BYTES" >&2; exit 2; }
+
 # Text kinds must be UTF-8: jq --rawfile would quietly turn invalid bytes into U+FFFD (#207 review).
+# After the size check, so a file over the cap is not read through first (#208 review).
 # Checked with iconv where there is one (glibc, macOS); without it, the caller is trusted.
 if [ "$kind" != image ] && command -v iconv >/dev/null; then
   iconv -f UTF-8 -t UTF-8 "$file" >/dev/null 2>&1 || { echo "error: $file is not valid UTF-8 — convert it first (e.g. iconv -f <its encoding> -t UTF-8)" >&2; exit 2; }
 fi
-
-size=$(wc -c < "$file" | tr -d ' ')
-[ "$size" -le "$MAX_BYTES" ] || { echo "error: $file is $size bytes; a $kind canvas is capped at $MAX_BYTES" >&2; exit 2; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

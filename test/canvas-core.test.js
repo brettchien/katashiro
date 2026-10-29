@@ -109,7 +109,7 @@ test("htmlReadView (canvas-html §6 Q3): the first 16 K characters unless full",
   assert.equal(v.text.length + v.cut, emoji.length);
 });
 
-test("cssForShadow (#207 review): every < escaped by context, CDO dropped, :root → html; strings / comments otherwise kept", () => {
+test("cssForShadow (#207 review): every < escaped by context, CDO → space, :root → :is(html,…); strings / comments otherwise kept", () => {
   const f = C.cssForShadow;
   // the case that started it: Archify's comment
   assert.equal(f("/* switch on <html> */ a{}"), "/* switch on \\3C html> */ a{}");
@@ -118,16 +118,23 @@ test("cssForShadow (#207 review): every < escaped by context, CDO dropped, :root
   assert.equal(f('a::before{content:"\\<"}'), 'a::before{content:"\\3C "}');
   assert.equal(f('a::before{content:"\\\\<"}'), 'a::before{content:"\\\\\\3C "}');
   assert.equal(f("a::before{content:'<b>'}"), "a::before{content:'\\3C b>'}");
-  // top-level CDO is ignored by CSS: dropped, not turned into an escape that would break the next rule
-  assert.equal(f("<!-- a{color:red} -->"), " a{color:red} -->");
+  // top-level CDO is ignored by CSS: a space, not an escape that would break the next rule, and not
+  // nothing, which would join "/" and "*" into a comment opener (#208 review)
+  assert.equal(f("<!-- a{color:red} -->"), "  a{color:red} -->");
+  assert.equal(f("a{}/<!--*b{}"), "a{}/ *b{}");
   // outside strings: an unquoted url(), a custom property value
   assert.equal(f("b{background:url(data:image/svg+xml,<svg/>)}"), "b{background:url(data:image/svg+xml,\\3C svg/>)}");
   assert.equal(f("x{--v:<foo>}"), "x{--v:\\3C foo>}");
   // :root in selectors only
-  assert.equal(f(":root, svg { --x: 1 }"), "html, svg { --x: 1 }");
-  assert.equal(f(':root[data-theme="light"] .a{}'), 'html[data-theme="light"] .a{}');
-  assert.equal(f("a:not(:root){}"), "a:not(html){}");
-  assert.equal(f("@media (x){\n:root{--a:1}}"), "@media (x){\nhtml{--a:1}}");
+  // (as :is(html,:nth-child(0)): :nth-child(0) matches nothing and keeps :root's (0,1,0) specificity)
+  assert.equal(f(":root, svg { --x: 1 }"), ":is(html,:nth-child(0)), svg { --x: 1 }");
+  assert.equal(f(':root[data-theme="light"] .a{}'), ':is(html,:nth-child(0))[data-theme="light"] .a{}');
+  assert.equal(f("a:not(:root){}"), "a:not(:is(html,:nth-child(0))){}");
+  assert.equal(f("@media (x){\n:root{--a:1}}"), "@media (x){\n:is(html,:nth-child(0)){--a:1}}");
+  // right after a comment (Bootstrap 5.3 min.css starts "/*! … */:root,[data-bs-theme=light]{…}"), after *, any case
+  assert.equal(f("/*! x */:root,[data-bs-theme=light]{--a:1}"), "/*! x */:is(html,:nth-child(0)),[data-bs-theme=light]{--a:1}");
+  assert.equal(f("*:root{}"), "*:is(html,:nth-child(0)){}");
+  assert.equal(f(":ROOT{}"), ":is(html,:nth-child(0)){}");
   assert.equal(f(".rooty:root2{}"), ".rooty:root2{}");
   assert.equal(f('a{content:":root"}'), 'a{content:":root"}');
   assert.equal(f("/* :root */"), "/* :root */");
