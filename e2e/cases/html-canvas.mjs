@@ -18,6 +18,7 @@ const pageHtml = (origin, label) => `<!DOCTYPE html>
 <title>fixture</title>
 <style>:root, [data-theme="dark"] { --fg: rgb(1, 2, 3); } #hdr { color: var(--fg); }</style>
 <style>/* THEME — switch by toggling [data-theme] on <html> (Archify's own comment) */ #out { border-top: 3px solid rgb(4, 5, 6); }</style>
+<style><!-- :root { --bg2: rgb(7, 8, 9); } #dia { background-color: var(--bg2); } #ext::after { content: "<b>"; } --></style>
 </head>
 <body>
 <h1 id="hdr">${label}</h1>
@@ -81,6 +82,8 @@ export default [
         script: !!root.querySelector("script"), form: !!root.querySelector("form"), iframe: !!root.querySelector("iframe"),
         out: root.querySelector("#out").textContent,
         ltStyle: getComputedStyle(root.querySelector("#out")).borderTopColor,
+        rootVar: getComputedStyle(root.querySelector("#dia")).backgroundColor,
+        after: getComputedStyle(root.querySelector("#ext"), "::after").content,
         remote: root.querySelector("#remote").getAttribute("src"), dataimg: (root.querySelector("#dataimg").getAttribute("src") || "").slice(0, 22),
         target: root.querySelector("#ext").getAttribute("target"), onclick: root.querySelector("#nav").getAttribute("onclick"),
         theme: root.querySelector("html") && root.querySelector("html").getAttribute("data-theme"),
@@ -88,6 +91,7 @@ export default [
       t.check(st.title === "Static title" && st.rect && st.marker, "the page's text and SVG show without its scripts", st);
       t.check(st.color === "rgb(1, 2, 3)" && st.theme === "dark", "its <style> applies in the shadow root (a [data-theme] variable on the moved <html>)", st);
       t.check(st.ltStyle === "rgb(4, 5, 6)", "a <style> with \"<html>\" in a comment survives DOMPurify (its < escaped as \\3C before the mXSS check)", st);
+      t.check(st.rootVar === "rgb(7, 8, 9)" && st.after === '"<b>"', "a sheet behind a CDO, with :root (→ html) and a \"<\" in a string, applies as written", st);
       t.check(!st.use && !st.fo && !st.script && !st.form && !st.iframe, "no use / foreignObject / script / form / iframe", st);
       t.check(st.out === "not run" && st.onclick === null, "no script ran, event handlers are gone", st);
       t.check(st.remote === null && st.dataimg === "data:image/png;base64,", "a remote image source is dropped, a data: one kept", st);

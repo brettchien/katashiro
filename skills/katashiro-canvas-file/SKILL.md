@@ -27,6 +27,8 @@ directly, and you only see one line back.
 
 - `--kind`: `html` (≤ 4 MB), `markdown` / `slides` / `mermaid` (≤ 2 MB), `image` (≤ 5 MB; png,
   jpg, gif, webp, svg; optional `--caption`).
+- Text kinds must be **UTF-8**. The script refuses a file that is not (checked with `iconv` when the
+  host has it); convert it first, or invalid bytes would turn into U+FFFD.
 - Without `--id` it creates a canvas and opens its tab in the background. With `--id` it writes a
   new revision of that canvas: on top of `--base` (the version you last wrote or read), or, without
   it, on top of whatever version the canvas has now. Pass `--base` when the user may have edited a
@@ -60,6 +62,7 @@ directly, and you only see one line back.
 | `kind "html" is not supported yet` | Katashiro is too old for html canvases — ask the user to update it |
 | `html canvases are turned off …` | The user turned them off in Settings |
 | `… is capped at …` | The file is too large for that kind |
+| `… is not valid UTF-8` | Convert the file to UTF-8 first |
 | `stale` (JSON with `currentVersion`) | The canvas moved on since `--base`: read it, then write again |
 
 The script never prints the session token; do not echo it yourself either.

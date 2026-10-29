@@ -10,6 +10,7 @@ const path = require("node:path");
 const { execFile } = require("node:child_process");
 
 const SCRIPT = path.join(__dirname, "..", "skills", "katashiro-canvas-file", "scripts", "canvas-file.sh");
+const haveIconv = (() => { try { require("node:child_process").execFileSync("which", ["iconv"]); return true; } catch (_) { return false; } })();
 const haveTools = ["bash", "curl", "jq"].every((t) => { try { require("node:child_process").execFileSync("which", [t]); return true; } catch (_) { return false; } });
 
 function fakeFacade({ onCall }) {
@@ -100,6 +101,11 @@ test("canvas-file.sh: a refusal comes back as an error; bad arguments, caps and 
     const bigHtml = tmpFile("big.html", "x".repeat(4 * 1024 * 1024 + 1));
     r = await run([bigHtml, "--kind", "html", "--title", "T"], { OPENAB_SESSION_TOKEN: "t", OAB_FACADE_URL: f.url });
     assert.equal(r.code, 2); assert.match(r.stderr, /capped at 4194304/);
+    if (haveIconv) {
+      const latin1 = tmpFile("l1.html", Buffer.from([0x3c, 0x70, 0x3e, 0xe9, 0x3c, 0x2f, 0x70, 0x3e]));   // "<p>é</p>" in Latin-1
+      r = await run([latin1, "--kind", "html", "--title", "T"], { OPENAB_SESSION_TOKEN: "t", OAB_FACADE_URL: f.url });
+      assert.equal(r.code, 2); assert.match(r.stderr, /not valid UTF-8/);
+    }
     assert.equal(f.calls.length, before, "no facade call for any of these");
   } finally { f.server.close(); }
 });
