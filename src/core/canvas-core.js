@@ -505,6 +505,12 @@
     const e = effectiveEngine({ override, setting });
     return `圖表：${ENGINE_LABEL[e]}${isEngine(override) && override !== effectiveEngine({ override: null, setting }) ? "（此分頁）" : ""}`;
   }
+  /**
+   * canvas_view({engine}) waits for render waitSeq or a newer one (§2.3). That render's error{}
+   * before its rendered{} ends the wait at once (ok:false, the reason) instead of the timeout's ok;
+   * a CSP report (no seq) or an older render's error does not.
+   */
+  const failsEngineWait = (m, waitSeq, rendered) => !!m && Number.isInteger(m.seq) && Number.isInteger(waitSeq) && m.seq >= waitSeq && !rendered;
   const DIAGRAMS_REPORT_MAX = 500;
   /**
    * rendered{diagrams} (§2.3): one entry per diagram of the render, in order — the engine that drew
@@ -1216,5 +1222,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

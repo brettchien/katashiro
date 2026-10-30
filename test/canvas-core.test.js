@@ -1213,6 +1213,15 @@ test("diagram engine: header override > Settings > Pele; the switch toggles and 
   assert.equal(C.otherEngine("mermaid"), "pele");
 });
 
+test("diagram engine: canvas_view({engine}) ends its wait on the awaited render's error, not on an older one or a CSP report", () => {
+  assert.equal(C.failsEngineWait({ type: "error", msg: "boom", seq: 5 }, 5, false), true);
+  assert.equal(C.failsEngineWait({ type: "error", msg: "boom", seq: 6 }, 5, false), true);    // a newer render, already with the new engine
+  assert.equal(C.failsEngineWait({ type: "error", msg: "boom", seq: 4 }, 5, false), false);   // the render before the switch
+  assert.equal(C.failsEngineWait({ type: "error", msg: "CSP" }, 5, false), false);            // no seq: a CSP report
+  assert.equal(C.failsEngineWait({ type: "error", msg: "late", seq: 5 }, 5, true), false);    // after rendered{}: not a render failure
+  assert.equal(C.failsEngineWait(null, 5, false), false);
+});
+
 test("diagram engine: rendered{diagrams} and diagramFallback{} pass the allow-list only when well-formed", () => {
   assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [] }));
   assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [{ engine: "pele", fallback: false }, { engine: "none", fallback: false }] }));

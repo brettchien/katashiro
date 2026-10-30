@@ -806,6 +806,7 @@
     notice(why);
     finishGoto({ ok: false, error: "the canvas is no longer shown" });
     finishHighlight({ ok: false, error: "the canvas is no longer shown" });
+    finishEngine({ ok: false, error: "the canvas is no longer shown" });
   }
 
   // What the frame renders: the text for markdown / slides; for an image canvas the stored JSON
@@ -834,7 +835,11 @@
     if (!frame || !frameReady || !current || frameProfile === "html") return;
     const c = current;
     let content;
-    try { content = await renderPayload(c); } catch (e) { notice(CanvasCore.clipError(e.message)); return; }
+    try { content = await renderPayload(c); } catch (e) {
+      notice(CanvasCore.clipError(e.message));
+      finishEngine({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(e.message)}` });
+      return;
+    }
     if (compareView) {
       if (frame && frameReady && current === c) sendCompareRender(c, content);   // superseded while reading
       return;
@@ -1014,14 +1019,21 @@
     if (!current || !frame || frameProfile === "html" || !CanvasCore.textKind(current.meta.kind)) { sendResponse({ ok: false, error: "the canvas is not shown with diagrams in this tab" }); return false; }
     if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return false; }
     const answer = () => ({ ok: true, engine: tabEngine(), override: engineOverride, setting: CanvasCore.effectiveEngine({ override: null, setting: engineSetting }), diagrams: shownDiagrams });
-    if (pendingEngine) { clearTimeout(pendingEngine.timer); pendingEngine.reply({ ok: false, error: "superseded by a newer canvas_view({engine})" }); pendingEngine = null; }
+    finishEngine({ ok: false, error: "superseded by a newer canvas_view({engine})" });
     const changed = setTabEngine(msg.engine === "default" ? null : msg.engine);
     if (!changed && rendered) { sendResponse(answer()); return false; }
+    if (!changed && renderFailed) { sendResponse({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return false; }
     pendingEngine = {
       seq: renderSeq + (changed ? 1 : 0), reply: sendResponse, answer,
-      timer: setTimeout(() => { if (pendingEngine) { pendingEngine.reply({ ok: true, ...answer(), note: "the new render had not finished; diagrams may be from before" }); pendingEngine = null; } }, 15000),
+      timer: setTimeout(() => finishEngine({ ok: true, ...answer(), note: "the new render had not finished; diagrams may be from before" }), 15000),
     };
     return true;
+  }
+  function finishEngine(result) {
+    if (!pendingEngine) return;
+    clearTimeout(pendingEngine.timer);
+    pendingEngine.reply(result);
+    pendingEngine = null;
   }
 
   if (!compareView) {
@@ -1324,7 +1336,7 @@
         renderFailed = "";
         shownDiagrams = CanvasCore.diagramsReport(m.diagrams || []) || [];
         updateEngineBtn();
-        if (pendingEngine && m.seq >= pendingEngine.seq) { clearTimeout(pendingEngine.timer); pendingEngine.reply(pendingEngine.answer()); pendingEngine = null; }
+        if (pendingEngine && m.seq >= pendingEngine.seq) finishEngine(pendingEngine.answer());
         if (CanvasCore.renderNoticeStale(noticeTag, m.seq)) notice("");    // an older render's error
         maybePeleNotice(shownDiagrams);
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
@@ -1375,6 +1387,7 @@
         if (CanvasCore.fromOlderRender(m, renderingSeq)) break;
         if (printing) mountFrame();      // back to the normal view; a later render must never print()
         if (!rendered) renderFailed = CanvasCore.clipError(m.msg);    // the render failed (not a later CSP report)
+        if (pendingEngine && CanvasCore.failsEngineWait(m, pendingEngine.seq, rendered)) finishEngine({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         if (compareView) notice(`顯示時發生錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
         else offerSendError(m.msg, false, { seq: renderingSeq, version: renderingVersion });
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
