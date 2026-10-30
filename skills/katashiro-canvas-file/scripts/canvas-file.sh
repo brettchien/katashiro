@@ -110,11 +110,11 @@ result_text() {
   printf '%s' "$out"
 }
 
-# 1) MCP handshake → session id
+# 1) MCP handshake → session id, if the facade gives one (a stateless facade sends no
+#    Mcp-Session-Id; then every request goes without it)
 jq -n '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"katashiro-canvas-file",version:"1"}}}' > "$tmp/init.json"
 post "$tmp/init.json" >/dev/null || { echo "error: cannot reach the OpenAB facade at $FACADE" >&2; exit 1; }
-sid=$(grep -i '^mcp-session-id:' "$tmp/headers" | sed 's/^[^:]*: *//' | tr -d '\r')
-[ -n "$sid" ] || { echo "error: facade handshake failed (no Mcp-Session-Id)" >&2; exit 1; }
+sid=$(grep -i '^mcp-session-id:' "$tmp/headers" | sed 's/^[^:]*: *//' | tr -d '\r' || true)
 echo '{"jsonrpc":"2.0","method":"notifications/initialized"}' > "$tmp/inited.json"
 post "$tmp/inited.json" "$sid" >/dev/null || { echo "error: facade handshake failed (notifications/initialized)" >&2; exit 1; }
 

@@ -1,6 +1,7 @@
 // skills/katashiro-canvas-file/scripts/canvas-file.sh (canvas-html ADR §2.2) against a fake OpenAB
 // facade: the MCP handshake, the canvas_open arguments it builds (the file's bytes as content, never
-// on a command line), --id with and without --base (canvas_read for the version), caps and errors.
+// on a command line), --id with and without --base (canvas_read for the version), caps and errors,
+// and a stateless facade (no Mcp-Session-Id).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
@@ -13,7 +14,7 @@ const SCRIPT = path.join(__dirname, "..", "skills", "katashiro-canvas-file", "sc
 const haveIconv = (() => { try { require("node:child_process").execFileSync("which", ["iconv"]); return true; } catch (_) { return false; } })();
 const haveTools = ["bash", "curl", "jq"].every((t) => { try { require("node:child_process").execFileSync("which", [t]); return true; } catch (_) { return false; } });
 
-function fakeFacade({ onCall }) {
+function fakeFacade({ onCall, sessionId = "s-1" }) {
   const calls = [];
   const server = http.createServer((req, res) => {
     let body = "";
@@ -21,7 +22,7 @@ function fakeFacade({ onCall }) {
     req.on("end", () => {
       const msg = JSON.parse(body);
       calls.push({ msg, auth: req.headers.authorization, sid: req.headers["mcp-session-id"] });
-      if (msg.method === "initialize") { res.setHeader("Mcp-Session-Id", "s-1"); res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} })); return; }
+      if (msg.method === "initialize") { if (sessionId) res.setHeader("Mcp-Session-Id", sessionId); res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} })); return; }
       if (msg.method === "notifications/initialized") { res.statusCode = 202; res.end(); return; }
       const { text, isError } = onCall(msg.params.arguments);
       // SSE framing, as the facade answers
@@ -50,6 +51,18 @@ test("canvas-file.sh: creates an html canvas from a file; the content is the fil
     assert.deepEqual(call.msg.params, { name: "execute_capability", arguments: { name: "katashiro.canvas_open", arguments: { kind: "html", title: "Arch map", content: page } } });
     assert.equal(call.auth, "Bearer tok-1");
     assert.equal(call.sid, "s-1");
+  } finally { f.server.close(); }
+});
+
+test("canvas-file.sh: a stateless facade (no Mcp-Session-Id) still works; no request carries a session id", { skip: !haveTools }, async () => {
+  const f = await fakeFacade({ sessionId: null, onCall: (a) => ({ text: `created canvas "${a.arguments.title}" — id cv_00000000000b, version 1 (opened in a background tab)` }) });
+  try {
+    const file = tmpFile("s.html", "<p>stateless</p>");
+    const r = await run([file, "--kind", "html", "--title", "S"], { OPENAB_SESSION_TOKEN: "t", OAB_FACADE_URL: f.url });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /^created canvas "S" — id cv_00000000000b/);
+    assert.deepEqual(f.calls.map((c) => c.msg.method), ["initialize", "notifications/initialized", "tools/call"]);
+    assert.ok(f.calls.every((c) => c.sid === undefined), "no Mcp-Session-Id header sent");
   } finally { f.server.close(); }
 });
 
