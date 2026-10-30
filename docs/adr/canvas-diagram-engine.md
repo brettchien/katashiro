@@ -98,7 +98,9 @@ None of them changes a canvas's content, versions or `agentVersion`; they change
 that canvas's tab (opened if needed, like `compare`), through the same handler; `"default"` drops
 the override. Refused on html / image canvases, with the reason. Not gated by act mode (display
 only). The result says which engine each diagram was actually drawn with (fallbacks included,
-§2.4), so the agent can screenshot and compare. The global setting stays the user's.
+§2.4), so the agent can screenshot and compare. If the re-render itself fails (the canvas, not a
+diagram), the result is `ok:false` with that error at once, not the 15 s wait's "had not finished".
+The global setting stays the user's.
 
 ### 2.4 Automatic fallback
 
