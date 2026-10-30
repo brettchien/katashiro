@@ -35,6 +35,8 @@ const STUB = `
   const data = {
     "canvas:${ID}:meta": { id: "${ID}", title: "Plan", kind: "markdown", version: 22, agentVersion: 22, author: "agent", conversationId: "conv1", normalized: true },
     "canvas:${ID}:latest": ${JSON.stringify(BAD)},
+    // The one-time "圖表現在用 Pele 繪製" notice (canvas-diagram-engine) is not what this tests: seen.
+    "canvas:peleNoticeShown": true,
   };
   const listeners = [];
   const ev = () => ({ addListener() {}, removeListener() {} });

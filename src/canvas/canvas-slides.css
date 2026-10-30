@@ -30,3 +30,6 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal figure.ks-mermaid svg { width: 100%; height: auto; max-width: 100% !important; max-height: 500px; }
 .reveal figure.ks-mermaid:hover .copy-btn { opacity: 1; }
 .reveal .ks-mermaid-error { font-size: 0.45em; text-align: left; }
+/* Pele on the deck's background (canvas-frame.css sets the document's; edge labels are opaque). */
+.reveal figure.ks-mermaid[data-engine="pele"] { --pele-bg: #191919; --pele-surface: #262626; --pele-surface-alt: #333333; }
+.reveal .ks-mermaid-fallback { font-size: 0.4em; }

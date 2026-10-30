@@ -20,7 +20,8 @@
     ready: () => true,
     // normalized (§3.5): Milkdown's parse+serialize of an agent markdown version, ≤ 2 MB.
     // seq (#96): the host's render number echoed back — two renders of one version differ in it.
-    rendered: (m) => Number.isInteger(m.version) && Number.isInteger(m.seq) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)),
+    rendered: (m) => Number.isInteger(m.version) && Number.isInteger(m.seq) && (m.normalized === undefined || (typeof m.normalized === "string" && m.normalized.length <= TEXT_MAX)) &&
+      (m.diagrams === undefined || diagramsReport(m.diagrams) !== null),
     // Editing (§3.5): an explicit save (Ctrl+S / Save), and the editor's dirty state for the header.
     save: (m) => typeof m.content === "string" && m.content.length <= TEXT_MAX && Number.isInteger(m.baseVersion),
     dirty: (m) => typeof m.dirty === "boolean",
@@ -38,6 +39,9 @@
     // A mermaid diagram that failed (§3.3): shown inline in the frame, the rest of the canvas stands,
     // so unlike error{} it never marks the render as failed. Offers "send error to agent" all the same.
     diagramError: (m) => typeof m.msg === "string" && Number.isInteger(m.seq),
+    // A diagram the chosen engine could not draw and the other one did (canvas-diagram-engine §2.4):
+    // the figure carries a note; no "failed" banner. msg names the engine that failed and why.
+    diagramFallback: (m) => typeof m.msg === "string" && Number.isInteger(m.seq),
     // #91: the editor did not open (startEdit threw). Separate from error{}, which also comes from
     // CSP violations while an editor is open and must not end edit mode.
     editFailed: (m) => typeof m.msg === "string",
@@ -476,14 +480,82 @@
    * fence (a compare's other side is never rendered): the same source is the same block.
    */
   const mermaidKey = (source) => `mermaid:${normText(source)}`;
+  // --- Diagram engine (canvas-diagram-engine, Brett 2026-10-30) -------------------------------
+  // Pele by default, Mermaid as the other engine; each is the other's fallback. The engine used:
+  // the tab's header choice (override) if set, else Settings → 圖表引擎, else Pele.
+  const ENGINES = ["pele", "mermaid"];
+  const ENGINE_LABEL = { pele: "Pele", mermaid: "Mermaid" };
+  const isEngine = (e) => e === "pele" || e === "mermaid";
+  const otherEngine = (e) => (e === "mermaid" ? "pele" : "mermaid");
+  /** The engine a tab draws with: its override if it has a valid one, else the setting (Pele unless "mermaid"). */
+  function effectiveEngine({ override, setting }) {
+    if (isEngine(override)) return override;
+    return setting === "mermaid" ? "mermaid" : "pele";
+  }
+  /**
+   * The header switch (§2.2): what one click leads to. From the engine shown, the other one; an
+   * override equal to the setting is no override at all (null), so the tab follows the setting again.
+   */
+  function engineAfterSwitch({ override, setting }) {
+    const next = otherEngine(effectiveEngine({ override, setting }));
+    return next === effectiveEngine({ override: null, setting }) ? null : next;
+  }
+  /** The header switch's label: the engine shown, marked when only this tab uses it. */
+  function engineSwitchLabel({ override, setting }) {
+    const e = effectiveEngine({ override, setting });
+    return `圖表：${ENGINE_LABEL[e]}${isEngine(override) && override !== effectiveEngine({ override: null, setting }) ? "（此分頁）" : ""}`;
+  }
+  const DIAGRAMS_REPORT_MAX = 500;
+  /**
+   * rendered{diagrams} (§2.3): one entry per diagram of the render, in order — the engine that drew
+   * it ("pele" | "mermaid", or "none" when both failed) and whether that was the fallback. Returns
+   * the cleaned list, or null when malformed.
+   */
+  function diagramsReport(list) {
+    if (!Array.isArray(list) || list.length > DIAGRAMS_REPORT_MAX) return null;
+    const out = [];
+    for (const d of list) {
+      if (!d || typeof d !== "object" || !(isEngine(d.engine) || d.engine === "none") || typeof d.fallback !== "boolean") return null;
+      out.push({ engine: d.engine, fallback: d.fallback });
+    }
+    return out;
+  }
+  /** One line for the agent (canvas_view): how many diagrams each engine drew, fallbacks and failures. */
+  function diagramsSummary(list) {
+    const d = diagramsReport(list) || [];
+    if (!d.length) return "no diagrams";
+    const count = (f) => d.filter(f).length;
+    const parts = [];
+    for (const e of ENGINES) {
+      const n = count((x) => x.engine === e);
+      if (!n) continue;
+      const fb = count((x) => x.engine === e && x.fallback);
+      parts.push(`${n} by ${ENGINE_LABEL[e]}${fb ? ` (${fb} as the fallback)` : ""}`);
+    }
+    const none = count((x) => x.engine === "none");
+    if (none) parts.push(`${none} failed with both engines`);
+    return `${d.length} diagram${d.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
+  }
+  /** The note on a figure drawn by the fallback (§2.4): which engine drew it and why the other did not. */
+  function diagramFallbackNote(drawnBy, failed) {
+    return clipError(`以 ${ENGINE_LABEL[drawnBy] || drawnBy} 繪製（${failed}）`);
+  }
+
   /**
    * The text of a failed diagram for the host (error{} rules: plain text, capped there too). `n` =
    * the diagram's number in the canvas; none when it is not about one diagram (mermaid did not load).
    */
-  function diagramErrorText(err, n) {
+  function diagramErrorText(err, n, engine) {
     let msg = err && typeof err === "object" ? (err.message || err.str || "") : String(err == null ? "" : err);
     msg = String(msg).replace(/\r\n?/g, "\n").trim() || "the diagram could not be drawn";
-    return clipError(`${n ? `mermaid diagram ${n}` : "mermaid"}: ${msg}`);
+    // Pele's PeleError carries line / column; say where when its message does not already.
+    if (err && typeof err === "object" && Number.isInteger(err.line) && !/\bline \d/.test(msg)) {
+      msg = `line ${err.line}${Number.isInteger(err.column) ? `, column ${err.column}` : ""}: ${msg}`;
+    } else if (err && typeof err === "object" && Number.isInteger(err.column) && /\bline \d+/.test(msg) && !/\bcolumn \d/.test(msg)) {
+      msg = msg.replace(/\bline (\d+)/, `line $1, column ${err.column}`);
+    }
+    const who = isEngine(engine) ? ENGINE_LABEL[engine] : "mermaid";
+    return clipError(`${who}${n ? ` diagram ${n}` : ""}: ${msg}`);
   }
 
   // Above this many LCS cells (prev × next blocks left after trimming the common ends) every
@@ -1144,5 +1216,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });

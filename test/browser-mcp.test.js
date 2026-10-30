@@ -3728,7 +3728,7 @@ test("katashiro.canvas_view: showChanges is the global switch; compare needs an 
   assert.deepEqual(calls, [["show", true], ["show", true], ["show", false], ["compare", "cv_000000000001", true], ["compare", "cv_000000000001", false]]);
   calls.length = 0;
   for (const [args, re] of [
-    [{}, /give `showChanges` and\/or `compare`/],
+    [{}, /give `showChanges`, `compare` and\/or `engine`/],
     [{ showChanges: "on" }, /must be true or false/],
     [{ compare: 1, id: "cv_000000000001" }, /must be true or false/],
     [{ compare: true }, /needs the canvas `id`/],
@@ -3748,6 +3748,50 @@ test("katashiro.canvas_view: showChanges is the global switch; compare needs an 
   assert.equal((await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: false })).content[0].text, 'no compare of "Doc" was open');
   delete d.canvas.compare;
   assert.match((await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: true })).content[0].text, /not available/);
+});
+
+test("katashiro.canvas_view: engine switches one canvas's tab; the result says what drew each diagram", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });    // not act-gated, sessionScope
+  withCanvas(d);
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "```mermaid\nmindmap\n  root\n```" });
+  await callTool(d, "katashiro.canvas_open", { title: "Page", kind: "html", content: "<p>x</p>" });
+  const calls = [];
+  d.canvas.setEngine = async (id, engine) => {
+    calls.push([id, engine]);
+    if (engine === "default") return { ok: true, engine: "pele", override: null, setting: "pele", diagrams: [{ engine: "pele", fallback: false }] };
+    return { ok: true, engine, override: engine, setting: "pele", diagrams: [{ engine: "pele", fallback: true }, { engine: "mermaid", fallback: false }, { engine: "none", fallback: false }], tabId: 80 };
+  };
+  const m = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", engine: "mermaid" });
+  assert.equal(m.isError, undefined, JSON.stringify(m));
+  assert.equal(m.content[0].text, '"Doc" now draws its diagrams with Mermaid in its tab (this tab only; Settings → 圖表引擎 is Pele): 3 diagrams: 1 by Pele (1 as the fallback), 1 by Mermaid, 1 failed with both engines');
+  const back = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", engine: "default" });
+  assert.equal(back.content[0].text, '"Doc" now draws its diagrams with Pele in its tab (Settings → 圖表引擎): 1 diagram: 1 by Pele');
+  assert.deepEqual(calls, [["cv_000000000001", "mermaid"], ["cv_000000000001", "default"]]);
+  calls.length = 0;
+  for (const [args, re] of [
+    [{ engine: "pele" }, /needs the canvas `id`/],
+    [{ id: "cv_000000000001", engine: "dagre" }, /must be "pele", "mermaid" or "default"/],
+    [{ id: "cv_000000000002", engine: "pele" }, /"Page" is html; only markdown, slides and mermaid canvases have diagrams/],
+  ]) {
+    const r = await callTool(d, "katashiro.canvas_view", args);
+    assert.equal(r.isError, true, JSON.stringify(args));
+    assert.match(r.content[0].text, re);
+  }
+  assert.deepEqual(calls, []);
+  d.canvas.setEngine = async () => ({ ok: false, error: "the user is editing this canvas; try again when they are done" });
+  const busy = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", engine: "pele" });
+  assert.equal(busy.isError, true);
+  assert.match(busy.content[0].text, /^canvas_view: cannot switch the diagram engine of "Doc": the user is editing/);
+  delete d.canvas.setEngine;
+  assert.match((await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", engine: "pele" })).content[0].text, /not available/);
+});
+
+test("katashiro.client_info: reports the diagram engine setting when the host gives it", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  d.clientInfo = async () => ({ version: "3.1.0", build: "dev", actMode: false, optionalPermissions: {}, diagramEngine: "pele" });
+  assert.match((await callTool(d, "katashiro.client_info", {})).content[0].text, /\ndiagram engine: pele \(Settings → 圖表引擎; the other engine is the fallback\)$/);
+  d.clientInfo = async () => ({ version: "3.1.0", build: "dev", actMode: false, optionalPermissions: {} });
+  assert.doesNotMatch((await callTool(d, "katashiro.client_info", {})).content[0].text, /diagram engine/);
 });
 
 test("katashiro.canvas_gallery: opens the gallery, query trimmed and capped", async () => {

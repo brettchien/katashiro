@@ -77,6 +77,19 @@ body {
 body.mode-mermaid .doc figure.ks-mermaid { margin: 0; }
 body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !important; max-height: calc(100vh - 80px); }
 
+/* Pele diagrams (canvas-diagram-engine §2.6): every colour and the font are CSS variables on the SVG,
+   set here — dark like the canvas on screen, light for paper (print below), no re-render. --pele-bg is
+   also the opaque background of edge labels, so it must equal what the diagram sits on. --pele-font
+   repeats body's font: Pele measured the labels with it (canvas-frame.js renderWithPele). */
+figure.ks-mermaid[data-engine="pele"] {
+  --pele-bg: #0f172a; --pele-fg: #e2e8f0; --pele-muted: #94a3b8; --pele-line: #cbd5e1;
+  --pele-surface: #1e293b; --pele-surface-alt: #334155; --pele-border: #64748b; --pele-accent: #60a5fa;
+  --pele-fg-on-dark: #ffffff; --pele-fg-on-light: #0f172a; --pele-error: #f87171; --pele-critical: #f87171;
+  --pele-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+}
+/* A diagram drawn by the other engine (§2.4): which one, and why the chosen one did not. */
+.ks-mermaid-fallback { margin: 4px 0 0; font-size: 0.78em; color: #94a3b8; text-align: center; }
+
 /* image canvas: centered, fits the tab, caption below (text only). */
 .pic { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; }
 .pic img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; border-radius: 8px; }
@@ -122,8 +135,16 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
   .doc td code, .doc th code, .doc td a, .doc th a { overflow-wrap: anywhere; }
   .doc th { background: #f6f8fa; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .doc tr { break-inside: avoid; }
-  /* Diagrams are re-rendered with mermaid's light theme for paper (canvas-frame.js, print). */
+  /* Diagrams for paper: Mermaid's are re-rendered with its light theme (canvas-frame.js, print);
+     Pele's take light variables here, in a document only — a deck prints dark (§3.8). Colours and
+     the font only: Pele measured the labels with the screen font, so print must not change it. */
   .doc figure.ks-mermaid { overflow: visible; break-inside: avoid; }
+  .doc figure.ks-mermaid[data-engine="pele"] {
+    --pele-bg: #ffffff; --pele-fg: #1f2328; --pele-muted: #57606a; --pele-line: #1f2328;
+    --pele-surface: #f6f8fa; --pele-surface-alt: #eaeef2; --pele-border: #8c959f; --pele-accent: #0969da;
+    --pele-fg-on-dark: #ffffff; --pele-fg-on-light: #1f2328; --pele-error: #cf222e; --pele-critical: #cf222e;
+  }
+  .ks-mermaid-fallback { color: #57606a; }
   body.mode-mermaid .doc figure.ks-mermaid svg { max-height: none; }
   .ks-mermaid-error { color: #82071e; background: #ffebe9; }
 }

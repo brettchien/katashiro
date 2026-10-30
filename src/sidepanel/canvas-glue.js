@@ -231,6 +231,26 @@ async function setCanvasShowChanges(on) {
   return { was };
 }
 
+// The canvas header's 圖表 switch (canvas-diagram-engine §2.3): that canvas's tab (an open one, or a
+// new one in front) runs the switch's own path and answers once the new render reports which engine
+// drew each diagram. An open tab comes to the front only once it answered ok (an editing user gets a
+// refusal and keeps the focus). The first Mermaid load can take a few seconds: a longer wait.
+const ENGINE_ASK_MS = 20000;
+async function setCanvasEngine(id, engine) {
+  const existing = await findCanvasTab(id);
+  let front = existing ? null : await openCanvasTab(id, { active: true });
+  const r = await askCanvasTab({ type: "katashiro-canvas-engine", id, engine }, ENGINE_ASK_MS);
+  if (existing && r && r.ok) {
+    try {
+      const tab = (await findCanvasTab(id)) || existing;
+      await chrome.tabs.update(tab.id, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+      front = tab;
+    } catch (_) { /* switched either way */ }
+  }
+  return front && r ? { ...r, tabId: front.id } : r;
+}
+
 // ⇆ Compare with agent's: pre-checked from storage (a canvas that cannot compare is not opened for
 // nothing), then the canvas tab (the open one, or a new one in front) runs the button's own path, which
 // asks this panel back (katashiro-canvas-compare) — so this must not run under canvasTabQueue.

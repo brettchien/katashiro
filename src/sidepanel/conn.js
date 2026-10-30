@@ -312,6 +312,7 @@ class Conn {
         // canvas_view / canvas_gallery (§3.11): the agent's equivalents of the user's display switches.
         setShowChanges: (on) => setCanvasShowChanges(on),
         compare: (id, on) => (on ? startCanvasCompare(id) : endCanvasCompare(id)),
+        setEngine: (id, engine) => setCanvasEngine(id, engine),
         openGallery: (query) => openCanvasGallery(query),
       },
       windowId: panelWindowId,
