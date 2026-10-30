@@ -1193,3 +1193,53 @@ test("acceptFrameMessage: armedKey carries a key and its flags only, never from 
   assert.equal(C.acceptFrameMessage({ source: frameWindow, data: m }, { frameWindow, nonce: "n1", readOnly: true }), null);
   assert.equal(C.acceptFrameMessage({ source: frameWindow, data: { ...m, nonce: "other" } }, { frameWindow, nonce: "n1" }), null);
 });
+
+// --- Diagram engine (ADR canvas-diagram-engine) --------------------------------------------------
+
+test("diagram engine: header override > Settings > Pele; the switch toggles and drops a redundant override", () => {
+  assert.equal(C.effectiveEngine({ override: null, setting: undefined }), "pele");
+  assert.equal(C.effectiveEngine({ override: null, setting: "mermaid" }), "mermaid");
+  assert.equal(C.effectiveEngine({ override: null, setting: "dagre" }), "pele");
+  assert.equal(C.effectiveEngine({ override: "mermaid", setting: undefined }), "mermaid");
+  assert.equal(C.effectiveEngine({ override: "bogus", setting: "mermaid" }), "mermaid");
+  // From Pele (setting), one click: Mermaid for this tab; a second: back to the setting (no override).
+  assert.equal(C.engineAfterSwitch({ override: null, setting: undefined }), "mermaid");
+  assert.equal(C.engineAfterSwitch({ override: "mermaid", setting: undefined }), null);
+  assert.equal(C.engineAfterSwitch({ override: null, setting: "mermaid" }), "pele");
+  assert.equal(C.engineSwitchLabel({ override: null, setting: undefined }), "圖表：Pele");
+  assert.equal(C.engineSwitchLabel({ override: "mermaid", setting: undefined }), "圖表：Mermaid（此分頁）");
+  assert.equal(C.engineSwitchLabel({ override: "mermaid", setting: "mermaid" }), "圖表：Mermaid");
+  assert.equal(C.otherEngine("pele"), "mermaid");
+  assert.equal(C.otherEngine("mermaid"), "pele");
+});
+
+test("diagram engine: rendered{diagrams} and diagramFallback{} pass the allow-list only when well-formed", () => {
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [] }));
+  assert.ok(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [{ engine: "pele", fallback: false }, { engine: "none", fallback: false }] }));
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [{ engine: "elk", fallback: false }] }), null);
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: [{ engine: "pele" }] }), null);
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: "pele" }), null);
+  assert.equal(ok({ type: "rendered", nonce: "n1", version: 3, seq: 1, diagrams: Array(501).fill({ engine: "pele", fallback: false }) }), null);
+  assert.ok(ok({ type: "diagramFallback", nonce: "n1", msg: "Pele diagram 1: x → drawn by Mermaid", seq: 2 }));
+  assert.equal(ok({ type: "diagramFallback", nonce: "n1", msg: 5, seq: 2 }), null);
+  assert.equal(ok({ type: "diagramFallback", nonce: "n1", msg: "x" }), null);
+  // An html canvas's frames never draw diagrams.
+  const html = (data) => C.acceptFrameMessage({ source: frameWindow, data: { nonce: "n1", ...data } }, { frameWindow, nonce: "n1", profile: "htmlStatic" });
+  assert.equal(html({ type: "diagramFallback", msg: "x", seq: 1 }), null);
+  assert.deepEqual(C.diagramsReport([{ engine: "mermaid", fallback: true, extra: 1 }]), [{ engine: "mermaid", fallback: true }]);
+});
+
+test("diagram engine: summary, fallback note and engine-named errors with Pele's line / column", () => {
+  const list = [{ engine: "pele", fallback: false }, { engine: "pele", fallback: false }, { engine: "mermaid", fallback: true }, { engine: "none", fallback: false }];
+  assert.equal(C.diagramsSummary(list), "4 diagrams: 2 by Pele, 1 by Mermaid (1 as the fallback), 1 failed with both engines");
+  assert.equal(C.diagramsSummary([]), "no diagrams");
+  // browser-mcp.js keeps its own copy (it cannot load canvas-core.js): the same text.
+  const BM = require("../src/mcp/browser-mcp.js");
+  for (const l of [list, [], [{ engine: "mermaid", fallback: false }]]) assert.equal(BM.diagramsSummary(l), C.diagramsSummary(l));
+  assert.equal(C.diagramFallbackNote("mermaid", "Pele diagram 2: Parse error on line 3, column 3"), "以 Mermaid 繪製（Pele diagram 2: Parse error on line 3, column 3）");
+  const peleErr = Object.assign(new Error("Parse error on line 3:\nA -->"), { line: 3, column: 7 });
+  assert.equal(C.diagramErrorText(peleErr, 2, "pele"), "Pele diagram 2: Parse error on line 3, column 7:\nA -->");
+  assert.equal(C.diagramErrorText(Object.assign(new Error("unknown diagram type"), { line: 1 }), 1, "pele"), "Pele diagram 1: line 1: unknown diagram type");
+  assert.equal(C.diagramErrorText(new Error("No diagram type detected"), 1, "mermaid"), "Mermaid diagram 1: No diagram type detected");
+  assert.equal(C.diagramErrorText(new Error("Mermaid failed to load"), undefined, "mermaid"), "Mermaid: Mermaid failed to load");
+});

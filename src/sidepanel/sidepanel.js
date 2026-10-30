@@ -131,6 +131,10 @@ async function clientInfoSnapshot() {
     browser: m ? `Chrome ${m[1]}` : null,
     windowId: panelWindowId,
     actMode, optionalPermissions,
+    diagramEngine: await (async () => {
+      try { return CanvasStore.diagramEngine((await chrome.storage.local.get(CanvasStore.DIAGRAM_ENGINE_KEY))[CanvasStore.DIAGRAM_ENGINE_KEY]); }
+      catch (_) { return null; }
+    })(),
     recentDisconnects: await recentDisconnects(5),
   };
 }
@@ -1601,6 +1605,23 @@ if (canvasHtmlOnBtn && canvasHtmlOffBtn) {
   chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
   canvasHtmlOnBtn.addEventListener("click", () => { show(true); chrome.storage.local.set({ [K]: true }).catch(() => {}); });
   canvasHtmlOffBtn.addEventListener("click", () => { show(false); chrome.storage.local.set({ [K]: false }).catch(() => {}); });
+  chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
+}
+
+// Settings → 圖表引擎 (canvas-diagram-engine §2.1): Pele unless set to "mermaid". Canvas tabs follow
+// through storage.onChanged (a tab's own 圖表 switch stays on top of it).
+const canvasEnginePeleBtn = document.getElementById("canvas-engine-pele");
+const canvasEngineMermaidBtn = document.getElementById("canvas-engine-mermaid");
+if (canvasEnginePeleBtn && canvasEngineMermaidBtn) {
+  const K = CanvasStore.DIAGRAM_ENGINE_KEY;
+  const show = (raw) => {
+    const e = CanvasStore.diagramEngine(raw);
+    canvasEnginePeleBtn.classList.toggle("on", e === "pele");
+    canvasEngineMermaidBtn.classList.toggle("on", e === "mermaid");
+  };
+  chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
+  canvasEnginePeleBtn.addEventListener("click", () => { show("pele"); chrome.storage.local.set({ [K]: "pele" }).catch(() => {}); });
+  canvasEngineMermaidBtn.addEventListener("click", () => { show("mermaid"); chrome.storage.local.set({ [K]: "mermaid" }).catch(() => {}); });
   chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
 }
 

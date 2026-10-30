@@ -1253,3 +1253,13 @@ test("move notes are capped per conversation (the oldest go)", async () => {
   assert.equal(notes.length, CanvasStore.MOVE_NOTES_MAX);
   assert.equal(notes[notes.length - 1].id, ids[ids.length - 1]);
 });
+
+test("diagram engine setting: Pele unless canvas:diagramEngine is \"mermaid\"", () => {
+  assert.equal(CanvasStore.DIAGRAM_ENGINE_KEY, "canvas:diagramEngine");
+  assert.equal(CanvasStore.diagramEngine(undefined), "pele");
+  assert.equal(CanvasStore.diagramEngine("pele"), "pele");
+  assert.equal(CanvasStore.diagramEngine("mermaid"), "mermaid");
+  assert.equal(CanvasStore.diagramEngine("Mermaid"), "pele");
+  assert.equal(CanvasStore.diagramEngine(true), "pele");
+  assert.equal(CanvasStore.PELE_NOTICE_KEY, "canvas:peleNoticeShown");
+});

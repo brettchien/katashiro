@@ -22,6 +22,10 @@ cp node_modules/reveal.js/dist/theme/dracula.css ../../vendor/reveal/theme-dracu
 # `mermaid`; no ELK, so it lays out with dagre and never starts a Worker). Copied as-is.
 mkdir -p ../../vendor/mermaid
 cp node_modules/@mermaid-js/tiny/dist/mermaid.tiny.js ../../vendor/mermaid/
+# Pele (canvas diagrams, the default engine; ADR canvas-diagram-engine §2.7): one prebuilt IIFE
+# (global `pele`; synchronous, no Worker, no eval). Copied as-is.
+mkdir -p ../../vendor/pele
+cp node_modules/pele/dist/pele.global.js ../../vendor/pele/
 cd ../../vendor && sha256sum markdown-it.iife.js dompurify.iife.js highlight.iife.js \
   reveal/reveal.js reveal/reveal.css reveal/theme-dracula.css milkdown/crepe.iife.js milkdown/crepe.css \
-  mermaid/mermaid.tiny.js
+  mermaid/mermaid.tiny.js pele/pele.global.js

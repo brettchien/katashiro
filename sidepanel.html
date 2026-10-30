@@ -158,6 +158,16 @@
             <span class="mode-hint">開著時，agent 可以開 html 畫布：先顯示不執行 script 的版本，你按 ▶ Run scripts 才會執行（每個版本按一次）。執行後，那個畫布的 script 可以把畫布內容、和你在裡面輸入的東西送出瀏覽器。關掉後，agent 不能再開 html 畫布，已經有的只顯示不執行 script 的版本。</span>
           </div>
 
+          <!-- Diagram engine (ADR canvas-diagram-engine §2.1): Pele by default; canvas:diagramEngine in chrome.storage.local -->
+          <div class="input-group">
+            <label>圖表引擎（畫布裡的 Mermaid 圖）</label>
+            <div class="mode-toggle">
+              <button id="canvas-engine-pele" class="mode-btn on" type="button">Pele</button>
+              <button id="canvas-engine-mermaid" class="mode-btn" type="button">Mermaid</button>
+            </div>
+            <span class="mode-hint">用哪一個畫畫布裡的 Mermaid 圖。Pele（預設）比較小，也畫得出 mindmap 和 architecture；Mermaid 是原本的引擎。其中一個畫不出來時，會自動改用另一個，並在圖下面註明。畫布上方的「圖表」按鈕可以只切換那個分頁（不會存起來）。</span>
+          </div>
+
           <!-- Canvas folder mirror (ADR docs/adr/canvas.md §3.6): File System Access, handle in IndexedDB -->
           <div class="input-group">
             <label>畫布存到資料夾（選填）</label>

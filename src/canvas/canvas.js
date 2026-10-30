@@ -41,6 +41,7 @@
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
   const runBtn = document.getElementById("canvas-run");
+  const engineBtn = document.getElementById("canvas-engine");
   const htmlBar = document.getElementById("canvas-html-bar");
   const htmlHint = document.getElementById("canvas-html-hint");
   // The compare tab's own way out (Brett, 2026-10-11): closing it ends the compare (§3.10).
@@ -191,6 +192,7 @@
     printBtn.disabled = (mode === "edit" && dirty) || !!printing;
     printBtn.title = printing ? "正在準備列印…" : printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
     editBtn.disabled = !!printing;
+    updateEngineBtn();
     updateHtmlBar();
   }
 
@@ -843,7 +845,7 @@
       awaitingNormalize = c.meta.agentVersion;
     }
     if (!frame || !frameReady || current !== c) return;         // superseded while reading
-    const msg = { type: "render", kind: c.meta.kind, version: c.meta.version, content };
+    const msg = { type: "render", kind: c.meta.kind, version: c.meta.version, content, engine: tabEngine() };
     if (typeof normalizeText === "string") { msg.normalizeText = normalizeText; msg.version = c.meta.agentVersion; }
     // Glow on every agent write (§3.10): the frame compares with what it showed before. With 顯示變更
     // on, held markers replace the fade (applied on rendered{}), unless a compare's markers show.
@@ -950,6 +952,78 @@
     chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) apply(changes[K].newValue); });
   }
 
+  // Diagram engine (canvas-diagram-engine §2.1–§2.3): Settings → 圖表引擎 for every tab, this tab's
+  // header switch on top of it (not saved: a reload goes back to the setting). Changing either
+  // re-renders the canvas with the new engine; rendered{diagrams} says what drew each diagram.
+  let engineSetting;                        // raw CanvasStore.DIAGRAM_ENGINE_KEY (read before the first render)
+  let engineOverride = null;                // this tab's header choice, or null
+  let shownDiagrams = [];                   // rendered{diagrams} of the render on screen
+  let fallbackSeq = 0, fallbackMsg = "";    // diagramFallback{} of render fallbackSeq (goes with a diagram error's push)
+  let pendingEngine = null;                 // canvas_view({engine}): { seq, reply, timer } until that render's rendered{}
+  let peleNoticeShown = true;               // CanvasStore.PELE_NOTICE_KEY (read with the setting)
+  const tabEngine = () => CanvasCore.effectiveEngine({ override: engineOverride, setting: engineSetting });
+  const hasDiagrams = () => !!current && (current.meta.kind === "mermaid" || shownDiagrams.length > 0);
+  function updateEngineBtn() {
+    const textKind = !compareView && !!current && CanvasCore.textKind(current.meta.kind);
+    engineBtn.hidden = !(textKind && !!frame && hasDiagrams());
+    engineBtn.textContent = CanvasCore.engineSwitchLabel({ override: engineOverride, setting: engineSetting });
+    engineBtn.disabled = mode === "edit" || !!printing;
+    const other = CanvasCore.ENGINE_LABEL[CanvasCore.otherEngine(tabEngine())];
+    engineBtn.title = engineBtn.disabled ? "先結束編輯" : `這個分頁改用 ${other} 畫圖（不會存起來；預設在側邊欄的設定 → 圖表引擎）`;
+  }
+  // Re-render with the engine now in effect, if it changed (the frame draws everything again; held
+  // markers come back on rendered{}, as after any render).
+  function setTabEngine(override) {
+    const before = tabEngine();
+    engineOverride = CanvasCore.isEngine(override) ? override : null;
+    updateEngineBtn();
+    if (tabEngine() === before) return false;
+    if (mode !== "edit") sendRender();
+    return true;
+  }
+  engineBtn.addEventListener("click", () => {
+    if (mode === "edit" || printing) return;
+    setTabEngine(CanvasCore.engineAfterSwitch({ override: engineOverride, setting: engineSetting }));
+  });
+  async function readEngineSetting() {
+    try {
+      const got = await chrome.storage.local.get([CanvasStore.DIAGRAM_ENGINE_KEY, CanvasStore.PELE_NOTICE_KEY]);
+      engineSetting = got[CanvasStore.DIAGRAM_ENGINE_KEY];
+      peleNoticeShown = got[CanvasStore.PELE_NOTICE_KEY] === true;
+    } catch (_) { /* Pele, the default */ }
+  }
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes[CanvasStore.DIAGRAM_ENGINE_KEY]) return;
+    const before = tabEngine();
+    engineSetting = changes[CanvasStore.DIAGRAM_ENGINE_KEY].newValue;
+    // An override equal to the new setting is no override any more (the tab follows the setting).
+    if (engineOverride && engineOverride === CanvasCore.effectiveEngine({ override: null, setting: engineSetting })) engineOverride = null;
+    updateEngineBtn();
+    if (tabEngine() !== before && current && frame && frameProfile !== "html" && mode !== "edit") sendRender();
+  });
+  // The one-time notice (#210 review): Pele drew a diagram in this browser for the first time.
+  function maybePeleNotice(diagrams) {
+    // Another notice on screen (an error, say) wins; this one waits for a later render.
+    if (peleNoticeShown || compareView || !noticeBar.hidden || !diagrams.some((d) => d.engine === "pele")) return;
+    peleNoticeShown = true;
+    chrome.storage.local.set({ [CanvasStore.PELE_NOTICE_KEY]: true }).catch(() => {});
+    notice("圖表現在用 Pele 繪製。要改回 Mermaid：側邊欄的設定 → 圖表引擎，或按上方的「圖表」只切換這個分頁。", { label: "知道了", fn: () => notice("") });
+  }
+  // canvas_view({engine}) (§2.3): the header switch's path; answers once that render reports.
+  function onEngineRequest(msg, sendResponse) {
+    if (!current || !frame || frameProfile === "html" || !CanvasCore.textKind(current.meta.kind)) { sendResponse({ ok: false, error: "the canvas is not shown with diagrams in this tab" }); return false; }
+    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return false; }
+    const answer = () => ({ ok: true, engine: tabEngine(), override: engineOverride, setting: CanvasCore.effectiveEngine({ override: null, setting: engineSetting }), diagrams: shownDiagrams });
+    if (pendingEngine) { clearTimeout(pendingEngine.timer); pendingEngine.reply({ ok: false, error: "superseded by a newer canvas_view({engine})" }); pendingEngine = null; }
+    const changed = setTabEngine(msg.engine === "default" ? null : msg.engine);
+    if (!changed && rendered) { sendResponse(answer()); return false; }
+    pendingEngine = {
+      seq: renderSeq + (changed ? 1 : 0), reply: sendResponse, answer,
+      timer: setTimeout(() => { if (pendingEngine) { pendingEngine.reply({ ok: true, ...answer(), note: "the new render had not finished; diagrams may be from before" }); pendingEngine = null; } }, 15000),
+    };
+    return true;
+  }
+
   if (!compareView) {
     chrome.tabs.onRemoved.addListener(endCompareIfClosed);
     chrome.tabs.onUpdated.addListener((_id, info) => { if (info.url) endCompareIfClosed(); });
@@ -980,7 +1054,7 @@
   // that differ from the latest glow; once they are equal (e.g. the agent wrote), it says so and
   // glows what the agent's write changed.
   function sendCompareRender(c, content) {
-    const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content };
+    const msg = { type: "render", kind: c.meta.kind, version: c.meta.agentVersion, content, engine: tabEngine() };
     const same = c.content === c.latest;
     if (!same && typeof c.latest === "string") { msg.glowAgainst = c.latest; msg.glowHold = true; }
     else if (lastRenderedVersion && c.meta.agentVersion > lastRenderedVersion) {
@@ -1248,7 +1322,11 @@
         if (m.seq !== renderingSeq) break;                   // an older render; a newer one is on its way
         rendered = true;
         renderFailed = "";
+        shownDiagrams = CanvasCore.diagramsReport(m.diagrams || []) || [];
+        updateEngineBtn();
+        if (pendingEngine && m.seq >= pendingEngine.seq) { clearTimeout(pendingEngine.timer); pendingEngine.reply(pendingEngine.answer()); pendingEngine = null; }
         if (CanvasCore.renderNoticeStale(noticeTag, m.seq)) notice("");    // an older render's error
+        maybePeleNotice(shownDiagrams);
         if (pendingGoto && !pendingGoto.sent) { pendingGoto.sent = true; toFrame({ type: "goto", slide: pendingGoto.slide }); }
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         if (comparing && !compareView) holdCompareGlow();     // re-mark on the new DOM
@@ -1302,13 +1380,22 @@
         finishGoto({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         finishHighlight({ ok: false, error: `the canvas failed to show: ${CanvasCore.clipError(m.msg)}` });
         break;
-      case "diagramError":
-        // One mermaid diagram failed (§3.3): it shows its error in place and the canvas stands, so
-        // nothing is marked failed and pending goto / highlight carry on.
-        if (m.seq !== renderingSeq) break;                   // an older render's
-        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
-        else offerSendError(m.msg, true, { seq: renderingSeq, version: renderingVersion });
+      case "diagramFallback":
+        // Drawn by the other engine (canvas-diagram-engine §2.4): the figure says so; no banner. Kept
+        // for this render, so a diagram error's "send to agent" carries it too.
+        if (m.seq !== renderingSeq) break;
+        fallbackSeq = m.seq;
+        fallbackMsg = m.msg;
         break;
+      case "diagramError": {
+        // A diagram both engines failed to draw (§3.3): it shows its errors in place and the canvas
+        // stands, so nothing is marked failed and pending goto / highlight carry on.
+        if (m.seq !== renderingSeq) break;                   // an older render's
+        const msg = fallbackSeq === m.seq && fallbackMsg ? `${m.msg}\n\n(other diagrams were drawn by the fallback engine:)\n${fallbackMsg}` : m.msg;
+        if (compareView) notice(`圖表有錯誤：${CanvasCore.clipError(m.msg)}`, null, { seq: renderingSeq, version: renderingVersion });
+        else offerSendError(msg, true, { seq: renderingSeq, version: renderingVersion });
+        break;
+      }
       case "editFailed":
         mode = CanvasCore.modeAfterFrameMessage(m.type, { mode });
         dirty = false;                   // #93: no editor opened, so nothing unsaved
@@ -1388,6 +1475,7 @@
     }
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
     if (msg && msg.type === "katashiro-canvas-css" && msg.id === canvasId) { onCssRequest(msg, sendResponse); return false; }
+    if (msg && msg.type === "katashiro-canvas-engine" && msg.id === canvasId && !compareView) return onEngineRequest(msg, sendResponse);
     if (msg && msg.type === "katashiro-canvas-compare-start" && msg.id === canvasId) {
       // Only the tab the panel picked: two tabs of one canvas must not both open a compare.
       if (myTabId == null || msg.tabId !== myTabId) return false;
@@ -1649,6 +1737,7 @@
   (async () => {
     const c = await load();
     if (!c) return;
+    await readEngineSetting();                  // the first render already uses the right engine
     current = c;
     setHeader(c.meta);
     mountFrame();

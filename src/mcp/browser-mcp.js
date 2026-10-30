@@ -367,6 +367,23 @@
   const lastCanvasHighlight = new Map();   // canvas id → { at } of the last call that showed something
   const CANVAS_GALLERY_QUERY_MAX = 200;    // canvas_gallery query (CanvasGalleryCore.QUERY_MAX)
   const canvasTextKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";   // CanvasCore.textKind
+  // canvas_view({engine}): which engine drew each diagram, in one line — the same text as
+  // CanvasCore.diagramsSummary (this module cannot load it; test/canvas-core.test.js compares them).
+  function diagramsSummary(list) {
+    const d = Array.isArray(list) ? list.filter((x) => x && (x.engine === "pele" || x.engine === "mermaid" || x.engine === "none")) : [];
+    if (!d.length) return "no diagrams";
+    const count = (f) => d.filter(f).length;
+    const parts = [];
+    for (const [e, name] of [["pele", "Pele"], ["mermaid", "Mermaid"]]) {
+      const n = count((x) => x.engine === e);
+      if (!n) continue;
+      const fb = count((x) => x.engine === e && x.fallback === true);
+      parts.push(`${n} by ${name}${fb ? ` (${fb} as the fallback)` : ""}`);
+    }
+    const none = count((x) => x.engine === "none");
+    if (none) parts.push(`${none} failed with both engines`);
+    return `${d.length} diagram${d.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
+  }
   // canvas_read on an html canvas (canvas-html §2.1, §6 Q3): the first 16 K characters unless full
   // (CanvasCore.htmlReadView, which this module cannot load).
   const HTML_READ_HEAD = 16 * 1024;
@@ -2312,6 +2329,8 @@
           `act mode: ${i.actMode ? "on (page writes allowed)" : "off (read-only)"}`,
           `optional permissions: ${optText}`
         ];
+        // canvas-diagram-engine §2.4: Settings → 圖表引擎 (a canvas tab's 圖表 switch may differ).
+        if (i.diagramEngine === "pele" || i.diagramEngine === "mermaid") lines.push(`diagram engine: ${i.diagramEngine} (Settings → 圖表引擎; the other engine is the fallback)`);
         // Tunnel-liveness §9.3 (E): one line per disconnect, formatted by the panel. Absent → a
         // host that does not record them; empty → none since the browser started.
         if (Array.isArray(i.recentDisconnects)) {
@@ -2901,8 +2920,8 @@
         "beside the chat — use it for long or structured output the user will read, keep and come " +
         "back to (a report, a design doc, a plan, a deck), instead of a long chat reply. `kind`: " +
         "`markdown` (default; GFM tables, task lists, fenced code; a ```mermaid fence is drawn as a " +
-        "diagram — flowchart, sequence, class, state, ER, gantt, pie, journey, C4, …; not mindmap or " +
-        "architecture), `slides` (markdown, slides separated " +
+        "diagram — flowchart, sequence, class, state, ER, gantt, pie, journey, C4, mindmap, architecture, …; " +
+        "drawn by Pele unless the user picked Mermaid, each engine the other's fallback), `slides` (markdown, slides separated " +
         "by lines that are exactly `---`; arrow keys to navigate; mermaid fences work there too), " +
         "`mermaid` (the whole canvas is one diagram: `content` is Mermaid source, no fence), `image` " +
         "(give `imageId` from screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an " +
@@ -3428,6 +3447,10 @@
         "agent's last write read-only in Split View beside the canvas, the differing blocks marked; " +
         "possible only when the user's saved edits differ from your last write (not for image " +
         "canvases, nor while the user is editing; the result says why not). false ends it (✕ 結束比較). " +
+        "`engine` (needs `id`): \"pele\" / \"mermaid\" draws that canvas's diagrams with that engine in its tab — " +
+        "the header's 圖表 switch: this tab only, not saved (a reload goes back to Settings → 圖表引擎, which only the " +
+        "user changes); \"default\" drops it. The result says which engine drew each diagram (a diagram the chosen " +
+        "engine cannot draw falls back to the other, with a note on it). Not for html or image canvases. " +
         "Use it to show the user what changed, e.g. before you canvas_read their edits; screenshot to check.",
       sessionScope: true,
       inputSchema: {
@@ -3435,16 +3458,19 @@
         properties: {
           id: { type: "string", description: "canvas id (required with compare)" },
           showChanges: { type: "boolean", description: "◐ 顯示變更 on/off — global, all canvas tabs" },
-          compare: { type: "boolean", description: "true: open the compare with your last write for this canvas; false: close it" }
+          compare: { type: "boolean", description: "true: open the compare with your last write for this canvas; false: close it" },
+          engine: { type: "string", enum: ["pele", "mermaid", "default"], description: "draw this canvas's diagrams with this engine in its tab (this tab only, not saved); default: back to Settings → 圖表引擎" }
         }
       },
       redact: redactDefault,
-      /** @param {{ id?: string, showChanges?: boolean, compare?: boolean }} args */
+      /** @param {{ id?: string, showChanges?: boolean, compare?: boolean, engine?: string }} args */
       async call(args, ctx) {
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
-        const hasShow = args.showChanges != null, hasCompare = args.compare != null;
-        if (!hasShow && !hasCompare) return errText("canvas_view: give `showChanges` and/or `compare`");
+        const hasShow = args.showChanges != null, hasCompare = args.compare != null, hasEngine = args.engine != null;
+        if (!hasShow && !hasCompare && !hasEngine) return errText("canvas_view: give `showChanges`, `compare` and/or `engine`");
+        if (hasEngine && !["pele", "mermaid", "default"].includes(args.engine)) return errText("canvas_view: `engine` must be \"pele\", \"mermaid\" or \"default\"");
+        if (hasEngine && args.id == null) return errText("canvas_view: `engine` needs the canvas `id`");
         if (hasShow && typeof args.showChanges !== "boolean") return errText("canvas_view: `showChanges` must be true or false");
         if (hasCompare && typeof args.compare !== "boolean") return errText("canvas_view: `compare` must be true or false");
         if (hasCompare && args.id == null) return errText("canvas_view: `compare` needs the canvas `id`");
@@ -3456,7 +3482,10 @@
         if (hasCompare && args.compare && !canvasTextKind(meta.kind)) {
           return errText(`canvas_view: canvas "${meta.title}" is ${meta.kind}; only markdown, slides and mermaid canvases can be compared`);
         }
-        if ((hasShow && typeof c.setShowChanges !== "function") || (hasCompare && typeof c.compare !== "function")) {
+        if (hasEngine && !canvasTextKind(meta.kind)) {
+          return errText(`canvas_view: canvas "${meta.title}" is ${meta.kind}; only markdown, slides and mermaid canvases have diagrams`);
+        }
+        if ((hasShow && typeof c.setShowChanges !== "function") || (hasCompare && typeof c.compare !== "function") || (hasEngine && typeof c.setEngine !== "function")) {
           return errText("canvas_view: not available in this host");
         }
         const out = [];
@@ -3478,6 +3507,19 @@
           }
           if (args.compare) out.push(`comparing "${meta.title}" with your last write (v${meta.agentVersion}) in Split View beside it${r.note ? ` — note: ${r.note}` : ""}`);
           else out.push(r.closed ? `ended the compare of "${meta.title}" (closed its compare tab)` : `no compare of "${meta.title}" was open`);
+        }
+        if (hasEngine) {
+          let r;
+          try { r = await c.setEngine(meta.id, args.engine); }
+          catch (e) { r = { ok: false, error: (e && e.message) || String(e) }; }
+          noteCanvasTabUsed(ctx, r);
+          if (!r || !r.ok) {
+            const why = `canvas_view: cannot switch the diagram engine of "${meta.title}": ${(r && r.error) || "failed"}`;
+            return out.length ? errText(`${out.join("\n")}\n${why}`) : errText(why);
+          }
+          const label = (e) => (e === "mermaid" ? "Mermaid" : "Pele");
+          const own = r.override ? `this tab only; Settings → 圖表引擎 is ${label(r.setting)}` : "Settings → 圖表引擎";
+          out.push(`"${meta.title}" now draws its diagrams with ${label(r.engine)} in its tab (${own}): ${diagramsSummary(r.diagrams)}${r.note ? ` — note: ${r.note}` : ""}`);
         }
         return okText(out.join("\n"));
       }
@@ -4079,5 +4121,5 @@
     }
   }
 
-  return { localStamp, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, BACKGROUND_SESSION_TOOLS, BACKGROUND_PAGE_REFUSED, backgroundRefusal, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
+  return { localStamp, diagramsSummary, TOOLS, BROWSER_TOOLS, NOTIFY_ID_PREFIX, BACKGROUND_SESSION_TOOLS, BACKGROUND_PAGE_REFUSED, backgroundRefusal, createServer, callBrowserTool, handleMcpMessage, handleServerRequest, extractRefCandidates, normalizeScreenshotConfig, SCREENSHOT_DEFAULTS, SCREENSHOT_LIMITS };
 });

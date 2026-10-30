@@ -1,18 +1,20 @@
 // canvas-frame.js — renders one canvas inside the sandboxed canvas-frame.html (ADR §3.2–§3.3).
 //
 // Runs in an opaque origin with no chrome.* APIs. It talks only to its parent (canvas.html):
-//  in:  render{nonce, kind, version, seq, content, normalizeText?}   (kind html: shown without its scripts, canvas-html §2.3)
+//  in:  render{nonce, kind, version, seq, content, normalizeText?, engine?}   (kind html: shown without its scripts, canvas-html §2.3;
+//       engine "pele" | "mermaid": which diagram engine draws first, canvas-diagram-engine §2.5)
 //  in:  copied{reqId, ok}                 (reply to our copy request)
 //  in:  edit{content, version}, saved{version, content}, requestSave, leaveEdit      (markdown editing, §3.5)
 //  in:  editCmd{cmd: "undo" | "redo"}       (the editor's own history: the edit-mode ↶ / ↷, §3.5)
 //  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  in:  css{sheets}                          (canvas_inject_css: the agent's sheets, all of them; [] clears)
-//  out: ready, rendered{version, seq, normalized?}, error{msg, seq?}, openLink{url}, copy{reqId, text},
+//  out: ready, rendered{version, seq, normalized?, diagrams}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, seq, truncated?, rect?, where?}, selectionRect{seq, rect?} (Ask agent, §3.7; rect places the host's 💬,
 //                                                        where{headings?, lines?, slide?} says where it is)
-//       diagramError{msg, seq}                              (a mermaid diagram that failed, §3.3)
+//       diagramError{msg, seq}                              (a diagram both engines failed to draw, §3.3)
+//       diagramFallback{msg, seq}                           (diagrams the other engine drew, canvas-diagram-engine §2.4)
 //       — each carrying the nonce from our URL fragment, which the host checks.
 // Content goes through renderMarkdownInto (markdown-it + DOMPurify, the chat's sanitized sink).
 // Links never navigate this frame: a capture-phase listener turns every click on <a>/<area> into
@@ -240,27 +242,37 @@
     post({ type: "escape", dirty: editing.dirty });
   }, true);
 
-  // --- Mermaid (§3.3), loaded on first use: a ```mermaid fence in a markdown / slides canvas, or a
-  // mermaid canvas — 2.7 MB, so a canvas without a diagram never loads it. @mermaid-js/tiny has no
-  // ELK: it lays out with dagre on this thread, so worker-src 'none' costs nothing (smoke test,
-  // scripts/smoke-mermaid.mjs). securityLevel 'strict': labels are sanitized and `click` callbacks
-  // are off; a `click X "url"` link is still drawn as an SVG <a>, which onLinkClick turns into openLink.
-  let mermaidLoad = null;
-  function loadMermaid() {
-    if (!mermaidLoad) {
-      mermaidLoad = new Promise((resolve, reject) => {
+  // --- Diagrams (§3.3; canvas-diagram-engine): two engines, each loaded on first use — a
+  // ```mermaid fence in a markdown / slides canvas, or a mermaid canvas. Pele by default, Mermaid as
+  // the other engine (the host says which in render{engine}); each is the other's fallback, so a
+  // canvas without a diagram loads neither, and a normal one never loads mermaid's 2.7 MB.
+  // - Mermaid: @mermaid-js/tiny has no ELK: it lays out with dagre on this thread, so worker-src
+  //   'none' costs nothing (smoke test, scripts/smoke-mermaid.mjs). securityLevel 'strict': labels
+  //   are sanitized and `click` callbacks are off; a `click X "url"` link is still drawn as an SVG
+  //   <a>, which onLinkClick turns into openLink.
+  // - Pele: synchronous, no Worker, no eval; colours and fonts are CSS variables (canvas-frame.css),
+  //   so print does not re-render it. No external images (the frame's img-src would block them).
+  const engineLoads = {};
+  function loadEngine(engine) {
+    if (!engineLoads[engine]) {
+      const name = CanvasCore.ENGINE_LABEL[engine];
+      engineLoads[engine] = new Promise((resolve, reject) => {
         const s = document.createElement("script");
-        s.src = "vendor/mermaid/mermaid.tiny.js";       // 'self' only (sandbox CSP + meta CSP)
-        s.onload = () => (globalThis.mermaid ? resolve(globalThis.mermaid) : reject(new Error("mermaid failed to load")));
-        s.onerror = () => reject(new Error("mermaid failed to load"));
+        s.src = engine === "pele" ? "vendor/pele/pele.global.js" : "vendor/mermaid/mermaid.tiny.js";   // 'self' only (sandbox CSP + meta CSP)
+        s.onload = () => {
+          const g = engine === "pele" ? globalThis.pele : globalThis.mermaid;
+          return g ? resolve(g) : reject(new Error(`${name} failed to load`));
+        };
+        s.onerror = () => reject(new Error(`${name} failed to load`));
         document.head.appendChild(s);
       });
-      mermaidLoad.catch(() => { mermaidLoad = null; });   // a later render may try again
+      engineLoads[engine].catch(() => { delete engineLoads[engine]; });   // a later render may try again
     }
-    return mermaidLoad;
+    return engineLoads[engine];
   }
-  // Dark like the canvas; a printed document re-renders its diagrams with the light theme. A deck
-  // prints on its own dark slides (reveal's print-pdf layout), so it stays dark.
+  // Dark like the canvas; a printed document re-renders its Mermaid diagrams with the light theme
+  // (Pele's switch through CSS variables, no re-render). A deck prints on its own dark slides
+  // (reveal's print-pdf layout), so it stays dark.
   const PRINT_THEME = "default", SCREEN_THEME = "dark";
   // Mermaid scopes this under the diagram's id, after its own rules: SVG-text labels (rect) and
   // HTML ones (a directive can turn htmlLabels on) alike.
@@ -269,7 +281,8 @@
   let mermaidTheme = "";
   let mermaidQueue = Promise.resolve();    // one render at a time: mermaid's config is global
   let diagramSeq = 0;
-  function renderDiagram(M, source, theme) {
+  const canvasFont = () => getComputedStyle(document.body).fontFamily;
+  function renderWithMermaid(M, source, theme) {
     const run = mermaidQueue.then(async () => {
       if (theme !== mermaidTheme) {
         M.initialize({
@@ -279,7 +292,7 @@
           // SVG text labels by default: they take the canvas font and print the same.
           htmlLabels: false,
           suppressErrorRendering: true,   // throw instead of drawing mermaid's own error graphic
-          fontFamily: getComputedStyle(document.body).fontFamily,
+          fontFamily: canvasFont(),
           // Paper: edge labels on solid white. Mermaid draws their background at half opacity, so on
           // the light theme the edge line runs visibly through the text (reads as struck through).
           ...(theme === PRINT_THEME ? { themeVariables: { edgeLabelBackground: "#ffffff" }, themeCSS: PRINT_EDGE_LABEL_CSS } : {}),
@@ -293,12 +306,25 @@
     mermaidQueue = run.catch(() => {});
     return run;
   }
-  // Mermaid's SVG goes through DOMPurify too, as a second check behind its 'strict' sanitizing; the
+  // Pele measures labels with the font it is given: the canvas font, which --pele-font repeats
+  // (canvas-frame.css), so labels fit the boxes drawn for them. idPrefix keeps ids apart between
+  // diagrams of one canvas.
+  function renderWithPele(P, source) {
+    return P.render(source, { fontFamily: canvasFont(), images: false, idPrefix: `ks-pele-${++diagramSeq}-` }).svg;
+  }
+  /** One diagram with one engine → its SVG text (throws as the engine does, or when it did not load). */
+  async function renderDiagram(engine, source, theme) {
+    const E = await loadEngine(engine);
+    return engine === "pele" ? renderWithPele(E, source) : renderWithMermaid(E, source, theme);
+  }
+  // The engine for this canvas, from the host's render{engine} (anything else: Pele, the default).
+  let diagramEngine = "pele";
+  // Both engines' SVG goes through DOMPurify, as a second check behind their own sanitizing; the
   // frame's meta CSP blocks script either way. <foreignObject> with HTML in it is kept: some labels
-  // are drawn that way whatever htmlLabels says (journey tasks, venn text, and htmlLabels can be
-  // turned on by a directive), and dropping them would blank those labels without an error. The
-  // HTML inside is held to the html profile, like the markdown sink's; DOMPurify drops HTML under
-  // SVG unless the SVG parent is an integration point, so foreignObject is made one (as mermaid does).
+  // are drawn that way (mermaid: journey tasks, venn text, htmlLabels turned on by a directive;
+  // Pele: math), and dropping them would blank those labels without an error. The HTML inside is
+  // held to the html profile, like the markdown sink's; DOMPurify drops HTML under SVG unless the
+  // SVG parent is an integration point, so foreignObject is made one (as mermaid does).
   const SVG_DP = {
     USE_PROFILES: { svg: true, svgFilters: true, html: true }, ADD_TAGS: ["foreignObject"],
     HTML_INTEGRATION_POINTS: { foreignobject: true }, SANITIZE_DOM: true, RETURN_DOM_FRAGMENT: true,
@@ -307,19 +333,27 @@
   // foreignObject gets its scheme check. It matches nodeName "A" only, and an SVG <a> is "a": that
   // one relies on DOMPurify's own URI filter, and on the host's safeLinkUrl + confirm on openLink.
   const diagramSource = new WeakMap();    // <figure class="ks-mermaid"> → its mermaid source
-  function setDiagramSvg(fig, svg) {
+  function setDiagramSvg(fig, svg, engine) {
     let box = fig.querySelector(":scope > .ks-mermaid-svg");
     if (!box) { box = document.createElement("div"); box.className = "ks-mermaid-svg"; fig.prepend(box); }
     // The sanitized nodes themselves, not a string parsed again: svg / html / foreignObject nesting
     // is where a re-parse could differ from what DOMPurify checked (mXSS). Replaces the old SVG and
     // its <style>.
     box.replaceChildren(DOMPurify.sanitize(svg, SVG_DP));
+    fig.dataset.engine = engine;          // which engine drew it: print re-themes Mermaid's only
   }
-  function diagramFigure(source, svg) {
+  function diagramFigure(source, svg, engine, fallbackNote) {
     const fig = document.createElement("figure");
     fig.className = "ks-mermaid";
     diagramSource.set(fig, source);
-    setDiagramSvg(fig, svg);
+    setDiagramSvg(fig, svg, engine);
+    // Drawn by the fallback (§2.4): say so on the figure, so neither the user nor a screenshot hides it.
+    if (fallbackNote) {
+      const note = document.createElement("figcaption");
+      note.className = "ks-mermaid-fallback";
+      note.textContent = fallbackNote;              // quotes the engine's message: textContent only
+      fig.appendChild(note);
+    }
     // The copy button copies the diagram's source (through the host, like a code block's).
     const btn = document.createElement("button");
     btn.className = "copy-btn";
@@ -333,58 +367,64 @@
     fig.appendChild(btn);
     return fig;
   }
-  // Render every ```mermaid fence under root in place. A bad diagram keeps its source, shows the
-  // error above it (textContent) and is reported as diagramError{}; the rest of the canvas stands.
-  // `gen` is the render it belongs to: a newer render makes it stop. `seq` (the host's render number,
-  // #96) goes with the report, so the host can tell it from an older render's.
+  // Render every ```mermaid fence under root in place: with the chosen engine, and if that throws
+  // (parse error, unsupported type, did not load) with the other one once (§2.4). A fallback draws
+  // with a note on the figure and is reported as diagramFallback{}; a diagram both engines reject
+  // keeps its source, shows both errors above it (textContent) and is reported as diagramError{};
+  // the rest of the canvas stands. `gen` is the render it belongs to: a newer render makes it stop.
+  // `seq` (the host's render number, #96) goes with the reports, so the host can tell it from an
+  // older render's. Each diagram's outcome is added to `shownDiagrams` for rendered{diagrams}.
   let renderGen = 0;
+  let shownDiagrams = [];                 // rendered{diagrams}: [{engine: "pele" | "mermaid" | "none", fallback}]
   function diagramNote(pre, msg) {
     const note = document.createElement("div");
     note.className = "ks-mermaid-error";
     note.setAttribute("role", "note");
-    note.textContent = msg;                         // mermaid's message quotes agent text: textContent only
+    note.textContent = msg;                         // the engines' messages quote agent text: textContent only
     pre.before(note);
   }
   async function renderDiagrams(root, kind, gen, seq, theme) {
     if (!CanvasCore.wantsMermaid(kind, root)) return;
     const codes = Array.from(root.querySelectorAll(CanvasCore.MERMAID_SEL));
     if (!codes.length) return;
-    let M;
-    try { M = await loadMermaid(); } catch (e) {
-      if (gen !== renderGen) return;
-      // Not one diagram's fault: every fence stays source, each saying so.
-      const msg = CanvasCore.diagramErrorText(e);
-      for (const code of codes) diagramNote(code.parentElement, msg);
-      post({ type: "diagramError", msg, seq });
-      return;
-    }
-    const errors = [];
+    const first = diagramEngine, second = CanvasCore.otherEngine(first);
+    const errors = [], fallbacks = [];
     for (const [i, code] of codes.entries()) {
       const pre = code.parentElement;
       const source = code.textContent;
-      let svg, err;
-      try { svg = await renderDiagram(M, source, theme); } catch (e) { err = e; }
+      let svg, engine = first, err1, err2;
+      try { svg = await renderDiagram(first, source, theme); } catch (e) { err1 = e; }
       if (gen !== renderGen) return;
+      if (svg === undefined) {
+        engine = second;
+        try { svg = await renderDiagram(second, source, theme); } catch (e) { err2 = e; }
+        if (gen !== renderGen) return;
+      }
       if (svg !== undefined) {
-        const fig = diagramFigure(source, svg);
+        const why = err1 !== undefined ? CanvasCore.diagramErrorText(err1, i + 1, first) : "";
+        const fig = diagramFigure(source, svg, engine, why ? CanvasCore.diagramFallbackNote(engine, why) : "");
         for (const a of ["data-line-start", "data-line-end"]) if (pre.hasAttribute(a)) fig.setAttribute(a, pre.getAttribute(a));
         pre.replaceWith(fig);
+        if (why) fallbacks.push(`${why} → drawn by ${CanvasCore.ENGINE_LABEL[engine]}`);
+        shownDiagrams.push({ engine, fallback: !!why });
         continue;
       }
-      const msg = CanvasCore.diagramErrorText(err, i + 1);
+      const msg = `${CanvasCore.diagramErrorText(err1, i + 1, first)}\n${CanvasCore.diagramErrorText(err2, i + 1, second)}`;
       diagramNote(pre, msg);
       errors.push(msg);
+      shownDiagrams.push({ engine: "none", fallback: false });
     }
+    if (fallbacks.length) post({ type: "diagramFallback", msg: CanvasCore.clipError(fallbacks.join("\n")), seq });
     if (errors.length) post({ type: "diagramError", msg: CanvasCore.clipError(errors.join("\n\n")), seq });
   }
-  // Print (§3.8): the rendered diagrams again with another theme, in place (same figures, so glow
-  // and highlight state stay). Failures keep the old SVG.
+  // Print (§3.8): the Mermaid diagrams again with another theme, in place (same figures, so glow
+  // and highlight state stay). Pele's follow the print CSS variables. Failures keep the old SVG.
+  const mermaidFigures = (root) => Array.from(root.querySelectorAll('figure.ks-mermaid[data-engine="mermaid"]'));
   async function rethemeDiagrams(root, theme) {
-    const figs = Array.from(root.querySelectorAll("figure.ks-mermaid"));
+    const figs = mermaidFigures(root);
     if (!figs.length) return;
-    const M = await loadMermaid();
     for (const fig of figs) {
-      try { setDiagramSvg(fig, await renderDiagram(M, diagramSource.get(fig) || "", theme)); } catch (_) { /* keeps the old one */ }
+      try { setDiagramSvg(fig, await renderDiagram("mermaid", diagramSource.get(fig) || "", theme), "mermaid"); } catch (_) { /* keeps the old one */ }
     }
   }
 
@@ -1007,7 +1047,7 @@
       // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
       // reveal's print-pdf layout; give it a moment to lay the pages out. A document's diagrams go
       // light for the paper first, and dark again after the (blocking) print dialog.
-      const light = deck.hidden && !!doc.querySelector("figure.ks-mermaid");
+      const light = deck.hidden && mermaidFigures(doc).length > 0;
       (light ? rethemeDiagrams(doc, PRINT_THEME) : Promise.resolve()).catch(() => {}).then(() => {
         setTimeout(() => {
           try { window.print(); } finally {
@@ -1049,6 +1089,8 @@
     const gen = ++renderGen;
     const seq = Number.isInteger(m.seq) ? m.seq : 0;     // echoed back: which render this answers (#96)
     shownSeq = seq;
+    diagramEngine = CanvasCore.isEngine(m.engine) ? m.engine : "pele";
+    shownDiagrams = [];
     Promise.resolve().then(() => {
       if (m.kind === "markdown") return renderMarkdown(typeof m.content === "string" ? m.content : "", gen, seq);
       if (m.kind === "slides") return renderSlides(typeof m.content === "string" ? m.content : "", gen, seq);
@@ -1066,7 +1108,8 @@
         // #86: never store a normalization that lost an image; the agent's text stays as written.
         if (normalized !== undefined && CanvasCore.losesImages(m.normalizeText, normalized)) normalized = undefined;
       }
-      post(normalized === undefined ? { type: "rendered", version: m.version, seq } : { type: "rendered", version: m.version, seq, normalized });
+      const done = { type: "rendered", version: m.version, seq, diagrams: shownDiagrams.slice(0, 500) };
+      post(normalized === undefined ? done : { ...done, normalized });
     }, (err) => {
       if (gen === renderGen) post({ type: "error", msg: String((err && err.message) || err), seq });   // else superseded
     });

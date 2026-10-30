@@ -107,6 +107,22 @@ chat shows mermaid fences as code.
   state and class diagrams in the real frame under the manifest's sandbox CSP: 0 CSP violations,
   0 Workers.
 
+## `pele/` — Pele (canvas diagrams, the default engine)
+
+The other diagram engine, and the default (ADR `docs/adr/canvas-diagram-engine.md`): the same
+```` ```mermaid ```` fences and `kind: "mermaid"` canvases, drawn by Pele unless Settings → 圖表引擎
+or the canvas header says Mermaid; each engine is the other's fallback. Loaded **on demand** by
+`canvas-frame.html`, like `mermaid/`.
+
+- Source: `pele@1.12.0` (MIT; its zoom controls' reset icon is Lucide's, ISC — both in
+  `THIRD_PARTY_NOTICES.md`). Its prebuilt `dist/pele.global.js` (global `pele`) is copied as-is, not
+  rebuilt. 730,358 bytes, 273,749 gzip. No runtime dependencies.
+- Synchronous, on the main thread: no `fetch` / XHR, no `eval` / `new Function`, no Worker. Colours
+  and fonts are CSS variables (`--pele-*`) on the SVG, so the frame themes it with CSS and print
+  does not re-render it. `foreignObject` only for math labels.
+- Verified by `scripts/smoke-mermaid.mjs`, which runs every section under both engines in the real
+  frame under the manifest's sandbox CSP.
+
 ## Reproducible rebuild
 
 The markdown-it / DOMPurify / highlight.js bundles are built from pinned inputs in
@@ -130,6 +146,7 @@ aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.
 c47e9f48acc43519c4a7b58f7a27745bbed021d944b58b469ad4459797462016  milkdown/crepe.iife.js
 7d6bb77a0d31140eb36fdec3b9831eaba9eae3f8583564f67f9c413c8f51ac5a  milkdown/crepe.css
 143c1b9345c45963ff429da4bdcd9051316a43522ea9edd7ccb7a87ff947a804  mermaid/mermaid.tiny.js
+787ed66bb4bd56c15e224109ff5b89ed395ebfacf71fae2c0ccad1f86d6e24ef  pele/pele.global.js
 ```
 
 To bump a version: edit `package.json`, run `npm i --package-lock-only` there, run `build.sh`, and update

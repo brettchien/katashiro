@@ -64,6 +64,12 @@
   // off: canvas_open refuses kind html, and canvas tabs show html canvases without their scripts only.
   const HTML_ENABLED_KEY = "canvas:htmlEnabled";
   const htmlEnabled = (v) => v !== false;
+  // canvas-diagram-engine §2.1 (Brett 2026-10-30): Settings → 圖表引擎. "mermaid" picks Mermaid;
+  // anything else (absent included) is Pele, the default.
+  const DIAGRAM_ENGINE_KEY = "canvas:diagramEngine";
+  const diagramEngine = (v) => (v === "mermaid" ? "mermaid" : "pele");
+  // §3 (#210 review): the one-time "圖表改用 Pele 繪製" notice; true once a canvas tab showed it.
+  const PELE_NOTICE_KEY = "canvas:peleNoticeShown";
   const ID_RE = /^cv_[0-9a-f]{12}$/;
 
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
@@ -959,5 +965,5 @@
 
   return { createCanvasStore, incognitoLeftovers,
     historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint,
-    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, HTML_MAX_BYTES, HTML_ENABLED_KEY, htmlEnabled, contentCap, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
+    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, HTML_MAX_BYTES, HTML_ENABLED_KEY, htmlEnabled, DIAGRAM_ENGINE_KEY, diagramEngine, PELE_NOTICE_KEY, contentCap, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
 });
