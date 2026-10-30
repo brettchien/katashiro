@@ -39,52 +39,88 @@ size=$(wc -c < "$file" | tr -d ' ')
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+FACADE_TIMEOUT=60
+CLIENT_NAME=katashiro-show-image
+# --- facade client: keep identical in canvas-file.sh and show-image.sh (test/facade-scripts.test.js) ---
+# Each skill is installed on its own, so this block is copied, not sourced. Set before it: FACADE,
+# FACADE_TIMEOUT, CLIENT_NAME, tmp.
 # The bearer token goes in a 0600 header file read by curl (-H @file, curl ≥ 7.55), never on the
 # command line, where any process on the host could read it from ps.
 ( umask 077; printf 'Authorization: Bearer %s\n' "$OPENAB_SESSION_TOKEN" > "$tmp/auth" )
 
-post() {  # post <body-file> [mcp-session-id] → response body on stdout, headers in $tmp/headers
-  if [ -n "${2:-}" ]; then
-    curl -sS -m 60 "$FACADE" -X POST \
-      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-      -H @"$tmp/auth" -H "Mcp-Session-Id: $2" \
-      -D "$tmp/headers" --data-binary @"$1"
-  else
-    curl -sS -m 60 "$FACADE" -X POST \
-      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
-      -H @"$tmp/auth" \
-      -D "$tmp/headers" --data-binary @"$1"
-  fi
+# The start of a response body for an error line: control characters dropped, one line, ≤ 200 bytes.
+snippet() {
+  local s
+  s=$(tr -d '\000-\010\013-\037\177' < "$1" | tr '\n\t' '  ' | head -c 200)
+  printf '%s' "${s:-(empty body)}"
 }
 
-# 1) MCP handshake → session id, if the facade gives one (a stateless facade sends no
-#    Mcp-Session-Id; then every request goes without it)
-jq -n '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:"katashiro-show-image",version:"1"}}}' > "$tmp/init.json"
-post "$tmp/init.json" >/dev/null || { echo "error: cannot reach the OpenAB facade at $FACADE" >&2; exit 1; }
+# post <body-file> [mcp-session-id] → the response body on stdout, headers in $tmp/headers.
+# Facade not reachable, or an HTTP status ≥ 400 → "error: …" on stderr and exit 1.
+post() {
+  local code
+  if [ -n "${2:-}" ]; then
+    code=$(curl -sS -m "$FACADE_TIMEOUT" "$FACADE" -X POST \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+      -H @"$tmp/auth" -H "Mcp-Session-Id: $2" \
+      -D "$tmp/headers" -o "$tmp/body" -w '%{http_code}' --data-binary @"$1") \
+      || { echo "error: cannot reach the OpenAB facade at $FACADE" >&2; exit 1; }
+  else
+    code=$(curl -sS -m "$FACADE_TIMEOUT" "$FACADE" -X POST \
+      -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream" \
+      -H @"$tmp/auth" \
+      -D "$tmp/headers" -o "$tmp/body" -w '%{http_code}' --data-binary @"$1") \
+      || { echo "error: cannot reach the OpenAB facade at $FACADE" >&2; exit 1; }
+  fi
+  case "$code" in
+    [123][0-9][0-9]) ;;
+    *)
+      # A JSON-RPC error body gives its message; anything else, the start of the body.
+      local why
+      why=$(jq -r '.error.message // empty' "$tmp/body" 2>/dev/null | head -c 200 || true)
+      echo "error: the OpenAB facade answered HTTP $code: ${why:-$(snippet "$tmp/body")}" >&2; exit 1 ;;
+  esac
+  cat "$tmp/body"
+}
+
+# The capability's text from a tools/call response ($1), or "error: …" on stderr and exit 1.
+result_text() {
+  grep '^data:' "$1" | sed 's/^data: *//' | grep -v '^$' | tail -n 1 > "$tmp/rpc.json" || true
+  [ -s "$tmp/rpc.json" ] || cp "$1" "$tmp/rpc.json"
+  if ! jq -e 'type == "object" and (has("result") or has("error"))' "$tmp/rpc.json" >/dev/null 2>&1; then
+    echo "error: the OpenAB facade's answer is not a JSON-RPC response: $(snippet "$1")" >&2; exit 1
+  fi
+  if jq -e '.error' "$tmp/rpc.json" >/dev/null 2>&1; then
+    echo "error: $(jq -r '.error.message' "$tmp/rpc.json")" >&2; exit 1
+  fi
+  local text inner wrapped_err out
+  text=$(jq -r '.result.content[0].text // empty' "$tmp/rpc.json")
+  # execute_capability may wrap the provider's result as JSON text; unwrap one level when it does.
+  inner=$(printf '%s' "$text" | jq -r '.content[0].text // empty' 2>/dev/null || true)
+  wrapped_err=$(printf '%s' "$text" | jq -r '.isError // false' 2>/dev/null || echo false)
+  out="${inner:-$text}"
+  if [ "$wrapped_err" = "true" ] || [ "$(jq -r '.result.isError // false' "$tmp/rpc.json")" = "true" ]; then
+    echo "error: $out" >&2; exit 1
+  fi
+  printf '%s' "$out"
+}
+
+# MCP handshake → the session id, if the facade gives one (a stateless facade sends no
+# Mcp-Session-Id; then every request goes without it).
+jq -n --arg name "$CLIENT_NAME" '{jsonrpc:"2.0",id:1,method:"initialize",params:{protocolVersion:"2024-11-05",capabilities:{},clientInfo:{name:$name,version:"1"}}}' > "$tmp/init.json"
+post "$tmp/init.json" >/dev/null
 sid=$(grep -i '^mcp-session-id:' "$tmp/headers" | sed 's/^[^:]*: *//' | tr -d '\r' || true)
 echo '{"jsonrpc":"2.0","method":"notifications/initialized"}' > "$tmp/inited.json"
-post "$tmp/inited.json" "$sid" >/dev/null || { echo "error: facade handshake failed (notifications/initialized)" >&2; exit 1; }
+post "$tmp/inited.json" "$sid" >/dev/null
+# --- end facade client ---
 
-# 2) katashiro.show_image — the base64 goes file → jq → body file, never onto a command line
+# katashiro.show_image — the base64 goes file → jq → body file, never onto a command line
 base64 < "$file" | tr -d '\n' > "$tmp/b64"
 jq -n --rawfile data "$tmp/b64" --arg mime "$mime" --arg caption "$caption" '
   {jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"execute_capability",arguments:{
     name:"katashiro.show_image",
     arguments:({data:$data, mimeType:$mime} + (if $caption == "" then {} else {caption:$caption} end))}}}' > "$tmp/call.json"
-post "$tmp/call.json" "$sid" > "$tmp/resp" || { echo "error: the show_image call to the facade failed" >&2; exit 1; }
+post "$tmp/call.json" "$sid" > "$tmp/resp"
 
-# 3) Result: the SSE "data:" line (or plain JSON) → JSON-RPC → the capability's text
-grep '^data:' "$tmp/resp" | sed 's/^data: *//' | grep -v '^$' | tail -n 1 > "$tmp/rpc.json" || true
-[ -s "$tmp/rpc.json" ] || cp "$tmp/resp" "$tmp/rpc.json"
-if jq -e '.error' "$tmp/rpc.json" >/dev/null 2>&1; then
-  echo "error: $(jq -r '.error.message' "$tmp/rpc.json")" >&2; exit 1
-fi
-text=$(jq -r '.result.content[0].text // empty' "$tmp/rpc.json")
-# execute_capability may wrap the provider's result as JSON text; unwrap one level when it does.
-inner=$(printf '%s' "$text" | jq -r '.content[0].text // empty' 2>/dev/null || true)
-wrapped_err=$(printf '%s' "$text" | jq -r '.isError // false' 2>/dev/null || echo false)
-out="${inner:-$text}"
-if [ "$wrapped_err" = "true" ] || [ "$(jq -r '.result.isError // false' "$tmp/rpc.json")" = "true" ]; then
-  echo "error: $out" >&2; exit 1
-fi
+out=$(result_text "$tmp/resp")
 echo "$out"
