@@ -237,6 +237,11 @@ new click".
   sandbox above, which a revision cannot change; what a later revision can do is what the first
   could have done (canvas §3.2 residual risk). The notice makes the change of code visible, and a
   move to another conversation (another agent) asks again.
+  What the per-revision click also held back, and this gives up, is **when** the code runs and
+  **what** it carries: a granted canvas reopens the act-mode bypass canvas §3.2 describes. An agent
+  steered by prompt injection later in the same conversation can put context from other tabs into a
+  new revision that sends it out with no action from the user; a navigation leaves before the load
+  gate revokes the grant, and the notice comes after the run, not before it.
 - **Pages do not tell the user to press Run scripts.** `canvas_open`'s description and the
   `katashiro-canvas-file` / `katashiro-archify` skills say: no "press Run scripts" text or
   placeholders in the page (Katashiro shows its own hint, and the page's would stay on screen after

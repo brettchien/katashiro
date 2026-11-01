@@ -294,7 +294,12 @@ below is built around that.
   click authorizes running the script; it does not make the content trustworthy, and the banner
   stays. Since 2026-11-01 the click authorizes the **canvas**, not one revision (§6 Q8 revised,
   [canvas-html](./canvas-html.md) §2.6): the agent's later revisions of it run without another
-  click, until the user stops them, moves or deletes the canvas, or turns `html` off.
+  click, until the user stops them, moves or deletes the canvas, or turns `html` off. **So a granted
+  canvas reopens the act-mode bypass above:** the click now closes it for the first revision only.
+  If the same conversation's agent is later steered by prompt injection, it can write a revision
+  that sends data out with no action from the user — a navigation is already sent before the load
+  gate sees it, and the "vN ran automatically" notice comes after the run, not before. Accepted
+  with canvas-html §2.6.
 
 ### 3.3 Content kinds, in phases
 
