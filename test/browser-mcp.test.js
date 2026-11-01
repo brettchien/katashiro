@@ -3761,9 +3761,19 @@ test("katashiro.canvas_view: showChanges is the global switch; compare needs an 
   const end = await callTool(d, "katashiro.canvas_view", { id: "cv_000000000001", compare: false });
   assert.equal(end.content[0].text, 'ended the compare of "Doc" (closed its compare tab)');
   assert.deepEqual(calls, [["show", true], ["show", true], ["show", false], ["compare", "cv_000000000001", true], ["compare", "cv_000000000001", false]]);
+  // ↔ 窄欄 (§3.1): the same kind of global switch.
+  calls.length = 0;
+  let nar = false;
+  d.canvas.setNarrow = async (on) => { calls.push(["narrow", on]); const was = nar; nar = on; return { was }; };
+  const n1 = await callTool(d, "katashiro.canvas_view", { narrow: true });
+  assert.equal(n1.isError, undefined, JSON.stringify(n1));
+  assert.match(n1.content[0].text, /^窄欄 \(reading width\) is now on for every canvas tab/);
+  assert.match((await callTool(d, "katashiro.canvas_view", { narrow: true, showChanges: true })).content[0].text, /^顯示變更 is now on .*\n窄欄 \(reading width\) is already on/);
+  assert.deepEqual(calls, [["narrow", true], ["show", true], ["narrow", true]]);
   calls.length = 0;
   for (const [args, re] of [
-    [{}, /give `showChanges`, `compare` and\/or `engine`/],
+    [{}, /give `showChanges`, `narrow`, `compare` and\/or `engine`/],
+    [{ narrow: "on" }, /`narrow` must be true or false/],
     [{ showChanges: "on" }, /must be true or false/],
     [{ compare: 1, id: "cv_000000000001" }, /must be true or false/],
     [{ compare: true }, /needs the canvas `id`/],

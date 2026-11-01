@@ -231,6 +231,14 @@ async function setCanvasShowChanges(on) {
   return { was };
 }
 
+// ↔ 窄欄 (reading width, canvas §3.1): the same kind of global switch, same path. → { was }.
+async function setCanvasNarrow(on) {
+  const k = CanvasCore.NARROW_KEY;
+  const was = (await chrome.storage.local.get(k))[k] === true;
+  if (was !== on) await chrome.storage.local.set({ [k]: on });
+  return { was };
+}
+
 // The canvas header's 圖表 switch (canvas-diagram-engine §2.3): that canvas's tab (an open one, or a
 // new one in front) runs the switch's own path and answers once the new render reports which engine
 // drew each diagram. An open tab comes to the front only once it answered ok (an editing user gets a
