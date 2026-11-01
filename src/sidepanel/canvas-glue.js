@@ -791,6 +791,7 @@ function canvasCard({ id, version, title, conv = conversationId }) {
   const card = document.createElement("button");
   card.type = "button";
   card.className = "canvas-card";
+  card.dataset.canvasId = String(id);
   const icon = document.createElement("span");
   icon.className = "canvas-card-icon";
   icon.textContent = "📄";
@@ -804,4 +805,19 @@ function canvasCard({ id, version, title, conv = conversationId }) {
   card.title = "在分頁中開啟這個畫布";
   card.addEventListener("click", () => { openCanvasTab(id, { active: true, conv }).catch(() => {}); });
   return card;
+}
+
+// A rename (Brett 2026-11-01, meta-only: CanvasStore.rename or canvas_patch's title) relabels every
+// chat card of that canvas; the version on the card stays the one that write made. Called from
+// sidepanel.js's storage.onChanged listener (no load-time calls here).
+function relabelCanvasCards(changes) {
+  for (const [key, ch] of Object.entries(changes)) {
+    const m = /^canvas:(cv_[0-9a-f]{12}):meta$/.exec(key);
+    if (!m || !ch.newValue || !ch.oldValue || ch.newValue.title === ch.oldValue.title) continue;
+    for (const card of document.querySelectorAll(".canvas-card")) {
+      if (card.dataset.canvasId !== m[1]) continue;
+      const name = card.querySelector(".canvas-card-title");
+      if (name) name.textContent = String(ch.newValue.title || "Canvas").slice(0, 120);
+    }
+  }
 }

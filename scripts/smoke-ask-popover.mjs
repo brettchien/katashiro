@@ -232,7 +232,7 @@ try {
   check(s.note === "draft note", "reopened on the same selection: the unsent note is back", s.note);
 
   // 7. A click in the header (outside) closes it.
-  await page.click("#canvas-title");
+  await page.click("#canvas-version");   // not the title: a click there renames (2026-11-01)
   s = await state();
   check(!s.pop, "a click outside closes the popover", s);
   // …and so does a click into the canvas (focus leaves this page for the frame).

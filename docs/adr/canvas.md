@@ -481,6 +481,18 @@ below is built around that.
   Every kind except `html` also has no way out of the sandbox (§3.2). An `html` canvas can send data
   out only after the user clicks **Run scripts** for that canvas (click to run, once per canvas since
   2026-11-01: §6 Q8, §3.2 residual risk), so it needs no act-mode gate.
+- **Rename (Brett, 2026-11-01, Katashiro chat `acpmsg_8086cfe4-1e5b-4742-8f94-688e3c217ab6`:
+  「canvas_patch 加 title ＋ 標題列點名稱直接改」).** `CanvasStore.rename({conversationId?, id, title,
+  by})` is meta-only: under the `canvas:<id>` lock it sets `meta.title` and the index entry — no new
+  version, any kind; titles are validated as everywhere (trimmed, non-empty, ≤ 120). The agent
+  renames with `canvas_patch({id, baseVersion, title})` (own conversation only; `baseVersion` is
+  still required and stale-checked; `edits` optional when `title` is given; title + edits is one
+  agent version). The user clicks the title in the canvas tab's header: an inline input, Enter or
+  blur saves, Esc cancels — allowed while editing the content too (a rename touches no text). Other
+  tabs, the gallery and the side panel's chat cards follow through `storage.onChanged`. **The folder
+  mirror keeps the file name** (no new file, no orphan): the store keeps the title the file was named
+  after in `meta.fileTitle`; `.katashiro/<id>.json` may show the new title. A `canvas_open` with a
+  new title still moves the file as before (§3.6).
 
 ### 3.5 Versions and concurrency (markdown editing in phase 1, slides in phase 2)
 

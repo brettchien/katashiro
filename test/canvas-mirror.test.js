@@ -1222,3 +1222,21 @@ test("§7.3 a canvas moved to another conversation: its files move to that conve
   assert.equal(JSON.parse(await readText(env.dir, `.katashiro/${a.id}.json`)).conversation, "fedcba9-topic");
   assert.equal((await env.meta(stay.id)).file.convSlug, "0123456-draft");
 });
+
+test("a canvas rename (store.rename, canvas_patch title) keeps the file name; canvas_open with a new title still moves it", async () => {
+  const env = setup();
+  const { id } = await env.store.agentWrite({ conversationId: "c", title: "Old name", content: "v1" });
+  await env.mirror.sync(id);
+  await env.store.rename({ id, title: "Renamed", by: "user" });
+  await env.mirror.sync(id);
+  await env.store.agentPatch({ conversationId: "c", id, baseVersion: 1, title: "Renamed again", edits: [{ find: "v1", replace: "v2" }] });
+  await env.mirror.sync(id);
+  assert.deepEqual(env.dir.shared.moves, []);
+  assert.equal(await readText(env.dir, "c/old-name.md"), "v2");
+  assert.equal(await readText(env.dir, "c/renamed.md"), null);
+  assert.equal((await env.meta(id)).title, "Renamed again");
+  // canvas_open with another title: the file follows the title, as before.
+  await env.store.agentWrite({ conversationId: "c", id, baseVersion: 2, title: "Fresh", content: "v3" });
+  await env.mirror.sync(id);
+  assert.equal(await readText(env.dir, "c/fresh.md"), "v3");
+});

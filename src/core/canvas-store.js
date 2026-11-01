@@ -604,6 +604,7 @@
       const version = cur.version + 1;
       const meta = { ...cur, ...fields, version };
       if (!fields.patchRanges) delete meta.patchRanges;
+      if (meta.fileTitle == null) delete meta.fileTitle;
       delete meta.agentBytes;                            // the history has every version's size
       delete meta.walk;                                  // #117's ↶ / ↷ walk state, no longer used
       const legacy = !hasHistory(cur);
@@ -641,11 +642,13 @@
     // agent copy, so it is pinned and the previous agent write trims like any version.
     // ranges: what a canvas_patch changed, in this text (planPatch), kept as meta.patchRanges so the
     // canvas tab glows exactly that (§3.10, #107); any other write drops the previous patch's.
-    async function storeAgentVersion(cur, { title, content, bytes, at, ranges, img, max, latest }) {
+    async function storeAgentVersion(cur, { title, fileTitle, content, bytes, at, ranges, img, max, latest }) {
       const fields = {
         title, author: "agent", at, agentVersion: cur.version + 1, agentSeenVersion: cur.version + 1, bytes,
         normalized: cur.kind !== "markdown",
       };
+      if (fileTitle) fields.fileTitle = fileTitle;
+      else if (title !== cur.title) fields.fileTitle = null;   // a canvas_open rename: the file follows (canvas-mirror.js)
       if (ranges) fields.patchRanges = ranges;
       return commit(cur, { content, fields, img, max, latest });
     }
@@ -706,7 +709,7 @@
         // the agent to canvas_read.
         const rebasedOver = cur.version === baseVersion ? null
           : { version: cur.version, author: cur.author, diffFromBase: await diffFromBase(cur, baseVersion, latest) };
-        const meta = await storeAgentVersion(cur, { title: newTitle || cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges, max, latest });
+        const meta = await storeAgentVersion(cur, { title: newTitle || cur.title, fileTitle: newTitle && newTitle !== cur.title ? (cur.fileTitle || cur.title) : undefined, content: plan.text, bytes, at: now(), ranges: plan.ranges, max, latest });
         result = {
           id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges, rebasedOver,
         };
@@ -743,7 +746,8 @@
         if (by === "agent" && cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
         if (by === "agent" && (baseVersion > cur.version || baseVersion < 1)) throw new StaleError(cur, baseVersion, null);
         if (cur.title === t) { result = { id, version: cur.version, title: t, kind: cur.kind, unchanged: true }; return; }
-        const meta = { ...cur, title: t };
+        // fileTitle: the folder mirror keeps the file named after the title it had (canvas-mirror.js).
+        const meta = { ...cur, title: t, fileTitle: cur.fileTitle || cur.title };
         await storage.set({ [metaKey(id)]: meta });
         await updateIndex(cur.conversationId, indexEntry(meta));
         result = { id, version: meta.version, title: t, kind: meta.kind, unchanged: false };

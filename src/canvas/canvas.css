@@ -229,3 +229,15 @@ body {
 .conv-picker-empty { margin: 4px 0; color: var(--muted); font-size: 12px; }
 .conv-picker-empty[hidden] { display: none; }
 .conv-picker-cancel { align-self: flex-end; }
+
+/* Rename (Brett 2026-11-01): the title is clickable; the inline input takes its place. */
+.canvas-title.renamable { cursor: text; border-radius: 4px; }
+.canvas-title.renamable:hover { background: rgba(127, 127, 127, 0.15); }
+.canvas-title-input {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 12em;
+  max-width: 40vw;
+  padding: 1px 4px;
+}
