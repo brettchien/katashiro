@@ -430,6 +430,16 @@ below is built around that.
   keys (§3.10) stay on `tr`, source lines on the `table`. Print uses the same style in ink, slides
   and chat bubbles a scaled one. Accepted: uppercase does nothing to CJK headers (they only get
   smaller and muted), and on a wide tab a short table is stretched.
+- **Footnotes, highlight, underline, definition lists (2026-11-01, Brett: "for better editing UX").**
+  `markdown-it-footnote` / `-mark` / `-ins` / `-deflist` 4.0.0 (MIT, markdown-it's own), bundled in
+  `vendor/markdown-it.iife.js` like the cards plugins: `[^1]` footnotes, `==highlight==` (`<mark>`),
+  `++underline++` (`<ins>`), `Term` / `: definition`. Picked because Milkdown normalization (§3.5,
+  crepe 7.22.3) writes each back unchanged; tried and left out because it does not: `~sub~` (becomes
+  `~~strike~~`), `*[abbr]` and `[[toc]]` (escaped), and `$` math blocks (a backslash is dropped).
+  `DP_CONFIG` is unchanged and so is the link hook: a footnote's `#fn1` / `#fnref1` hrefs are removed
+  (http(s)/mailto only), so a reference is a plain superscript number and the ↩ back-links are
+  hidden in CSS — no fragment navigation inside the frame. `scripts/smoke-cards.mjs` checks the
+  rendering and that normalization keeps all four.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 

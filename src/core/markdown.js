@@ -7,8 +7,9 @@
 // `docs/adr/chat-markdown-rendering.md` §1.2). `renderMarkdown` is therefore the ONLY sanctioned
 // route from remote text to innerHTML: `md.render` → `DOMPurify.sanitize` (mandatory).
 //
-// Depends on the vendored globals `markdownit` (with `markdownitContainer` and `markdownitGithubAlerts`,
-// bundled in the same file), `DOMPurify`, and `hljs` (loaded before this file).
+// Depends on the vendored globals `markdownit` (with `markdownitContainer`, `markdownitGithubAlerts`,
+// `markdownitFootnote`, `markdownitMark`, `markdownitIns` and `markdownitDeflist`, bundled in the same
+// file), `DOMPurify`, and `hljs` (loaded before this file).
 (function (global) {
   "use strict";
 
@@ -169,6 +170,17 @@
       '<div class="table-wrap">\n' + slf.renderToken(tokens, idx, options);
     md.renderer.rules.table_close = (tokens, idx, options, env, slf) =>
       slf.renderToken(tokens, idx, options) + "</div>\n";
+
+    // Footnotes `[^1]`, ==highlight== (<mark>), ++underline++ (<ins>) and definition lists (ADR canvas
+    // §3.3 "Footnotes, highlight, underline, definition lists"; markdown-it's own plugins, vendored with
+    // it). Chosen because Milkdown normalization (§3.5) writes each of them back unchanged (checked
+    // with the vendored crepe 7.22.3; ~sub~, *[abbr] and [[toc]] did not survive and are left out).
+    // Their markup is plain HTML the html profile keeps. A footnote's `#fn1` / `#fnref1` links lose
+    // their href to the link hook below (http(s)/mailto only), so a reference is a plain superscript
+    // number and the ↩ back-links are hidden by the stylesheets: no fragment navigation in the frame.
+    for (const name of ["markdownitFootnote", "markdownitMark", "markdownitIns", "markdownitDeflist"]) {
+      if (global[name]) md.use(global[name]);
+    }
 
     // Source lines (canvas Ask agent, ADR canvas §3.7): with env.sourceLines, every block element
     // markdown-it maps to source lines carries them as data-line-start / data-line-end (its

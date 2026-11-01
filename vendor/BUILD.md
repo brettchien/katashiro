@@ -40,6 +40,10 @@ advisories, and rebuild — not "vendor once and forget".
   `markdown-it-github-alerts@1.0.1` (MIT), no dependencies of their own — cards and callouts in
   canvases and the chat (ADR `docs/adr/canvas.md` §3.3 "Cards and callouts"). The alerts plugin's
   SVG icon strings are in the bundle as data but never rendered (`markdown.js` turns icons off).
+  Also bundled, as `markdownitFootnote` / `markdownitMark` / `markdownitIns` / `markdownitDeflist`:
+  `markdown-it-footnote`, `markdown-it-mark`, `markdown-it-ins`, `markdown-it-deflist`, all `@4.0.0`
+  (MIT), no dependencies of their own — footnotes, ==highlight==, ++underline++ and definition lists
+  (ADR `docs/adr/canvas.md` §3.3 "Footnotes, highlight, underline, definition lists").
 - Rebuild: `scripts/vendor-build/build.sh` (see [Reproducible rebuild](#reproducible-rebuild) below).
 - Verified: eval-free (grep → 0); `renderMarkdown` renders GFM tables and strips
   `<script>` / `javascript:` / `onerror` (jsdom smoke test).
@@ -143,7 +147,7 @@ scripts/vendor-build/build.sh   # npm ci + esbuild, then prints the sha256 of ea
 The output should be byte-identical to what is committed:
 
 ```
-0a3f15a3b9d3bedbc2372d1300cee4dc86e1ceb40ea6e8d18b3c1d61306246af  markdown-it.iife.js
+4b904312baaa1882a90667678f2eaca80313925325c3bbe31ab91d6d2c8255c0  markdown-it.iife.js
 c087a84ef0542bc645e3bcac407ffb55ff6c08558c6798dcf1448739dc1fe406  dompurify.iife.js
 add316e5136c3ed131ab6dbe99bdd05195f236462093f017426fc439eab64713  highlight.iife.js
 aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.js

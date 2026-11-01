@@ -316,3 +316,32 @@ test("cards and callouts: the chat renders them too (agent and user parsers shar
     assert.match(h, /<blockquote class="markdown-alert markdown-alert-warning markdown-alert-emoji">/);
   }
 });
+
+// --- footnotes, ==highlight==, ++underline++, definition lists (ADR canvas §3.3) ---------------------
+test("plugins: footnote, mark, ins and deflist are bundled with markdown-it", () => {
+  for (const g of ["markdownitFootnote", "markdownitMark", "markdownitIns", "markdownitDeflist"]) {
+    assert.equal(typeof globalThis[g], "function", g);
+  }
+});
+
+test("plugins: ==highlight== is <mark>, ++underline++ is <ins>, in the chat path too", () => {
+  assert.match(md.render("a ==hot== b"), /<p>a <mark>hot<\/mark> b<\/p>/);
+  assert.match(md.render("a ++new++ b"), /<p>a <ins>new<\/ins> b<\/p>/);
+  const { mdUser } = require("../src/core/markdown.js");
+  assert.match(mdUser.render("==x== ++y++"), /<mark>x<\/mark> <ins>y<\/ins>/);
+});
+
+test("plugins: a definition list is <dl><dt><dd>", () => {
+  assert.match(md.render("Term\n: Its definition.\n"), /<dl>\n<dt>Term<\/dt>\n<dd>Its definition\.<\/dd>\n<\/dl>/);
+});
+
+test("plugins: footnotes render a superscript reference and a footnotes section", () => {
+  const h = md.render("Text[^1].\n\n[^1]: The note.\n");
+  assert.match(h, /<sup class="footnote-ref"><a href="#fn1" id="fnref1">\[1\]<\/a><\/sup>/);
+  assert.match(h, /<hr class="footnotes-sep">\n<section class="footnotes">\n<ol class="footnotes-list">\n<li id="fn1" class="footnote-item"><p>The note\./);
+});
+
+test("plugins: source lines still reach a definition list and the footnotes section", () => {
+  const h = md.render("x\n\nTerm\n: def\n", { sourceLines: true });
+  assert.match(h, /<dl data-line-start="2" data-line-end="4">/);
+});

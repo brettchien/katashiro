@@ -34,6 +34,18 @@ body {
 .doc tbody tr:last-child td { border-bottom: 0; }
 .doc img { max-width: 100%; }
 .doc hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 1.5em 0; }
+/* ==highlight==, ++underline++, definition lists, footnotes (ADR canvas §3.3). A footnote reference
+   has no href (markdown.js), so it is a plain superscript; the ↩ back-links go nowhere and are hidden. */
+.doc mark { background: rgba(250, 204, 21, 0.28); color: inherit; padding: 0 0.15em; border-radius: 3px; }
+.doc ins { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
+.doc dl { margin: 0.8em 0; }
+.doc dt { font-weight: 600; margin-top: 0.6em; }
+.doc dd { margin: 0.15em 0 0 1.4em; color: #cbd5e1; }
+.doc sup.footnote-ref { font-size: 0.75em; line-height: 0; }
+.doc sup.footnote-ref a { color: #60a5fa; text-decoration: none; }
+.doc hr.footnotes-sep { margin: 2em 0 0.8em; }
+.doc section.footnotes { font-size: 0.88em; color: #94a3b8; }
+.doc .footnote-backref { display: none; }
 
 .doc pre.hljs {
   position: relative;
@@ -184,6 +196,9 @@ figure.ks-mermaid[data-engine="pele"] {
   .doc td { border-bottom-color: #d0d7de; }
   .doc td code, .doc th code, .doc td a, .doc th a { overflow-wrap: anywhere; }
   .doc tr { break-inside: avoid; }
+  .doc mark { background: #fff3a3; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .doc dd { color: inherit; }
+  .doc section.footnotes { color: #57606a; }
   /* Diagrams for paper: Mermaid's are re-rendered with its light theme (canvas-frame.js, print);
      Pele's take light variables here, in a document only — a deck prints dark (§3.8). Colours and
      the font only: Pele measured the labels with the screen font, so print must not change it. */
