@@ -1,7 +1,7 @@
 # ADR: `html` canvas — implementation spec, with Archify as the first user
 
 - **Status:** Accepted 2026-10-28 (§6 decided by Brett); amended 2026-11-01 (§2.6: Run scripts once
-  per canvas, Brett)
+  per canvas, Brett); amended 2026-11-01 (§2.7: pointing at and asking about an html canvas, Brett)
 - **Date:** 2026-10-27
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [canvas](./canvas.md) §3.2 (isolation, `canvas-html-frame.html`, residual risk), §3.3
@@ -17,6 +17,11 @@
 > It changes three details of canvas §3.2, each marked there with a pointer back here: the `html`
 > frame also sends `openLink` (§2.4), its sandbox adds `allow-downloads` (§6 Q2), and a navigation
 > whose response never commits is not caught by the load gate at all (§3).
+>
+> **Amended 2026-11-01 (§2.7, Brett):** 💬 on a selection, `canvas_highlight` and `canvas_inject_css`
+> work on `html` canvases, the host may post `highlight` / `css` / `selectionRequest` to the
+> running frame besides its one render, and Send error to agent carries a running page's error as
+> labelled page-reported data. The places below that said otherwise point to §2.7.
 
 ---
 
@@ -72,9 +77,11 @@ The CLI (`node archify/bin/archify.mjs`) has no dependencies besides Node ≥ 18
   `{version, author, at, bytes, sha256}` and the first 16 K characters, with a line saying it was
   cut. `full: true` returns all of it. The agent's source of truth for an `html` canvas is its own
   input (Archify's JSON), and an unasked 0.85 MB read would fill the context.
-- No editor, no `save`, no Send to agent diff, no 💬 on a selection, no `canvas_highlight`, no
-  compare: as the canvas ADR already says for `html` (§3.2, §3.7, §3.10). The glow on an agent
-  write is skipped too (there are no text blocks to compare).
+- No editor, no `save`, no Send to agent diff, no compare: as the canvas ADR already says for
+  `html` (§3.2, §3.7, §3.10). The glow on an agent write is skipped too (there are no text blocks
+  to compare). *Amended 2026-11-01 (§2.7):* 💬 on a selection and `canvas_highlight` (and
+  `canvas_inject_css`) **are** available — in the static view as for markdown, while the scripts
+  run through the host's requests; Send to agent (the edit diff) stays N/A, since there is no editor.
 - Mirroring to the local folder writes `<slug>.html`, under the same rules as `.md`.
 
 ### 2.2 Getting the file in: a script, not the model
@@ -119,7 +126,9 @@ the backstop if the profile ever lets a script through.
 ### 2.4 After Run scripts: `canvas-html-frame.html`
 
 - **Page:** `canvas-html-frame.html` is a sandbox page with one script of ours,
-  `src/canvas/canvas-html-frame.js`, and no other content. The manifest sandbox CSP gains
+  `src/canvas/canvas-html-frame.js`, and no other content (since §2.7, `src/core/canvas-core.js`
+  is loaded before it for its pure block-matching helpers, taken before any page script runs, the
+  global removed again). The manifest sandbox CSP gains
   `'unsafe-inline'` in `script-src` (canvas §3.2 already plans it). `canvas-frame.html` keeps its
   meta `script-src 'self'`, so the loosening reaches only this page.
 - **iframe:** `sandbox="allow-scripts allow-downloads"` (§6 Q2),
@@ -143,7 +152,9 @@ the backstop if the profile ever lets a script through.
   exactly one message per nonce, the `render` answering that nonce's `ready`. It never posts a
   second `render`, a theme change, a scroll request or anything else to it. That is what bounds
   the gaps below: whatever the frame's script does, it holds this one revision's content and
-  nothing more.
+  nothing more. *Relaxed 2026-11-01 (§2.7):* after the render, also `highlight{…}`, `css{…}` and
+  `selectionRequest{reqId}` — the agent's own strings for the content the same agent wrote, or a
+  bare request. The bound still holds: no user data, theme, history or other canvas ever goes in.
 - **The load gate and `document.close()`.** Chrome may or may not fire the iframe's `load` event
   again when a `document.open`/`close` pair finishes. The gate is a plain counter
   (`createLoadGate` in `src/core/canvas-core.js`), so a wrong guess either way is a hole: an
@@ -156,6 +167,8 @@ the backstop if the profile ever lets a script through.
      covers that one load. It is dropped on `rendered{version}` or after a timeout (set in the
      implementation, a few seconds), whichever comes first, and never carries over to a later
      load. The same test pins the order in which the host sees that load and `rendered`.
+     *(§8, 2026-11-01: the load comes after `rendered`, so it is dropped by that load or the
+     timeout, not by `rendered`.)*
   3. **Known gap:** page script that navigates during `document.write()`, before `close()`, races
      that load. The host may count its navigation as the expected load, or the expected load may
      be counted as the navigation. The cost is detection only: the frame may not be dropped, but
@@ -171,8 +184,9 @@ the backstop if the profile ever lets a script through.
 - **Deep links** (`#focus=…`, `#route=…`) are not supported in this version: the host does not
   pass a fragment, and Archify's `replaceState` rewriting our hash is harmless (the nonce was
   already read).
-- Messages accepted from this frame: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`.
-  Everything else is dropped, as in canvas §3.2.
+- Messages accepted from this frame: `ready`, `rendered{version}`, `error{msg}`, `openLink{url}`,
+  and (§2.7) the answers `highlighted{reqId, ok, tag?, text?, error?}`, `styled{reqId, sheets}` and
+  `pageSelection{reqId, text, truncated?}`. Everything else is dropped, as in canvas §3.2.
 
 ### 2.5 Agent side: Archify into a canvas
 
@@ -226,7 +240,8 @@ new click".
   grant lasts are in the tooltip and `aria-describedby` (§2.3). There is no confirm dialog on the
   first click (there was none before either): the button's label and tooltip say what it does, and
   a modal would be clicked through like any other.
-- **Unchanged:** the host invariant (one `render` per nonce, nothing else, §2.4) — an auto-run
+- **Unchanged:** the host invariant (one `render` per nonce, nothing else, §2.4; since relaxed by
+  §2.7 B for `highlight` / `css` / `selectionRequest` only) — an auto-run
   revision is a fresh frame load with a new nonce, never a second `render` into a running frame;
   the sandbox (own frame, `allow-scripts allow-downloads` only), the CSP (no network, no eval,
   no workers), the load gate, the banner, and act mode not gating `html` (canvas §3.4).
@@ -247,6 +262,95 @@ new click".
   placeholders in the page (Katashiro shows its own hint, and the page's would stay on screen after
   the scripts run), and the page must read well without its scripts (content pre-rendered in the
   HTML; script only adds interaction).
+
+### 2.7 Pointing at and asking about an `html` canvas (Brett, 2026-11-01)
+
+**Decision.** Brett, in Katashiro chat (`acpmsg_ebd08ef6-972e-4749-b70d-996d398544dd`, 2026-11-01
+11:38 TPE): *"we should enable these"* — 💬 on a selection, Send to agent and `canvas_highlight` on
+`html` canvases. An Archify diagram is the canvas a user most wants to ask about ("what is this
+node?") and the agent most wants to point into, and §2.1 had turned all of it off. The design
+splits on the two frames, because their trust differs.
+
+**A. The static view (before Run scripts, `canvas-frame.html`).** It runs no page script (§2.3: the
+sanitized document in a shadow root, under `script-src 'self'`), so it gets the markdown view's
+trust and the markdown view's features:
+
+- **💬 Ask agent / 📨 To chat input on a selection**, exactly as canvas §3.7 (popover, armed Enter,
+  the same refusals). The frame's `selection{}` reads `document.getSelection()`, which in Chrome 155
+  reaches into the open shadow root (checked). The host line names the kind and where:
+  `[canvas "X" (<id>) v3 (html), text selected by the user in 「Overview」 in the page shown without
+  its scripts — as rendered, not the html source; an html canvas is rewritten whole with canvas_open]`
+  (`CanvasCore.composeAskAgent({kind})`). `where` carries the heading path (the page's `h1`–`h6`)
+  and never source lines: the shown DOM does not map to lines of the stored page.
+- **`canvas_highlight`.** A *block* of an html page is `CanvasCore.htmlBlocks`: markdown's blocks (p,
+  li, h1–h6, tr, pre) plus where pages keep their text — blockquote, dt / dd, figcaption, caption,
+  summary, div and the sectioning elements, and SVG `<text>` (a diagram's labels, Archify's nodes).
+  As in markdown a block's text is its **own** text (words in a nested block belong to that one), so
+  a `div` wrapping paragraphs never matches their words and `find` stays unambiguous. script, style,
+  template, title / desc, head and our own notes are not content; blocks that are not laid out
+  (`display: none`) are left out. Matching is `CanvasCore.matchBlock`, unchanged; a heading anchor
+  is an h1–h6's text. The glow and the note are the markdown ones (`CanvasCore.POINT_CSS`, put into
+  the shadow root, where `canvas-frame.css` does not reach); an SVG label's note goes before the
+  whole `<svg>` (a `<div>` inside it would not show). Outline and background only, as §3.10.
+- **`canvas_inject_css`.** The agent's sheet goes into the shadow root (through
+  `CanvasCore.cssForShadow`, so `:root` is the moved `<html>`), with the tool's usual refusals.
+
+**B. While the scripts run (`canvas-html-frame.html`).** The page's script runs in the same
+document as our listener, so anything that frame says is **page-reported**: it may be what we asked
+for, or whatever the page chose to send. Since §2.6 a granted canvas runs at once on open and on
+every revision, so this is the path the user usually sees; the static view (A) is what an
+ungranted canvas, or one after ⏹ Stop scripts, shows. An auto-run revision is a fresh frame: the
+agent's sheets are posted again after its `rendered{}`, a glow is not carried over.
+
+- **The host invariant is relaxed, not dropped.** Besides the one `render`, after `rendered{}` the
+  host may post exactly three things, each rebuilt field by field by `CanvasCore.htmlFramePost`
+  (the one place every post to that frame goes through; `toFrame()` drops the rest):
+  `highlight{reqId, find|heading, label, durationMs}`, `css{reqId, sheets}` and
+  `selectionRequest{reqId}`. Rationale: highlight and css carry only **agent-chosen strings about
+  content the same agent wrote**, so the page learns nothing it could not already hold (the agent
+  could have written the label into the page itself); selectionRequest carries nothing. The host
+  still never posts user data (no note, no input text, no edits), the theme, other versions or other
+  canvases' content. Our script re-installs its `message` listener after `document.close()`, like
+  the link and CSP listeners (§2.4), and applies them: `CanvasCore.htmlBlocks` + `matchBlock` over
+  the live `body` with the same glow and note (`canvas-core.js` is loaded before our script; its
+  helpers are taken before any page script runs, and the global is removed), and one `<style>` of
+  ours for the sheets. It answers `highlighted{}` / `styled{}`.
+- **Best effort, and said so.** Page script can remove our listener, our style or our note, or
+  answer in our place. Then the feature does not work, which is acceptable; the tool result says
+  so: `canvas_highlight` fails with "the html canvas's running page did not confirm it … nothing is
+  known to be shown" when no `highlighted{}` arrives in 5 s, and `canvas_inject_css` succeeds with
+  a note "… did not confirm it; it may not show" after 2 s (the sheets stay in the host and go to
+  the next frame either way). A forged `highlighted{ok:true}` only makes a wrong "shown" claim about
+  the page's own frame; its `text` is quoted to the agent like any canvas text (≤ 200 characters).
+- **💬 on a selection: the trigger is the user's, in the host.** The running frame never sends
+  `selection{}` (its script could forge one at any time, and a forged selection behind a
+  host-drawn 💬 would put page text into a push). Instead the header has **📨 頁面選取** while the
+  scripts run: an `isTrusted` click in `canvas.html` posts `selectionRequest{reqId}`, and the frame
+  answers `pageSelection{reqId, text, truncated?}` (≤ `SELECTION_MAX`, cut and flagged). The text
+  goes **into the side panel's input box, never sent**: framed as page-reported data
+  (`CanvasCore.composePageSelection`: the host line `[canvas "X" (<id>) v3 (html, scripts running):
+  text the page reports as selected — page-reported by the canvas's own script, not checked by
+  Katashiro]`, then the text in the §3.7 fence; refused whole when cut or when it would not fit the
+  panel's 20 KB cap). The user reads it, adds a question and sends it. It is not armed for Enter (as
+  📨 To chat input is): page text should be read before it goes out. A forged answer can only change
+  text the user sees before sending. No answer in 3 s → "畫布頁面沒有回答…" and nothing goes in.
+- **Send error to agent.** The running frame's `error{msg}` now goes with the button, as data:
+  clipped (`clipError`, 500 characters), fenced, under a header saying it is page-reported
+  (`renderErrorHeader({pageReported})`: "… reported an error while its scripts ran — the message
+  below is page-reported (the canvas's own script can write it), not checked by Katashiro"), and
+  the banner says 畫布頁面回報錯誤. Still only on the user's click in the host. This replaces canvas
+  §3.7's "host-composed text only" for `html`: the agent wrote the page, so the page's error text
+  is the most useful thing to send, and the fence and the label are what every push relies on. The
+  static view's errors come from `canvas-frame.html` (no page script) and go as for markdown.
+- **Send to agent (the edit diff)** stays N/A: an `html` canvas has no editor.
+- **Unchanged:** the per-frame allow-lists with their nonce checks, the load gate, compare refused
+  for `html`, no editor, no `armKeys` to the running frame.
+
+**Risk, in short.** Nothing new leaves the browser: the running page already holds its content
+(§3), and the new host → frame messages add only agent strings about that content. Nothing new
+reaches the agent unasked: every frame → agent path still needs the user's click in the host and is
+fenced and labelled; the only text that goes into the user's own message (📨 頁面選取) sits in the
+input box, labelled, until the user sends it.
 
 ## 3. Consequences
 
@@ -320,14 +424,17 @@ any vendored Archify code.
 ## 7. As implemented (2026-10-28)
 
 - **The `document.close()` load, pinned:** in Chrome 155, `document.open`/`write`/`close` in
-  `canvas-html-frame.html` does **not** fire the iframe's `load` again. `e2e/cases/html-canvas.mjs`
+  `canvas-html-frame.html` does **not** fire the iframe's `load` again. *Re-pinned 2026-11-01 (§2.7),
+  see below: it does when the document has finished loading, and the frame now waits for that.* `e2e/cases/html-canvas.mjs`
   counts the iframe's loads from the moment it is created (exactly one: the `src`), and `canvas.js`
   hard-codes `HTML_WRITE_FIRES_LOAD = false`: the host never expects that load. The single-use
   expectation of §2.4 point 2 is implemented (`createLoadGate().arm()` / `disarm()`, unit-tested)
   and stays unused unless a later Chrome changes this; the e2e then fails and the constant flips.
 - **Host invariant, enforced in one place:** `toFrame()` drops every message while the html frame is
   mounted; its one `render` goes out through `sendHtmlRender()`, once per nonce. The e2e checks the
-  page receives no message after its render (◐ 顯示變更 toggled meanwhile).
+  page receives no message after its render (◐ 顯示變更 toggled meanwhile). *Since §2.7, `toFrame()`
+  passes `highlight` / `css` / `selectionRequest` through `CanvasCore.htmlFramePost` once the page
+  has rendered, and drops everything else; the e2e checks the page gets nothing else.*
 - **Per-frame allow-lists** (`CanvasCore.acceptFrameMessage` `profile`): `canvas` (canvas-frame.html),
   `htmlStatic` (canvas-frame.html showing an html canvas: `ready`, `rendered`, `error`, `openLink`
   only) and `html` (canvas-html-frame.html: the same four, `rendered{version}` without `seq`).
@@ -363,6 +470,22 @@ any vendored Archify code.
 - **`canvas_read`'s 16 K head** never ends between the halves of a surrogate pair (#208).
 - **`canvas-file.sh`** refuses a text file that is not UTF-8 (checked with `iconv` when present).
 - **canvas_inject_css** is refused for an html canvas (it styles itself), like `canvas_highlight`.
+  *Superseded 2026-11-01 by §2.7: both work on html canvases.*
+
+## 8. As implemented (2026-11-01, §2.7)
+
+- **The `document.close()` load, re-pinned.** The 10-28 pin (no second load) held only because the
+  host's `render` reached the frame before its first `load`: a race. Loading `canvas-core.js` before
+  our script (§2.7) made it lose in about half the e2e runs — `document.open` on a document that has
+  finished loading **does** fire the iframe's `load` again, and the gate dropped the frame. Now the
+  frame posts `ready` only after its own `load` (plus a task), so the write always comes after it
+  and always fires one more load. `canvas.js` sets `HTML_WRITE_FIRES_LOAD = true`: the single-use
+  expectation of §2.4 point 2 is armed with the render and used by that load; it is **not** dropped
+  on `rendered{}` (the frame posts it right after `close()`, before the load arrives) but by the
+  load itself or the 5 s timer. `e2e/cases/html-canvas.mjs` pins exactly two loads (the `src`, the
+  write); a self-navigation after them is still dropped (same test). The known gap of §2.4 point 3
+  (a navigation during `write()`) is unchanged.
+- The rest is as §2.7 describes; `e2e/cases/html-canvas.mjs` covers each part in real Chrome.
 - **Mirror:** `<slug>.html`, conflict files `<slug>.katashiro-<time>.html`; the file record keeps
   `ext: "html"` so every path check knows the extension.
 

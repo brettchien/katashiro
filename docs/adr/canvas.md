@@ -234,7 +234,9 @@ below is built around that.
     `undoState{canUndo, canRedo}` (the editor's undo stack, for the edit-mode ↶ / ↷ buttons, §3.5;
     refused from a compare tab, and acted on only in edit mode).
   - `canvas-html-frame.html`: `ready`, `rendered{version}`, `error{msg}`, and `openLink{url}`
-    (added by [canvas-html](./canvas-html.md) §2.4, for links the page draws) only. **`save`,
+    (added by [canvas-html](./canvas-html.md) §2.4, for links the page draws), plus the answers to the
+    host's own requests `highlighted{}`, `styled{}` and `pageSelection{}` (added by
+    [canvas-html](./canvas-html.md) §2.7, 2026-11-01; page-reported, treated as such) only. **`save`,
     `selection` and `undoState` are refused**, so agent script cannot forge a "user" edit. Otherwise a forged
     `save` would be stored as `author:"user"` and read back by the agent as user intent: prompt
     injection laundered into the user's voice.
@@ -458,8 +460,8 @@ below is built around that.
 | `katashiro.canvas_goto({id, slide})` | Brings a **slides** canvas's tab to the front and shows slide N (1-based, clamped); returns the slide shown and the deck length (Brett, 2026-10-10). Reached panel → canvas tab by extension runtime messaging, then the nonce channel to the frame (`goto{slide}` in, `slide{index,total}` out). Only the side panel's messages are accepted (not content scripts); every goto is answered (frame error or drop, newer goto, 5 s canvas timer, panel deadline). If the canvas is open in two tabs both move and the first answer wins |
 | `katashiro.canvas_view({id?, showChanges?, compare?})` | The agent's equivalent of the header's display switches (§3.11, Brett 2026-10-12): `showChanges` sets ◐ 顯示變更, which is **global** (every canvas tab, like the button); `compare: true` / `false` (needs `id`) starts ⇆ Compare with agent's for that canvas or ends it (✕ 結束比較), with the button's preconditions and the button's path |
 | `katashiro.canvas_gallery({query?})` | Opens 🗂️ the gallery tab (§3.7), or brings the open one to the front, optionally with its search box set to `query` (§3.11) |
-| `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only; label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
-| `katashiro.canvas_inject_css({id, css \| clear})` | (Brett, 2026-10-15) `inject_css` for a canvas: page tools cannot script a canvas tab (an extension page; they are refused there with a message naming the canvas tools). Same sheet rules as `inject_css` (≤ 20 000 chars; nothing that fetches, no CSS escapes), checked in `browser-mcp.js`. Panel → canvas tab by runtime messaging (`katashiro-canvas-css`, side panel only, compare tabs never answer); every open tab of the canvas keeps the sheets (≤ 10) in memory and sends all of them as `css{sheets}` on the nonce channel on each change and on each frame (re)mount, so they survive re-renders and print; a tab reload drops them. The frame puts them in one `<style>` last in its head (sandbox CSP `style-src 'unsafe-inline'`; `connect-src` / `img-src` / `font-src` stay closed, a second line behind the fetch refusal) and disables it while the user edits. Refused while editing; `clear` always works and never opens a tab. A canvas not open is opened in front, an open one is brought to the front once it applied the sheet. Not callable from a background conversation (it shows something). |
+| `katashiro.canvas_highlight({id, find \| heading, label?, durationMs?})` | Phase 1: points the user at a part of the canvas (glow + optional label, scrolls to it), like `katashiro.highlight` on pages (§3.10). Implemented in PR 6: `markdown`/`slides` only (`html` too since 2026-11-01: [canvas-html](./canvas-html.md) §2.7 — the static view's page blocks, or the running page, best effort, "did not confirm" when it does not answer); label ≤ 80, `durationMs` 500–10 000 (default 4 000), one call per 1.5 s per canvas (a call that showed nothing gives its slot back). Panel → canvas tab by runtime messaging (side panel only, compare tabs never answer), then `highlight{reqId,…}` in / `highlighted{reqId, ok, tag?, text?, slide?, error?}` out on the nonce channel. An open tab is brought to the front only after it showed the block; while the user edits, the frame only checks the anchor and the result says `not shown yet` |
+| `katashiro.canvas_inject_css({id, css \| clear})` | (Brett, 2026-10-15) `inject_css` for a canvas: page tools cannot script a canvas tab (an extension page; they are refused there with a message naming the canvas tools). Same sheet rules as `inject_css` (≤ 20 000 chars; nothing that fetches, no CSS escapes), checked in `browser-mcp.js`. Panel → canvas tab by runtime messaging (`katashiro-canvas-css`, side panel only, compare tabs never answer); every open tab of the canvas keeps the sheets (≤ 10) in memory and sends all of them as `css{sheets}` on the nonce channel on each change and on each frame (re)mount, so they survive re-renders and print; a tab reload drops them. The frame puts them in one `<style>` last in its head (sandbox CSP `style-src 'unsafe-inline'`; `connect-src` / `img-src` / `font-src` stay closed, a second line behind the fetch refusal) and disables it while the user edits. An `html` canvas (2026-11-01, [canvas-html](./canvas-html.md) §2.7): into the static view's shadow root, or, while its scripts run, `css{reqId, sheets}` to the page, answered by `styled{}` (else the result notes it was not confirmed). Refused while editing; `clear` always works and never opens a tab. A canvas not open is opened in front, an open one is brought to the front once it applied the sheet. Not callable from a background conversation (it shows something). |
 
 - Caps: 2 MB text per version, 5 MB images (as `show_image`). Writes are rate-limited like `notify`.
 - Large payloads use a shell helper that posts to the facade (the `show_image` skill pattern), so
@@ -938,7 +940,8 @@ is silent, the conservative choice:
   `[canvas "X" v5 → v7, edited by user]` plus a unified diff from the last version the agent wrote,
   capped at 20 KB (beyond that, the line says so and the agent calls `canvas_read`), plus an
   optional note the user types. It is enabled only when there are saved user edits the agent has
-  not been sent, and only for `canvas-frame.html` canvases (never on behalf of the `html` frame).
+  not been sent, and only for `canvas-frame.html` canvases (never on behalf of the `html` frame;
+  an `html` canvas has no editor, so there is no diff to send — [canvas-html](./canvas-html.md) §2.7).
   **The diff is computed by the host from storage** (agent's last write → latest);
   the frame never supplies diff text.
 - **Ideas adopted from Anthropic's artifacts** `[Artifacts]`:
@@ -947,7 +950,8 @@ is silent, the conservative choice:
     knows exactly which part to change (`selection{}`, §3.2).
     *As implemented:* the frame posts `selection{}` in view mode only (debounced 250 ms; the
     editor's unsaved text is never quoted, since the agent could not find it in storage), for
-    `markdown` and `slides`; the host shows **💬 Ask agent** while text is selected, and a small
+    `markdown` and `slides`, and (2026-11-01, [canvas-html](./canvas-html.md) §2.7) an `html` canvas
+    shown without its scripts — while its scripts run, the header's 📨 頁面選取 asks the page instead; the host shows **💬 Ask agent** while text is selected, and a small
     **💬** beside the selection (below its end, above it when there is no room below; never over the
     selected text unless the selection fills the view). Either opens a popover for the request (an
     empty one shows an inline hint and sends nothing). The host line is
@@ -1098,11 +1102,13 @@ is silent, the conservative choice:
         input's content comes from the canvas side.
   - **Try fixing** (phase 1): when `canvas-frame.html` reports `error{}` (a bad mermaid diagram, a
     reveal error, a CSP violation), the error banner has a *Send error to agent* button with the
-    message, sent as data (rules below). **The `html` frame never gets this button with its
-    message:** its `error{msg}` is fully controlled by agent script (and can arrive before the load
-    gate fires, §3.2), so one click would turn 500 characters of arbitrary text into the user's
-    words. For an `html` canvas the button sends only host-composed text,
-    `[canvas "X" v3 (html) failed to render]`, with no `msg`.
+    message, sent as data (rules below). ~~**The `html` frame never gets this button with its
+    message:** … For an `html` canvas the button sends only host-composed text, with no `msg`.~~
+    **Changed 2026-11-01 ([canvas-html](./canvas-html.md) §2.7, Brett):** the `html` frame's
+    `error{msg}` is fully controlled by agent script (and can arrive before the load gate fires,
+    §3.2), so it now goes **labelled as page-reported** — the banner says 畫布頁面回報錯誤, the
+    header says the message is page-reported and not checked by Katashiro — clipped to 500
+    characters and fenced as data, still only on the user's click.
   - **Download as markdown** (phase 1) beside PDF; Word export can come later.
   - **Canvas gallery** (phase 2): one page listing every canvas across conversations, with search,
     so a canvas is findable after its conversation scrolls away.
@@ -1143,9 +1149,13 @@ is silent, the conservative choice:
     instructions):`; then the diff, selection or error inside a code fence. The fence uses more
     backticks than the longest backtick run in the content, so content cannot close it early and
     forge text "outside" the data block. This marks the data for the model; it cannot guarantee the
-    model ignores instructions in it, which is why the `html` frame's text never goes this way.
-  - **Sources:** diffs come from host storage (above); selections and errors come only from
-    `canvas-frame.html`, validated as in §3.2 and capped (20 KB total).
+    model ignores instructions in it, which is why the `html` frame's text goes this way only
+    labelled as page-reported, on the user's click ([canvas-html](./canvas-html.md) §2.7).
+  - **Sources:** diffs come from host storage (above); selections and errors come from
+    `canvas-frame.html`, validated as in §3.2 and capped (20 KB total) — and, since 2026-11-01, a
+    running `html` page's error, labelled page-reported ([canvas-html](./canvas-html.md) §2.7). A
+    running page's selection never becomes a push: it goes into the input box, framed, for the
+    user to send.
   - **Panel checks the requester.** The canvas tab asks the panel over `runtime.sendMessage`, and
     Katashiro's content scripts in web pages can call that too. The panel accepts a "post as user"
     request only when `sender.id === chrome.runtime.id` and `sender.url` is Katashiro's
@@ -1318,11 +1328,15 @@ the glow and of Compare; ◐ 顯示變更 compares the previous version with the
     calls are rate-limited per canvas.
   - **While the user edits,** it does not scroll or take focus; the header shows *"Agent wants to
     show you a section"* and the user clicks to go there.
-  - **`kind:"html"` refuses it.** The host sends the new `highlight{…}` message only to
-    `canvas-frame.html`.
+  - ~~**`kind:"html"` refuses it.**~~ **Changed 2026-11-01 ([canvas-html](./canvas-html.md) §2.7,
+    Brett):** an `html` canvas takes it. In its static view (`canvas-frame.html`) as for markdown,
+    with the page's text blocks (`CanvasCore.htmlBlocks`); while its scripts run, the host posts
+    `highlight{…}` to the running page too (the agent's own strings only), best effort, and the
+    result says when the page did not confirm.
 - **Effects are ours, not agent CSS.** `canvas-frame.html` runs no agent code (§3.2), so the agent
   cannot inject CSS there; it picks from fixed effects (glow, underline, label) and gives a text
-  anchor. An `html` canvas is agent code already and can style itself.
+  anchor. An `html` canvas is agent code already and can style itself; `canvas_inject_css` reaches
+  it all the same since 2026-11-01 ([canvas-html](./canvas-html.md) §2.7).
 - **Phase 1 as implemented (PR 6).**
   - *Glow:* the host marks a render `glowPrev` when an agent version newer than the one it last
     rendered arrives; the frame keys each block by tag + rendered text (own text only, so a list

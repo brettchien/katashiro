@@ -3326,7 +3326,11 @@
         "rendered — not markdown syntax; ≤ " + CANVAS_FIND_MAX + " chars) or `heading` (a heading's " +
         "rendered text, exactly). No match or several matches is an error: make `find` longer. If the " +
         "user is editing the canvas, nothing moves; they are asked in the canvas header and the result " +
-        "says so. markdown and slides canvases only. Your own canvas_open writes glow by themselves.",
+        "says so. markdown, slides and html canvases. An html canvas's blocks are the page's text blocks " +
+        "(also div / section / blockquote and SVG <text> labels, each with its OWN text); before ▶ Run " +
+        "scripts it points in the page shown without its scripts, while they run it asks the running page — " +
+        "best effort: the page's own script can stop it, and the result says when the page did not confirm. " +
+        "Your own canvas_open writes glow by themselves (not html).",
       sessionScope: true,
       inputSchema: {
         type: "object",
@@ -3355,8 +3359,8 @@
         let meta;
         try { meta = await c.store.read({ conversationId: c.conversationId(), id: args.id }); }
         catch (e) { return errText(`canvas_highlight: ${(e && e.message) || e}`); }
-        // §3.10: html canvases refuse it (agent code styles itself); images have no blocks.
-        if (meta.kind !== "markdown" && meta.kind !== "slides") return errText(`canvas_highlight: canvas "${meta.title}" is ${meta.kind}; only markdown and slides canvases can be highlighted`);
+        // §3.10, canvas-html §2.7 (Brett 2026-11-01: html too); images and mermaid canvases have no blocks to point at.
+        if (meta.kind !== "markdown" && meta.kind !== "slides" && meta.kind !== "html") return errText(`canvas_highlight: canvas "${meta.title}" is ${meta.kind}; only markdown, slides and html canvases can be highlighted`);
         if (typeof c.highlight !== "function") return errText("canvas_highlight: not available in this host");
         const now = typeof ctx.now === "function" ? ctx.now() : Date.now();
         const last = lastCanvasHighlight.get(meta.id);
@@ -3380,7 +3384,8 @@
         // The block's text is canvas content the agent wrote (or the user edited): quoted, bounded.
         const what = `${r.tag || "block"}${r.slide ? ` on slide ${r.slide}` : ""} ${JSON.stringify(String(r.text || "").slice(0, 120))}`;
         if (r.deferred) return okText(`not shown yet: the user is editing "${meta.title}"; the canvas header asks "Agent wants to show you a section" and shows ${what} when they click`);
-        return okText(`highlighted ${what} in "${meta.title}" for ${ms / 1000}s${label ? ` with the note ${JSON.stringify(label)}` : ""}`);
+        const running = r.running ? " (in the html canvas's running page, which confirmed it)" : "";
+        return okText(`highlighted ${what} in "${meta.title}"${running} for ${ms / 1000}s${label ? ` with the note ${JSON.stringify(label)}` : ""}`);
       }
     },
 
@@ -3399,7 +3404,11 @@
         "while the user is editing the canvas (clear always works). Same rules as inject_css: ≤ " + CSS_MAX +
         " chars; sheets that fetch anything (`url()`, `@import`, `image-set()`, `@font-face`, …) and CSS " +
         "escapes (`\\`) are refused. Rendered markdown is plain HTML (h1–h6, p, li, table/tr/td, pre, " +
-        "blockquote); slides are reveal.js sections; diagrams are figure.ks-mermaid > svg.",
+        "blockquote); slides are reveal.js sections; diagrams are figure.ks-mermaid > svg. An html canvas " +
+        "takes it too, with selectors for its own page: before ▶ Run scripts the page is shown without its " +
+        "scripts inside a shadow root (`:root` means its <html>); while they run the sheet goes into the " +
+        "running page — best effort: its own script can remove it, and the result says when the page did " +
+        "not confirm.",
       sessionScope: true,
       inputSchema: {
         type: "object",
@@ -3434,8 +3443,10 @@
         noteCanvasTabUsed(ctx, r);
         if (!r || !r.ok) return errText(`canvas_inject_css: ${(r && r.error) || "failed"}`);
         const n = Number.isInteger(r.sheets) ? r.sheets : 0;
-        if (req.clear) return okText(`removed the injected stylesheets from "${meta.title}"`);
-        return okText(`injected ${req.css.length} chars of CSS into "${meta.title}" (${n} sheet${n === 1 ? "" : "s"} now; canvas_inject_css with clear: true to undo; screenshot to see it)`);
+        // A running html canvas's page that did not confirm (canvas-html §2.7): said, not hidden.
+        const note = typeof r.note === "string" && r.note ? ` — note: ${r.note.slice(0, 300)}` : "";
+        if (req.clear) return okText(`removed the injected stylesheets from "${meta.title}"${note}`);
+        return okText(`injected ${req.css.length} chars of CSS into "${meta.title}" (${n} sheet${n === 1 ? "" : "s"} now; canvas_inject_css with clear: true to undo; screenshot to see it)${note}`);
       }
     },
 

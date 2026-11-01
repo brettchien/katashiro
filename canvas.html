@@ -41,6 +41,9 @@
     <!-- To chat input (§3.7, Brett 2026-10-13 01:12): the selection into the side panel's input box;
          nothing is sent. Not 📤 Send to agent (saved edits) nor 💬 Ask agent (a request). -->
     <button id="canvas-send-sel" class="canvas-btn" data-icon="📨" type="button" title="把選取的文字放進聊天輸入框（不會送出）" hidden>📨 To chat input</button>
+    <!-- An html canvas whose scripts run (canvas-html §2.7, Brett 2026-11-01): this click asks the page what is
+         selected and puts that page-reported text, framed, into the side panel's input box; nothing is sent. -->
+    <button id="canvas-page-sel" class="canvas-btn" data-icon="📨" type="button" title="把畫布頁面裡選取的文字放進聊天輸入框（頁面自己回報的文字，會標明；不會送出）" hidden>📨 頁面選取</button>
     <button id="canvas-download" class="canvas-btn" type="button" title="下載成 .md" hidden>⬇ .md</button>
     <button id="canvas-print" class="canvas-btn" type="button" title="列印／存成 PDF" hidden>🖨 PDF</button>
     <!-- An html canvas (canvas-html §2.3, §2.6): a compact chip says whether its scripts run; the risk of
