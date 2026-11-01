@@ -92,6 +92,7 @@ body {
 :is(.doc, .reveal) .markdown-alert > :last-child { margin-bottom: 0; }
 .markdown-alert .markdown-alert-title { margin: 0 0 4px; font-weight: 600; color: var(--ks-alert); line-height: 1.4; }
 :is(.doc, .reveal) .markdown-alert-title + * { margin-top: 0; }
+.markdown-alert > p:empty { display: none; }
 /* The title row's glyph is text from this sheet (the sanitizer keeps no <svg> icon, by design). */
 .markdown-alert-title::before { margin-right: 6px; }
 .markdown-alert-note .markdown-alert-title::before { content: "\2139\FE0E"; }

@@ -1290,3 +1290,9 @@ test("padContainerMarkers: idempotent", () => {
   }
   assert.equal(P("x\n:::\n:::\ny"), "x\n\n:::\n\n:::\n\ny");
 });
+
+test("padContainerMarkers: CRLF and CR line ends are read as LF", () => {
+  const P = C.padContainerMarkers;
+  assert.equal(P("::: cards\r\n### A\r\n| a |\r\n|---|\r\n:::\r\nafter"), "::: cards\n\n### A\n| a |\n|---|\n\n:::\n\nafter");
+  assert.equal(P("```\r:::\r```\r:::"), "```\n:::\n```\n\n:::");
+});

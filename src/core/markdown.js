@@ -77,7 +77,8 @@
     // Each card: every DIRECT-child `###` of a cards container starts one; blocks before the first
     // `###` (if any) are a card of their own. Direct child = one level below the container's token,
     // so an h3 inside a list, quote, alert or nested container never splits the outer row (a nested
-    // cards container gets its own cards). The card tokens are plain `div`s with a constant class
+    // cards container gets its own cards; the outer one needs the longer fence, `::::`, or the inner
+    // `:::` closes it). The card tokens are plain `div`s with a constant class
     // (rendered by markdown-it's renderToken, no rule needed); their source lines run from their
     // first block to the next card (or the closing `:::`), so the canvas's Ask agent can name them.
     md.core.ruler.after("block", "cards", (state) => {

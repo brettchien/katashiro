@@ -470,12 +470,19 @@
    * (``` / ~~~) are left alone: a fence closes only on a line of its own character, at least as
    * long, and nothing else; a backtick fence whose info string holds a backtick is not a fence
    * (CommonMark). Any indent counts as a fence, like cleanEditorMarkdown (a fence in a list item
-   * starts 4+ spaces in). Idempotent; a text with no marker line comes back unchanged. markdown-it
-   * reads the padded text the same (blank lines inside a container are just blank lines).
+   * starts 4+ spaces in). That has two known misses, accepted since tracking list and quote context
+   * is out of scope: a top-level indented-code line of ``` (4+ spaces or a tab) is taken for a fence
+   * opening, so with no matching ``` after it no later marker is padded; and inside a real fence a
+   * 4+-space-indented ``` line is taken for its close, so `:::` lines after it in that code get
+   * padded. A marker inside a quote (`> ::: cards`) is not padded (not supported). A bare `:::` with
+   * no opening is padded too (harmless: it was a paragraph break anyway). CRLF / CR line ends are
+   * read as LF (like splitSlidesAt); the result is LF. Idempotent; a text with no marker line comes
+   * back unchanged. markdown-it reads the padded text the same (blank lines inside a container are
+   * just blank lines).
    */
   const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*(cards\b.*)?$/;
   function padContainerMarkers(text) {
-    const lines = String(text == null ? "" : text).split("\n");
+    const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
     const out = [];
     let fence = null;
     let padNext = false;                    // the previous line was a marker: blank before this one

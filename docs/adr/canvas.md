@@ -390,7 +390,11 @@ below is built around that.
     the plugin's, which pasted the title into the HTML raw. And emoji callouts, as in Claude's docs:
     a quote whose first paragraph starts with ℹ️ / ✅ / ⚠️ (with or without U+FE0F) gets the
     note / tip / warning classes, with the emoji kept in the text and no title row (a small core rule,
-    no dependency). The title glyphs are text in the stylesheets.
+    no dependency). The title glyphs are text in the stylesheets. Known limits of the alerts plugin
+    (kept, not patched): an alert holding a nested quote (`> > …`) closes at the inner quote's end,
+    so the text after it falls outside the box; and a quote whose first item is a list item starting
+    `[!WARNING]` is an alert too (GitHub does not do that). A marker line with nothing after it
+    and a blank `>` line leaves an empty paragraph, hidden in the stylesheets.
   - **`DP_CONFIG` is unchanged** `[MD-ADR §3.2]`: everything above is `div` / `p` / `blockquote`
     with a `class`, which the html profile keeps; no `svg` profile and no `ADD_TAGS` / `ADD_ATTR`.
   - Both plugins are bundled into `vendor/markdown-it.iife.js` (globals `markdownitContainer`,

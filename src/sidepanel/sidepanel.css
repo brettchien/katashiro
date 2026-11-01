@@ -1312,6 +1312,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .bubble .markdown-alert > :last-child { margin-bottom: 0; }
 .bubble .markdown-alert .markdown-alert-title { margin: 0 0 4px; font-weight: 600; color: var(--ks-alert); }
 .bubble .markdown-alert-title + * { margin-top: 0; }
+.bubble .markdown-alert > p:empty { display: none; }
 .bubble .markdown-alert-title::before { margin-right: 6px; }
 .bubble .markdown-alert-note .markdown-alert-title::before { content: "\2139\FE0E"; }
 .bubble .markdown-alert-tip .markdown-alert-title::before { content: "\2713\FE0E"; }
