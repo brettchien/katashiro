@@ -3540,7 +3540,7 @@ test("katashiro.canvas_goto: slides only, positive slide, reports what is shown"
   assert.deepEqual(calls, [["cv_000000000001", 2], ["cv_000000000001", 9]]);
 });
 
-test("katashiro.canvas_highlight: one text anchor, bounded label and duration, markdown/slides only", async () => {
+test("katashiro.canvas_highlight: one text anchor, bounded label and duration, markdown/slides/html only", async () => {
   const { deps: d } = deps({ actMode: false });
   withCanvas(d, { conversationId: "c_hl" });
   let t = 1_000_000;
@@ -3558,7 +3558,7 @@ test("katashiro.canvas_highlight: one text anchor, bounded label and duration, m
     [{ id: "cv_000000000001", find: "  " }, /is empty/],
     [{ id: "cv_000000000001", find: "x".repeat(501) }, /at most 500/],
     [{ id: "cv_000000000001", find: "text", label: "l".repeat(81) }, /keep it to 80/],
-    [{ id: "cv_000000000002", find: "x" }, /is image; only markdown and slides/],
+    [{ id: "cv_000000000002", find: "x" }, /is image; only markdown, slides and html/],
     [{ id: "cv_000000000009", find: "x" }, /cv_000000000009/],
   ]) {
     t += 10_000;
@@ -3587,6 +3587,28 @@ test("katashiro.canvas_highlight: one text anchor, bounded label and duration, m
   t += 2000;
   delete d.canvas.highlight;
   assert.match((await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "x" })).content[0].text, /not available/);
+});
+
+test("katashiro.canvas_highlight on an html canvas (canvas-html §2.7): reaches the tab; a running page's answer says so, its silence is an error", async () => {
+  const { deps: d } = deps({ actMode: false });
+  withCanvas(d, { conversationId: "c_hlh" });
+  let t = 1_000_000;
+  d.now = () => t;
+  await callTool(d, "katashiro.canvas_open", { title: "Page", kind: "html", content: "<h1>A</h1><p>text</p>" });
+  const calls = [];
+  d.canvas.highlight = async (id, req) => { calls.push([id, req]); return { ok: true, tag: "p", text: "text" }; };
+  const stat = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  assert.equal(stat.content[0].text, 'highlighted p "text" in "Page" for 4s');
+  assert.deepEqual(calls[0], ["cv_000000000001", { label: "", durationMs: 4000, find: "text" }]);
+  t += 10_000;
+  d.canvas.highlight = async () => ({ ok: true, tag: "text", text: "Node A", running: true });
+  const run = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "Node A", label: "here" });
+  assert.equal(run.content[0].text, 'highlighted text "Node A" in "Page" (in the html canvas\'s running page, which confirmed it) for 4s with the note "here"');
+  t += 10_000;
+  d.canvas.highlight = async () => ({ ok: false, error: "the html canvas's running page did not confirm it (its own script may have replaced Katashiro's listener); nothing is known to be shown" });
+  const silent = await callTool(d, "katashiro.canvas_highlight", { id: "cv_000000000001", find: "text" });
+  assert.equal(silent.isError, true);
+  assert.match(silent.content[0].text, /^canvas_highlight: the html canvas's running page did not confirm it/);
 });
 
 test("katashiro.canvas_inject_css: inject_css's sheet rules, any canvas kind, clear needs no css", async () => {
@@ -3623,6 +3645,11 @@ test("katashiro.canvas_inject_css: inject_css's sheet rules, any canvas kind, cl
   assert.match((await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "p {}" })).content[0].text, /^canvas_inject_css: the user is editing/);
   delete d.canvas.injectCss;
   assert.match((await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "p {}" })).content[0].text, /not available/);
+  // canvas-html §2.7: a running html page that did not confirm — said in the result, not hidden.
+  d.canvas.injectCss = async () => ({ ok: true, sheets: 1, note: "the html canvas's running page did not confirm it" });
+  const unconfirmed = await callTool(d, "katashiro.canvas_inject_css", { id: "cv_000000000001", css: "p {}" });
+  assert.equal(unconfirmed.isError, undefined);
+  assert.match(unconfirmed.content[0].text, /\(1 sheet now; .*\) — note: the html canvas's running page did not confirm it$/);
 });
 
 // --- canvas_patch (§3.5) -------------------------------------------------------------------------

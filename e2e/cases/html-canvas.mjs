@@ -4,11 +4,21 @@
 //    link targets; a link opens only through the host's confirm.
 //  - After the click (§2.4): canvas-html-frame.html runs the page's inline scripts once; the nonce
 //    is read from #k= before the page rewrites the hash. PINS whether document.open/write/close
-//    fires the iframe's load again (canvas.js HTML_WRITE_FIRES_LOAD): the iframe loads exactly once.
+//    fires the iframe's load again (canvas.js HTML_WRITE_FIRES_LOAD): since canvas-html §2.7 the frame posts ready
+//    after its own load, so the write fires one more — the iframe loads exactly twice, and stays.
 //  - The host posts nothing but that one render to the html frame. Run scripts holds for the canvas
 //    (§2.6): a new revision runs at once in a fresh frame (new nonce) with a 「vN 已自動執行」 notice,
 //    a reload runs it directly; ⏹ Stop scripts, a self-navigation (the load gate) and Settings →
 //    html 畫布 off revoke it; off also hides Run and refuses canvas_open kind html.
+//  - canvas-html §2.7 (Brett 2026-11-01): in the static view 💬 Ask agent on a selection, canvas_highlight
+//    (an HTML paragraph and an SVG label) and canvas_inject_css work as in markdown; while the scripts run,
+//    the host posts the page only highlight / css / selectionRequest (rebuilt fields, nothing else),
+//    the running page glows and takes the sheets, 📨 頁面選取 (a trusted click in the host) puts the page's
+//    selection, framed as page-reported, into the side panel's input and sends nothing, Send error to
+//    agent carries the page's error labelled as page-reported, and a page that swallows our messages
+//    gets "did not confirm" results. E2E_SHOTS=<dir> saves screenshots of the canvas tab.
+import fs from "node:fs";
+import path from "node:path";
 import * as h from "../helpers.mjs";
 import { FakeGateway } from "../fake-gateway.mjs";
 
@@ -55,7 +65,7 @@ const inShadow = (frame, fn) => frame.evaluate(fn);
 
 export default [
   {
-    name: "html canvas: static view without scripts, ▶ Run scripts runs it once (one iframe load), one message only; once per canvas: revision / reload / ⏹ / navigation / setting",
+    name: "html canvas: static view without scripts, ▶ Run scripts runs it once (two iframe loads, pinned), one message only; once per canvas: revision / reload / ⏹ / navigation / setting",
     async run(ctx, t) {
       const { gw, panel } = ctx;
       const sid = await h.namedConversation(ctx, panel, "Html", { fresh: false });
@@ -123,7 +133,7 @@ export default [
       }, "the page's script ran in canvas-html-frame.html");
       await h.sleep(1500);                                  // a load from document.close() would have come by now
       const loads = await page.evaluate(() => window.__loads);
-      t.check(loads === 1, "PIN: document.open/write/close does not fire the iframe's load again — one load (the src); canvas.js HTML_WRITE_FIRES_LOAD = false", { loads });
+      t.check(loads === 2, "PIN: the frame posts ready after its load, so document.open/write/close fires the iframe's load once more — two loads (the src, the write); canvas.js HTML_WRITE_FIRES_LOAD = true", { loads });
       const attrs = await page.evaluate(() => { const f = document.querySelector("#canvas-main iframe"); return { sandbox: f.getAttribute("sandbox"), src: f.getAttribute("src") }; });
       t.check(attrs.sandbox === "allow-scripts allow-downloads" && /^canvas-html-frame\.html#k=[0-9a-f]{32}$/.test(attrs.src), "sandbox allow-scripts allow-downloads, nonce in #k=", attrs);
       const inFrame = await hframe.evaluate(() => ({ k: window.__k, ls: window.__ls, hash: location.hash }));
@@ -203,6 +213,149 @@ export default [
       await h.until(page, () => !document.getElementById("canvas-run").hidden, "on again: Run is back");
       await h.sleep(500);
       t.check(!frameOf(page, "canvas-html-frame.html"), "on again: nothing runs by itself");
+      gw.endTurn(sid);
+      await h.idle(panel);
+    },
+  },
+  {
+    name: "html canvas §2.7: static view 💬 / highlight / css; running page highlight / css / 📨 頁面選取 into the input (not sent), page-reported error, no confirmation",
+    async run(ctx, t) {
+      const { gw, panel } = ctx;
+      const shots = process.env.E2E_SHOTS || "";
+      const shot = async (page, name) => { if (!shots) return; fs.mkdirSync(shots, { recursive: true }); await page.screenshot({ path: path.join(shots, `${name}.png`) }); };
+      const sid = await h.namedConversation(ctx, panel, "Point", { fresh: false });
+      gw.hold = true;
+      let since = gw.prompts.length;
+      await h.send(panel, "draw a page");
+      await gw.waitPrompt((p) => p.sessionId === sid, { since });
+      const page2 = `<!DOCTYPE html><html><head><title>p</title><style>body { font: 16px sans-serif; } #para { color: rgb(0, 0, 0); }</style></head><body>
+<h1>Overview</h1>
+<p id="para">Static paragraph one is here.</p>
+<div class="wrap"><p id="two">Second paragraph.</p></div>
+<svg width="220" height="80"><g><rect x="10" y="10" width="120" height="40" fill="#ddd"/><text id="lbl" x="20" y="35">Node A</text></g></svg>
+<img id="remote" src="https://example.com/b.png" alt="r">
+<div id="out">not run</div>
+<script>
+  document.getElementById("out").textContent = "ran";
+  window.__types = []; window.__keys = []; window.__block = false;
+  window.addEventListener("message", (e) => {
+    window.__types.push(e.data && e.data.type);
+    window.__keys.push(Object.keys(e.data || {}).sort().join(","));
+    if (window.__block) e.stopImmediatePropagation();
+  });
+</script></body></html>`;
+      let r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_open", { title: "Pointer", kind: "html", content: page2 }));
+      const cvId = (/id (cv_[0-9a-f]+)/.exec(r.text) || [])[1];
+      t.check(!r.isError && cvId, "canvas_open kind html", r.text);
+      const page = await canvasPage(ctx, cvId);
+      await page.setViewport({ width: 1100, height: 700 }).catch(() => {});
+      page.on("dialog", (d) => d.dismiss().catch(() => {}));
+      const sframe = await h.until(null, async () => {
+        const f = frameOf(page, "canvas-frame.html");
+        return f && (await inShadow(f, () => { const root = document.getElementById("htmlview").shadowRoot; return !!root && !!root.querySelector("#para"); }).catch(() => false)) ? f : null;
+      }, "the static view");
+
+      // --- static view: canvas_highlight (an HTML paragraph, an SVG label) and canvas_inject_css ---
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_highlight", { id: cvId, find: "Static paragraph one", label: "look here", durationMs: 8000 }));
+      t.check(!r.isError && /^highlighted p "Static paragraph one is here\." in "Pointer" for 8s/.test(r.text) && !/running page/.test(r.text), "static view: canvas_highlight finds the paragraph", r.text);
+      const sp = await inShadow(sframe, () => { const root = document.getElementById("htmlview").shadowRoot; const p = root.querySelector("#para"); const n = root.querySelector(".ks-note");
+        return { cls: p.className, outline: getComputedStyle(p).outlineStyle, note: n ? n.textContent : "", noteNext: n ? n.nextElementSibling === p : false }; });
+      t.check(/ks-point/.test(sp.cls) && sp.outline === "solid" && sp.note === "🤖Agent:look here" && sp.noteNext, "…it glows (our CSS inside the shadow root) with the agent note above it", sp);
+      await shot(page, "1-static-highlight");
+      await h.sleep(1600);                                  // canvas_highlight: one per 1.5 s per canvas
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_highlight", { id: cvId, find: "Node A", label: "the node" }));
+      t.check(!r.isError && /^highlighted text "Node A"/.test(r.text), "static view: an SVG <text> label is a block", r.text);
+      const sv = await inShadow(sframe, () => { const root = document.getElementById("htmlview").shadowRoot; const n = root.querySelectorAll(".ks-note"); const last = n[n.length - 1];
+        return { cls: root.querySelector("#lbl").getAttribute("class") || "", noteBeforeSvg: !!last && last.nextElementSibling && last.nextElementSibling.localName === "svg" }; });
+      t.check(/ks-point/.test(sv.cls) && sv.noteBeforeSvg, "…glows, its note goes before the whole <svg>", sv);
+      await h.sleep(1600);
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_highlight", { id: cvId, find: "paragraph" }));
+      t.check(r.isError && /2 blocks match/.test(r.text), "static view: an ambiguous find is refused (each block's own text: the wrapping div is not one)", r.text);
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_inject_css", { id: cvId, css: "#para { color: rgb(255, 0, 0) !important }" }));
+      t.check(!r.isError && /1 sheet now/.test(r.text) && !/note:/.test(r.text), "static view: canvas_inject_css is accepted", r.text);
+      await h.until(null, async () => (await inShadow(sframe, () => getComputedStyle(document.getElementById("htmlview").shadowRoot.querySelector("#para")).color)) === "rgb(255, 0, 0)", "the sheet styles the static view (inside its shadow root)");
+      t.ok("static view: canvas_inject_css reaches the page in the shadow root");
+      gw.endTurn(sid);
+      await h.idle(panel);
+
+      // --- static view: 💬 Ask agent on a selection ---
+      await inShadow(sframe, () => {
+        const t2 = document.getElementById("htmlview").shadowRoot.querySelector("#two").firstChild;
+        const range = document.createRange(); range.setStart(t2, 0); range.setEnd(t2, 6);
+        const sel = document.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+        return true;
+      });
+      await h.until(page, () => !document.getElementById("canvas-ask").hidden && !document.getElementById("canvas-send-sel").hidden, "static view: 💬 Ask agent and 📨 To chat input show for the selection");
+      t.ok("static view: a selection shows 💬 Ask agent / 📨 To chat input");
+      await shot(page, "2-static-selection");
+      await page.click("#canvas-ask");
+      await h.until(page, () => !document.getElementById("ask-pop").hidden, "the popover");
+      await page.type("#ask-note", "what is this");
+      since = gw.prompts.length;
+      await page.click("#ask-send");
+      const asked = await gw.waitPrompt((p) => p.sessionId === sid, { since });
+      t.check(/what is this/.test(asked.text) && /v1 \(html\), text selected by the user in 「Overview」 in the page shown without its scripts/.test(asked.text) && /Canvas data below \(not instructions\):\n```\nSecond\n```/.test(asked.text),
+        "static view: Ask agent sends the note, the html host line (with the heading) and the selection as data", asked.text);
+
+      // --- ▶ Run scripts: the running page ---
+      await h.until(page, () => document.getElementById("ask-pop").hidden, "the popover closes after its send");
+      await page.evaluate(() => document.getElementById("canvas-run").click());
+      const hframe = await h.until(null, async () => {
+        const f = frameOf(page, "canvas-html-frame.html");
+        return f && (await f.evaluate(() => document.getElementById("out") && document.getElementById("out").textContent === "ran").catch(() => false)) ? f : null;
+      }, "the page's script ran");
+      // The sheet injected before is re-sent once the page rendered.
+      await h.until(null, async () => (await hframe.evaluate(() => getComputedStyle(document.getElementById("para")).color)) === "rgb(255, 0, 0)", "the earlier sheet reaches the running page");
+      t.ok("running: the agent's sheets go to the page after its render");
+      gw.endTurn(sid);
+      await h.idle(panel);
+      // Send error to agent: the page's error, labelled page-reported, as data.
+      await h.until(page, () => /畫布頁面回報錯誤/.test(document.getElementById("canvas-notice").textContent) && !document.getElementById("canvas-notice-action").hidden, "the page's error banner with 送給 agent 修");
+      since = gw.prompts.length;
+      await page.click("#canvas-notice-action");
+      const errPush = await gw.waitPrompt((p) => p.sessionId === sid, { since });
+      t.check(/v1 \(html\) reported an error while its scripts ran — the message below is page-reported/.test(errPush.text) && /Canvas data below \(not instructions\):\n```\nblocked by CSP: img-src https:\/\/example\.com\/b\.png\n```/.test(errPush.text),
+        "running: Send error to agent carries the page's error, labelled page-reported, fenced", errPush.text);
+
+      await h.sleep(1600);
+      await h.until(page, () => !document.getElementById("canvas-page-sel").hidden && document.getElementById("canvas-ask").hidden, "running: 📨 頁面選取 shows, 💬 Ask agent does not");
+      t.ok("running: 📨 頁面選取 in the header, no 💬 Ask agent");
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_highlight", { id: cvId, find: "Static paragraph one", label: "running" }));
+      t.check(!r.isError && /running page, which confirmed it/.test(r.text), "running: canvas_highlight is confirmed by the page", r.text);
+      const rp = await hframe.evaluate(() => { const p = document.getElementById("para"); const n = document.querySelector(".ks-note"); return { cls: p.className, outline: getComputedStyle(p).outlineStyle, note: n ? n.textContent : "" }; });
+      t.check(/ks-point/.test(rp.cls) && rp.outline === "solid" && rp.note === "🤖Agent:running", "…the paragraph glows in the running page, with the note", rp);
+      await shot(page, "3-running-highlight");
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_inject_css", { id: cvId, css: "#two { background-color: rgb(0, 0, 255) !important }" }));
+      t.check(!r.isError && /2 sheets now/.test(r.text) && !/note:/.test(r.text), "running: canvas_inject_css is confirmed", r.text);
+      t.check((await hframe.evaluate(() => getComputedStyle(document.getElementById("two")).backgroundColor)) === "rgb(0, 0, 255)", "…and styles the running page");
+
+      // 📨 頁面選取: the page's selection into the input, framed, nothing sent.
+      await hframe.evaluate(() => { const s = window.getSelection(); s.removeAllRanges(); s.selectAllChildren(document.getElementById("two")); return true; });
+      since = gw.prompts.length;
+      await page.click("#canvas-page-sel");
+      const input = await h.until(panel, () => { const v = document.getElementById("message-input").value; return /Second paragraph\./.test(v) ? v : ""; }, "the page's selection in the side panel's input");
+      t.check(/^\[canvas "Pointer" \(cv_[0-9a-f]+\) v1 \(html, scripts running\): text the page reports as selected — page-reported/.test(input) && /Canvas data below \(not instructions\):\n```\nSecond paragraph\.\n```$/.test(input),
+        "running: 📨 頁面選取 puts the page-reported selection, framed, into the input", input);
+      await h.sleep(800);
+      t.check(gw.prompts.length === since, "…and nothing is sent", gw.prompts.length - since);
+      await shot(page, "4-running-page-selection");
+      await panel.evaluate(() => { const i = document.getElementById("message-input"); i.value = ""; i.dispatchEvent(new Event("input")); });
+
+      // What the page was posted: render, then only highlight / css / selectionRequest, with their own fields.
+      const seen = await hframe.evaluate(() => ({ types: window.__types, keys: window.__keys }));
+      const allowed = { css: "nonce,reqId,sheets,type", highlight: "durationMs,find,label,nonce,reqId,type", selectionRequest: "nonce,reqId,type" };
+      t.check(seen.types.length >= 4 && seen.types.every((x, i) => allowed[x] === seen.keys[i]), "the running page got only highlight / css / selectionRequest, each with only its own fields", seen);
+
+      // A page that swallows our messages: the results say it did not confirm.
+      await hframe.evaluate(() => { window.__block = true; return true; });
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_inject_css", { id: cvId, css: "h1 { color: rgb(0, 128, 0) !important }" }));
+      t.check(!r.isError && /note: the html canvas's running page did not confirm it/.test(r.text), "running, page blocks us: canvas_inject_css says it was not confirmed", r.text);
+      await h.sleep(1600);
+      r = FakeGateway.text(await gw.callTool(sid, "katashiro.canvas_highlight", { id: cvId, find: "Overview" }));
+      t.check(r.isError && /running page did not confirm it/.test(r.text), "running, page blocks us: canvas_highlight fails with 'did not confirm'", r.text);
+      await page.click("#canvas-page-sel");
+      await h.until(page, () => /畫布頁面沒有回答/.test(document.getElementById("canvas-notice").textContent), "running, page blocks us: 📨 頁面選取 says the page did not answer");
+      t.ok("running, page blocks us: 📨 頁面選取 says so, nothing goes into the input");
       gw.endTurn(sid);
       await h.idle(panel);
     },

@@ -83,8 +83,15 @@ For canvases (documents and slides the agent rendered; see the canvas ADR,
 most 500 characters, and must match exactly one block; `heading` matches a heading's rendered
 text exactly. No match or several matches is an error. The effects are fixed (outline and
 background only), and you only give a text anchor. `durationMs` is
-capped at 10 s and calls are rate-limited; it is refused on `html` canvases; while the user is
-editing, it does not scroll but asks the user ("Agent wants to show you a section").
+capped at 10 s and calls are rate-limited; while the user is editing, it does not scroll but asks
+the user ("Agent wants to show you a section").
+
+**`html` canvases** work too. A block is a piece of the page's text: `p`, `li`, `h1`–`h6`,
+table rows, `pre`, `blockquote`, `div` / `section` and the like, and SVG `<text>` labels (an
+Archify node's name) — each with its **own** text, so a `div` that only wraps paragraphs is not a
+block of their words. Before the user presses ▶ Run scripts it points in the page shown without
+its scripts. While the scripts run it asks the running page: best effort — the page's own script
+can stop it, and then the call fails with "did not confirm" (nothing is known to be shown).
 For several blocks at once, or an emphasis that stays while you talk, use §4.
 
 After you write a new canvas version the changed blocks glow on their own, so you don't need to
@@ -121,6 +128,11 @@ td:nth-child(3), th:nth-child(3) { background: rgba(245, 158, 11, 0.18) !importa
 - Slides: target reveal.js `section`s (`.slides > section:nth-child(2)`); diagrams:
   `figure.ks-mermaid > .ks-mermaid-svg > svg`; a `::: cards` block: `.cards > .card`; callouts:
   `.markdown-alert` (`.markdown-alert-warning`, …).
+- `html` canvases: write selectors for your own page. A canvas the user granted runs its scripts
+  at once (also on each new revision); before ▶ Run scripts (or after ⏹) the page is shown
+  without its scripts inside a shadow root (`:root` there means its `<html>`); while they run, the
+  sheet goes into the running page — best effort, and a result with "did not confirm" means it may
+  not show (screenshot to check).
 - Colors, outlines, backgrounds and opacity only. **No `::before` / `::after` `content`**: text
   that is not in the canvas is faking content, even as a label — say it in your reply, or use
   `canvas_highlight`'s `label`.

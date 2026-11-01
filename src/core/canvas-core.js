@@ -79,18 +79,56 @@
   const READ_ONLY_REFUSED = new Set(["save", "dirty", "selection", "selectionRect", "editFailed", "escape", "undoState", "armedKey"]);
 
   // An html canvas before Run scripts (canvas-html §2.3; canvas §6 Q8): canvas-frame.html shows it
-  // without its scripts, as a view — no editor, no selection, no copy, no highlight, no slides.
+  // without its scripts, as a view — no editor, no copy, no slides. It runs no agent script, so it
+  // has the markdown view's trust (canvas-html §2.7, Brett 2026-11-01): the selection for 💬 / 📨
+  // (and the armed Enter after 📨) and canvas_highlight's answer.
   const HTML_STATIC_TYPES = {
     ready: FRAME_TYPES.ready, rendered: FRAME_TYPES.rendered, error: FRAME_TYPES.error, openLink: FRAME_TYPES.openLink,
+    selection: FRAME_TYPES.selection, selectionRect: FRAME_TYPES.selectionRect, highlighted: FRAME_TYPES.highlighted,
+    armedKey: FRAME_TYPES.armedKey,
   };
   // canvas-html-frame.html (canvas §3.2, canvas-html §2.4): agent script runs there, so only these,
-  // and nothing it sends is ever stored or sent on as the user's words.
+  // and nothing it sends is ever stored or sent on as the user's words. canvas-html §2.7 (Brett
+  // 2026-11-01) adds three answers to the host's own requests, each page-reported and treated so:
+  // highlighted{} (canvas_highlight's result, quoted to the agent like any canvas text), styled{}
+  // (canvas_inject_css applied: a count only), and pageSelection{} (what the page says is selected,
+  // asked for by the user's click in the host; it only goes into the side panel's input box, framed
+  // as page-reported data, for the user to read before sending).
   const HTML_FRAME_TYPES = {
     ready: () => true,
     rendered: (m) => Number.isInteger(m.version),
     error: (m) => typeof m.msg === "string",
     openLink: (m) => typeof m.url === "string",
+    highlighted: (m) => FRAME_TYPES.highlighted(m) && m.slide === undefined,
+    styled: (m) => Number.isInteger(m.reqId) && Number.isInteger(m.sheets) && m.sheets >= 0,
+    pageSelection: (m) => Number.isInteger(m.reqId) && typeof m.text === "string" && m.text.length <= SELECTION_MAX &&
+      (m.truncated === undefined || typeof m.truncated === "boolean"),
   };
+  // Host → canvas-html-frame.html besides its one render (canvas-html §2.7, the relaxed host
+  // invariant): only these, rebuilt field by field from what the host was given, so nothing else
+  // (the user's words, the theme, another canvas) can ride along. highlight and css carry the
+  // agent's own strings for the content the same agent wrote; selectionRequest carries nothing.
+  // → the message to post (without the nonce), or null.
+  // canvas_inject_css: at most this many sheets on one canvas tab, each at most this long (canvas.js).
+  const CSS_SHEETS_MAX = 10;
+  const CSS_SHEET_MAX = 20000;
+  const HTML_FRAME_POSTS = {
+    highlight: (m) => {
+      const hasFind = typeof m.find === "string", hasHeading = typeof m.heading === "string";
+      if (!Number.isInteger(m.reqId) || hasFind === hasHeading) return null;
+      const out = { type: "highlight", reqId: m.reqId, label: typeof m.label === "string" ? m.label.slice(0, 200) : "" };
+      if (hasFind) out.find = m.find.slice(0, 2000); else out.heading = m.heading.slice(0, 2000);
+      if (Number.isFinite(m.durationMs)) out.durationMs = m.durationMs;
+      return out;
+    },
+    css: (m) => (Number.isInteger(m.reqId) && Array.isArray(m.sheets) && m.sheets.length <= CSS_SHEETS_MAX && m.sheets.every((s) => typeof s === "string" && s.length <= CSS_SHEET_MAX)
+      ? { type: "css", reqId: m.reqId, sheets: m.sheets.slice() } : null),
+    selectionRequest: (m) => (Number.isInteger(m.reqId) ? { type: "selectionRequest", reqId: m.reqId } : null),
+  };
+  function htmlFramePost(msg) {
+    if (!msg || typeof msg !== "object" || !Object.prototype.hasOwnProperty.call(HTML_FRAME_POSTS, msg.type)) return null;
+    return HTML_FRAME_POSTS[msg.type](msg);
+  }
   const FRAME_PROFILES = { canvas: FRAME_TYPES, htmlStatic: HTML_STATIC_TYPES, html: HTML_FRAME_TYPES };
 
   /**
@@ -167,8 +205,12 @@
   // The header of 送給 agent 修 (§3.7): the version is the one whose render failed, not whatever
   // the canvas holds at click time; when a newer version is already in, the agent is told so, so
   // it never "fixes" an error that the latest version may no longer have.
-  function renderErrorHeader({ title, id, version, kind, diagram, nowVersion }) {
-    const what = diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
+  // pageReported (canvas-html §2.7): an error{} from a RUNNING html canvas — its own script can
+  // write that text (or forge it), so the header says so; the push carries it as fenced data.
+  function renderErrorHeader({ title, id, version, kind, diagram, nowVersion, pageReported }) {
+    const what = pageReported
+      ? "reported an error while its scripts ran — the message below is page-reported (the canvas's own script can write it), not checked by Katashiro"
+      : diagram ? "has a mermaid diagram that failed to draw; the rest rendered — canvas_patch that fence" : "failed to render";
     const older = Number.isInteger(nowVersion) && Number.isInteger(version) && nowVersion !== version
       ? `; this error is from v${version}, the canvas is now v${nowVersion} — check it still applies` : "";
     return `[canvas "${title}" (${id}) v${version} (${kind}) ${what}${older}]`;
@@ -793,6 +835,9 @@
   const SHOW_CHANGES_KEY = "canvas:showChanges";
   // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
   const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
+  // 💬 Ask agent / 📨 To chat input on a selection in the view (§3.7): the text kinds, and an html
+  // canvas shown without its scripts (canvas-html §2.7; canvas-frame.html, no page script).
+  const selectableKind = (k) => textKind(k) || k === "html";
 
   /**
    * What the held markers compare the shown canvas with → { against: string | null, from }. The
@@ -883,6 +928,61 @@
     return { error: `${hits.length} ${byHeading ? "headings" : "blocks"} match ${JSON.stringify(want)}; give ${byHeading ? "`find` with text from the section instead" : "a longer `find`"}` };
   }
 
+  /**
+   * canvas_highlight's blocks in an html canvas (canvas-html §2.7), for matchBlock: the static
+   * view's shadow root (canvas-frame.html) or the running page's body (canvas-html-frame.html).
+   * Markdown's blocks (paragraph, heading, list item, table row, code block) plus what pages hold
+   * their text in: blockquote, dt / dd, figcaption, caption, summary, the sectioning elements and
+   * div, and SVG <text> (a diagram's labels, Archify's nodes). A block's text is its OWN text: words
+   * inside a nested block belong to that one, so a <div> wrapping paragraphs is not a block of
+   * their text. Script, style, template and the like are not content, nor our own notes. Only
+   * nodeType / localName / firstChild / nextSibling / data / getAttribute are read (plain DOM, so
+   * the tests can use a small fake). keep(el): a block left out when false (the frames: not laid out).
+   * → [{ el, tag, text, heading }] in document order, empty blocks dropped.
+   */
+  const HTML_BLOCK_TAGS = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "li", "tr", "pre", "blockquote", "dt", "dd",
+    "figcaption", "caption", "summary", "div", "section", "article", "aside", "header", "footer", "main", "nav", "text"]);
+  const HTML_SKIP_TAGS = new Set(["script", "style", "template", "noscript", "title", "desc", "metadata", "head", "textarea", "select"]);
+  const isNote = (el) => typeof el.getAttribute === "function" && /(^|\s)ks-note(\s|$)/.test(el.getAttribute("class") || "");
+  function htmlBlocks(root, { keep } = {}) {
+    const found = [];
+    const stack = [];
+    // Iterative, so a deeply nested page cannot overflow the stack.
+    if (root && root.firstChild) stack.push({ node: root.firstChild, owner: null });
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      const n = top.node;
+      if (!n) { stack.pop(); continue; }
+      top.node = n.nextSibling;
+      if (n.nodeType === 3) { if (top.owner) top.owner.raw += n.data; continue; }
+      if (n.nodeType !== 1) continue;
+      const tag = String(n.localName || "").toLowerCase();
+      if (HTML_SKIP_TAGS.has(tag) || isNote(n)) continue;
+      let owner = top.owner;
+      if (HTML_BLOCK_TAGS.has(tag)) { owner = { el: n, tag, raw: "" }; found.push(owner); }
+      if (n.firstChild) stack.push({ node: n.firstChild, owner });
+    }
+    const out = [];
+    for (const b of found) {
+      const text = normText(b.raw);
+      if (!text || (keep && !keep(b.el))) continue;
+      out.push({ el: b.el, tag: b.tag, text, heading: /^h[1-6]$/.test(b.tag) });
+    }
+    return out;
+  }
+  // The pointer's look inside an html canvas (the page's own CSS is all there is there): the same
+  // amber glow and agent note as canvas-frame.css's .ks-point / .ks-note — outline and background
+  // only, never text color, opacity or visibility (§3.10).
+  const POINT_CSS = [
+    ".ks-point { outline: 3px solid #f59e0b; outline-offset: 3px; border-radius: 4px; background-color: rgba(245, 158, 11, 0.16);",
+    "  animation: ks-fade-point var(--ks-ms, 4000ms) linear forwards; }",
+    "@keyframes ks-fade-point { 0%, 85% { outline-color: #f59e0b; background-color: rgba(245, 158, 11, 0.16); } 100% { outline-color: transparent; background-color: transparent; } }",
+    "div.ks-note { display: block; width: fit-content; max-width: 100%; margin: 4px 0; padding: 2px 10px; font: 600 12px/1.6 system-ui, sans-serif;",
+    "  color: #1e1b4b; background: #c4b5fd; border-radius: 10px 10px 10px 2px; list-style: none; user-select: none; overflow-wrap: anywhere; }",
+    "div.ks-note b { margin: 0 4px; }",
+    "@media (prefers-reduced-motion: reduce) { .ks-point { animation: none; } }",
+  ].join("\n");
+
   // --- Pushes into the prompt (§3.7: Send to agent, Ask agent, Send error) ----------------------
   // Layout: the user's note first, then a fixed host line, then the canvas data in a code fence
   // longer than any backtick run inside it, so the data cannot close the fence and forge text
@@ -918,15 +1018,21 @@
   // so, since a canvas_patch `find` must be the stored text.
   // where (Brett 2026-10-12 17:43, askWhere): the heading path, the source lines of the stored
   // version, the slide — each left out when not known; the agent decides whether to read more.
-  function composeAskAgent({ note, title, id, version, text, truncated, where }) {
+  // An html canvas (canvas-html §2.7): the selection comes from the static view (canvas-frame.html,
+  // no page script), so the same push; the header says it is the page's rendered text and that an
+  // html canvas is rewritten whole with canvas_open (no canvas_patch, no source lines).
+  function composeAskAgent({ note, title, id, version, text, truncated, where, kind }) {
     const t = String(title == null ? "" : title).slice(0, 120);
+    const html = kind === "html";
     const w = askWhere(where) || {};
     let loc = "";
     if (w.slide) loc += ` on slide ${w.slide}`;
     if (w.headings) loc += ` in ${w.headings.map((h) => `「${h}」`).join(" › ")}`;   // quoted: agent-written text (#129 review)
     // "of the canvas content": canvas_read prints a JSON line and a blank line first (#129 review).
-    if (w.lines) loc += `, ${w.lines.from === w.lines.to ? `line ${w.lines.from}` : `lines ${w.lines.from}–${w.lines.to}`} of the canvas content`;
-    const header = `[canvas "${t}" (${id}) v${version}, text selected by the user${loc} — as rendered, not the markdown source; canvas_read before canvas_patch]`;
+    if (w.lines && !html) loc += `, ${w.lines.from === w.lines.to ? `line ${w.lines.from}` : `lines ${w.lines.from}–${w.lines.to}`} of the canvas content`;
+    const header = html
+      ? `[canvas "${t}" (${id}) v${version} (html), text selected by the user${loc} in the page shown without its scripts — as rendered, not the html source; an html canvas is rewritten whole with canvas_open]`
+      : `[canvas "${t}" (${id}) v${version}, text selected by the user${loc} — as rendered, not the markdown source; canvas_read before canvas_patch]`;
     const CUT = "(the selection was cut at 20 KB — canvas_read for the rest)";
     const body = composeCanvasPush({ note, header, data: text, truncatedNote: CUT });
     // Cut here (over the cap) or already in the frame (`truncated`): say so once.
@@ -936,6 +1042,22 @@
   // To chat input (§3.7, Brett 2026-10-13 01:12): the side panel's input box after a canvas
   // selection is put in. Empty (or only blanks) → the selection; a draft → kept, the selection on
   // a new line after it (never in the middle of its last line, never over it).
+  // 📨 頁面選取 (canvas-html §2.7): what a RUNNING html canvas says is selected, put into the side
+  // panel's input box after the user's click in the host — never sent by itself. Unlike To chat
+  // input's plain selection, the page's script may have written this text (it answers our request,
+  // and could answer anything), so it goes in framed: a host line naming the canvas and saying the
+  // text is page-reported, then the text as fenced data, the push layout (composeCanvasPush). The
+  // user reads it, adds their question and sends it. → the text, or null when it is empty or would
+  // not fit the panel's cap (SELECTION_MAX) once framed.
+  function composePageSelection({ title, id, version, text }) {
+    const t = String(title == null ? "" : title).slice(0, 120);
+    const s = String(text == null ? "" : text);
+    if (!s.trim()) return null;
+    const header = `[canvas "${t}" (${id}) v${version} (html, scripts running): text the page reports as selected — page-reported by the canvas's own script, not checked by Katashiro]`;
+    const out = composeCanvasPush({ header, data: s });
+    return out.length > SELECTION_MAX || s.length > PUSH_DATA_MAX ? null : out;
+  }
+
   function inputWithSelection(draft, text) {
     const d = typeof draft === "string" ? draft : "";
     const t = String(text == null ? "" : text);
@@ -1308,5 +1430,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

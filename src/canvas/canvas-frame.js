@@ -9,6 +9,8 @@
 //  in:  render{…, glowPrev?, glowRanges?, glowAgainst?}, glow{against}, highlight{reqId, find|heading, label,
 //       durationMs, check?}                                                (showing what changed, §3.10)
 //  in:  css{sheets}                          (canvas_inject_css: the agent's sheets, all of them; [] clears)
+//       — an html canvas (canvas-html §2.7) takes css{} and highlight{} too, and posts selection{} like
+//         markdown: all of it inside the static view's shadow root
 //  out: ready, rendered{version, seq, normalized?, diagrams}, error{msg, seq?}, openLink{url}, copy{reqId, text},
 //       save{content, baseVersion}, dirty{dirty}, undoState{canUndo, canRedo}, highlighted{reqId, ok, tag?, text?, slide?, error?},
 //       selection{text, seq, truncated?, rect?, where?}, selectionRect{seq, rect?} (Ask agent, §3.7; rect places the host's 💬,
@@ -211,13 +213,20 @@
   // canvas_inject_css: the agent's sheets in one <style> of our own (style-src 'unsafe-inline';
   // nothing in them can fetch: connect-src / img-src / font-src stay closed). Off while the user
   // edits, so the editor always looks like itself.
+  // An html canvas (canvas-html §2.7): the sheet goes into the static view's shadow root instead, the
+  // only place it can reach the page, through CanvasCore.cssForShadow (its :root is the moved <html>).
   let agentCss = null;
+  let agentCssText = "";
   function setAgentCss(sheets) {
-    const text = Array.isArray(sheets) ? sheets.filter((s) => typeof s === "string").join("\n") : "";
-    if (!text) { if (agentCss) agentCss.remove(); agentCss = null; return; }
+    agentCssText = Array.isArray(sheets) ? sheets.filter((s) => typeof s === "string").join("\n") : "";
+    placeAgentCss();
+  }
+  function placeAgentCss() {
+    if (!agentCssText) { if (agentCss) agentCss.remove(); agentCss = null; return; }
     if (!agentCss) { agentCss = document.createElement("style"); agentCss.id = "ks-agent-css"; }
-    agentCss.textContent = text;
-    document.head.appendChild(agentCss);          // last, so it wins ties with the canvas's own CSS
+    const shadow = shownKind === "html" ? htmlview.shadowRoot : null;
+    agentCss.textContent = shadow ? CanvasCore.cssForShadow(agentCssText) : agentCssText;
+    (shadow || document.head).appendChild(agentCss);    // last, so it wins ties with the canvas's own CSS
     syncAgentCss();
   }
   function syncAgentCss() { if (agentCss) agentCss.disabled = !!editing; }
@@ -542,7 +551,12 @@
       }
     }
     const shadow = htmlview.shadowRoot || htmlview.attachShadow({ mode: "open" });
-    shadow.replaceChildren(root);
+    // canvas_highlight's glow and note (canvas-html §2.7): canvas-frame.css does not reach in here.
+    const point = document.createElement("style");
+    point.id = "ks-point-css";
+    point.textContent = CanvasCore.POINT_CSS;
+    shadow.replaceChildren(root, point);
+    placeAgentCss();
   }
   const post = (msg) => window.parent.postMessage({ ...msg, nonce }, "*");
 
@@ -619,7 +633,7 @@
     clearTimeout(timers.get(cls));
     el.classList.remove(cls);
     if (ms === Infinity) { el.classList.add("ks-hold", cls); timers.delete(cls); return; }
-    void el.offsetWidth;                          // restart the fade
+    void el.getBoundingClientRect();              // restart the fade (SVG elements have no offsetWidth)
     el.style.setProperty("--ks-ms", `${Math.round(ms)}ms`);
     el.classList.add(cls);
     timers.set(cls, setTimeout(() => { el.classList.remove(cls); timers.delete(cls); }, ms));
@@ -771,17 +785,25 @@
     text.textContent = label;                      // agent text: textContent only
     note.append(icon, who, text);
     // Never over text: before the table for a row (outside its scrolling .table-wrap, so the note
-    // does not scroll away with a wide table), at the top inside a list item, else right above.
-    if (el.tagName === "TR") (el.closest(".table-wrap") || el.closest("table") || el).before(note);
+    // does not scroll away with a wide table), at the top inside a list item, before the whole
+    // diagram for an SVG label (an html canvas: a <div> inside <svg> would not show), else right above.
+    let svg = el.closest("svg");
+    while (svg && svg.parentElement && svg.parentElement.closest("svg")) svg = svg.parentElement.closest("svg");
+    if (svg) svg.before(note);
+    else if (el.tagName === "TR") (el.closest(".table-wrap") || el.closest("table") || el).before(note);
     else if (el.tagName === "LI") el.prepend(note);
     else el.before(note);
     setTimeout(() => note.remove(), ms);
   }
+  // An html canvas (canvas-html §2.7): the blocks of the page in the static view's shadow root
+  // (CanvasCore.htmlBlocks; only what is laid out), the same match and glow.
+  const laidOut = (el) => el.getClientRects().length > 0;
   function highlight(m) {
     const reply = (r) => post({ type: "highlighted", reqId: m.reqId, ...r });
-    if (shownKind !== "markdown" && shownKind !== "slides") { reply({ ok: false, error: "this canvas shows nothing to point at" }); return; }
+    const html = shownKind === "html";
+    if (shownKind !== "markdown" && shownKind !== "slides" && !(html && htmlview.shadowRoot)) { reply({ ok: false, error: "this canvas shows nothing to point at" }); return; }
     if (editing && !m.check) { reply({ ok: false, error: "the user is editing this canvas" }); return; }
-    const blocks = blocksOf(shownKind === "slides" ? deck : doc);
+    const blocks = html ? CanvasCore.htmlBlocks(htmlview.shadowRoot, { keep: laidOut }) : blocksOf(shownKind === "slides" ? deck : doc);
     const r = CanvasCore.matchBlock(blocks, typeof m.heading === "string" ? { heading: m.heading } : { find: m.find });
     if (r.error) { reply({ ok: false, error: CanvasCore.clipError(r.error) }); return; }
     const b = blocks[r.index];
@@ -906,7 +928,9 @@
     return first ? [first, last] : null;
   }
   function selectionWhere(sel) {
-    if (!sel || !sel.rangeCount || !shownSource) return undefined;
+    // An html canvas (canvas-html §2.7): the heading path in the page, never source lines.
+    const html = shownKind === "html";
+    if (!sel || !sel.rangeCount || !(shownSource || (html && htmlview.shadowRoot))) return undefined;
     const a = selectedTextEnds(sel.getRangeAt(0));
     const b = sel.rangeCount > 1 ? selectedTextEnds(sel.getRangeAt(sel.rangeCount - 1)) : a;
     if (!a || !b) return undefined;
@@ -914,7 +938,7 @@
     const where = {};
     const sections = shownKind === "slides" ? slideSections() : null;
     const sectionOf = (n) => (sections ? sections.indexOf(n.parentElement.closest(".slides > section")) : -1);
-    let root = doc;
+    let root = html ? htmlview.shadowRoot : doc;
     if (sections) {
       const i = sectionOf(first);
       if (i < 0) return undefined;
@@ -934,8 +958,8 @@
       const offset = sections ? shownSource.slideLines[sectionOf(n)] : 0;
       return { start: Number(el.getAttribute("data-line-start")), end: Number(el.getAttribute("data-line-end")), offset };
     };
-    const ends = [end(first), end(last)];
-    if (ends.every(Boolean)) {
+    const ends = html ? [] : [end(first), end(last)];
+    if (ends.length && ends.every(Boolean)) {
       const lines = CanvasCore.askSourceLines(ends, { map: shownSource.map, stored: shownSource.stored });
       if (lines) where.lines = lines;
     }
@@ -943,7 +967,7 @@
   }
   function postSelection() {
     let text = "", rect, where;
-    if (!editing && (shownKind === "markdown" || shownKind === "slides")) {
+    if (!editing && (shownKind === "markdown" || shownKind === "slides" || shownKind === "html")) {
       const sel = document.getSelection();
       text = sel && !sel.isCollapsed ? sel.toString().trim() : "";
       if (text) {

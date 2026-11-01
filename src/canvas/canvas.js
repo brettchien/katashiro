@@ -10,6 +10,9 @@
 //  - links come back as openLink{url}: http(s) only, opened in a new tab after the user confirms.
 // With `&view=agent` it is a compare tab (§3.10): the agent's last write, read-only — no Edit, Save,
 // Send to agent, Ask agent, To chat input, Revert or delete, and its frame's save/dirty/selection/undoState are refused.
+// An html canvas (canvas-html §2.3–§2.7): shown without its scripts in canvas-frame.html (selection,
+// highlight and css as for markdown), or, after ▶ Run scripts, in canvas-html-frame.html, which gets
+// its one render and then only highlight / css / selectionRequest (toFrame, CanvasCore.htmlFramePost).
 (function () {
   "use strict";
 
@@ -41,6 +44,7 @@
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
   const runBtn = document.getElementById("canvas-run");
+  const pageSelBtn = document.getElementById("canvas-page-sel");
   const engineBtn = document.getElementById("canvas-engine");
   const htmlHint = document.getElementById("canvas-html-hint");       // the chip (canvas-html §2.6)
   const htmlRisk = document.getElementById("canvas-html-risk");       // its tooltip, for aria-describedby
@@ -108,8 +112,15 @@
   let htmlOn = true;                  // Settings → html 畫布 (CanvasStore.HTML_ENABLED_KEY)
   // Pinned by e2e/cases/html-canvas.mjs (real Chrome 155): whether document.open/write/close in the
   // html frame fires the iframe's `load` again. The host expects that load always or never — never
-  // "if it fires" at runtime (canvas-html §2.4).
-  const HTML_WRITE_FIRES_LOAD = false;
+  // "if it fires" at runtime (canvas-html §2.4). Always, since canvas-html §2.7: the frame now posts
+  // ready only after its own load, and document.open on a loaded document fires a second load (before
+  // that, whether the render beat the first load decided it — a race the first pin happened to win).
+  // The expectation is armed with the render and dropped by that load or the timer, not by
+  // rendered{}: the frame posts rendered{} right after close(), before the load comes. The timer
+  // is HTML_RENDER_ARM_MS until rendered{} (the page's synchronous script runs inside write(): a
+  // heavy page must not be taken for a navigation and lose its grant), then HTML_ARM_MS from it.
+  const HTML_WRITE_FIRES_LOAD = true;
+  const HTML_RENDER_ARM_MS = 30000;
   const HTML_ARM_MS = 5000;
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
@@ -182,12 +193,17 @@
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
     sendBtn.hidden = !(textKind && mode === "view" && current.meta.version > seen && !sameAsAgent);
     sendBtn.title = current ? `把你的修改送給 agent（agent 最後看過 v${seen}）` : "";
-    // Ask agent (§3.7): while text is selected in the view.
-    askBtn.hidden = !(textKind && mode === "view" && !!frame && !!ask.sel);
+    // Ask agent (§3.7): while text is selected in the view — an html canvas's too, shown without its
+    // scripts (canvas-html §2.7: canvas-frame.html; the running frame has 📨 頁面選取 instead).
+    const selectable = !!current && CanvasCore.selectableKind(current.meta.kind) && frameProfile !== "html";
+    askBtn.hidden = !(selectable && mode === "view" && !!frame && !!ask.sel);
     // To chat input (§3.7, Brett 2026-10-13): the same rule; disabled while the panel is asked.
     sendSelBtn.hidden = askBtn.hidden;
     sendSelBtn.disabled = toInputBusy;
     const isHtml = !!current && current.meta.kind === "html";
+    // 📨 頁面選取 (canvas-html §2.7): while the html canvas's scripts run and its page has rendered.
+    pageSelBtn.hidden = !(isHtml && frameProfile === "html" && !!htmlRun && rendered && !deleted);
+    pageSelBtn.disabled = pageSelBusy;
     downloadBtn.hidden = !(textKind || isHtml);
     const ext = isHtml ? "html" : current && current.meta.kind === "mermaid" ? "mmd" : "md";
     downloadBtn.textContent = `⬇ .${ext}`;
@@ -437,7 +453,7 @@
     // cleared the selection), whose DOM is gone. By seq, not version (#115 review): a re-render of
     // the same version (§3.5 normalization, two refreshes) replaces the DOM too.
     if (CanvasCore.fromOlderRender(m, renderingSeq)) return;
-    const textKind = !!current && CanvasCore.textKind(current.meta.kind);
+    const textKind = !!current && CanvasCore.selectableKind(current.meta.kind);
     const sel = textKind && mode === "view" && m.text ? { text: m.text, truncated: m.truncated === true, seq: m.seq, rect: m.rect, where: m.where } : null;
     if (armed && !(sel && sel.text === armed.text && sel.seq === armed.seq)) disarm();    // a new selection
     // For the 📨's sidePanel.open (needs it at the click); at most once a second while dragging.
@@ -471,7 +487,7 @@
     askSendBtn.disabled = true;                   // one push per send; the panel also dedupes by reqId
     askSay("送出中…");
     const where = CanvasCore.askWhereAtSend(cap.where, { shown: askShownText, stored: current.content, sameVersion: current.meta.version === cap.version });
-    const text = CanvasCore.composeAskAgent({ note, title: cap.title, id: canvasId, version: cap.version, text: cap.text, truncated: cap.truncated, where });
+    const text = CanvasCore.composeAskAgent({ note, title: cap.title, id: canvasId, version: cap.version, text: cap.text, truncated: cap.truncated, where, kind: current.meta.kind });
     const r = await pushToAgent(text, note);
     const ok = r.ok ? `💬 已問 ${r.agent || "agent"}（v${cap.version} 的選取文字）` : `送出失敗：${CanvasCore.clipError(r.error)}`;
     if (ask.phase !== "sending") {                // closed meanwhile (edit mode, frame reloaded): say it here
@@ -499,7 +515,7 @@
   // text kind, never a compare tab). A selection the frame cut at SELECTION_MAX is refused, never
   // put in cut. The selection stays; after it went in only its 💬 / 📨 go away, as after Ask agent.
   async function selectionToInput() {
-    if (toInputBusy || !current || compareView || mode !== "view" || !frame || !CanvasCore.textKind(current.meta.kind)) return;
+    if (toInputBusy || !current || compareView || mode !== "view" || !frame || !CanvasCore.selectableKind(current.meta.kind) || frameProfile === "html") return;
     const sel = ask.sel;
     if (!sel) return;
     if (sel.truncated) { notice(`選取的文字超過 ${CanvasCore.SELECTION_MAX / 1024} KB，沒放進輸入框：選短一點再試。`); return; }
@@ -524,6 +540,58 @@
     sendSelBtn.blur();
     sendPill.blur();
   }
+
+  // 📨 頁面選取 (canvas-html §2.7, Brett 2026-11-01): while an html canvas's scripts run, its frame
+  // never sends selection{} (page script could forge it at any time). Instead the user's click here —
+  // a trusted event in this page, never the frame's — asks the frame what is selected
+  // (selectionRequest{reqId} → pageSelection{reqId, text, truncated?}). The answer is page-reported:
+  // it goes into the side panel's input box framed as such (CanvasCore.composePageSelection: a host
+  // line, then the text as fenced data, ≤ SELECTION_MAX), and nothing is sent — the user reads it,
+  // adds their question and sends it. Not armed for Enter (as 📨 To chat input is): page text should
+  // be read before it goes out. A forged answer can only change what the user sees in the box. No
+  // answer in time (the page's script removed our listener): the notice says so.
+  const PAGE_SEL_TIMEOUT_MS = 3000;
+  let htmlReqSeq = 0;                 // request ids of the host's posts to the html frame
+  let pageSelBusy = false;
+  let pageSelReq = null;              // { reqId, timer, resolve }
+  function askPageSelection() {
+    return new Promise((resolve) => {
+      if (pageSelReq) { clearTimeout(pageSelReq.timer); pageSelReq.resolve(null); }
+      const reqId = ++htmlReqSeq;
+      pageSelReq = { reqId, resolve, timer: setTimeout(() => finishPageSelection(reqId, null), PAGE_SEL_TIMEOUT_MS) };
+      toFrame({ type: "selectionRequest", reqId });
+    });
+  }
+  function finishPageSelection(reqId, answer) {
+    if (!pageSelReq || pageSelReq.reqId !== reqId) return;
+    const { resolve, timer } = pageSelReq;
+    pageSelReq = null;
+    clearTimeout(timer);
+    resolve(answer);
+  }
+  pageSelBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted || pageSelBusy || !current || compareView || frameProfile !== "html" || !htmlRun || !rendered) return;
+    focusSidePanel();                             // still inside the click: the gesture open() needs
+    pageSelBusy = true;
+    pageSelBtn.disabled = true;
+    try {
+      const c = current, version = htmlRun.version;
+      const ans = await askPageSelection();
+      if (!ans) { notice("畫布頁面沒有回答（它自己的 script 可能攔下了 Katashiro 的訊息）：沒放進輸入框。可以按 ⏹ Stop scripts，在不執行 script 的顯示裡選取。"); return; }
+      if (ans.truncated) { notice(`頁面回報的選取超過 ${CanvasCore.SELECTION_MAX / 1024} KB，沒放進輸入框：選短一點再試。`); return; }
+      if (!ans.text.trim()) { notice("頁面裡沒有選取的文字：先在畫布裡選取文字，再按 📨 頁面選取。"); return; }
+      const text = CanvasCore.composePageSelection({ title: c.meta.title, id: canvasId, version, text: ans.text });
+      if (!text) { notice(`頁面回報的選取加上說明後超過 ${CanvasCore.SELECTION_MAX / 1024} KB，沒放進輸入框：選短一點再試。`); return; }
+      const r = await askPanel({ type: "katashiro-canvas-to-input", text }, "沒放進輸入框", "再按一次 📨 頁面選取");
+      if (!r.ok) { if (!r.shown) notice(`沒放進輸入框：${CanvasCore.clipError(r.error)}`); return; }
+      flash(r.draft
+        ? "📨 頁面回報的選取已放進那段對話的草稿（頁面自己回報的文字，送出前請先看過）"
+        : "📨 頁面回報的選取已放進輸入框（頁面自己回報的文字，送出前請先看過；不會自動送出）");
+    } finally {
+      pageSelBusy = false;
+      pageSelBtn.disabled = false;
+    }
+  });
 
   // --- To chat input, then Enter (§3.7, Brett 2026-10-13 16:31) ----------------------------------
   // The side panel is another document: its messageInput.focus() cannot take the window's keyboard
@@ -644,20 +712,23 @@
   // tag ({seq, version}): the render the error came from. A newer render's rendered{} clears the
   // notice, and the push names that version, not whatever the canvas holds at click time.
   // lead: a line kept above the error (an html revision's auto-run notice, canvas-html §2.6).
-  function offerSendError(msg, diagram = false, tag = null, lead = "") {
+  // pageReported (canvas-html §2.7, Brett 2026-11-01): an error{} from a RUNNING html canvas. Its
+  // script can write that text, so it is labelled so in the banner and in the push (renderErrorHeader),
+  // and goes as fenced data, capped (clipError) — still only on the user's click here. An html
+  // canvas's static view is canvas-frame.html (no page script): its errors go as for markdown.
+  function offerSendError(msg, diagram = false, tag = null, lead = "", pageReported = false) {
     const c = current;
     const version = tag && Number.isInteger(tag.version) ? tag.version : c && c.meta.version;
-    notice(`${lead ? `${lead}\n` : ""}${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
+    notice(`${lead ? `${lead}\n` : ""}${pageReported ? "畫布頁面回報錯誤" : diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
         const text = CanvasCore.composeCanvasPush({
           header: CanvasCore.renderErrorHeader({
             title: String(c.meta.title).slice(0, TITLE_MAX), id: canvasId, version, kind: c.meta.kind, diagram,
-            nowVersion: current ? current.meta.version : undefined,
+            nowVersion: current ? current.meta.version : undefined, pageReported,
           }),
-          // An html canvas: host-composed text only, never the frame's message (canvas §3.7).
-          data: c.meta.kind === "html" ? null : CanvasCore.clipError(msg),
+          data: CanvasCore.clipError(msg),
         });
         const r = await pushToAgent(text);
         if (r.ok) notice(`📤 已把錯誤送給 ${r.agent || "agent"}`); else if (!r.shown) notice(`送出失敗：${CanvasCore.clipError(r.error)}`);
@@ -780,16 +851,22 @@
     htmlAutoNote = "";
     htmlRenderSent = false;
     if (htmlArm) { clearTimeout(htmlArm.timer); gate.disarm(htmlArm.token); htmlArm = null; }
+    // The running page is gone: what it was asked and has not answered never will be (§2.7).
+    if (pageSelReq) finishPageSelection(pageSelReq.reqId, null);
+    if (pendingCss) onStyled({ reqId: pendingCss.reqId, timeout: true });
+    // A highlight it was sent goes again to the next frame (on its ready / rendered{}), within its timeout.
+    if (pendingHighlight) pendingHighlight.sent = false;
+  }
+  function armHtmlLoad(token, ms) {
+    if (htmlArm && htmlArm.token === token) clearTimeout(htmlArm.timer);
+    htmlArm = { token, timer: setTimeout(() => { gate.disarm(token); if (htmlArm && htmlArm.token === token) htmlArm = null; }, ms) };
   }
   // The one message this html frame ever gets (canvas-html §2.4 host invariant): render, answering
   // the ready of its nonce. Nothing else is posted to it — toFrame() drops everything for it.
   function sendHtmlRender() {
     if (!frame || !frameReady || htmlRenderSent || !htmlRun) return;
     htmlRenderSent = true;
-    if (HTML_WRITE_FIRES_LOAD) {
-      const token = gate.arm();
-      htmlArm = { token, timer: setTimeout(() => { gate.disarm(token); if (htmlArm && htmlArm.token === token) htmlArm = null; }, HTML_ARM_MS) };
-    }
+    if (HTML_WRITE_FIRES_LOAD) armHtmlLoad(gate.arm(), HTML_RENDER_ARM_MS);
     frame.contentWindow.postMessage({ type: "render", nonce, kind: "html", content: htmlRun.content, version: htmlRun.version }, "*");
   }
   // ▶ Run scripts grants this canvas (CanvasStore.grantRun, under its lock: refused if it moved or
@@ -888,8 +965,15 @@
 
   function toFrame(msg) {
     // '*' is the only target for an opaque-origin frame; the load gate is what makes it safe.
-    // Never to the html frame: it gets its one render from sendHtmlRender and nothing else (§2.4).
-    if (frameProfile === "html") return;
+    // The html frame gets its one render from sendHtmlRender; after that page has rendered, only
+    // highlight / css / selectionRequest, each rebuilt from its own fields by CanvasCore.htmlFramePost
+    // (canvas-html §2.7: the agent's strings for its own content, or a bare request). Everything
+    // else — glow, theme, armKeys, edits, other canvases — is dropped here.
+    if (frameProfile === "html") {
+      const m = htmlRenderSent && rendered ? CanvasCore.htmlFramePost(msg) : null;
+      if (m && frame && frameReady) frame.contentWindow.postMessage({ ...m, nonce }, "*");
+      return;
+    }
     if (frame && frameReady) frame.contentWindow.postMessage({ ...msg, nonce }, "*");
   }
 
@@ -1497,8 +1581,11 @@
   });
 
   // canvas-html-frame.html (canvas-html §2.4): ready → its one render; rendered{version} ends the
-  // write's load expectation; error{} is shown as text, and 送給 agent 修 sends no frame text (canvas
-  // §3.7); openLink as everywhere. Agent script runs there: nothing it sends is stored or forwarded.
+  // write's load expectation; error{} is shown as text, and 送給 agent 修 sends it only labelled as
+  // page-reported, fenced (§2.7); openLink as everywhere. Agent script runs there: nothing it sends
+  // is stored, or forwarded unlabelled.
+  // canvas-html §2.7: once rendered, the agent's sheets and a waiting canvas_highlight go to it;
+  // highlighted / styled / pageSelection answer the host's own requests (page-reported, see there).
   function onHtmlFrameMessage(m) {
     switch (m.type) {
       case "ready":
@@ -1507,12 +1594,24 @@
         break;
       case "rendered":
         if (!htmlRun || m.version !== htmlRun.version) break;
-        if (htmlArm) { clearTimeout(htmlArm.timer); gate.disarm(htmlArm.token); htmlArm = null; }
         rendered = true;
+        if (htmlArm) armHtmlLoad(htmlArm.token, HTML_ARM_MS);   // the write is done: its load is near
+        if (agentSheets.length) postHtmlCss(null);
+        if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
+        updateButtons();
         break;
       case "error":
         // A CSP report must not wipe out 「vN 已自動執行」: the user would not see the code changed.
-        offerSendError(m.msg, false, { seq: 0, version: htmlRun ? htmlRun.version : undefined }, htmlAutoNote);
+        offerSendError(m.msg, false, { seq: 0, version: htmlRun ? htmlRun.version : undefined }, htmlAutoNote, true);
+        break;
+      case "highlighted":
+        onHighlighted(m);
+        break;
+      case "styled":
+        onStyled(m);
+        break;
+      case "pageSelection":
+        finishPageSelection(m.reqId, { text: m.text, truncated: m.truncated === true });
         break;
       case "openLink":
         openLinkConfirm(m.url);
@@ -1557,7 +1656,7 @@
       return false;
     }
     if (msg && msg.type === "katashiro-canvas-highlight" && msg.id === canvasId) return onHighlightRequest(msg, sendResponse);
-    if (msg && msg.type === "katashiro-canvas-css" && msg.id === canvasId) { onCssRequest(msg, sendResponse); return false; }
+    if (msg && msg.type === "katashiro-canvas-css" && msg.id === canvasId) return onCssRequest(msg, sendResponse);
     if (msg && msg.type === "katashiro-canvas-engine" && msg.id === canvasId && !compareView) return onEngineRequest(msg, sendResponse);
     if (msg && msg.type === "katashiro-canvas-compare-start" && msg.id === canvasId) {
       // Only the tab the panel picked: two tabs of one canvas must not both open a compare.
@@ -1599,13 +1698,16 @@
   function queueHighlight(req, respond) {
     finishHighlight({ ok: false, error: "superseded by a newer highlight" });
     if (renderFailed) { respond({ ok: false, error: `the canvas failed to show: ${renderFailed}` }); return; }
-    const timer = setTimeout(() => finishHighlight({ ok: false, error: "the canvas did not respond in time" }), HIGHLIGHT_TIMEOUT_MS);
+    const timer = setTimeout(() => finishHighlight({ ok: false, error: frameProfile === "html"
+      ? "the html canvas's running page did not confirm it (its own script may have replaced Katashiro's listener); nothing is known to be shown"
+      : "the canvas did not respond in time" }), HIGHLIGHT_TIMEOUT_MS);
     pendingHighlight = { reqId: ++highlightSeq, req, respond, sent: false, timer };
     if (frame && frameReady && rendered) sendHighlight();
   }
   function onHighlighted(m) {
     if (!pendingHighlight || m.reqId !== pendingHighlight.reqId) return;
     const r = { ok: m.ok, tag: m.tag, text: m.text, slide: m.slide, error: m.error };
+    if (frameProfile === "html") r.running = true;   // answered by the running page (best effort, §2.7)
     if (m.ok && pendingHighlight.req.check) {
       offerHighlight(pendingHighlight.req);
       r.deferred = true;
@@ -1627,30 +1729,55 @@
   // canvas_inject_css, from the side panel like highlight (browser-mcp checked the sheet). This tab
   // keeps the sheets and the frame gets all of them on every change and on every (re)mount; a
   // reload of the tab drops them. Refused while the user edits; clear always works.
-  const CSS_SHEETS_MAX = 10;
-  const CSS_SHEET_MAX = 20000;
+  const { CSS_SHEETS_MAX, CSS_SHEET_MAX } = CanvasCore;
   let agentSheets = [];
+  // An html canvas (canvas-html §2.7): its static view takes the sheets as markdown does (inside its
+  // shadow root); a RUNNING page gets them as css{reqId, sheets} and answers styled{} — without that
+  // answer in time the result says it was not confirmed (the page's script can drop our listener or
+  // the <style>). The sheets stay here either way and go again to the next frame.
+  const CSS_CONFIRM_MS = 2000;
+  let pendingCss = null;              // { reqId, respond, timer, sheets }
+  function postHtmlCss(respond) {
+    if (pendingCss) { const p = pendingCss; pendingCss = null; clearTimeout(p.timer); p.respond({ ok: true, sheets: p.sheets, note: "superseded by a newer canvas_inject_css before the running page confirmed it" }); }
+    const sheets = agentSheets.length;
+    if (!respond) { toFrame({ type: "css", reqId: ++htmlReqSeq, sheets: agentSheets }); return; }
+    if (!rendered) { respond({ ok: true, sheets, note: "the html canvas's page has not finished rendering; the sheets go to it once it has" }); return; }
+    const reqId = ++htmlReqSeq;
+    pendingCss = { reqId, respond, sheets, timer: setTimeout(() => onStyled({ reqId, timeout: true }), CSS_CONFIRM_MS) };
+    toFrame({ type: "css", reqId, sheets: agentSheets });
+  }
+  function onStyled(m) {
+    if (!pendingCss || m.reqId !== pendingCss.reqId) return;
+    const { respond, timer, sheets } = pendingCss;
+    pendingCss = null;
+    clearTimeout(timer);
+    respond(m.timeout
+      ? { ok: true, sheets, note: "the html canvas's running page did not confirm it (its own script may have replaced Katashiro's listener); it may not show — screenshot to check" }
+      : { ok: true, sheets });
+  }
   function onCssRequest(msg, sendResponse) {
     if (msg.clear === true) {
       agentSheets = [];
+      if (frameProfile === "html") { postHtmlCss(sendResponse); return true; }
       toFrame({ type: "css", sheets: [] });
       sendResponse({ ok: true, sheets: 0 });
-      return;
+      return false;
     }
-    if (typeof msg.css !== "string" || !msg.css.trim() || msg.css.length > CSS_SHEET_MAX) { sendResponse({ ok: false, error: "css must be 1–20000 chars" }); return; }
-    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return; }
-    if (current && current.meta.kind === "html") { sendResponse({ ok: false, error: "an html canvas styles itself: rewrite it with canvas_open instead" }); return; }
-    if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return; }
-    if (agentSheets.length >= CSS_SHEETS_MAX) { sendResponse({ ok: false, error: `${CSS_SHEETS_MAX} stylesheets are already applied; clear them first` }); return; }
+    if (typeof msg.css !== "string" || !msg.css.trim() || msg.css.length > CSS_SHEET_MAX) { sendResponse({ ok: false, error: "css must be 1–20000 chars" }); return false; }
+    if (mode === "edit") { sendResponse({ ok: false, error: "the user is editing this canvas; try again when they are done" }); return false; }
+    if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return false; }
+    if (agentSheets.length >= CSS_SHEETS_MAX) { sendResponse({ ok: false, error: `${CSS_SHEETS_MAX} stylesheets are already applied; clear them first` }); return false; }
     agentSheets = [...agentSheets, msg.css];
+    if (frameProfile === "html") { postHtmlCss(sendResponse); return true; }
     toFrame({ type: "css", sheets: agentSheets });
     sendResponse({ ok: true, sheets: agentSheets.length });
+    return false;
   }
 
   function onHighlightRequest(msg, sendResponse) {
     const hasFind = typeof msg.find === "string", hasHeading = typeof msg.heading === "string";
     if (hasFind === hasHeading) { sendResponse({ ok: false, error: "give exactly one of find / heading" }); return false; }
-    if (current && current.meta.kind !== "markdown" && current.meta.kind !== "slides") { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}; only markdown and slides can be highlighted` }); return false; }
+    if (current && !["markdown", "slides", "html"].includes(current.meta.kind)) { sendResponse({ ok: false, error: `this canvas is ${current.meta.kind}; only markdown, slides and html can be highlighted` }); return false; }
     if (current && !frame) { sendResponse({ ok: false, error: "the canvas is not shown in its tab" }); return false; }
     const req = {
       find: hasFind ? msg.find.slice(0, 2000) : undefined,
