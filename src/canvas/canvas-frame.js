@@ -1047,6 +1047,8 @@
     if (event.source !== window.parent) return;
     const m = event.data;
     if (!m || m.nonce !== nonce) return;
+    // Reading width (§3.1): only a boolean; a constant class on the root, applied by the CSS.
+    if (m.type === "narrow") { document.documentElement.classList.toggle("ks-narrow", m.on === true); return; }
     if (m.type === "armKeys") { armedKeys = m.on === true && !editing; return; }
     if (m.type === "copied") {
       const done = pendingCopies.get(m.reqId);

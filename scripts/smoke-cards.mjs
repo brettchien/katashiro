@@ -17,6 +17,8 @@
 //     escaped `\[!NOTE]` an alert, and normalizing it again changes nothing;
 //   - the editor round trip: edit{} with the unpadded text, then a save, renders the same again;
 //   - layout: cards side by side on a wide frame, stacked on a narrow one; print keeps a card whole;
+//   - reading width (§3.1): narrow{on:true} puts the class on the frame root and the document in a
+//     centered column (≤ 46rem + 64px), cards wrap to fewer per row; print ignores it; off restores;
 //   - a slides canvas with cards renders them; no CSP violation.
 // Screenshots (default /tmp/ks-shots/cards.png): the document, and -slides.png beside it.
 import http from "node:http";
@@ -236,6 +238,31 @@ try {
   check(brk[0] === "avoid" && brk[1] === "avoid", "print: cards and callouts are not split across pages", brk);
   await page.emulateMediaType(null);
 
+  // Reading width (§3.1, Brett 2026-11-01): a boolean message → a constant class on the root.
+  const box = () => frame.evaluate(() => {
+    const r = document.getElementById("doc").getBoundingClientRect();
+    return { cls: document.documentElement.classList.contains("ks-narrow"), left: Math.round(r.left), width: Math.round(r.width), vw: document.documentElement.clientWidth };
+  });
+  const full = await box();
+  check(!full.cls && full.width === full.vw, "reading width off: the document fills the frame", full);
+  await send({ type: "narrow", on: true });
+  await sleep(200);
+  const col = await box();
+  const maxW = await frame.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize) * 46 + 64);
+  check(col.cls && col.width <= Math.ceil(maxW) && col.width > 600, "reading width on: a column of ≤ 46rem + 64px", { ...col, maxW });
+  check(Math.abs(col.left - (col.vw - col.width - col.left)) <= 2, "reading width on: the column is centered", col);
+  const narrowTops = await tops();
+  check(narrowTops.length === 4 && new Set(narrowTops).size > 1, "reading width on: the cards grid wraps to fewer per row", narrowTops);
+  await page.emulateMediaType("print");
+  const printed = await frame.evaluate(() => getComputedStyle(document.getElementById("doc")).maxWidth);
+  check(printed === "none", "reading width on: print ignores it", printed);
+  await page.emulateMediaType(null);
+  await send({ type: "narrow", on: false });
+  await sleep(200);
+  const back = await box();
+  check(!back.cls && back.width === back.vw, "reading width off again: full width", back);
+  await send({ type: "narrow", on: true });   // stays on for the editor round trip below
+
   // Footnotes, ==mark==, ++ins++, definition lists (§3.3): rendered, the footnote links inert.
   const extras = () => frame.evaluate(() => {
     const d = document.querySelector("#doc");
@@ -268,6 +295,8 @@ try {
   await send({ type: "edit", version: 3, content: FIXTURE });
   await frame.waitForSelector("#editor .ProseMirror", { timeout: 20000 });
   await sleep(200);
+  const ed = await frame.evaluate(() => { const r = document.getElementById("editor").getBoundingClientRect(); return { left: Math.round(r.left), width: Math.round(r.width), vw: document.documentElement.clientWidth }; });
+  check(ed.width < ed.vw - 200 && Math.abs(ed.left - (ed.vw - ed.width - ed.left)) <= 2, "reading width on: the editor is the same centered column", ed);
   await send({ type: "requestSave" });
   const sv = await waitFor((m) => m.type === "save", "save");
   await send({ type: "leaveEdit" });

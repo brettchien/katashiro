@@ -833,6 +833,17 @@
   // Show changes (§3.10, Brett 2026-10-11): one global switch in the header; while on, the
   // markers are held (no fade) and re-applied after every render.
   const SHOW_CHANGES_KEY = "canvas:showChanges";
+  // Reading width (§3.1, Brett 2026-11-01): one global switch in the header, like 顯示變更. Off (the
+  // default) = full width; on = a centered column for a markdown canvas (view and editor). Slides,
+  // mermaid, image and html canvases have their own layout: the button is hidden for them.
+  const NARROW_KEY = "canvas:narrow";
+  const narrowKind = (k) => k === "markdown";
+  /** The ↔ button for the state the tab is in: its label names what a click switches to. */
+  function narrowButton(on) {
+    return on
+      ? { label: "↔ 全寬", title: "目前是窄欄閱讀寬度（置中欄位）— 按一下改回全寬。所有畫布分頁一起切換；不影響列印" }
+      : { label: "↔ 窄欄", title: "改成窄欄閱讀寬度（置中、約 46rem）— 所有畫布分頁一起切換；不影響列印" };
+  }
   // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
   const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
   // 💬 Ask agent / 📨 To chat input on a selection in the view (§3.7): the text kinds, and an html
@@ -1430,5 +1441,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

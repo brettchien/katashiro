@@ -3459,7 +3459,9 @@
         "(it never changes content). `showChanges`: true / false turns ◐ 顯示變更 on / off — a GLOBAL " +
         "switch for every canvas tab, exactly like the user's button (while on, markdown / slides / " +
         "mermaid canvases keep marking what changed from the previous version to the latest, instead " +
-        "of a glow that fades). `compare` (needs `id`): true opens ⇆ Compare with agent's — the " +
+        "of a glow that fades). `narrow`: true / false turns the header's ↔ 窄欄 reading width on / off — also " +
+        "GLOBAL, like the user's button: markdown canvases in a centered ~46rem column instead of the full tab " +
+        "width (not slides, mermaid, image or html; print is unchanged). `compare` (needs `id`): true opens ⇆ Compare with agent's — the " +
         "agent's last write read-only in Split View beside the canvas, the differing blocks marked; " +
         "possible only when the user's saved edits differ from your last write (not for image " +
         "canvases, nor while the user is editing; the result says why not). false ends it (✕ 結束比較). " +
@@ -3474,20 +3476,22 @@
         properties: {
           id: { type: "string", description: "canvas id (required with compare)" },
           showChanges: { type: "boolean", description: "◐ 顯示變更 on/off — global, all canvas tabs" },
+          narrow: { type: "boolean", description: "↔ 窄欄 reading width on/off — global, all canvas tabs (markdown only)" },
           compare: { type: "boolean", description: "true: open the compare with your last write for this canvas; false: close it" },
           engine: { type: "string", enum: ["pele", "mermaid", "default"], description: "draw this canvas's diagrams with this engine in its tab (this tab only, not saved); default: back to Settings → 圖表引擎" }
         }
       },
       redact: redactDefault,
-      /** @param {{ id?: string, showChanges?: boolean, compare?: boolean, engine?: string }} args */
+      /** @param {{ id?: string, showChanges?: boolean, narrow?: boolean, compare?: boolean, engine?: string }} args */
       async call(args, ctx) {
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
-        const hasShow = args.showChanges != null, hasCompare = args.compare != null, hasEngine = args.engine != null;
-        if (!hasShow && !hasCompare && !hasEngine) return errText("canvas_view: give `showChanges`, `compare` and/or `engine`");
+        const hasShow = args.showChanges != null, hasNarrow = args.narrow != null, hasCompare = args.compare != null, hasEngine = args.engine != null;
+        if (!hasShow && !hasNarrow && !hasCompare && !hasEngine) return errText("canvas_view: give `showChanges`, `narrow`, `compare` and/or `engine`");
         if (hasEngine && !["pele", "mermaid", "default"].includes(args.engine)) return errText("canvas_view: `engine` must be \"pele\", \"mermaid\" or \"default\"");
         if (hasEngine && args.id == null) return errText("canvas_view: `engine` needs the canvas `id`");
         if (hasShow && typeof args.showChanges !== "boolean") return errText("canvas_view: `showChanges` must be true or false");
+        if (hasNarrow && typeof args.narrow !== "boolean") return errText("canvas_view: `narrow` must be true or false");
         if (hasCompare && typeof args.compare !== "boolean") return errText("canvas_view: `compare` must be true or false");
         if (hasCompare && args.id == null) return errText("canvas_view: `compare` needs the canvas `id`");
         let meta = null;
@@ -3501,7 +3505,7 @@
         if (hasEngine && !canvasTextKind(meta.kind)) {
           return errText(`canvas_view: canvas "${meta.title}" is ${meta.kind}; only markdown, slides and mermaid canvases have diagrams`);
         }
-        if ((hasShow && typeof c.setShowChanges !== "function") || (hasCompare && typeof c.compare !== "function") || (hasEngine && typeof c.setEngine !== "function")) {
+        if ((hasShow && typeof c.setShowChanges !== "function") || (hasNarrow && typeof c.setNarrow !== "function") || (hasCompare && typeof c.compare !== "function") || (hasEngine && typeof c.setEngine !== "function")) {
           return errText("canvas_view: not available in this host");
         }
         const out = [];
@@ -3511,6 +3515,13 @@
           catch (e) { return errText(`canvas_view: could not set 顯示變更: ${(e && e.message) || e}`); }
           const state = args.showChanges ? "on" : "off";
           out.push(`顯示變更 is ${r && r.was === args.showChanges ? "already" : "now"} ${state} for every canvas tab (a global switch, like the user's ◐ button)`);
+        }
+        if (hasNarrow) {
+          let r;
+          try { r = await c.setNarrow(args.narrow); }
+          catch (e) { return errText(`canvas_view: could not set 窄欄: ${(e && e.message) || e}`); }
+          const state = args.narrow ? "on" : "off";
+          out.push(`窄欄 (reading width) is ${r && r.was === args.narrow ? "already" : "now"} ${state} for every canvas tab (a global switch, like the user's ↔ button)`);
         }
         if (hasCompare) {
           let r;
