@@ -1331,3 +1331,43 @@ test("runGrantHolds: needs a well-formed grant, an html meta of the same convers
   assert.equal(CanvasStore.runGrantHolds(true, meta), false);
   assert.equal(CanvasStore.runGrantHolds(grant, null), false);
 });
+
+// --- rename (Brett 2026-11-01) ------------------------------------------------------------------
+
+test("rename: meta-only — title in meta and index, no new version, any kind; validates like titles", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", content: "# A" });
+  const before = await s.read({ conversationId: "c", id });
+  const r = await s.rename({ id, title: "  New name  ", by: "user" });
+  assert.deepEqual(r, { id, version: 1, title: "New name", kind: "markdown", unchanged: false });
+  const m = await s.read({ conversationId: "c", id });
+  assert.equal(m.title, "New name");
+  assert.deepEqual([m.version, m.author, m.at, m.content, m.history], [before.version, before.author, before.at, before.content, before.history]);
+  assert.equal((await s.list({ conversationId: "c" }))[0].title, "New name");
+  assert.equal((await s.rename({ id, title: "New name" })).unchanged, true);
+  await assert.rejects(() => s.rename({ id, title: "   " }), /`title` is required/);
+  await assert.rejects(() => s.rename({ id, title: "x".repeat(CanvasStore.TITLE_MAX + 1) }), /keep it to 120/);
+  await assert.rejects(() => s.rename({ id: "cv_00000000ffff", title: "x" }), /no canvas/);
+  // mermaid (not user-editable) renames too
+  const mm = await s.agentWrite({ conversationId: "c", title: "M", kind: "mermaid", content: "graph TD; A-->B" });
+  assert.equal((await s.rename({ id: mm.id, title: "Flow" })).title, "Flow");
+});
+
+test("rename by agent: own conversation only, baseVersion required and checked", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", content: "# A" });
+  await assert.rejects(() => s.rename({ conversationId: "other", id, title: "X", by: "agent", baseVersion: 1 }), /another conversation/);
+  await assert.rejects(() => s.rename({ conversationId: "c", id, title: "X", by: "agent" }), /baseVersion/);
+  await assert.rejects(() => s.rename({ conversationId: "c", id, title: "X", by: "agent", baseVersion: 5 }), (e) => e.code === "stale");
+  const r = await s.rename({ conversationId: "c", id, title: "X", by: "agent", baseVersion: 1 });
+  assert.equal(r.title, "X");
+});
+
+test("agentPatch with title: rename and edits in one version", async () => {
+  const { s } = store();
+  const { id } = await s.agentWrite({ conversationId: "c", title: "Doc", content: "# A\n\nbody" });
+  const r = await s.agentPatch({ conversationId: "c", id, baseVersion: 1, title: "Renamed", edits: [{ find: "body", replace: "new" }] });
+  assert.deepEqual([r.version, r.title, r.content], [2, "Renamed", "# A\n\nnew"]);
+  assert.equal((await s.list({ conversationId: "c" }))[0].title, "Renamed");
+  await assert.rejects(() => s.agentPatch({ conversationId: "c", id, baseVersion: 2, title: " ", edits: [{ find: "new", replace: "x" }] }), /`title` is required/);
+});

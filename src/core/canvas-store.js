@@ -661,10 +661,11 @@
      *   rebasedOver = { version, author, diffFromBase } of the latest when it was past baseVersion,
      *   else null; diffFromBase as in a stale error (null once baseVersion is out of history).
      */
-    async function agentPatch({ conversationId, id, baseVersion, edits, confirmEvict: ask }) {
+    async function agentPatch({ conversationId, id, baseVersion, edits, title, confirmEvict: ask }) {
       if (!conversationId) throw new Error("no conversation to attach the canvas to");
       if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
       if (!Number.isInteger(baseVersion)) throw new Error("canvas_patch needs `baseVersion` (the version you last read or wrote)");
+      const newTitle = title == null ? null : checkTitle(title);
       const list = validatePatchEdits(edits);
       // The budget is checked before the lock (eviction takes other canvases' locks, §3.6 lock
       // order), on a lock-free dry run; a dry run that fails, or a patch the locked run will refuse
@@ -705,10 +706,47 @@
         // the agent to canvas_read.
         const rebasedOver = cur.version === baseVersion ? null
           : { version: cur.version, author: cur.author, diffFromBase: await diffFromBase(cur, baseVersion, latest) };
-        const meta = await storeAgentVersion(cur, { title: cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges, max, latest });
+        const meta = await storeAgentVersion(cur, { title: newTitle || cur.title, content: plan.text, bytes, at: now(), ranges: plan.ranges, max, latest });
         result = {
           id, version: meta.version, created: false, title: meta.title, kind: meta.kind, content: plan.text, ranges: plan.ranges, rebasedOver,
         };
+      });
+      return result;
+    }
+
+    function checkTitle(title) {
+      const t = title == null ? "" : String(title).trim();
+      if (!t) throw new Error("`title` is required");
+      if (t.length > TITLE_MAX) throw new Error(`title is ${t.length} chars; keep it to ${TITLE_MAX} or fewer`);
+      return t;
+    }
+
+    /**
+     * Rename a canvas (Brett 2026-11-01): a meta-only change — meta.title and the index entry; no
+     * new content version (version, history, author, at unchanged), any kind. by "agent" needs the
+     * canvas's conversationId and a baseVersion (stale if it is not a version the canvas has had,
+     * as canvas_patch); by "user" needs neither. The mirror keeps the file name (§ rename in the ADR).
+     * @returns {Promise<{ id, version, title, kind, unchanged }>}
+     */
+    async function rename({ conversationId, id, title, by = "user", baseVersion }) {
+      if (!ID_RE.test(String(id))) throw new Error(`"${id}" is not a canvas id`);
+      if (by !== "agent" && by !== "user") throw new Error("`by` must be agent or user");
+      if (by === "agent") {
+        if (!conversationId) throw new Error("no conversation to attach the canvas to");
+        if (!Number.isInteger(baseVersion)) throw new Error("canvas_patch needs `baseVersion` (the version you last read or wrote)");
+      }
+      const t = checkTitle(title);
+      let result;
+      await lock(`canvas:${id}`, async () => {
+        const cur = await getOne(metaKey(id));
+        if (!cur) throw new Error(`no canvas "${id}"`);
+        if (by === "agent" && cur.conversationId !== conversationId) throw new Error(`canvas "${id}" belongs to another conversation`);
+        if (by === "agent" && (baseVersion > cur.version || baseVersion < 1)) throw new StaleError(cur, baseVersion, null);
+        if (cur.title === t) { result = { id, version: cur.version, title: t, kind: cur.kind, unchanged: true }; return; }
+        const meta = { ...cur, title: t };
+        await storage.set({ [metaKey(id)]: meta });
+        await updateIndex(cur.conversationId, indexEntry(meta));
+        result = { id, version: meta.version, title: t, kind: meta.kind, unchanged: false };
       });
       return result;
     }
@@ -1004,7 +1042,7 @@
       return keys.length;
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas, move, takeMoveNotes, grantRun, readRunGrant, noteRun, revokeRun, revokeAllRuns };
+    return { markSeen, agentWrite, agentPatch, rename, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas, move, takeMoveNotes, grantRun, readRunGrant, noteRun, revokeRun, revokeAllRuns };
   }
 
   // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
