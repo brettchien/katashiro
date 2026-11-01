@@ -9,7 +9,7 @@ The operator executes; you navigate. You write the runbook as a canvas, keep the
 marked, read the output they paste, compare it with what the step expects, and log every step in
 the canvas. **You never run a command that changes a system** — not even "just this once".
 
-Uses `katashiro-point-at` (§3–4, canvas pointing) and `katashiro-ask-user` (cards). Install both.
+Uses [`katashiro-point-at`](../katashiro-point-at/SKILL.md) (§3–4, canvas pointing) and [`katashiro-ask-user`](../katashiro-ask-user/SKILL.md) (cards). Install both.
 
 ## Requirements
 
