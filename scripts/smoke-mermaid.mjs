@@ -383,7 +383,7 @@ async function suite(engine) {
   sl === 1 ? ok("a mermaid fence on a slide renders") : fail(`slides: ${sl} svgs`);
   if (engine === "pele") {
     const deckBg = await frameOf("sl").evaluate(() => getComputedStyle(document.querySelector(".slides figure.ks-mermaid")).getPropertyValue("--pele-bg").trim());
-    deckBg === "#191919" ? ok("on a slide Pele sits on the deck's background (--pele-bg #191919)") : fail(`deck --pele-bg ${deckBg}`);
+    deckBg === "#0d1117" ? ok("on a slide Pele sits on the deck's background (--pele-bg #0d1117)") : fail(`deck --pele-bg ${deckBg}`);
   }
   await page.evaluate(() => __send("sl", { type: "goto", slide: 2 }));
   await waitFor((m) => m.nonce === "nonce0sl" && m.type === "slide", "slide 2");

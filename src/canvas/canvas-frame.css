@@ -97,7 +97,7 @@ body {
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0.8em 0; }
 .card {
   min-width: 0; padding: 12px 16px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
+  background: #161b22;
 }
 .card > :first-child, .doc .card > h3:first-child { margin-top: 0; }
 .card > :last-child { margin-bottom: 0; }
@@ -163,7 +163,7 @@ figure.ks-mermaid[data-engine="pele"] {
 .editor .milkdown {
   --crepe-color-background: #0d1117;
   --crepe-color-surface: #161b22;
-  --crepe-color-surface-low: #131c2e;
+  --crepe-color-surface-low: #151b23;
   --crepe-color-on-background: #e6edf3;
   --crepe-color-on-surface: #e6edf3;
   --crepe-color-primary: #4493f8;
