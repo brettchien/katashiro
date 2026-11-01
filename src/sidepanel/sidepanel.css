@@ -1,20 +1,23 @@
-/* Design System — Solarized Dark (Brett, 2026-11-01): base03 #002b36 background, base02 #073642
-   surfaces, base1 #93a1a1 / base0 #839496 / base01 #586e75 text, blue #268bd2 accent, green #859900
-   success. Canvases use GitHub Dark instead (ADR canvas §3.3 "Palette"); the panel is the chat. */
+/* Design System — Solarized Dark: base03 #002b36 background, base02 #073642 surfaces, blue #268bd2
+   accent, cyan #2aa198, green #859900 success. Text is lifted above Solarized's base1/base0/base01 so
+   small text stays at WCAG AA (4.5:1) on base02; white text sits on --accent-fill (#1f74b0, 5.0:1),
+   not on #268bd2 (3.7:1). Canvases use GitHub Dark instead (ADR canvas §3.3 "Palette"). */
 :root {
   --bg-primary: #002b36;
   --bg-secondary: rgba(7, 54, 66, 0.7);
   --bg-tertiary: #073642;
   --accent: #268bd2;
   --accent-glow: rgba(38, 139, 210, 0.4);
+  --accent-fill: #1f74b0;
+  --accent-fill-hover: #1f7a73;
   --accent-success: #859900;
   --accent-success-glow: rgba(133, 153, 0, 0.3);
   
-  --text-primary: #93a1a1;
-  --text-secondary: #839496;
-  --text-muted: #586e75;
+  --text-primary: #c5cfcf;
+  --text-secondary: #a7b5b5;
+  --text-muted: #8d9d9f;
   
-  --bubble-sent: #268bd2;
+  --bubble-sent: #1f74b0;
   --bubble-received: #073642;
   
   --border-color: rgba(147, 161, 161, 0.14);
@@ -52,8 +55,8 @@ body {
   flex-direction: column;
   height: 100vh;
   width: 100vw;
-  background: radial-gradient(circle at top right, rgba(79, 70, 229, 0.15), transparent 60%),
-              radial-gradient(circle at bottom left, rgba(16, 185, 129, 0.08), transparent 50%);
+  background: radial-gradient(circle at top right, rgba(38, 139, 210, 0.15), transparent 60%),
+              radial-gradient(circle at bottom left, rgba(42, 161, 152, 0.08), transparent 50%);
 }
 
 /* Header */
@@ -62,7 +65,7 @@ body {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: rgba(18, 24, 36, 0.85);
+  background: rgba(0, 43, 54, 0.85);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--border-color);
@@ -165,7 +168,7 @@ body {
   gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(18, 24, 36, 0.5);
+  background: rgba(0, 43, 54, 0.5);
 }
 
 .roster-chip {
@@ -428,7 +431,7 @@ body {
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, var(--accent), #2aa198);
+  background: linear-gradient(135deg, var(--accent-fill), var(--accent-fill-hover));
   color: #fff;
   border: none;
   padding: 12px;
@@ -436,12 +439,12 @@ body {
   font-weight: 600;
   cursor: pointer;
   transition: var(--transition-smooth);
-  box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);
+  box-shadow: 0 4px 12px rgba(38, 139, 210, 0.3);
 }
 
 .primary-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4);
+  box-shadow: 0 6px 16px rgba(38, 139, 210, 0.4);
 }
 
 .primary-btn:active {
@@ -535,7 +538,7 @@ body {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #4f46e5, #ec4899);
+  background: linear-gradient(135deg, #268bd2, #d33682);
   color: white;
   display: flex;
   align-items: center;
@@ -592,7 +595,7 @@ body {
 }
 
 .sent .bubble {
-  background: linear-gradient(135deg, var(--bubble-sent), #1f74b0);
+  background: linear-gradient(135deg, var(--bubble-sent), #1a6399);
   color: white;
   border-top-right-radius: 4px;
 }
@@ -684,10 +687,10 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .tool-pill.agent-tool,
 .tool-pill.agent-tool.done,
 .tool-pill.agent-tool.error {
-  border-color: rgba(129, 140, 248, 0.45);
-  background: rgba(79, 70, 229, 0.12);
+  border-color: rgba(38, 139, 210, 0.45);
+  background: rgba(38, 139, 210, 0.12);
 }
-.tool-pill.agent-tool.running { color: #a5b4fc; }
+.tool-pill.agent-tool.running { color: #7fbfef; }
 /* Turn ended before the call reported back (cancel / disconnect): outcome unknown. */
 .tool-pill.stopped { color: var(--text-muted); border-style: dashed; }
 
@@ -727,7 +730,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 16px 0 16px;
-  background: rgba(18, 24, 36, 0.9);
+  background: rgba(0, 43, 54, 0.9);
 }
 .attach-preview[hidden] { display: none; }
 .attach-thumb {
@@ -821,7 +824,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   justify-content: center;
   border: 2px dashed var(--accent);
   border-radius: 12px;
-  background: rgba(79, 70, 229, 0.12);
+  background: rgba(38, 139, 210, 0.12);
   color: #fff;
   font-size: 14px;
   pointer-events: none;
@@ -891,7 +894,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 
 .chat-input-area {
   padding: 12px 16px 16px 16px;
-  background: rgba(18, 24, 36, 0.9);
+  background: rgba(0, 43, 54, 0.9);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-top: 1px solid var(--border-color);
@@ -916,8 +919,8 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 
 .chat-input-area textarea:focus {
-  border-color: rgba(79, 70, 229, 0.6);
-  box-shadow: 0 0 0 2px rgba(79, 70, 229, 0.2);
+  border-color: rgba(38, 139, 210, 0.6);
+  box-shadow: 0 0 0 2px rgba(38, 139, 210, 0.2);
 }
 
 /* Hide the input scrollbar entirely (it clashes with the rounded pill and showed even
@@ -935,7 +938,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: white;
   border: none;
   display: flex;
@@ -947,7 +950,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #2aa198;
+  background: var(--accent-fill-hover);
   transform: scale(1.05);
 }
 
@@ -959,7 +962,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 
 /* Settings View overlay */
 #settings-view {
-  background: rgba(10, 15, 26, 0.85);
+  background: rgba(0, 33, 43, 0.85);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   /* flex-start + margin:auto on the card (not justify-content:center) so overflow
@@ -1033,7 +1036,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   padding: 5px 10px;
   border-radius: 8px;
   border: 1px solid var(--border-color);
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   font-size: 12px;
   cursor: pointer;
@@ -1073,7 +1076,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 
 .agent-conn-toggle.on {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border-color: var(--accent);
 }
@@ -1122,7 +1125,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   transition: var(--transition-smooth);
 }
 .mode-btn.on {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: #fff;
   border-color: var(--accent);
 }
@@ -1233,8 +1236,8 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .bubble h3 { font-size: 1.1em; }
 .bubble ul, .bubble ol { margin: 0 0 8px; padding-left: 20px; }
 .bubble li { margin: 2px 0; }
-.bubble a { color: #93c5fd; text-decoration: underline; }
-.sent .bubble a { color: #e0e7ff; }
+.bubble a { color: #7fbfef; text-decoration: underline; }
+.sent .bubble a { color: #fff; }
 .bubble blockquote {
   margin: 6px 0;
   padding: 2px 10px;
@@ -1294,7 +1297,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   border-radius: 8px;
   overflow-x: auto;
 }
-.bubble pre.hljs code { background: none; padding: 0; color: #c9d1d9; }
+.bubble pre.hljs code { background: none; padding: 0; color: #c5cfcf; }
 .copy-btn {
   position: absolute;
   top: 6px;
@@ -1319,7 +1322,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .bubble .card { min-width: 0; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; background: rgba(0, 0, 0, 0.16); }
 .bubble .card > :first-child { margin-top: 0; }
 .bubble .card > :last-child { margin-bottom: 0; }
-.bubble .markdown-alert-note { --ks-alert: #60a5fa; --ks-alert-bg: rgba(96, 165, 250, 0.12); }
+.bubble .markdown-alert-note { --ks-alert: #60a5fa; --ks-alert-bg: rgba(42, 161, 152, 0.12); }
 .bubble .markdown-alert-tip { --ks-alert: #34d399; --ks-alert-bg: rgba(52, 211, 153, 0.12); }
 .bubble .markdown-alert-important { --ks-alert: #c4b5fd; --ks-alert-bg: rgba(196, 181, 253, 0.12); }
 .bubble .markdown-alert-warning { --ks-alert: #fbbf24; --ks-alert-bg: rgba(251, 191, 36, 0.12); }
@@ -1420,7 +1423,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   cursor: pointer;
   transition: var(--transition-smooth);
 }
-.cmd-btn:hover, .cmd-btn[aria-expanded="true"] { background: rgba(79, 70, 229, 0.25); border-color: rgba(129, 140, 248, 0.55); }
+.cmd-btn:hover, .cmd-btn[aria-expanded="true"] { background: rgba(38, 139, 210, 0.25); border-color: rgba(38, 139, 210, 0.55); }
 .cmd-btn[hidden] { display: none; }
 
 /* The command menu: a popup above the composer (command-core.js has the entries and keys). */
@@ -1435,7 +1438,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   flex-direction: column;
   padding: 4px;
   background: var(--bg-tertiary);
-  border: 1px solid rgba(129, 140, 248, 0.45);
+  border: 1px solid rgba(38, 139, 210, 0.45);
   border-radius: 10px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
 }
@@ -1454,7 +1457,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   text-align: left;
   cursor: pointer;
 }
-.cmd-item.selected { background: rgba(79, 70, 229, 0.35); }
+.cmd-item.selected { background: rgba(38, 139, 210, 0.35); }
 .cmd-item-label { flex: none; font-weight: 600; }
 .cmd-item-desc { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cmd-item-key {
@@ -1494,7 +1497,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   padding: 6px 14px;
   font-size: 12px;
   color: white;
-  background: var(--accent);
+  background: var(--accent-fill);
   border: none;
   border-radius: 999px;
   box-shadow: 0 4px 12px var(--accent-glow);
@@ -1602,15 +1605,15 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   max-width: 100%;
   margin: 4px 0;
   padding: 8px 12px;
-  background: rgba(96, 165, 250, 0.08);
-  border: 1px solid rgba(96, 165, 250, 0.35);
+  background: rgba(42, 161, 152, 0.08);
+  border: 1px solid rgba(42, 161, 152, 0.35);
   border-radius: 10px;
   color: var(--text-primary);
   font-size: 13px;
   cursor: pointer;
   text-align: left;
 }
-.canvas-card:hover { background: rgba(96, 165, 250, 0.16); }
+.canvas-card:hover { background: rgba(42, 161, 152, 0.16); }
 .canvas-card-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .canvas-card-meta { color: var(--text-secondary); white-space: nowrap; }
 
@@ -1668,16 +1671,16 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   max-width: 100%;
   margin: 4px 0;
   padding: 10px 12px;
-  background: rgba(79, 70, 229, 0.10);
-  border: 1px solid rgba(129, 140, 248, 0.55);
-  border-left: 4px solid #818cf8;
+  background: rgba(38, 139, 210, 0.10);
+  border: 1px solid rgba(38, 139, 210, 0.55);
+  border-left: 4px solid #268bd2;
   border-radius: 10px;
   color: var(--text-primary);
   font-size: 13px;
   text-align: left;
   overflow-wrap: anywhere;
 }
-.ask-card-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c7d2fe; }
+.ask-card-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #a7d3f3; }
 .ask-card-icon { flex: none; }
 .ask-card-question { font-weight: 600; white-space: normal; }
 .ask-card-controls { display: flex; flex-direction: column; gap: 6px; }
@@ -1688,7 +1691,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 .ask-card-other button {
   padding: 4px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(129, 140, 248, 0.6);
+  border: 1px solid rgba(38, 139, 210, 0.6);
   background: var(--bg-tertiary);
   color: var(--text-primary);
   font-size: 13px;
@@ -1696,11 +1699,11 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .ask-card-option:hover,
 .ask-card-submit:hover:not(:disabled),
-.ask-card-other button:hover { background: rgba(79, 70, 229, 0.35); }
+.ask-card-other button:hover { background: rgba(38, 139, 210, 0.35); }
 .ask-card-submit { align-self: flex-end; }
 .ask-card-submit:disabled { opacity: 0.45; cursor: default; }
 .ask-card-check { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-.ask-card-check input { flex: none; accent-color: #818cf8; }
+.ask-card-check input { flex: none; accent-color: #268bd2; }
 .ask-card-other { display: flex; gap: 6px; }
 .ask-card-other input {
   flex: 1 1 auto;
@@ -1714,17 +1717,17 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 .ask-card-hint { color: var(--text-secondary); font-size: 11px; }
 .ask-card-result { font-weight: 600; }
-.ask-card.answered .ask-card-result { color: #a5b4fc; }
+.ask-card.answered .ask-card-result { color: #7fbfef; }
 .ask-card.unanswered .ask-card-result { color: var(--text-secondary); }
-.ask-card:not(.pending) { border-color: rgba(129, 140, 248, 0.3); border-left-color: rgba(129, 140, 248, 0.5); }
+.ask-card:not(.pending) { border-color: rgba(38, 139, 210, 0.3); border-left-color: rgba(38, 139, 210, 0.5); }
 /* A command card (⚡ Reset session / Switch model): the ask card's layout, but Katashiro's own — a
    neutral grey accent instead of the agent's indigo, and a ⚡ head. The current model is marked. */
 .message.system:has(> .ask-card.command-card) { align-self: stretch; }
 .message.system > .ask-card.command-card { flex: 1 1 auto; min-width: 0; }
-.ask-card.command-card { border-color: rgba(156, 163, 175, 0.45); border-left-color: #9ca3af; background: rgba(156, 163, 175, 0.08); }
+.ask-card.command-card { border-color: rgba(131, 148, 150, 0.45); border-left-color: #839496; background: rgba(131, 148, 150, 0.08); }
 .ask-card.command-card .ask-card-head { color: var(--text-secondary); }
 .ask-card.command-card .ask-card-option.current { border-color: var(--accent-success); }
-.ask-card.command-card:not(.pending) { border-color: rgba(156, 163, 175, 0.3); border-left-color: rgba(156, 163, 175, 0.5); }
+.ask-card.command-card:not(.pending) { border-color: rgba(131, 148, 150, 0.3); border-left-color: rgba(131, 148, 150, 0.5); }
 .ask-card.command-card.answered .ask-card-result { color: var(--text-primary); }
 
 /* GFM task lists in chat bubbles (markdown.js). */
@@ -1749,7 +1752,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   gap: 4px;
   padding: 6px 8px 0;
   border-bottom: 1px solid var(--border-color);
-  background: rgba(18, 24, 36, 0.7);
+  background: rgba(0, 43, 54, 0.7);
   overflow-x: auto;
   scrollbar-width: none;
 }
