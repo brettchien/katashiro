@@ -232,7 +232,7 @@ try {
   check(s.note === "draft note", "reopened on the same selection: the unsent note is back", s.note);
 
   // 7. A click in the header (outside) closes it.
-  await page.click("#canvas-title");
+  await page.click("#canvas-version");   // not the title: a click there renames (2026-11-01)
   s = await state();
   check(!s.pop, "a click outside closes the popover", s);
   // …and so does a click into the canvas (focus leaves this page for the frame).
@@ -446,6 +446,23 @@ try {
   s = await state();
   check(!s.pop && !s.pill && !s.header && !s.sendPill && !s.sendHeader, "edit mode closes the popover, the 💬 and the 📨 (both)", s);
   check(s.prompts === 0, "no window.prompt anywhere in Ask agent", s.prompts);
+
+  // 9. Rename (2026-11-01): click the title → inline input; Esc cancels; Enter saves (meta only).
+  const titleNow = () => page.evaluate(async (id) => { const k = `canvas:${id}:meta`; const got = await chrome.storage.local.get(k); return { h1: document.getElementById("canvas-title").textContent, input: !!document.querySelector(".canvas-title-input"), stored: got[k] && got[k].title, version: got[k] && got[k].version }; }, ID);
+  const v0 = (await titleNow()).version;
+  await page.click("#canvas-title");
+  await until(() => !!document.querySelector(".canvas-title-input"), "the rename input");
+  await page.keyboard.type(" X");
+  await page.keyboard.press("Escape");
+  let tn = await titleNow();
+  check(!tn.input && tn.h1 === "Plan", "rename: Esc cancels", tn);
+  await page.click("#canvas-title");
+  await until(() => !!document.querySelector(".canvas-title-input"), "the rename input again");
+  await page.evaluate(() => { const i = document.querySelector(".canvas-title-input"); i.value = "  Renamed plan  "; });
+  await page.keyboard.press("Enter");
+  await sleep(300);
+  tn = await titleNow();
+  check(!tn.input && tn.h1 === "Renamed plan" && tn.stored === "Renamed plan" && tn.version === v0, "rename: Enter saves (trimmed), meta only — same version", tn);
   await page.close();
 } catch (e) {
   fail(e && e.stack || String(e));

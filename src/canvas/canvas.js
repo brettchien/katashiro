@@ -1945,6 +1945,8 @@
     // running frame is never re-rendered (§2.4 host invariant).
     if (c.meta.kind === "html" && !compareView && (await reconcileHtml())) return;
     if (current !== c) return;                                    // superseded while reading the grant
+    // A rename (meta-only, Brett 2026-11-01): same version, same text — the header is enough.
+    if (prev && mode !== "edit" && c.meta.version === prev.meta.version && c.content === prev.content && c.meta.title !== prev.meta.title) return;
     if (mode === "edit") {
       if (prev && c.meta.version === prev.meta.version) return;      // e.g. normalization of the agent copy
       if (c.meta.version === ownSaveVersion) return;                  // our own save
@@ -2047,6 +2049,55 @@
     })();
   }
   convBtn.addEventListener("click", () => { openConversation(); });
+
+  // --- Rename (Brett 2026-11-01): click the title, edit it in place --------------------------------
+  // Enter or blur saves, Esc cancels. CanvasStore.rename is meta-only (no new version), so it is
+  // allowed while the content is being edited too. Every tab, the gallery and the side panel's
+  // cards follow through storage.onChanged (meta + index). textContent / input.value only.
+  let renaming = null;
+  titleEl.title = "點一下改名";
+  titleEl.classList.add("renamable");
+  titleEl.addEventListener("click", () => {
+    if (renaming || !current || deleted || compareView) return;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "canvas-title-input";
+    input.maxLength = TITLE_MAX;
+    input.value = String(current.meta.title || "");
+    // Compare with the name the box opened with, not current.meta.title: a rename from the agent or
+    // another tab moves current.meta.title under the open box, and a blur without typing must not
+    // write the old name back over it.
+    const orig = input.value;
+    input.setAttribute("aria-label", "畫布名稱");
+    renaming = input;
+    titleEl.hidden = true;
+    titleEl.after(input);
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (save) => {
+      if (done) return;
+      done = true;
+      const t = input.value.trim();
+      input.remove();
+      titleEl.hidden = false;
+      renaming = null;
+      if (!save || !current || t === orig.trim() || t === String(current.meta.title || "")) return;
+      if (!t) { notice("名稱不能是空的，沒有改名。"); return; }
+      try {
+        await store.rename({ id: canvasId, title: t, by: "user" });
+        titleEl.textContent = t;                 // onChanged → refresh() follows with the stored meta
+      } catch (e) {
+        notice(`改名失敗：${CanvasCore.clipError((e && e.message) || e)}`);
+      }
+    };
+    input.addEventListener("keydown", (ev) => {
+      if (CanvasCore.imeKey(ev)) return;        // IME: Enter confirms the composition, not the name
+      if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); finish(false); }
+    });
+    input.addEventListener("blur", () => finish(true));
+  });
 
   // --- ↪ 移到其他對話 (multi-conversation §7.3) ---------------------------------------------------
   // The picker lists every other conversation (open or archived, never a deleted one); the move is

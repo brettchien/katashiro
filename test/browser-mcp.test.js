@@ -3676,6 +3676,26 @@ test("katashiro.canvas_patch applies find/replace edits as an agent write: card,
   assert.equal((await d.canvas.store.read({ id: "cv_000000000001" })).content, "# Title\n\nUSER\n\n");
 });
 
+test("katashiro.canvas_patch with title: title-only renames (no version, no card); title + edits does both", async () => {
+  const { deps: d } = deps({ actMode: false, tabUrl: "chrome://newtab/" });
+  const { writes } = withCanvas(d);
+  d.canvas.waitNormalized = async () => ({ diff: "" });
+  await callTool(d, "katashiro.canvas_open", { title: "Doc", content: "# T\n\nalpha" });
+  const r = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, title: "Plan" });
+  assert.equal(r.isError, undefined, JSON.stringify(r));
+  assert.match(r.content[0].text, /^renamed canvas cv_000000000001 to "Plan" — version 1/);
+  assert.equal(writes.length, 1);
+  const m = await d.canvas.store.read({ id: "cv_000000000001" });
+  assert.deepEqual([m.title, m.version], ["Plan", 1]);
+  const both = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 1, title: "Plan 2", edits: [{ find: "alpha", replace: "beta" }] });
+  assert.match(both.content[0].text, /^patched canvas "Plan 2" — id cv_000000000001, version 2 \(1 edit\)/);
+  const none = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 2 });
+  assert.equal(none.isError, true);
+  assert.match(none.content[0].text, /pass `edits`, `title` or both/);
+  const stale = await callTool(d, "katashiro.canvas_patch", { id: "cv_000000000001", baseVersion: 9, title: "Z" });
+  assert.equal(JSON.parse(stale.content[0].text).error, "stale");
+});
+
 test("katashiro.canvas_patch errors are structured JSON: stale (+failedEdit, diffFromBase) and patch (edit index, count)", async () => {
   const { deps: d } = deps({ actMode: false });
   withCanvas(d);

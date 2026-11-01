@@ -669,6 +669,7 @@
     const out = {};
     if (a.id != null) out.id = a.id;
     if (a.baseVersion != null) out.baseVersion = a.baseVersion;
+    if (a.title != null) out.title = a.title;
     if (Array.isArray(a.edits)) {
       const enc = new TextEncoder();
       const bytes = a.edits.reduce((n, e) => n + (e && typeof e.find === "string" ? enc.encode(e.find).length : 0) + (e && typeof e.replace === "string" ? enc.encode(e.replace).length : 0), 0);
@@ -3067,13 +3068,16 @@
         "`baseVersion` = the version you last read or wrote. If the user edited since, your edits " +
         "still apply on top as long as every find matches (the result says `rebasedOver`); the " +
         "user's edits are never overwritten. If a find then misses, you get `stale` with " +
-        "diffFromBase — rebase on it or canvas_read. Not for image canvases.",
+        "diffFromBase — rebase on it or canvas_read. Not for image canvases. " +
+        "To RENAME a canvas pass `title` (any kind, image and html too): with no `edits` it only " +
+        "renames — no new version, `baseVersion` still required; with `edits` both happen in one write.",
       sessionScope: true,
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "string", description: "canvas id (markdown, slides or mermaid)" },
+          id: { type: "string", description: "canvas id (markdown, slides or mermaid; any kind for a title-only rename)" },
           baseVersion: { type: "integer", description: "the version you last read or wrote" },
+          title: { type: "string", description: "optional new title (renames the canvas); edits become optional" },
           edits: {
             type: "array",
             minItems: 1,
@@ -3089,7 +3093,7 @@
             }
           }
         },
-        required: ["id", "baseVersion", "edits"]
+        required: ["id", "baseVersion"]
       },
       redact: redactCanvasPatch,
       /** @param {{ id: string, baseVersion: number, edits: { find: string, replace: string }[] }} args */
@@ -3097,9 +3101,24 @@
         const c = ctx.canvas;
         if (!c || !c.store) return errText("canvases are not available in this host (no side panel)");
         if (typeof c.store.agentPatch !== "function") return errText("canvas_patch: not available in this host");
+        const hasTitle = args.title != null;
+        if (!hasTitle && args.edits == null) return errText("canvas_patch: pass `edits`, `title` or both");
+        if (hasTitle && args.edits == null) {
+          // Title only: a meta-only rename, no new version, no card.
+          if (typeof c.store.rename !== "function") return errText("canvas_patch: rename is not available in this host");
+          try {
+            const r = await c.store.rename({ conversationId: c.conversationId(), id: args.id, title: args.title, by: "agent", baseVersion: args.baseVersion });
+            return okText(r.unchanged
+              ? `canvas ${r.id} is already titled "${r.title}" — nothing changed (version ${r.version})`
+              : `renamed canvas ${r.id} to "${r.title}" — version ${r.version} (unchanged; a rename is not a new version)`);
+          } catch (e) {
+            if (e && e.code === "stale") return errText(JSON.stringify({ error: "stale", currentVersion: e.currentVersion, author: e.author, diffFromBase: null, message: e.message }));
+            return errText(`canvas_patch: ${(e && e.message) || e}`);
+          }
+        }
         let res;
         try {
-          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits, confirmEvict: c.confirmEvict });
+          res = await c.store.agentPatch({ conversationId: c.conversationId(), id: args.id, baseVersion: args.baseVersion, edits: args.edits, title: hasTitle ? args.title : undefined, confirmEvict: c.confirmEvict });
         } catch (e) {
           if (e && e.code === "stale") {
             const diff = e.diffFromBase == null ? null : String(e.diffFromBase).slice(0, CANVAS_DIFF_MAX);

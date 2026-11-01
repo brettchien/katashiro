@@ -431,6 +431,8 @@ if (chrome.notifications && chrome.notifications.onClicked) {
 // The synced config can land a few seconds after startup (reinstall, new device). While we are
 // still on defaults and the user hasn't touched anything, adopt it and reconnect — so the panel
 // recovers without a reopen. Once the user edits locally, their edit wins over the late arrival.
+// A canvas rename relabels its chat cards (canvas-glue.js).
+chrome.storage.onChanged.addListener((changes, area) => { if (area === "local") relabelCanvasCards(changes); });
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "sync" || !CONFIG_KEYS.some((k) => k in changes)) return;
   chrome.storage.sync.get(CONFIG_KEYS, (remote) => {

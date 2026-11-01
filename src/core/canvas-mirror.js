@@ -60,6 +60,14 @@
     return WINDOWS_RESERVED.test(s) || FORBIDDEN.has(s);
   }
 
+  // The title a canvas's file is named after. A rename (CanvasStore.rename, canvas_patch's title;
+  // Brett 2026-11-01) keeps the file name: the store keeps the title the file was named from in
+  // meta.fileTitle, so no new file and no orphan. A canvas_open with a new title clears it (the
+  // file follows the title, as before).
+  function fileTitle(meta) {
+    return meta && typeof meta.fileTitle === "string" && meta.fileTitle ? meta.fileTitle : meta && meta.title;
+  }
+
   /** A slug from untrusted text (a canvas title from the agent, a conversation id). */
   function slugify(text, fallback = "canvas") {
     let s = String(text == null ? "" : text).normalize("NFKC").toLowerCase()
@@ -583,7 +591,7 @@
           if (sib) convSlug = sib.file.convSlug;
         }
         if (!convSlug) convSlug = uniqueSlug(convBase, takenConv);
-        const slugBase = slugify(cur.title);
+        const slugBase = slugify(fileTitle(cur));
         const taken = new Set(others.filter((m) => m.file.convSlug === convSlug).map((m) => m.file.slug));
         // Moving to another folder with the same title: keep the slug if it is free there, so two
         // canvases with -2 slugs do not swap names depending on which moves first.
@@ -783,7 +791,7 @@
           };
           if (file && file.move) await runMove();
           const convBase = await convBaseFor(meta);
-          if (!file || !isValidSlug(file.slug) || !isValidSlug(file.convSlug) || file.slugBase !== slugify(meta.title) ||
+          if (!file || !isValidSlug(file.slug) || !isValidSlug(file.convSlug) || file.slugBase !== slugify(fileTitle(meta)) ||
             (convBase != null && (file.convBase || file.convSlug) !== convBase)) {
             file = await assignSlugs(id, root.dir, root.folderId, file, convBase);
             if (file.move) await runMove();
