@@ -421,6 +421,15 @@ below is built around that.
     the alerts plugin accepts the escaped form, so a normalized canvas keeps its callouts (unit
     test). `scripts/smoke-cards.mjs` checks all of it in the real frame, before and after
     normalization and after an editor load + save.
+- **Tables (2026-11-01, Brett picked style B of three tried live with canvas_inject_css).** The
+  editorial style of Claude's artifacts: full width, no vertical rules, small uppercase muted headers
+  over a strong rule, a faint rule between rows, tabular figures; a `---:` column keeps its
+  alignment. `markdown.js` wraps every `<table>` in `<div class="table-wrap">` (a constant class,
+  like cards), so the table can be 100% wide while a wide one scrolls in the wrapper; before, the
+  table itself was `display: block` to scroll, which left its rules at the content's width. Block
+  keys (§3.10) stay on `tr`, source lines on the `table`. Print uses the same style in ink, slides
+  and chat bubbles a scaled one. Accepted: uppercase does nothing to CJK headers (they only get
+  smaller and muted), and on a wide tab a short table is stretched.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 
