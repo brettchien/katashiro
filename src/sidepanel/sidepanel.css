@@ -1243,6 +1243,15 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
 }
+/* ==highlight==, ++underline++, definition lists, footnotes (ADR canvas §3.3); footnote links are
+   inert (no href), so the ↩ back-links are hidden. */
+.bubble mark { background: rgba(250, 204, 21, 0.28); color: inherit; padding: 0 2px; border-radius: 3px; }
+.bubble ins { text-decoration: underline; text-underline-offset: 2px; }
+.bubble dt { font-weight: 600; }
+.bubble dd { margin: 0 0 4px 16px; }
+.bubble section.footnotes { font-size: 0.88em; color: var(--text-secondary); }
+.bubble .footnote-backref { display: none; }
+
 /* inline code (a <code> not wrapped in <pre>) */
 .bubble :not(pre) > code {
   background: rgba(0, 0, 0, 0.28);

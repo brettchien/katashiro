@@ -82,6 +82,15 @@ const x = 1;
 
 > ✅ Done.
 
+## Inline extras
+
+A ==highlighted== word, an ++underlined++ one, and a footnote[^1].
+
+Term
+: Its definition.
+
+[^1]: The footnote text.
+
 ::: foo
 not a container
 :::
@@ -227,6 +236,18 @@ try {
   check(brk[0] === "avoid" && brk[1] === "avoid", "print: cards and callouts are not split across pages", brk);
   await page.emulateMediaType(null);
 
+  // Footnotes, ==mark==, ++ins++, definition lists (§3.3): rendered, the footnote links inert.
+  const extras = () => frame.evaluate(() => {
+    const d = document.querySelector("#doc");
+    const ref = d.querySelector("sup.footnote-ref a");
+    const back = d.querySelector(".footnote-backref");
+    return { mark: d.querySelectorAll("mark").length, ins: d.querySelectorAll("ins").length, dl: d.querySelectorAll("dl dt + dd").length,
+      notes: d.querySelectorAll("section.footnotes li").length, refHref: ref ? ref.getAttribute("href") : "missing",
+      backShown: back ? getComputedStyle(back).display !== "none" : false };
+  });
+  const EXTRAS = { mark: 1, ins: 1, dl: 1, notes: 1, refHref: null, backShown: false };
+  check(JSON.stringify(await extras()) === JSON.stringify(EXTRAS), "footnote / mark / ins / deflist render; footnote links have no href, back-links hidden", await extras());
+
   // 2. Normalization (the agent-write path).
   await send({ type: "render", kind: "markdown", version: 2, seq: 2, content: FIXTURE, normalizeText: FIXTURE });
   const n = await waitFor((m) => m.nonce === "nonce0" && m.type === "rendered" && m.seq === 2, "normalized render", 60000);
@@ -238,6 +259,8 @@ try {
     await send({ type: "render", kind: "markdown", version: 3, seq: 3, content: norm, normalizeText: norm });
     const n2 = await waitFor((m) => m.nonce === "nonce0" && m.type === "rendered" && m.seq === 3, "renormalized render", 60000);
     same(await shape(), "after normalization");
+    check(/==highlighted==/.test(norm) && /\+\+underlined\+\+/.test(norm) && /footnote\[\^1\]/.test(norm) && /^: Its definition\./m.test(norm), "normalized text keeps ==, ++, [^1] and the definition list", norm);
+    check(JSON.stringify(await extras()) === JSON.stringify(EXTRAS), "footnote / mark / ins / deflist after normalization", await extras());
     check(n2.normalized === norm, "normalization is idempotent", n2.normalized);
   }
 

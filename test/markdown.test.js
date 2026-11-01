@@ -316,3 +316,45 @@ test("cards and callouts: the chat renders them too (agent and user parsers shar
     assert.match(h, /<blockquote class="markdown-alert markdown-alert-warning markdown-alert-emoji">/);
   }
 });
+
+// --- footnotes, ==highlight==, ++underline++, definition lists (ADR canvas §3.3) ---------------------
+test("plugins: footnote, mark, ins and deflist are bundled with markdown-it", () => {
+  for (const g of ["markdownitFootnote", "markdownitMark", "markdownitIns", "markdownitDeflist"]) {
+    assert.equal(typeof globalThis[g], "function", g);
+  }
+});
+
+test("plugins: ==highlight== is <mark>, ++underline++ is <ins>, in the chat path too", () => {
+  assert.match(md.render("a ==hot== b"), /<p>a <mark>hot<\/mark> b<\/p>/);
+  assert.match(md.render("a ++new++ b"), /<p>a <ins>new<\/ins> b<\/p>/);
+  const { mdUser } = require("../src/core/markdown.js");
+  assert.match(mdUser.render("==x== ++y++"), /<mark>x<\/mark> <ins>y<\/ins>/);
+});
+
+test("plugins: a definition list is <dl><dt><dd>", () => {
+  assert.match(md.render("Term\n: Its definition.\n"), /<dl>\n<dt>Term<\/dt>\n<dd>Its definition\.<\/dd>\n<\/dl>/);
+});
+
+test("plugins: footnotes render a superscript reference and a footnotes section", () => {
+  const h = md.render("Text[^1].\n\n[^1]: The note.\n");
+  assert.match(h, /<sup class="footnote-ref"><a href="#fn1" id="fnref1">\[1\]<\/a><\/sup>/);
+  assert.match(h, /<hr class="footnotes-sep">\n<section class="footnotes">\n<ol class="footnotes-list">\n<li id="fn1" class="footnote-item"><p>The note\./);
+});
+
+test("plugins: source lines still reach a definition list and a footnote's text", () => {
+  const h = md.render("x\n\nTerm\n: def\n", { sourceLines: true });
+  assert.match(h, /<dl data-line-start="2" data-line-end="4">/);
+  const f = md.render("x[^1]\n\n[^1]: note\n", { sourceLines: true });
+  assert.match(f, /<li id="fn1" class="footnote-item"><p data-line-start="2" data-line-end="3">note /);
+});
+
+test("plugins: `==` inside words stays text (x==1 or y==2), CJK and spaced highlights still work", () => {
+  for (const p of [md, mdUser]) {
+    assert.match(p.render("if x==1 or y==2 then"), /<p>if x==1 or y==2 then<\/p>/);
+    assert.match(p.render("a==b and c==d"), /<p>a==b and c==d<\/p>/);
+  }
+  assert.match(md.render("x==**b**==y"), /<p>x==<strong>b<\/strong>==y<\/p>/);
+  assert.match(md.render("==hi== there"), /<p><mark>hi<\/mark> there<\/p>/);
+  assert.match(md.render("中文==重點==中文"), /<p>中文<mark>重點<\/mark>中文<\/p>/);
+  assert.match(md.render("x ==a== y==b==z"), /<p>x <mark>a<\/mark> y==b==z<\/p>/);
+});
