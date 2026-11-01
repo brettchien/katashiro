@@ -43,6 +43,7 @@
   const compareBtn = document.getElementById("canvas-compare");
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
+  const narrowBtn = document.getElementById("canvas-narrow");
   const runBtn = document.getElementById("canvas-run");
   const pageSelBtn = document.getElementById("canvas-page-sel");
   const engineBtn = document.getElementById("canvas-engine");
@@ -158,7 +159,7 @@
   async function updateButtons() {
     if (compareView) {
       // The compare tab is not the canvas (§3.10): nothing here can change it.
-      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, undoBtn, redoBtn, sendBtn, askBtn, sendSelBtn, compareBtn, showChangesBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
+      for (const b of [editBtn, saveBtn, cancelBtn, revertBtn, undoBtn, redoBtn, sendBtn, askBtn, sendSelBtn, compareBtn, showChangesBtn, narrowBtn, downloadBtn, printBtn, deleteBtn]) b.hidden = true;
       return;
     }
     const editable = !!current && current.meta.kind === "markdown" && !!frame;
@@ -188,6 +189,7 @@
     // Compare with agent's (§3.10): when the latest differs from the agent's last write.
     compareBtn.hidden = !(canRevert && textKind && !!frame);
     showChangesBtn.hidden = !textKind;
+    narrowBtn.hidden = !(current && CanvasCore.narrowKind(current.meta.kind));   // markdown only (§3.1)
     updateShowChangesBtn();             // editing changes its title (#110)
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
@@ -1094,6 +1096,32 @@
     });
   }
 
+  // Reading width (§3.1, Brett 2026-11-01): one switch for every canvas tab (chrome.storage.local),
+  // like 顯示變更. The frame gets only the boolean and toggles a constant class on its root; the
+  // CSS applies it to a markdown canvas on screen only (slides, mermaid, image, html and print keep
+  // their layout).
+  let narrow = false;
+  function updateNarrowBtn() {
+    const b = CanvasCore.narrowButton(narrow);
+    narrowBtn.setAttribute("aria-pressed", String(narrow));
+    narrowBtn.textContent = b.label;
+    narrowBtn.title = b.title;
+  }
+  function setNarrow(on) {
+    if (on === narrow) return;
+    narrow = on;
+    updateNarrowBtn();
+    toFrame({ type: "narrow", on: narrow });
+  }
+  if (!compareView) {
+    updateNarrowBtn();
+    chrome.storage.local.get(CanvasCore.NARROW_KEY).then((got) => setNarrow(got[CanvasCore.NARROW_KEY] === true), () => {});
+    narrowBtn.addEventListener("click", () => {
+      setNarrow(!narrow);
+      chrome.storage.local.set({ [CanvasCore.NARROW_KEY]: narrow }).catch(() => {});   // other canvas tabs follow
+    });
+  }
+
   // Settings → html 畫布 (canvas §6 Q2): off → html canvases show without their scripts only; a
   // running one goes back to that view.
   if (!compareView) {
@@ -1472,6 +1500,7 @@
     switch (m.type) {
       case "ready":
         frameReady = true;
+        if (narrow) toFrame({ type: "narrow", on: true });
         if (agentSheets.length) toFrame({ type: "css", sheets: agentSheets });
         sendRender();
         updateButtons();
@@ -1794,6 +1823,8 @@
     if (area !== "local") return;
     const sc = changes[CanvasCore.SHOW_CHANGES_KEY];
     if (sc && !compareView) setShowChanges(sc.newValue === true);
+    const nc = changes[CanvasCore.NARROW_KEY];
+    if (nc && !compareView) setNarrow(nc.newValue === true);
     const mc = changes[CanvasStore.metaKey(canvasId)];
     if (!mc && !changes[CanvasStore.latestKey(canvasId)]) return;
     // Only the folder mirror's bookkeeping changed: update the file status, no re-render.

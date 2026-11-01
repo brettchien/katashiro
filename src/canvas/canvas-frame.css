@@ -172,6 +172,22 @@ figure.ks-mermaid[data-engine="pele"] {
 }
 .editor .milkdown .ProseMirror { padding: 16px 0; max-width: none; }
 
+/* Reading width (§3.1, Brett 2026-11-01): the header ↔ switch puts a markdown canvas — its view and
+   the editor — in a centered column of about 46rem with 32px sides. Wide tables and code still
+   scroll inside it; a ::: cards grid fits fewer cards per row. Screen only: print keeps the paper
+   width. Slides, mermaid, image and html canvases have their own layout and are left as they are. */
+@media screen {
+  html.ks-narrow body:not(.mode-slides):not(.mode-mermaid):not(.mode-html) .doc,
+  html.ks-narrow body:not(.mode-slides):not(.mode-mermaid):not(.mode-html) .editor {
+    box-sizing: border-box;
+    max-width: calc(46rem + 64px);
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 32px;
+    padding-right: 32px;
+  }
+}
+
 /* Print (PDF export, §3.8): white paper, no editor chrome or copy buttons. */
 @media print {
   /* Light controls on paper: under the dark scheme a task-list checkbox prints as a dark square,

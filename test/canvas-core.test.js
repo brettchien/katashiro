@@ -401,6 +401,18 @@ test("show changes: the held markers compare the previous version with the lates
   }
 });
 
+test("reading width: a global switch for markdown only; the button names what a click does (§3.1, Brett 2026-11-01)", () => {
+  assert.equal(C.NARROW_KEY, "canvas:narrow");
+  assert.notEqual(C.NARROW_KEY, C.SHOW_CHANGES_KEY);
+  assert.equal(C.narrowKind("markdown"), true);
+  for (const k of ["slides", "mermaid", "image", "html", undefined]) assert.equal(C.narrowKind(k), false, k);
+  assert.equal(C.narrowButton(false).label, "↔ 窄欄");
+  assert.equal(C.narrowButton(true).label, "↔ 全寬");
+  for (const on of [false, true]) assert.match(C.narrowButton(on).title, /所有畫布分頁/);
+  // The html frame never gets it: htmlFramePost rebuilds only highlight / css / selectionRequest.
+  assert.equal(C.htmlFramePost({ type: "narrow", on: true }), null);
+});
+
 test("show changes: the button title follows editing and the compare, not only the last heldChanges (#110)", () => {
   const t = (o) => C.showChangesTitle({ on: true, from: "previous", editing: false, comparing: false, ...o });
   assert.match(t({ on: false }), /^顯示變更（關）/);

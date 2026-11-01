@@ -137,6 +137,17 @@ Each canvas opens in **its own extension tab** (`canvas.html?id=<canvasId>`), ne
   tables and code blocks take all the width they need, and slides scale to the tab. The host
   header (title, revision, Edit/Save, Send to agent, Revert to agent's, export) is one slim bar so the content keeps
   the height too.
+- **Reading-width toggle (Brett, 2026-11-01, Katashiro chat acpmsg_b78f97e1-451d-4437-8e52-e700442adede:
+  "窄欄閱讀寬度 → should be a toggle on top").** Full width stays the default. A header button
+  `↔ 窄欄` / `↔ 全寬` puts a **markdown** canvas — its view and the editor — in a centered column of
+  about 46rem (≈ 740 px) with 32 px sides; wide tables and code still scroll inside it and a
+  `::: cards` grid fits fewer cards per row. Like ◐ 顯示變更 (§3.10) it is one **global** switch:
+  stored in `chrome.storage.local` (`canvas:narrow`), every canvas tab follows. The host sends the
+  frame only `{ type: "narrow", on: <boolean> }`; the frame toggles a constant class on its root
+  (`html.ks-narrow`) and the CSS does the rest. The button is hidden for slides, mermaid, image and
+  html canvases (they have their own layout), and the html frame never receives the message
+  (`htmlFramePost` drops it). Screen only: print keeps the paper width (§3.8). The compare tab
+  (§3.10) stays full width. Agent equivalent: not exposed in `canvas_view` yet.
 - The panel never renders canvas content itself.
 - Where the data lives and how each party reaches it: §3.9.
 
