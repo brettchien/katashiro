@@ -1,21 +1,23 @@
-/* Design System */
+/* Design System — Solarized Dark (Brett, 2026-11-01): base03 #002b36 background, base02 #073642
+   surfaces, base1 #93a1a1 / base0 #839496 / base01 #586e75 text, blue #268bd2 accent, green #859900
+   success. Canvases use GitHub Dark instead (ADR canvas §3.3 "Palette"); the panel is the chat. */
 :root {
-  --bg-primary: #121824;
-  --bg-secondary: rgba(22, 30, 49, 0.7);
-  --bg-tertiary: #1b253b;
-  --accent: #4f46e5;
-  --accent-glow: rgba(79, 70, 229, 0.4);
-  --accent-success: #10b981;
-  --accent-success-glow: rgba(16, 185, 129, 0.3);
+  --bg-primary: #002b36;
+  --bg-secondary: rgba(7, 54, 66, 0.7);
+  --bg-tertiary: #073642;
+  --accent: #268bd2;
+  --accent-glow: rgba(38, 139, 210, 0.4);
+  --accent-success: #859900;
+  --accent-success-glow: rgba(133, 153, 0, 0.3);
   
-  --text-primary: #f3f4f6;
-  --text-secondary: #9ca3af;
-  --text-muted: #6b7280;
+  --text-primary: #93a1a1;
+  --text-secondary: #839496;
+  --text-muted: #586e75;
   
-  --bubble-sent: #3b82f6;
-  --bubble-received: #2e3b5e;
+  --bubble-sent: #268bd2;
+  --bubble-received: #073642;
   
-  --border-color: rgba(255, 255, 255, 0.08);
+  --border-color: rgba(147, 161, 161, 0.14);
   --transition-smooth: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -426,7 +428,7 @@ body {
 }
 
 .primary-btn {
-  background: linear-gradient(135deg, var(--accent), #6366f1);
+  background: linear-gradient(135deg, var(--accent), #2aa198);
   color: #fff;
   border: none;
   padding: 12px;
@@ -590,7 +592,7 @@ body {
 }
 
 .sent .bubble {
-  background: linear-gradient(135deg, #3b82f6, #2563eb);
+  background: linear-gradient(135deg, var(--bubble-sent), #1f74b0);
   color: white;
   border-top-right-radius: 4px;
 }
@@ -945,7 +947,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 
 .send-btn:hover:not(:disabled) {
-  background: #6366f1;
+  background: #2aa198;
   transform: scale(1.05);
 }
 
@@ -1287,7 +1289,7 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
   position: relative;
   margin: 8px 0;
   padding: 10px 12px;
-  background: #0d1117;
+  background: #00212b;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   overflow-x: auto;
