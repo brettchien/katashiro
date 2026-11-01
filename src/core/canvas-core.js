@@ -477,7 +477,7 @@
    * padded. A marker inside a quote (`> ::: cards`) is not padded (not supported). A bare `:::` with
    * no opening is padded too (harmless: it was a paragraph break anyway). CRLF / CR line ends are
    * read as LF (like splitSlidesAt); the result is LF. Idempotent; a text with no marker line comes
-   * back unchanged. markdown-it reads the padded text the same (blank lines inside a container are
+   * back unchanged apart from line ends. markdown-it reads the padded text the same (blank lines inside a container are
    * just blank lines).
    */
   const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*(cards\b.*)?$/;
