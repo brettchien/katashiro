@@ -14,7 +14,7 @@ deliver the file into a canvas the way this one says.
 
 - Archify's skill, installed where you run: `npx skills add tt-a1i/archify` (Katashiro does not
   vendor Archify), and Node ≥ 18.
-- The `katashiro-canvas-file` skill (its `scripts/canvas-file.sh`), and a Katashiro chat with html
+- The [`katashiro-canvas-file`](../katashiro-canvas-file/SKILL.md) skill (its `scripts/canvas-file.sh`), and a Katashiro chat with html
   canvases on.
 
 ## Steps

@@ -13,8 +13,8 @@ which job**, the few syntaxes that break, and how to edit without fighting the e
 
 - The current chat is a **Katashiro** chat, so `katashiro.canvas_*` tools are available.
 - For a page the user should *interact* with (sort, filter, simulate), use an `html` canvas instead,
-  and the `katashiro-canvas-file` skill to upload it. For an interactive system diagram, use
-  `katashiro-archify`. This skill is about `markdown` (and `slides`) canvases.
+  and the [`katashiro-canvas-file`](../katashiro-canvas-file/SKILL.md) skill to upload it. For an interactive system diagram, use
+  [`katashiro-archify`](../katashiro-archify/SKILL.md). This skill is about `markdown` (and `slides`) canvases.
 
 ## 1. Pick the block by what the content is
 
@@ -129,11 +129,14 @@ callout), `-` bullets come back as `*`, tables get padded, blank lines appear ar
   write or the user may have edited. Several edits go in one call.
 - **Rewrite**: `canvas_open` with `id`, `baseVersion`, `title` (required on every call) and the
   full content.
+- **Rename**: `canvas_patch` with `id`, `baseVersion` and `title` only — no new version, no
+  content resent. Add `edits` to rename and change text in one call. The user can also click the
+  name in the canvas header.
 - **Side by side with a source page**: `canvas_open` with `beside: "current"` while the user is on
   that page (Split View).
 - After a write, a `katashiro.screenshot` of the canvas tab (switch to it first) is the only way to
   see layout problems: cards too narrow, a diagram too wide, a table with one huge column.
-- To show the user what you mean in the canvas, use `katashiro-point-at` (`canvas_highlight`). Its
+- To show the user what you mean in the canvas, use [`katashiro-point-at`](../katashiro-point-at/SKILL.md) (`canvas_highlight`). Its
   `find` matches the **rendered** text, not the markdown: `important`, not `**important**`.
 
 ## 6. Converting an artifact or a web page into a canvas
