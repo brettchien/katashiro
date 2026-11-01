@@ -401,7 +401,8 @@ below is built around that.
     after a quote or alert `> :::` (the container then never closes), after a list `  :::`. With
     a blank line before and after each marker line, tables, quotes, lists and paragraphs survive and
     normalization stays idempotent. So **`CanvasCore.padContainerMarkers`** adds those blank lines
-    (lines starting with `:::`, 0–3 spaces in; not inside fenced code) to every text the frame
+    (an opening `::: cards …` or a bare closing `:::`, 0–3 spaces in, not inside fenced code; any
+    other `::: foo` line is text and stays as written) to every text the frame
     hands Milkdown's parser: normalization, the editor's load and the post-save reset. markdown-it
     reads the padded text the same. Normalization also writes `> [!NOTE]` back as `> \[!NOTE]`;
     the alerts plugin accepts the escaped form, so a normalized canvas keeps its callouts (unit

@@ -1263,6 +1263,8 @@ test("padContainerMarkers: a blank line before and after every ::: marker line, 
   assert.equal(P("   ::: cards\nx\n   :::"), "   ::: cards\n\nx\n\n   :::");                         // up to 3 spaces in
   assert.equal(P("    :::\nx"), "    :::\nx");                                                    // 4: not a marker
   assert.equal(P("::::\n:::\n::::"), "::::\n\n:::\n\n::::");                                         // longer markers too
+  assert.equal(P("x\n::: foo\ny"), "x\n::: foo\ny");                                              // not a cards marker: left alone
+  assert.equal(P("x\n:::cards\ny"), "x\n\n:::cards\n\ny");
   assert.equal(P("> :::\nx"), "> :::\nx");                                                        // inside a quote: left alone
   assert.equal(P("no markers\n\n\nhere  \n"), "no markers\n\n\nhere  \n");                          // nothing else changes
   assert.equal(P(""), "");

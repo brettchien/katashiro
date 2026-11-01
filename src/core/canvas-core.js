@@ -463,8 +463,9 @@
    * Cards (§3.3 "Cards and callouts") before Milkdown (§3.5): a `:::` container marker line must be a
    * paragraph of its own, or the parser folds it into the block next to it and the serializer writes
    * it back as part of that block (crepe 7.22.3: a closing `:::` right after a table becomes a row
-   * `| ::: |`, after a quote or alert `> :::`, after a list `  :::`). So every line that starts with
-   * `:::` (0–3 spaces in; the opening `::: cards …` and the closing `:::`) gets a blank line before
+   * `| ::: |`, after a quote or alert `> :::`, after a list `  :::`). So every marker line
+   * (0–3 spaces in: an opening `::: cards …`, or a bare closing `:::`; any other `::: foo` is plain
+   * text, never registered, and stays as written) gets a blank line before
    * and after it unless that neighbour is already blank (or there is none). Lines inside fenced code
    * (``` / ~~~) are left alone: a fence closes only on a line of its own character, at least as
    * long, and nothing else; a backtick fence whose info string holds a backtick is not a fence
@@ -472,7 +473,7 @@
    * starts 4+ spaces in). Idempotent; a text with no marker line comes back unchanged. markdown-it
    * reads the padded text the same (blank lines inside a container are just blank lines).
    */
-  const CONTAINER_LINE = /^ {0,3}:::/;
+  const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*(cards\b.*)?$/;
   function padContainerMarkers(text) {
     const lines = String(text == null ? "" : text).split("\n");
     const out = [];
