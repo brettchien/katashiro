@@ -445,6 +445,15 @@ below is built around that.
   letter/digit and whose closer is followed by one stays plain text (`x==1 or y==2` is code, not a
   highlight; like GFM's intraword `_`); CJK text still highlights. The plugin's inline footnote
   `^[note]` also renders, but is not part of this choice: Milkdown keeping it was not checked.
+- **Palette (2026-11-01, Brett picked GitHub Dark).** The canvas used Tailwind's slate (`#0f172a` navy
+  with `#60a5fa` blue), which read as Solarized-like. Measured what people use (VS Code Marketplace
+  installs that day: GitHub Theme 20.5 M, One Dark Pro 12.9 M, Dracula 11.1 M, …; document apps'
+  defaults are neutral greys), previewed GitHub Dark, One Dark and Dracula live on a canvas with
+  `canvas_inject_css`, and took **GitHub Dark (Primer)**: canvas `#0d1117`, surfaces `#161b22`
+  (code blocks and cards one step up), borders `#30363d`, text `#e6edf3`, muted `#8b949e`, accent
+  `#4493f8`, callouts in Primer's note/tip/important/warning/caution colours. The frame, the header
+  (`canvas.css`), slides, Pele's variables and the editor follow; print keeps its light Primer colours;
+  the chat panel is not changed.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 

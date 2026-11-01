@@ -1,7 +1,10 @@
 /* canvas-frame.css — the canvas document, full width (ADR §3.1: no centered column). Loaded by the
    sandboxed canvas-frame.html; no url()/@import (the sandbox CSP would block them anyway). */
 :root { color-scheme: dark; }
-html, body { margin: 0; background: #0f172a; color: #e2e8f0; }
+/* Palette (ADR canvas §3.3 "Palette", Brett 2026-11-01): GitHub Dark (Primer) — canvas #0d1117,
+   surfaces #161b22, borders #30363d / #3d444d, text #e6edf3, muted #8b949e, accent #4493f8, and
+   Primer's alert colours for the callouts. canvas.css (header) and canvas-slides.css use the same. */
+html, body { margin: 0; background: #0d1117; color: #e6edf3; }
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
   font-size: 15px;
@@ -15,9 +18,9 @@ body {
 .doc h2 { font-size: 1.4em; border-bottom: 1px solid rgba(255, 255, 255, 0.08); padding-bottom: 0.2em; }
 .doc h3 { font-size: 1.15em; }
 .doc > :first-child { margin-top: 0; }
-.doc a { color: #60a5fa; }
+.doc a { color: #4493f8; }
 .doc code { background: rgba(255, 255, 255, 0.08); padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
-.doc blockquote { margin: 0.8em 0; padding: 0.2em 1em; border-left: 3px solid #475569; color: #94a3b8; }
+.doc blockquote { margin: 0.8em 0; padding: 0.2em 1em; border-left: 3px solid #3d444d; color: #8b949e; }
 /* Tables (ADR canvas §3.3 "Tables", Brett 2026-11-01: the editorial style of Claude's artifacts):
    full width, no vertical rules, small uppercase muted headers over a strong rule, a faint rule
    between rows, tabular figures. A wide table scrolls inside .table-wrap (markdown.js). A cell's
@@ -28,7 +31,7 @@ body {
 .doc th:last-child, .doc td:last-child { padding-right: 0; }
 .doc th {
   font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
-  color: #94a3b8; border-bottom: 1.5px solid #cbd5e1;
+  color: #8b949e; border-bottom: 1.5px solid #c9d1d9;
 }
 .doc td { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
 .doc tbody tr:last-child td { border-bottom: 0; }
@@ -40,18 +43,18 @@ body {
 .doc ins { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 .doc dl { margin: 0.8em 0; }
 .doc dt { font-weight: 600; margin-top: 0.6em; }
-.doc dd { margin: 0.15em 0 0 1.4em; color: #cbd5e1; }
+.doc dd { margin: 0.15em 0 0 1.4em; color: #c9d1d9; }
 .doc sup.footnote-ref { font-size: 0.75em; line-height: 0; }
-.doc sup.footnote-ref a { color: #60a5fa; text-decoration: none; }
+.doc sup.footnote-ref a { color: #4493f8; text-decoration: none; }
 .doc hr.footnotes-sep { margin: 2em 0 0.8em; }
-.doc section.footnotes { font-size: 0.88em; color: #94a3b8; }
+.doc section.footnotes { font-size: 0.88em; color: #8b949e; }
 .doc .footnote-backref { display: none; }
 
 .doc pre.hljs {
   position: relative;
   margin: 8px 0;
   padding: 10px 12px;
-  background: #0d1117;
+  background: #161b22;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
   overflow-x: auto;
@@ -59,7 +62,7 @@ body {
 .doc pre.hljs code { background: none; padding: 0; color: #c9d1d9; }
 .copy-btn {
   position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;
-  color: #94a3b8; background: rgba(255, 255, 255, 0.06);
+  color: #8b949e; background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; cursor: pointer; opacity: 0;
 }
 .doc pre.hljs:hover .copy-btn { opacity: 1; }
@@ -102,13 +105,13 @@ body {
    kind sets one colour, --ks-alert; the box is a tinted panel with that colour on its left edge. The
    blockquote rules (.doc blockquote above, reveal's .reveal blockquote) are outranked by the
    two-class selectors here. */
-.markdown-alert-note { --ks-alert: #60a5fa; --ks-alert-bg: rgba(96, 165, 250, 0.1); }
-.markdown-alert-tip { --ks-alert: #34d399; --ks-alert-bg: rgba(52, 211, 153, 0.1); }
-.markdown-alert-important { --ks-alert: #c4b5fd; --ks-alert-bg: rgba(196, 181, 253, 0.1); }
-.markdown-alert-warning { --ks-alert: #fbbf24; --ks-alert-bg: rgba(251, 191, 36, 0.1); }
-.markdown-alert-caution { --ks-alert: #f87171; --ks-alert-bg: rgba(248, 113, 113, 0.1); }
+.markdown-alert-note { --ks-alert: #4493f8; --ks-alert-bg: rgba(68, 147, 248, 0.1); }
+.markdown-alert-tip { --ks-alert: #3fb950; --ks-alert-bg: rgba(63, 185, 80, 0.1); }
+.markdown-alert-important { --ks-alert: #ab7df8; --ks-alert-bg: rgba(171, 125, 248, 0.1); }
+.markdown-alert-warning { --ks-alert: #d29922; --ks-alert-bg: rgba(210, 153, 34, 0.1); }
+.markdown-alert-caution { --ks-alert: #f85149; --ks-alert-bg: rgba(248, 81, 73, 0.1); }
 :is(.doc, .reveal) .markdown-alert {
-  width: auto; margin: 0.8em 0; padding: 8px 14px; border-left: 4px solid var(--ks-alert, #475569); border-radius: 6px;
+  width: auto; margin: 0.8em 0; padding: 8px 14px; border-left: 4px solid var(--ks-alert, #3d444d); border-radius: 6px;
   background: var(--ks-alert-bg, transparent); color: inherit; font-style: normal; box-shadow: none;
 }
 :is(.doc, .reveal) .markdown-alert > :first-child { margin-top: 0; }
@@ -142,30 +145,30 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
    also the opaque background of edge labels, so it must equal what the diagram sits on. --pele-font
    repeats body's font: Pele measured the labels with it (canvas-frame.js renderWithPele). */
 figure.ks-mermaid[data-engine="pele"] {
-  --pele-bg: #0f172a; --pele-fg: #e2e8f0; --pele-muted: #94a3b8; --pele-line: #cbd5e1;
-  --pele-surface: #1e293b; --pele-surface-alt: #334155; --pele-border: #64748b; --pele-accent: #60a5fa;
-  --pele-fg-on-dark: #ffffff; --pele-fg-on-light: #0f172a; --pele-error: #f87171; --pele-critical: #f87171;
+  --pele-bg: #0d1117; --pele-fg: #e6edf3; --pele-muted: #8b949e; --pele-line: #c9d1d9;
+  --pele-surface: #161b22; --pele-surface-alt: #30363d; --pele-border: #6e7681; --pele-accent: #4493f8;
+  --pele-fg-on-dark: #ffffff; --pele-fg-on-light: #0d1117; --pele-error: #f87171; --pele-critical: #f87171;
   --pele-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
 }
 /* A diagram drawn by the other engine (§2.4): which one, and why the chosen one did not. */
-.ks-mermaid-fallback { margin: 4px 0 0; font-size: 0.78em; color: #94a3b8; text-align: center; }
+.ks-mermaid-fallback { margin: 4px 0 0; font-size: 0.78em; color: #8b949e; text-align: center; }
 
 /* image canvas: centered, fits the tab, caption below (text only). */
 .pic { margin: 0; min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; }
 .pic img { max-width: 100%; max-height: calc(100vh - 96px); object-fit: contain; border-radius: 8px; }
-.pic figcaption { color: #94a3b8; font-size: 14px; }
+.pic figcaption { color: #8b949e; font-size: 14px; }
 
 /* Editor (Milkdown crepe, §3.5): full width like the document view; our palette over frame-dark. */
 .editor { padding: 8px clamp(32px, 5vw, 96px) 48px; }
 .editor .milkdown {
-  --crepe-color-background: #0f172a;
-  --crepe-color-surface: #111827;
+  --crepe-color-background: #0d1117;
+  --crepe-color-surface: #161b22;
   --crepe-color-surface-low: #131c2e;
-  --crepe-color-on-background: #e2e8f0;
-  --crepe-color-on-surface: #e2e8f0;
-  --crepe-color-primary: #60a5fa;
-  --crepe-color-hover: #1e293b;
-  --crepe-color-selected: #334155;
+  --crepe-color-on-background: #e6edf3;
+  --crepe-color-on-surface: #e6edf3;
+  --crepe-color-primary: #4493f8;
+  --crepe-color-hover: #161b22;
+  --crepe-color-selected: #30363d;
   --crepe-font-title: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
   --crepe-font-default: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
   --crepe-font-code: Menlo, Consolas, Monaco, monospace;
