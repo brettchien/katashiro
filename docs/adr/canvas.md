@@ -486,9 +486,14 @@ below is built around that.
   by})` is meta-only: under the `canvas:<id>` lock it sets `meta.title` and the index entry — no new
   version, any kind; titles are validated as everywhere (trimmed, non-empty, ≤ 120). The agent
   renames with `canvas_patch({id, baseVersion, title})` (own conversation only; `baseVersion` is
-  still required and stale-checked; `edits` optional when `title` is given; title + edits is one
-  agent version). The user clicks the title in the canvas tab's header: an inline input, Enter or
-  blur saves, Esc cancels — allowed while editing the content too (a rename touches no text). Other
+  still required, but a title-only rename only refuses a `baseVersion` below 1 or above the latest
+  version — it proves the agent read the canvas, the text is not touched; `edits` optional when
+  `title` is given; title + edits is one agent version). A title-only rename adds no version, so an
+  agent rename and a user rename at the same time are last-writer-wins and the agent is not told
+  the user renamed it. The user clicks the title in the canvas tab's header: an inline input, Enter
+  or blur saves, Esc cancels — allowed while editing the content too (a rename touches no text); it
+  saves only when the text differs from the name the input opened with, so a rename from elsewhere
+  while it is open is not written back over by a blur. Other
   tabs, the gallery and the side panel's chat cards follow through `storage.onChanged`. **The folder
   mirror keeps the file name** (no new file, no orphan): the store keeps the title the file was named
   after in `meta.fileTitle`; `.katashiro/<id>.json` may show the new title. A `canvas_open` with a

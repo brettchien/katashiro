@@ -3075,7 +3075,7 @@
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "string", description: "canvas id (markdown, slides or mermaid)" },
+          id: { type: "string", description: "canvas id (markdown, slides or mermaid; any kind for a title-only rename)" },
           baseVersion: { type: "integer", description: "the version you last read or wrote" },
           title: { type: "string", description: "optional new title (renames the canvas); edits become optional" },
           edits: {

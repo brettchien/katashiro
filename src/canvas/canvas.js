@@ -2033,6 +2033,10 @@
     input.className = "canvas-title-input";
     input.maxLength = TITLE_MAX;
     input.value = String(current.meta.title || "");
+    // Compare with the name the box opened with, not current.meta.title: a rename from the agent or
+    // another tab moves current.meta.title under the open box, and a blur without typing must not
+    // write the old name back over it.
+    const orig = input.value;
     input.setAttribute("aria-label", "畫布名稱");
     renaming = input;
     titleEl.hidden = true;
@@ -2047,7 +2051,7 @@
       input.remove();
       titleEl.hidden = false;
       renaming = null;
-      if (!save || !current || t === String(current.meta.title || "")) return;
+      if (!save || !current || t === orig.trim() || t === String(current.meta.title || "")) return;
       if (!t) { notice("名稱不能是空的，沒有改名。"); return; }
       try {
         await store.rename({ id: canvasId, title: t, by: "user" });
