@@ -105,6 +105,15 @@ Committed.
 
 > [!WARNING]
 > Spot has no graceful stop.
+
+---
+
+## Prices
+
+| plan | price |
+|---|--:|
+| spot | $1 |
+| on-demand | $3 |
 `;
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
@@ -192,6 +201,8 @@ try {
   check(JSON.stringify(s1.kinds) === JSON.stringify(["markdown-alert-tip", "markdown-alert-note", "markdown-alert-important", "markdown-alert-warning", "markdown-alert-caution", "markdown-alert-note", "markdown-alert-warning", "markdown-alert-note", "markdown-alert-tip"]), "callout kinds in order", s1.kinds);
   const title = await frame.evaluate(() => document.querySelector(".markdown-alert-important .markdown-alert-title").textContent);
   check(title === "Custom title", "a custom alert title is its text", title);
+  const wrap = await frame.evaluate(() => { const t = document.querySelector("#doc table"); return t && t.parentElement.className; });
+  check(wrap === "table-wrap", "a table sits in its .table-wrap after the real DOMPurify", wrap);
 
   // Layout: side by side when wide, stacked when narrow.
   const tops = () => frame.evaluate(() => Array.from(document.querySelectorAll("#doc .cards")[1].children, (c) => Math.round(c.getBoundingClientRect().top)));
@@ -254,6 +265,16 @@ try {
   check(new Set(slideTops).size === 1, "slides: the three cards side by side", slideTops);
   await (await page.$("#s")).screenshot({ path: SHOT.replace(/\.png$/, "-slides.png") });
   ok(`screenshot ${SHOT.replace(/\.png$/, "-slides.png")}`);
+  // The editorial table style beats the dracula theme's `.reveal table th/td` (ADR §3.3 "Tables").
+  await send({ type: "goto", slide: 3 }, "s");
+  await waitFor((m) => m.type === "slide" && m.index === 3, "slide 3");
+  await sleep(600);
+  const cell = await slidesFrame.evaluate(() => {
+    const st = (q) => getComputedStyle(document.querySelector(q));
+    const th = st("#deck table th"), td = st("#deck table td"), last = st("#deck table tbody tr:last-child td");
+    return { wrap: document.querySelector("#deck table").parentElement.className, th: [th.borderBottomWidth, th.borderBottomColor, th.fontWeight, th.paddingLeft], td: [td.borderBottomWidth, td.borderBottomColor], last: last.borderBottomStyle };
+  });
+  check(cell.wrap === "table-wrap" && JSON.stringify(cell.th) === JSON.stringify(["2px", "rgb(203, 213, 225)", "600", "0px"]) && JSON.stringify(cell.td) === JSON.stringify(["1px", "rgba(255, 255, 255, 0.12)"]) && cell.last === "none", "slides: the table has the editorial rules, not the theme's", cell);
 
   let violations = [];
   for (const fr of page.frames()) violations = violations.concat(await fr.evaluate(() => window.__ksViolations || []));

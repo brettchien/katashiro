@@ -770,8 +770,9 @@
     const text = document.createElement("span");
     text.textContent = label;                      // agent text: textContent only
     note.append(icon, who, text);
-    // Never over text: before the table for a row, at the top inside a list item, else right above.
-    if (el.tagName === "TR") (el.closest("table") || el).before(note);
+    // Never over text: before the table for a row (outside its scrolling .table-wrap, so the note
+    // does not scroll away with a wide table), at the top inside a list item, else right above.
+    if (el.tagName === "TR") (el.closest(".table-wrap") || el.closest("table") || el).before(note);
     else if (el.tagName === "LI") el.prepend(note);
     else el.before(note);
     setTimeout(() => note.remove(), ms);
