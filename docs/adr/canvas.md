@@ -574,7 +574,7 @@ below is built around that.
   so agent and user edit the same text with no conversion step. Saved markdown is rendered through
   the same markdown-it + DOMPurify sink as agent markdown; the editor's own DOM is never persisted.
 - **Milkdown normalizes markdown, and the stored text is the normalized text.** Parsing and
-  serializing rewrites formatting (`*` → `-`, escaping, blank lines, table alignment). Left alone,
+  serializing rewrites formatting (`-` → `*`, escaping, blank lines, table alignment). Left alone,
   a one-character user edit would save as a fully reformatted document, so the agent's `find`s
   (written against its own original text) would miss and `diffFromBase` would cover everything.
   So:

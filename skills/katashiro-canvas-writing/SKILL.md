@@ -22,7 +22,7 @@ which job**, the few syntaxes that break, and how to edit without fighting the e
 |---|---|---|
 | 2–4 parallel things to compare (options, axes, principles) | `::: cards` with one `###` per card | three paragraphs in a row |
 | A rule, a warning, a caveat the reader must not miss | `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` (optional title after the marker) | bold text in a paragraph |
-| A short good/bad example line | `> ✅ …` / `> ⚠️ …` / `> ℹ️ …` (emoji callout, no title row) | a quote with no colour |
+| A short good/bad example line | `> ✅ …` / `> ⚠️ …` / `> ℹ️ …` (emoji callout, no title row; only these three, and the emoji must be the first character — `❌` / `💡` stay a plain quote) | a quote with no colour |
 | Fields, options, numbers with several attributes | a table (header row, `---:` for numbers) | nested bullets |
 | Terms and their meanings, events and when they fire | definition list: `Term` then `: meaning` on the next line | `**Term**: meaning` paragraphs |
 | An enum or a list of values | a bullet list, one value per line | `a · b · c · d` on one line |
@@ -72,8 +72,10 @@ columns that matter, and put long prose in the last column.
 
 ## 3. Diagrams
 
-Diagrams are drawn by Pele (or Mermaid, the user's setting). Colour the nodes with `classDef` /
-`class` — both engines honour it:
+Diagrams are drawn by Pele or Mermaid — the user's setting, the switch in the canvas tab's header,
+or `canvas_view({engine})`. Colour the nodes with `classDef` / `class`. Both engines apply it today,
+but Pele does not guarantee it: a style it drops vanishes without an error, so check with a
+screenshot after writing.
 
 ````markdown
 ```mermaid
@@ -93,19 +95,23 @@ flowchart LR
 ````
 
 - Dark fills with a brighter stroke read well on the dark canvas; give the main node the thickest
-  stroke.
+  stroke. The canvas is dark on screen and turns light only when printed, but `classDef` fills stay
+  as written — dark fills print dark.
 - Keep labels short; put detail in the text, not in the boxes.
-- A syntax error shows the error in place; fix it and write again.
+- If one engine fails, the other draws the diagram and a small note under it says why; fix the
+  source anyway. Only when both fail does the error show in place of the diagram.
 
 ## 4. Syntax that breaks — do not use
 
-The canvas editor (Milkdown) rewrites the stored markdown every time it saves. These do **not**
-survive that and must not be written:
+This section is about `markdown` canvases; a `slides` canvas is stored as written.
+
+The canvas has no plugin for these, so they never render, and the editor (Milkdown), which rewrites
+the stored markdown every time it saves, mangles them further. Do not write them:
 
 | Avoid | Because the editor turns it into | Write instead |
 |---|---|---|
 | `H~2~O` (subscript) | `~~2~~` strikethrough | `H₂O` (Unicode) |
-| `$$ … $$` math blocks | drops backslashes (`\,` → `,`) | a code block, or an image |
+| `$$ … $$` math blocks | plain text without backslashes (`\,` → `,`) | a code block, or an image |
 | `*[HTML]: …` abbreviations | escaped text | a footnote or a definition list |
 | `[[toc]]` | escaped text | nothing — headings are enough |
 | raw HTML (`<div>`, `<br>`, `<span style>`) | shown as text (HTML is off) | the blocks above |
@@ -121,12 +127,14 @@ callout), `-` bullets come back as `*`, tables get padded, blank lines appear ar
 - **Small change** (a section, a list, a diagram): `katashiro.canvas_patch` with `find`/`replace`
   copied from the **stored** text — `canvas_read` first if you have not seen it since the last
   write or the user may have edited. Several edits go in one call.
-- **Rewrite**: `canvas_open` with `id` and `baseVersion` and the full content.
+- **Rewrite**: `canvas_open` with `id`, `baseVersion`, `title` (required on every call) and the
+  full content.
 - **Side by side with a source page**: `canvas_open` with `beside: "current"` while the user is on
   that page (Split View).
 - After a write, a `katashiro.screenshot` of the canvas tab (switch to it first) is the only way to
   see layout problems: cards too narrow, a diagram too wide, a table with one huge column.
-- To show the user what you mean in the canvas, use `katashiro-point-at` (`canvas_highlight`).
+- To show the user what you mean in the canvas, use `katashiro-point-at` (`canvas_highlight`). Its
+  `find` matches the **rendered** text, not the markdown: `important`, not `**important**`.
 
 ## 6. Converting an artifact or a web page into a canvas
 
