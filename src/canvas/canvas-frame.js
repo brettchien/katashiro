@@ -58,6 +58,9 @@
     };
   }
 
+  // Every text handed to Milkdown's parser (normalize, the editor's load, showSaved) first gets its
+  // `:::` container markers padded with blank lines (CanvasCore.padContainerMarkers, ADR §3.3 "Cards
+  // and callouts"): without them crepe folds a closing `:::` into the table / quote / list before it.
   // Normalize with the parser + serializer of a hidden editor (never shown, never edited).
   let normalizer = null;
   async function normalize(text) {
@@ -70,7 +73,7 @@
       normalizer = crepe.create().then(() => crepe);
     }
     const crepe = await normalizer;
-    return crepe.editor.action((ctx) => ctx.get(M.serializerCtx)(ctx.get(M.parserCtx)(text)));
+    return crepe.editor.action((ctx) => ctx.get(M.serializerCtx)(ctx.get(M.parserCtx)(CanvasCore.padContainerMarkers(text))));
   }
 
   // The editor. Dirty is measured against the text right after loading (already normalized), so
@@ -81,7 +84,7 @@
     doc.hidden = true;
     editorRoot.hidden = false;
     editorRoot.replaceChildren();
-    const crepe = new M.Crepe(crepeOptions(M, editorRoot, content));
+    const crepe = new M.Crepe(crepeOptions(M, editorRoot, CanvasCore.padContainerMarkers(content)));
     await crepe.create();
     // #89: the editor must not open on a text it would lose images from — saving would store that.
     if (CanvasCore.losesImages(content, editorText(crepe))) {
@@ -159,7 +162,7 @@
       crepe.editor.action((ctx) => {
         const M = globalThis.KatashiroMilkdown;
         const view = ctx.get("editorView");          // by slice name: the bundle does not export editorViewCtx
-        const doc = ctx.get(M.parserCtx)(saved);
+        const doc = ctx.get(M.parserCtx)(CanvasCore.padContainerMarkers(saved));
         if (!doc) return;
         // Only empty paragraphs and block-end spaces go, so the text before the cursor is the same
         // less those spaces: put the cursor back after as many characters (a position would shift

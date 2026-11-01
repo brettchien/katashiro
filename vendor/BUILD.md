@@ -35,6 +35,11 @@ periodically, so a frozen bundle accrues latent XSS. Pin exact versions, watch c
 advisories, and rebuild — not "vendor once and forget".
 
 - Source: `markdown-it@15.0.2` (MIT), `dompurify@3.4.16` (MPL-2.0 OR Apache-2.0), zero-`eval` both.
+- Bundled into `markdown-it.iife.js` with it (entry `scripts/vendor-build/entry-md.js`), as the
+  globals `markdownitContainer` and `markdownitGithubAlerts`: `markdown-it-container@4.0.0` (MIT) and
+  `markdown-it-github-alerts@1.0.1` (MIT), no dependencies of their own — cards and callouts in
+  canvases and the chat (ADR `docs/adr/canvas.md` §3.3 "Cards and callouts"). The alerts plugin's
+  SVG icon strings are in the bundle as data but never rendered (`markdown.js` turns icons off).
 - Rebuild: `scripts/vendor-build/build.sh` (see [Reproducible rebuild](#reproducible-rebuild) below).
 - Verified: eval-free (grep → 0); `renderMarkdown` renders GFM tables and strips
   `<script>` / `javascript:` / `onerror` (jsdom smoke test).
@@ -128,7 +133,8 @@ or the canvas header says Mermaid; each engine is the other's fallback. Loaded *
 The markdown-it / DOMPurify / highlight.js bundles are built from pinned inputs in
 `scripts/vendor-build/` (outside `vendor/`, so they don't ship in the release zip): the three entry
 files, a `package.json` with exact versions (esbuild included), and a `package-lock.json` that also
-pins the transitive deps (`entities`, `linkify-it`, `mdurl`, `punycode.js`, `uc.micro`).
+pins the transitive deps (`entities`, `linkify-it`, `mdurl`, `punycode.js`, `uc.micro`); `entry-md.js` also
+bundles `markdown-it-container` and `markdown-it-github-alerts`.
 
 ```sh
 scripts/vendor-build/build.sh   # npm ci + esbuild, then prints the sha256 of each bundle
@@ -137,7 +143,7 @@ scripts/vendor-build/build.sh   # npm ci + esbuild, then prints the sha256 of ea
 The output should be byte-identical to what is committed:
 
 ```
-d15f9d734865458b907a5b7307b145f00f810a7963b6e0ad89d9d0972a2c6fb6  markdown-it.iife.js
+0a3f15a3b9d3bedbc2372d1300cee4dc86e1ceb40ea6e8d18b3c1d61306246af  markdown-it.iife.js
 c087a84ef0542bc645e3bcac407ffb55ff6c08558c6798dcf1448739dc1fe406  dompurify.iife.js
 add316e5136c3ed131ab6dbe99bdd05195f236462093f017426fc439eab64713  highlight.iife.js
 aa1bbbf2617b23a623b23612cb3c5bdb63de512e652bf20fcfa832b045d37844  reveal/reveal.js

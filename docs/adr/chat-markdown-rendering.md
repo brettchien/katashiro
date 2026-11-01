@@ -88,6 +88,9 @@ Vendor three prebuilt, eval-free bundles into `vendor/` (same flow as `dom-acces
 `vendor/BUILD.md`): **`markdown-it`**, **`DOMPurify`**, **`highlight.js`** (curated language set:
 js, ts, python, rust, go, bash/shell, json, yaml, html, css, sql, diff — extend as needed). Loaded via
 `<script src>` in `sidepanel.html` before `sidepanel.js`.
+*Later:* two markdown-it plugins ride in the markdown-it bundle — `markdown-it-container` (`::: cards`)
+and `markdown-it-github-alerts` (`> [!NOTE]` callouts); see ADR [canvas](./canvas.md) §3.3 "Cards and
+callouts". `DP_CONFIG` (§3.2) is unchanged by them.
 
 **DOMPurify (and secondarily markdown-it) are *security* dependencies, not pure-compute libs like
 `dom-accessibility-api`** (Orca S3). mXSS bypasses are found and patched periodically, so a frozen

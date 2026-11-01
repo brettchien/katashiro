@@ -79,6 +79,9 @@ screenshot of the fixture, to its first argument or `/tmp/ks11-mermaid.png`);
 `scripts/smoke-glow-ranges.mjs` checks `canvas_patch`'s exact-range glow (ADR
 canvas §3.10) in the real canvas frame, and `scripts/smoke-editor-undo.mjs` the edit-mode ↶ 復原 /
 ↷ 重做 (ADR canvas §3.5: the editor's own history, focus kept in the editor).
+`scripts/smoke-cards.mjs` checks `::: cards` and the callouts (ADR canvas §3.3) in the real frame,
+before and after Milkdown normalization and an editor load + save (screenshots to its first argument
+or `/tmp/ks-shots/cards.png`).
 `scripts/smoke-ask-selection.mjs` checks the frame's `selection{rect}` (where the 💬 goes, re-sent on
 scroll, dropped out of view) and `scripts/smoke-ask-popover.mjs` the Ask agent popover in the real
 `canvas.html` with stubbed `chrome.*` APIs (ADR canvas §3.7). `scripts/smoke-diagram-notice.mjs`

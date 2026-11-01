@@ -7,7 +7,8 @@
 // `docs/adr/chat-markdown-rendering.md` §1.2). `renderMarkdown` is therefore the ONLY sanctioned
 // route from remote text to innerHTML: `md.render` → `DOMPurify.sanitize` (mandatory).
 //
-// Depends on the vendored globals `markdownit`, `DOMPurify`, and `hljs` (loaded before this file).
+// Depends on the vendored globals `markdownit` (with `markdownitContainer` and `markdownitGithubAlerts`,
+// bundled in the same file), `DOMPurify`, and `hljs` (loaded before this file).
 (function (global) {
   "use strict";
 
@@ -56,6 +57,106 @@
         box.content = m[1] === " " ? TASK_BOX : TASK_BOX_CHECKED;
         t[i].children.unshift(box);
         t[i - 2].attrJoin("class", "task-list-item");
+      }
+    });
+
+    // Cards (ADR canvas §3.3, "Cards and callouts"): a `::: cards` … `:::` block (markdown-it-container,
+    // vendored in the markdown-it bundle) is a row of cards. Only the name `cards` is registered, so any
+    // other `::: foo` stays plain text. The class is a CONSTANT string: the info string after `cards`
+    // is ignored, never copied into the markup. markdown-it-container's own default render would also
+    // only use the name; ours spells it out so that stays true whatever the plugin does.
+    if (global.markdownitContainer) {
+      md.use(global.markdownitContainer, "cards", {
+        validate: (params) => params.trim().split(/\s+/, 1)[0] === "cards",
+        render: (tokens, idx, options, env, slf) => {
+          if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", "cards");
+          return slf.renderToken(tokens, idx, options);
+        },
+      });
+    }
+    // Each card: every DIRECT-child `###` of a cards container starts one; blocks before the first
+    // `###` (if any) are a card of their own. Direct child = one level below the container's token,
+    // so an h3 inside a list, quote, alert or nested container never splits the outer row (a nested
+    // cards container gets its own cards). The card tokens are plain `div`s with a constant class
+    // (rendered by markdown-it's renderToken, no rule needed); their source lines run from their
+    // first block to the next card (or the closing `:::`), so the canvas's Ask agent can name them.
+    md.core.ruler.after("block", "cards", (state) => {
+      if (!state.tokens.some((t) => t.type === "container_cards_open")) return;
+      const out = [];
+      const stack = [];                   // open cards containers: { open, orig level, card }
+      const closeCard = (top, end) => {
+        if (!top.card) return;
+        if (top.card.map && end != null) top.card.map[1] = end;
+        const c = new state.Token("card_close", "div", -1);
+        c.block = true;
+        c.level = top.open.level + 1;
+        out.push(c);
+        top.card = null;
+      };
+      for (const t of state.tokens) {
+        const orig = t.level;
+        let top = stack[stack.length - 1];
+        if (t.type === "container_cards_close" && top && orig === top.level) {
+          closeCard(top, top.open.map && top.open.map[1]);
+          stack.pop();
+          t.level = orig + stack.length;
+          out.push(t);
+          continue;
+        }
+        if (top && orig === top.level + 1 && t.nesting !== -1) {
+          const h3 = t.type === "heading_open" && t.tag === "h3";
+          if (!top.card || h3) {
+            closeCard(top, t.map && t.map[0]);
+            const c = new state.Token("card_open", "div", 1);
+            c.block = true;
+            c.level = top.open.level + 1;
+            c.attrSet("class", "card");
+            if (t.map) c.map = [t.map[0], t.map[1]];
+            out.push(c);
+            top.card = c;
+          }
+        }
+        t.level = orig + stack.length;    // everything inside a container now sits inside a card
+        out.push(t);
+        if (t.type === "container_cards_open") stack.push({ open: t, level: orig, card: null });
+      }
+      state.tokens = out;
+    });
+
+    // Callouts (ADR canvas §3.3): GitHub alerts `> [!NOTE]` / TIP / IMPORTANT / WARNING / CAUTION
+    // (markdown-it-github-alerts, vendored with markdown-it). Its rule also accepts the escaped
+    // `> \[!NOTE]`, which is how Milkdown normalization (ADR canvas §3.5) writes the marker back, so a
+    // normalized canvas keeps its alerts. Our own alert_open replaces the plugin's: no SVG icon (the
+    // sink is html-profile only and DP_CONFIG stays pinned, so an <svg> would be stripped anyway),
+    // classes only from a constant table keyed by the matched marker, and the optional custom title
+    // (`> [!NOTE] Heads up`) ESCAPED — the plugin pastes it into its HTML raw, which would undo the
+    // html:false double defense.
+    const ALERT_CLASS = {
+      note: "markdown-alert markdown-alert-note", tip: "markdown-alert markdown-alert-tip",
+      important: "markdown-alert markdown-alert-important", warning: "markdown-alert markdown-alert-warning",
+      caution: "markdown-alert markdown-alert-caution",
+    };
+    if (global.markdownitGithubAlerts) {
+      md.use(global.markdownitGithubAlerts, { icons: {}, markers: ["TIP", "NOTE", "IMPORTANT", "WARNING", "CAUTION"] });
+      md.renderer.rules.alert_open = (tokens, idx, options, env, slf) => {
+        const meta = tokens[idx].meta || {};
+        const cls = Object.prototype.hasOwnProperty.call(ALERT_CLASS, meta.type) ? ALERT_CLASS[meta.type] : ALERT_CLASS.note;
+        // renderAttrs: only the source-line data-* the source_lines rule set (numbers, see below)
+        return `<div class="${cls}"${slf.renderAttrs(tokens[idx])}><p class="markdown-alert-title">` +
+          md.utils.escapeHtml(String(meta.title || "")) + "</p>\n";
+      };
+    }
+    // Emoji callouts (as in Claude's docs): a plain quote whose first paragraph starts with ℹ️ / ✅ /
+    // ⚠️ (with or without U+FE0F) gets the same constant alert classes (note / tip / warning) plus
+    // `markdown-alert-emoji` (no title row: the emoji, kept in the text, is the marker). Runs after
+    // the GitHub-alerts rule, which has already turned `[!…]` quotes into alert_open.
+    const EMOJI_ALERT = [[/^ℹ️?/, "note"], [/^✅️?/, "tip"], [/^⚠️?/, "warning"]];
+    md.core.ruler.after(global.markdownitGithubAlerts ? "github-alerts" : "block", "emoji_alerts", (state) => {
+      const t = state.tokens;
+      for (let i = 0; i + 2 < t.length; i++) {
+        if (t[i].type !== "blockquote_open" || t[i + 1].type !== "paragraph_open" || t[i + 2].type !== "inline") continue;
+        const hit = EMOJI_ALERT.find(([re]) => re.test(t[i + 2].content));
+        if (hit) t[i].attrJoin("class", ALERT_CLASS[hit[1]] + " markdown-alert-emoji");
       }
     });
 

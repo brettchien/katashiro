@@ -1,1 +1,1 @@
-import m from "markdown-it";globalThis.markdownit=m;
+import m from "markdown-it";import c from "markdown-it-container";import a from "markdown-it-github-alerts";globalThis.markdownit=m;globalThis.markdownitContainer=c;globalThis.markdownitGithubAlerts=a;

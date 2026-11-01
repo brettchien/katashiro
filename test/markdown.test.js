@@ -194,3 +194,116 @@ test("user messages: lists, quotes, task lists and html escaping still work with
   assert.equal(mdUser.options.html, false);
   assert.equal(md.options.breaks, false);
 });
+
+// --- Cards and callouts (ADR canvas §3.3 "Cards and callouts") ------------------------------------
+// The class survives DOMPurify (html profile keeps `class` on div/p/blockquote) and no <svg> reaches
+// the sink: both checked on the real sanitizer by scripts/smoke-cards.mjs (no DOM under node --test).
+const cardsOf = (html) => {
+  const m = /<div class="cards">([\s\S]*)<\/div>\s*$/.exec(html);
+  return m ? (m[1].match(/<div class="card">/g) || []).length : -1;
+};
+
+test("cards: the plugins are bundled with markdown-it (one vendor file, load order unchanged)", () => {
+  assert.equal(typeof globalThis.markdownitContainer, "function");
+  assert.equal(typeof globalThis.markdownitGithubAlerts, "function");
+});
+
+test("cards: every direct-child ### starts a card; text before the first ### is a card of its own", () => {
+  const h = md.render("::: cards\nIntro **text**.\n\n### One\nBody 1\n\n### Two\n- a\n- b\n\n### Three\n| x |\n|---|\n| 1 |\n:::\n");
+  assert.equal(cardsOf(h), 4);
+  assert.match(h, /^<div class="cards">\n<div class="card">\n<p>Intro <strong>text<\/strong>\.<\/p>\n<\/div>\n<div class="card">\n<h3>One<\/h3>\n<p>Body 1<\/p>\n<\/div>\n<div class="card">\n<h3>Two<\/h3>/);
+  assert.match(h, /<h3>Three<\/h3>\n<table>[\s\S]*<\/table>\n<\/div>\n<\/div>\n$/);
+  // no preamble: the first card is the first ###
+  assert.match(md.render("::: cards\n### A\nx\n### B\ny\n:::"), /^<div class="cards">\n<div class="card">\n<h3>A<\/h3>/);
+  assert.equal(cardsOf(md.render("::: cards\n### A\nx\n### B\ny\n:::")), 2);
+  // only text, no ###: one card
+  assert.equal(cardsOf(md.render("::: cards\njust text\n:::")), 1);
+});
+
+test("cards: an h3 in a list, quote, alert or other heading level never splits a card", () => {
+  const h = md.render("::: cards\n### A\n- ### in a list\n\n> ### in a quote\n\n> [!NOTE]\n> ### in an alert\n\n## h2 stays\n#### h4 stays\n### B\nend\n:::");
+  assert.equal(cardsOf(h), 2);
+  assert.match(h, /<li>\n<h3>in a list<\/h3>\n<\/li>/);
+  assert.match(h, /<blockquote>\n<h3>in a quote<\/h3>\n<\/blockquote>/);
+});
+
+test("cards: a nested cards container (longer fence) has its own cards; the outer split is unchanged", () => {
+  const h = md.render(":::: cards\n### Outer A\n::: cards\n### Inner 1\n### Inner 2\n:::\n### Outer B\n::::");
+  assert.equal((h.match(/<div class="cards">/g) || []).length, 2);
+  assert.equal((h.match(/<div class="card">/g) || []).length, 4);
+  assert.match(h, /<h3>Outer A<\/h3>\n<div class="cards">\n<div class="card">\n<h3>Inner 1<\/h3>\n<\/div>\n<div class="card">\n<h3>Inner 2<\/h3>\n<\/div>\n<\/div>\n<\/div>\n<div class="card">\n<h3>Outer B<\/h3>/);
+});
+
+test("cards: only `cards` is a container; the info string never reaches the markup", () => {
+  assert.equal(md.render("::: foo\nx\n:::"), "<p>::: foo\nx\n:::</p>\n");
+  assert.equal(md.render("::: cardsx\nx\n:::"), "<p>::: cardsx\nx\n:::</p>\n");
+  const h = md.render('::: cards "><img src=x onerror=alert(1)> class="evil\n### A\n:::');
+  assert.match(h, /^<div class="cards">\n<div class="card">\n<h3>A<\/h3>\n<\/div>\n<\/div>\n$/);
+  assert.doesNotMatch(h, /evil|<img|onerror/);
+  // the ### text is ordinary (escaped) heading text
+  assert.match(md.render("::: cards\n### <b>x</b>\n:::"), /<h3>&lt;b&gt;x&lt;\/b&gt;<\/h3>/);
+  // an unclosed container runs to the end of the document (markdown-it-container)
+  assert.equal(cardsOf(md.render("::: cards\n### A\n### B")), 2);
+});
+
+test("cards: source lines on the container, each card (first block → next card / closing :::) and inside", () => {
+  const src = "# T\n\n::: cards\nintro\n\n### A\ntext\n\n### B\n- x\n:::\n";
+  const tags = lineTags(md.render(src, { sourceLines: true }));
+  const cards = Array.from(md.render(src, { sourceLines: true }).matchAll(/<div class="card" data-line-start="(\d+)" data-line-end="(\d+)"/g)).map((m) => [+m[1], +m[2]]);
+  assert.deepEqual(cards, [[3, 5], [5, 8], [8, 10]]);
+  assert.deepEqual(tags.filter(([t]) => t === "div"), [["div", 2, 10]]);
+  assert.deepEqual(tags.find(([t]) => t === "h3"), ["h3", 5, 6]);
+  assert.deepEqual(tags.find(([t]) => t === "ul"), ["ul", 9, 10]);
+  assert.match(md.render(src, { sourceLines: true }), /<div data-line-start="2" data-line-end="10" class="cards">\n<div class="card" data-line-start="3"/);
+});
+
+test("alerts: GitHub [!NOTE] … [!CAUTION] become constant-class callouts with a title row, no svg", () => {
+  for (const [marker, type, title] of [["NOTE", "note", "Note"], ["TIP", "tip", "Tip"], ["IMPORTANT", "important", "Important"], ["WARNING", "warning", "Warning"], ["caution", "caution", "Caution"]]) {
+    const h = md.render(`> [!${marker}]\n> Body *here*.`);
+    assert.equal(h, `<div class="markdown-alert markdown-alert-${type}"><p class="markdown-alert-title">${title}</p>\n<p>Body <em>here</em>.</p>\n</div>\n`);
+  }
+  assert.doesNotMatch(md.render("> [!WARNING]\n> x"), /<svg/i);
+  assert.match(md.render("> [!UNKNOWN]\n> x"), /^<blockquote>\n<p>\[!UNKNOWN\]/);   // not one of the five
+  assert.match(md.render("> plain quote"), /^<blockquote>\n<p>plain quote<\/p>/);
+});
+
+test("alerts: the escaped `> \\[!NOTE]` Milkdown normalization writes is still an alert (ADR canvas §3.5)", () => {
+  assert.equal(md.render("> \\[!NOTE]\n> Useful information."),
+    '<div class="markdown-alert markdown-alert-note"><p class="markdown-alert-title">Note</p>\n<p>Useful information.</p>\n</div>\n');
+  assert.match(md.render("> \\[!WARNING]\n>\n> Careful."), /^<div class="markdown-alert markdown-alert-warning">/);
+});
+
+test("alerts: a custom title is escaped text (the plugin would paste it raw); source lines kept", () => {
+  const h = md.render('> [!TIP] <img src=x onerror=alert(1)> & "q"\n> body');
+  assert.match(h, /^<div class="markdown-alert markdown-alert-tip"><p class="markdown-alert-title">&lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;q&quot;<\/p>/);
+  assert.doesNotMatch(h, /<img/);
+  assert.match(md.render("x\n\n> [!NOTE]\n> y", { sourceLines: true }), /<div class="markdown-alert markdown-alert-note" data-line-start="2" data-line-end="4">/);
+});
+
+test("emoji callouts: ℹ️ / ✅ / ⚠️ (with or without U+FE0F) at the start of a quote get the alert classes", () => {
+  const cls = (src) => { const m = /^<blockquote class="([^"]+)">/.exec(md.render(src)); return m && m[1]; };
+  assert.equal(cls("> ℹ️ Info"), "markdown-alert markdown-alert-note markdown-alert-emoji");
+  assert.equal(cls("> \u2139 Info"), "markdown-alert markdown-alert-note markdown-alert-emoji");
+  assert.equal(cls("> ✅ Done"), "markdown-alert markdown-alert-tip markdown-alert-emoji");
+  assert.equal(cls("> \u2705\uFE0F Done"), "markdown-alert markdown-alert-tip markdown-alert-emoji");
+  assert.equal(cls("> ⚠️ Careful"), "markdown-alert markdown-alert-warning markdown-alert-emoji");
+  assert.equal(cls("> \u26A0 Careful"), "markdown-alert markdown-alert-warning markdown-alert-emoji");
+  // the emoji stays in the text; no title row
+  assert.match(md.render("> ⚠️ Careful *now*"), /<p>⚠️ Careful <em>now<\/em><\/p>/);
+  assert.doesNotMatch(md.render("> ⚠️ Careful"), /markdown-alert-title/);
+  // only at the start of the quote's first paragraph
+  assert.equal(cls("> text ⚠️ later"), null);
+  assert.equal(cls("> first\n>\n> ⚠️ second paragraph"), null);
+  assert.equal(cls("> - ⚠️ in a list"), null);
+  assert.equal(cls("> 🔥 other emoji"), null);
+});
+
+test("cards and callouts: the chat renders them too (agent and user parsers share buildMd)", () => {
+  const src = "::: cards\n### A\n> [!NOTE]\n> n\n\n### B\n> ⚠️ w\n:::";
+  for (const p of [md, mdUser]) {
+    const h = p.render(src);
+    assert.equal((h.match(/<div class="card">/g) || []).length, 2);
+    assert.match(h, /<div class="markdown-alert markdown-alert-note">/);
+    assert.match(h, /<blockquote class="markdown-alert markdown-alert-warning markdown-alert-emoji">/);
+  }
+});
