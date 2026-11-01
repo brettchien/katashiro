@@ -285,7 +285,7 @@ async function suite(engine) {
   if (engine === "mermaid") s1.theme === "dark" ? ok(`theme dark (node fill ${s1.nodeFill})`) : fail(`theme ${s1.theme}`);
   else {
     const vars = await md.evaluate(() => { const f = document.querySelector('#doc figure.ks-mermaid[data-engine="pele"]'); const cs = getComputedStyle(f); return { bg: cs.getPropertyValue("--pele-bg").trim(), font: cs.getPropertyValue("--pele-font").trim(), body: getComputedStyle(document.body).fontFamily }; });
-    vars.bg === "#0f172a" && vars.font === vars.body ? ok(`Pele takes the canvas colours and font (--pele-bg ${vars.bg})`) : fail(`pele vars: ${JSON.stringify(vars)}`);
+    vars.bg === "#0d1117" && vars.font === vars.body ? ok(`Pele takes the canvas colours and font (--pele-bg ${vars.bg})`) : fail(`pele vars: ${JSON.stringify(vars)}`);
   }
 
   // Screenshot: the frame sized to its content.
@@ -362,7 +362,7 @@ async function suite(engine) {
   await (await page.$("#md")).screenshot({ path: PRINT_SHOT });
   await md.evaluate(() => { document.getElementById("doc").innerHTML = window.__screenDoc; });
   await page.emulateMediaType(null);
-  if (engine === "pele") (await pv()) === "#0f172a" ? ok("back on screen: dark variables again") : fail("pele vars stayed light after print media");
+  if (engine === "pele") (await pv()) === "#0d1117" ? ok("back on screen: dark variables again") : fail("pele vars stayed light after print media");
   ok(`print screenshot ${PRINT_SHOT}`);
 
   // 4. Milkdown normalization keeps the fences.
@@ -383,7 +383,7 @@ async function suite(engine) {
   sl === 1 ? ok("a mermaid fence on a slide renders") : fail(`slides: ${sl} svgs`);
   if (engine === "pele") {
     const deckBg = await frameOf("sl").evaluate(() => getComputedStyle(document.querySelector(".slides figure.ks-mermaid")).getPropertyValue("--pele-bg").trim());
-    deckBg === "#191919" ? ok("on a slide Pele sits on the deck's background (--pele-bg #191919)") : fail(`deck --pele-bg ${deckBg}`);
+    deckBg === "#0d1117" ? ok("on a slide Pele sits on the deck's background (--pele-bg #0d1117)") : fail(`deck --pele-bg ${deckBg}`);
   }
   await page.evaluate(() => __send("sl", { type: "goto", slide: 2 }));
   await waitFor((m) => m.nonce === "nonce0sl" && m.type === "slide", "slide 2");

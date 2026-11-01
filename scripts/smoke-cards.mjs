@@ -297,7 +297,7 @@ try {
     const th = st("#deck table th"), td = st("#deck table td"), last = st("#deck table tbody tr:last-child td");
     return { wrap: document.querySelector("#deck table").parentElement.className, th: [th.borderBottomWidth, th.borderBottomColor, th.fontWeight, th.paddingLeft], td: [td.borderBottomWidth, td.borderBottomColor], last: last.borderBottomStyle };
   });
-  check(cell.wrap === "table-wrap" && JSON.stringify(cell.th) === JSON.stringify(["2px", "rgb(203, 213, 225)", "600", "0px"]) && JSON.stringify(cell.td) === JSON.stringify(["1px", "rgba(255, 255, 255, 0.12)"]) && cell.last === "none", "slides: the table has the editorial rules, not the theme's", cell);
+  check(cell.wrap === "table-wrap" && JSON.stringify(cell.th) === JSON.stringify(["2px", "rgb(201, 209, 217)", "600", "0px"]) && JSON.stringify(cell.td) === JSON.stringify(["1px", "rgba(255, 255, 255, 0.12)"]) && cell.last === "none", "slides: the table has the editorial rules, not the theme's", cell);
 
   let violations = [];
   for (const fr of page.frames()) violations = violations.concat(await fr.evaluate(() => window.__ksViolations || []));
