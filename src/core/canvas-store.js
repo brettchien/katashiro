@@ -15,6 +15,10 @@
 //   canvas:<conversationId>:moved  [{ id, title, kind, version, dir: "in" | "out", at }] canvases the
 //                                  user moved into or out of that conversation (multi-conversation
 //                                  §7.3), until its agent has been told (takeMoveNotes).
+//   canvas:<id>:runGrant           an html canvas the user let run its scripts (canvas-html §2.6,
+//                                  Brett 2026-11-01): { conversationId, version, at }; version = the
+//                                  latest revision that ran under it. Gone on ⏹ Stop scripts, a move,
+//                                  a delete, or Settings → html 畫布 off.
 // meta may also carry the folder mirror state (canvas-mirror.js, §3.6): file, fileSyncedVersion,
 // filesByFolder. patchRanges: what the latest canvas_patch changed (§3.10, #107). noMirror marks
 // a canvas an incognito window stored before Katashiro stopped running in incognito (#109); none is
@@ -71,6 +75,16 @@
   // §3 (#210 review): the one-time "圖表改用 Pele 繪製" notice; true once a canvas tab showed it.
   const PELE_NOTICE_KEY = "canvas:peleNoticeShown";
   const ID_RE = /^cv_[0-9a-f]{12}$/;
+  // canvas-html §2.6 (canvas §6 Q8 revised, Brett 2026-11-01): ▶ Run scripts authorizes the canvas,
+  // not one revision. A grant holds only for the conversation it was given in (a move clears the key
+  // too; this check is the second line) and only while html canvases are on (the setting wins).
+  const runGrantKey = (id) => `canvas:${id}:runGrant`;
+  const RUN_GRANT_KEY_RE = /^canvas:cv_[0-9a-f]{12}:runGrant$/;
+  function runGrantHolds(grant, meta, htmlSetting) {
+    return !!grant && typeof grant === "object" && !!meta && meta.kind === "html" &&
+      typeof grant.conversationId === "string" && grant.conversationId === meta.conversationId &&
+      Number.isInteger(grant.version) && htmlEnabled(htmlSetting);
+  }
 
   const indexKey = (conversationId) => `canvas:${conversationId}:index`;
   const movedKey = (conversationId) => `canvas:${conversationId}:moved`;
@@ -861,7 +875,7 @@
         result = { removed: true, version: meta.version };
         // Its whole history (§3.5). With getKeys, also any version key a write left behind when it
         // stopped between storing the new version and removing the trimmed ones.
-        const keys = new Set([metaKey(id), latestKey(id), agentKey(id), ...contentKeys(meta)]);
+        const keys = new Set([metaKey(id), latestKey(id), agentKey(id), runGrantKey(id), ...contentKeys(meta)]);
         if (typeof storage.getKeys === "function") {
           const prefix = `canvas:${id}:v:`;
           for (const k of await storage.getKeys()) if (k.startsWith(prefix)) keys.add(k);
@@ -899,6 +913,9 @@
         const old = cur.conversationId;
         const meta = { ...cur, conversationId: to };
         const at = now();
+        // canvas-html §2.6: another agent writes next, so ▶ Run scripts must be asked again. Removed
+        // before the meta changes, so a tab that sees the move never sees the old grant.
+        await storage.remove(runGrantKey(id));
         await lock("canvas:index", async () => {
           const got = (await storage.get([indexKey(old), indexKey(to), movedKey(old), movedKey(to)])) || {};
           const oldList = (got[indexKey(old)] || []).filter((e) => e.id !== id);
@@ -939,7 +956,55 @@
       });
     }
 
-    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas, move, takeMoveNotes };
+    // --- ▶ Run scripts, once per canvas (canvas-html §2.6, Brett 2026-11-01) ---------------------
+    // Under the canvas lock, like move() and remove(), so a grant cannot land after a move or a
+    // delete cleared it. `conversationId`: the conversation the tab showed the canvas in when the
+    // user clicked; a canvas moved meanwhile is refused (the user authorized it for that agent).
+    // → true when the grant is stored.
+    async function grantRun({ id, conversationId, version }) {
+      if (!ID_RE.test(String(id)) || !Number.isInteger(version)) return false;
+      let ok = false;
+      await lock(`canvas:${id}`, async () => {
+        const meta = await getOne(metaKey(id));
+        if (!meta || meta.kind !== "html" || meta.conversationId !== conversationId) return;
+        if (!htmlEnabled(await getOne(HTML_ENABLED_KEY))) return;
+        await storage.set({ [runGrantKey(id)]: { conversationId, version: Math.min(version, meta.version), at: now() } });
+        ok = true;
+      });
+      return ok;
+    }
+    // The grant as stored and whether it holds for the canvas now (meta read under the lock-free
+    // path: a tab re-checks on every onChanged of the key, the meta or the setting).
+    async function readRunGrant(id) {
+      if (!ID_RE.test(String(id))) return { grant: null, holds: false };
+      const got = (await storage.get([runGrantKey(id), metaKey(id), HTML_ENABLED_KEY])) || {};
+      const grant = got[runGrantKey(id)] || null;
+      return { grant, holds: runGrantHolds(grant, got[metaKey(id)], got[HTML_ENABLED_KEY]) };
+    }
+    // A revision ran under the grant: remember it, so the next tab that opens says nothing about it
+    // and a later revision is announced (§2.6 auto-run notice). Only forward, only while it holds.
+    async function noteRun({ id, version }) {
+      if (!ID_RE.test(String(id)) || !Number.isInteger(version)) return;
+      await lock(`canvas:${id}`, async () => {
+        const got = (await storage.get([runGrantKey(id), metaKey(id), HTML_ENABLED_KEY])) || {};
+        const grant = got[runGrantKey(id)];
+        if (!runGrantHolds(grant, got[metaKey(id)], got[HTML_ENABLED_KEY]) || grant.version >= version) return;
+        await storage.set({ [runGrantKey(id)]: { ...grant, version } });
+      });
+    }
+    // ⏹ Stop scripts, or the load gate dropped the running frame.
+    async function revokeRun({ id }) {
+      if (!ID_RE.test(String(id))) return;
+      await lock(`canvas:${id}`, () => storage.remove(runGrantKey(id)));
+    }
+    // Settings → html 畫布 off: every grant goes, so turning it on again runs nothing by itself.
+    async function revokeAllRuns() {
+      const keys = Object.keys(await getMatching(storage, (k) => RUN_GRANT_KEY_RE.test(k)));
+      if (keys.length) await storage.remove(keys);
+      return keys.length;
+    }
+
+    return { markSeen, agentWrite, agentPatch, read, readImage, readAgentCopy, readPrevious, userSave, revertToAgent, applyNormalized, list, remove, removeIncognitoLeftovers, touch, usage, sweepImages, allMetas, move, takeMoveNotes, grantRun, readRunGrant, noteRun, revokeRun, revokeAllRuns };
   }
 
   // The canvases an incognito panel stored (#109): only those carry meta.noMirror. They never had
@@ -965,5 +1030,5 @@
 
   return { createCanvasStore, incognitoLeftovers,
     historyLimit, historyOf, contentKey, contentKeys, previousVersion, appendHistory, historyFootprint, footprint,
-    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, HTML_MAX_BYTES, HTML_ENABLED_KEY, htmlEnabled, DIAGRAM_ENGINE_KEY, diagramEngine, PELE_NOTICE_KEY, contentCap, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX };
+    HISTORY_MAX_KEY, HISTORY_DEFAULT, HISTORY_MIN, HISTORY_MAX, HTML_MAX_BYTES, HTML_ENABLED_KEY, htmlEnabled, DIAGRAM_ENGINE_KEY, diagramEngine, PELE_NOTICE_KEY, contentCap, versionKey, unifiedDiff, planPatch, validatePatchEdits, PatchError, PATCH_EDITS_MAX, PATCH_FIND_MAX, PATCH_REPLACE_MAX, agentKey, getMatching, IMAGE_MIME_TYPES, IMAGE_MAX_BYTES, imageKey, sha256OfBase64, StaleError, QuotaError, BUDGET_BYTES, BUDGET_OVERRIDE_KEY, BUDGET_OVERRIDE_MIN, KINDS, TITLE_MAX, CONTENT_MAX_BYTES, ID_RE, metaKey, latestKey, indexKey, movedKey, MOVE_NOTES_MAX, runGrantKey, runGrantHolds };
 });

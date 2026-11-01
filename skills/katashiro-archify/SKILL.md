@@ -36,13 +36,15 @@ deliver the file into a canvas the way this one says.
    check the layout. Report it as an automated check, not as the user's review. It stands in for
    Archify's browser check.
 5. **Tell the user** what the diagram shows, and that **▶ Run scripts** in the canvas header makes it
-   interactive (pan / zoom, trace a route, focus a node, themes). Exports (PNG / SVG / WebM) work
-   after that; Archify's Copy button does not (the clipboard stays closed).
+   interactive (pan / zoom, trace a route, focus a node, themes); once pressed, it holds for this
+   canvas. Exports (PNG / SVG / WebM) work after that; Archify's Copy button does not (the clipboard
+   stays closed). Do not add "press Run scripts" text to the page: Katashiro shows its own hint.
 
 ## Revisions
 
 Change the JSON, not the HTML: edit `<slug>.json`, finalize again, upload with `--id`. The user's
-canvas then shows the new revision without its scripts until they press ▶ Run scripts again.
+canvas runs the new revision at once if they already pressed ▶ Run scripts on it (and did not
+⏹ stop it); otherwise it shows without its scripts until they press it.
 `canvas_read` on the canvas returns only the first 16 K characters of the HTML — your JSON is the
 source of truth.
 

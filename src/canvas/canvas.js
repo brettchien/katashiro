@@ -42,8 +42,8 @@
   const showChangesBtn = document.getElementById("canvas-show-changes");
   const runBtn = document.getElementById("canvas-run");
   const engineBtn = document.getElementById("canvas-engine");
-  const htmlBar = document.getElementById("canvas-html-bar");
-  const htmlHint = document.getElementById("canvas-html-hint");
+  const htmlHint = document.getElementById("canvas-html-hint");       // the chip (canvas-html §2.6)
+  const htmlRisk = document.getElementById("canvas-html-risk");       // its tooltip, for aria-describedby
   // The compare tab's own way out (Brett, 2026-10-11): closing it ends the compare (§3.10).
   if (compareView) {
     endCompareBtn.hidden = false;
@@ -97,9 +97,13 @@
   // messages it may send (CanvasCore.acceptFrameMessage): "canvas" (canvas-frame.html), "htmlStatic"
   // (canvas-frame.html showing an html canvas without its scripts) or "html" (canvas-html-frame.html,
   // after ▶ Run scripts). htmlRun: the revision whose scripts run, while the html frame is mounted.
+  // ▶ Run scripts authorizes the canvas, not the revision (canvas-html §2.6, Brett 2026-11-01): the
+  // grant lives in storage (CanvasStore.runGrantKey), so every tab of the canvas, a reload and the
+  // agent's next revisions run without another click, each a fresh html frame with a new nonce.
   let frameProfile = "canvas";
   let htmlRun = null;                 // { version, content } | null: the revision it was started on
   let htmlRenderSent = false;         // the one render{} of this html frame's nonce went out
+  let htmlAutoNote = "";              // this html frame's 「vN 已自動執行」 notice (§2.6), kept above its errors
   let htmlArm = null;                 // { token, timer }: the single-use expectation of the write's load
   let htmlOn = true;                  // Settings → html 畫布 (CanvasStore.HTML_ENABLED_KEY)
   // Pinned by e2e/cases/html-canvas.mjs (real Chrome 155): whether document.open/write/close in the
@@ -196,24 +200,21 @@
     updateHtmlBar();
   }
 
-  // ▶ Run scripts / ⏹ Stop scripts and the line under the header (canvas-html §2.3). Host text only.
+  // ▶ Run scripts / ⏹ Stop scripts and the chip beside it (canvas-html §2.3, §2.6): a few words on
+  // screen, the risk in the tooltip and in #canvas-html-risk (aria-describedby). Host text only.
   function updateHtmlBar() {
     const isHtml = !compareView && !!current && current.meta.kind === "html";
-    htmlBar.hidden = !isHtml;
-    runBtn.hidden = !isHtml || (!htmlOn && !htmlRun) || deleted;
+    htmlHint.hidden = !isHtml;
+    runBtn.hidden = true;
     if (!isHtml) return;
-    htmlBar.classList.toggle("running", !!htmlRun);
-    if (htmlRun) {
-      runBtn.textContent = "⏹ Stop scripts";
-      runBtn.title = "停止這個畫布的 script，回到不執行 script 的顯示";
-      htmlHint.textContent = `▶ 正在執行 v${htmlRun.version} 的 script：它可以把這個畫布的內容、和你在裡面輸入的東西送出瀏覽器。新的版本會回到不執行 script 的顯示，要再按一次 ▶ Run scripts。`;
-    } else if (!htmlOn) {
-      htmlHint.textContent = "html 畫布的 script 已在側邊欄的設定裡關閉（設定 → html 畫布），這裡只顯示不執行 script 的版本。";
-    } else {
-      runBtn.textContent = "▶ Run scripts";
-      runBtn.title = "執行這個版本的 script（只有這個版本；新的版本要再按一次）";
-      htmlHint.textContent = "目前不執行它的 script（Shown without its scripts）。按 ▶ Run scripts 才能互動；執行後，這個畫布的 script 可以把它的內容、和你在裡面輸入的東西送出瀏覽器。";
-    }
+    const v = CanvasCore.htmlRunView({ running: htmlRun ? htmlRun.version : 0, htmlOn, deleted });
+    runBtn.hidden = v.runHidden;
+    runBtn.textContent = v.runLabel;
+    runBtn.title = v.runTitle;
+    htmlHint.textContent = v.chip;
+    htmlHint.title = v.chipTitle;
+    htmlRisk.textContent = v.chipTitle;
+    htmlHint.classList.toggle("running", v.chipRunning);
   }
 
   // --- Pushes into the prompt (§3.7) -----------------------------------------------------------
@@ -642,10 +643,11 @@
   // that fence rather than told the whole canvas is broken.
   // tag ({seq, version}): the render the error came from. A newer render's rendered{} clears the
   // notice, and the push names that version, not whatever the canvas holds at click time.
-  function offerSendError(msg, diagram = false, tag = null) {
+  // lead: a line kept above the error (an html revision's auto-run notice, canvas-html §2.6).
+  function offerSendError(msg, diagram = false, tag = null, lead = "") {
     const c = current;
     const version = tag && Number.isInteger(tag.version) ? tag.version : c && c.meta.version;
-    notice(`${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
+    notice(`${lead ? `${lead}\n` : ""}${diagram ? "圖表有錯誤" : "顯示時發生錯誤"}${tag && version ? `（v${version}）` : ""}：${CanvasCore.clipError(msg)}`, {
       label: "送給 agent 修",
       fn: async () => {
         if (!c) return;
@@ -759,7 +761,11 @@
     frame.setAttribute("referrerpolicy", "no-referrer");
     frame.title = "canvas content (scripts running)";
     frame.addEventListener("load", () => {
-      if (!gate.onLoad()) dropFrame("畫布內容嘗試離開這個頁面，已停止顯示。重新整理這個分頁即可重新載入。");
+      if (gate.onLoad()) return;
+      // A page that navigates itself loses the canvas's grant (canvas-html §2.6): a reload must not
+      // run it again by itself.
+      revokeHere();
+      dropFrame("畫布內容嘗試離開這個頁面，已停止顯示，script 的授權也已撤回。重新整理這個分頁即可重新載入。");
     });
     gate.reset();
     gate.expect();
@@ -771,6 +777,7 @@
   }
   function endHtmlRun() {
     htmlRun = null;
+    htmlAutoNote = "";
     htmlRenderSent = false;
     if (htmlArm) { clearTimeout(htmlArm.timer); gate.disarm(htmlArm.token); htmlArm = null; }
   }
@@ -785,12 +792,71 @@
     }
     frame.contentWindow.postMessage({ type: "render", nonce, kind: "html", content: htmlRun.content, version: htmlRun.version }, "*");
   }
-  runBtn.addEventListener("click", () => {
-    if (!current || current.meta.kind !== "html" || compareView) return;
-    if (htmlRun) { mountFrame(); updateButtons(); return; }
-    if (!htmlOn) return;
-    mountHtmlFrame();
+  // ▶ Run scripts grants this canvas (CanvasStore.grantRun, under its lock: refused if it moved or
+  // was deleted meanwhile, or html canvases are off); ⏹ Stop scripts revokes it, in every tab.
+  // canvas-html §2.6: no confirm dialog — the button's tooltip and the chip's say what running allows.
+  let runClicking = false;
+  let revoking = null;                // ⏹'s revoke in flight: reconcileHtml waits for it, never re-runs meanwhile
+  function revokeHere() {
+    const mine = store.revokeRun({ id: canvasId }).catch(() => {}).then(() => { if (revoking === mine) revoking = null; });
+    revoking = mine;
+    return mine;
+  }
+  runBtn.addEventListener("click", async () => {
+    if (!current || current.meta.kind !== "html" || compareView || runClicking) return;
+    if (htmlRun) { mountFrame(); updateButtons(); revokeHere(); return; }
+    if (!htmlOn || deleted) return;
+    const c = current;
+    runClicking = true;
+    runBtn.disabled = true;
+    let ok = false;
+    try { ok = await store.grantRun({ id: canvasId, conversationId: c.meta.conversationId, version: c.meta.version }); } catch (_) { ok = false; }
+    finally { runClicking = false; runBtn.disabled = false; }
+    if (!ok) { notice("沒有執行：這個畫布剛剛被移動或刪除，或 html 畫布已在設定裡關閉。"); return; }
+    reconcileHtml();                  // runs the latest revision (a newer one may have come meanwhile)
   });
+
+  // Whether this tab should run the html canvas's scripts now (canvas-html §2.6): on load, on every
+  // refresh, and when the grant changes in storage (another tab's ▶ / ⏹, a move, the setting). Runs
+  // the current revision in a fresh html frame if the grant holds; goes back to the static view if
+  // it runs without one. → true when it mounted (or kept) the frame itself; false: the caller
+  // renders the static view as usual.
+  let htmlSeq = 0;
+  async function reconcileHtml() {
+    if (compareView || !current || current.meta.kind !== "html" || deleted) return false;
+    const seq = ++htmlSeq, c = current;
+    if (revoking) await revoking;
+    let g = { grant: null, holds: false };
+    try { g = await store.readRunGrant(canvasId); } catch (_) { /* no grant */ }
+    if (seq !== htmlSeq || c !== current) return true;          // superseded: the newer call decides
+    if (deleted) return false;
+    const v = c.meta.version;
+    const plan = CanvasCore.htmlAutoRun({ kind: c.meta.kind, holds: g.holds, grantVersion: g.grant && g.grant.version, version: v, htmlOn, compareView, deleted });
+    if (plan.run) {
+      if (htmlRun && htmlRun.version === v) return true;        // already running this revision
+      mountHtmlFrame();                                         // a new nonce: the host invariant holds (§2.4)
+      if (plan.announce) {
+        htmlAutoNote = CanvasCore.htmlAutoRunNotice(v);
+        notice(htmlAutoNote);                                   // textContent; the version shows code changed
+        store.noteRun({ id: canvasId, version: v }).catch(() => {});
+      }
+      return true;
+    }
+    if (!htmlRun) return false;
+    const newer = v !== htmlRun.version;
+    mountFrame();
+    updateButtons();
+    notice(newer
+      ? `這個畫布更新成 v${v}：已回到靜態檢視，要互動請按 ▶ Run scripts。`
+      : "這個畫布的 script 授權已撤回，回到靜態檢視。");
+    return true;
+  }
+  if (!compareView) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      // false: the static view stays; render the latest into it (a revision may have raced this).
+      if (area === "local" && changes[CanvasStore.runGrantKey(canvasId)] && !runClicking) reconcileHtml().then((mounted) => { if (!mounted) sendRender(); });
+    });
+  }
 
   function dropFrame(why) {
     printing = null;
@@ -951,6 +1017,9 @@
     const apply = (v) => {
       htmlOn = CanvasStore.htmlEnabled(v);
       if (!htmlOn && htmlRun) mountFrame();
+      // Off revokes this canvas's grant (the side panel revokes them all, canvas-html §2.6): turning
+      // html canvases on again runs nothing by itself. A grant never holds while off anyway.
+      if (!htmlOn && current && current.meta.kind === "html") revokeHere();
       updateHtmlBar();
     };
     chrome.storage.local.get(K).then((got) => apply(got[K]), () => {});
@@ -1442,7 +1511,8 @@
         rendered = true;
         break;
       case "error":
-        offerSendError(m.msg, false, { seq: 0, version: htmlRun ? htmlRun.version : undefined });
+        // A CSP report must not wipe out 「vN 已自動執行」: the user would not see the code changed.
+        offerSendError(m.msg, false, { seq: 0, version: htmlRun ? htmlRun.version : undefined }, htmlAutoNote);
         break;
       case "openLink":
         openLinkConfirm(m.url);
@@ -1712,16 +1782,11 @@
     const prev = current;
     current = c;
     setHeader(c.meta);
-    // A new revision of an html canvas whose scripts run: back to the view without them; running
-    // the new one takes another click (canvas §6 Q8). The running frame is never re-rendered.
-    if (htmlRun) {
-      if (c.meta.version !== htmlRun.version) {
-        mountFrame();
-        updateButtons();
-        notice(`這個畫布更新成 v${c.meta.version}：已回到不執行 script 的顯示，要互動請再按 ▶ Run scripts。`);
-      }
-      return;
-    }
+    // An html canvas (canvas-html §2.6): with the canvas's grant a new revision runs at once in a
+    // fresh frame (new nonce) and the header says so; without it, back to the static view. The
+    // running frame is never re-rendered (§2.4 host invariant).
+    if (c.meta.kind === "html" && !compareView && (await reconcileHtml())) return;
+    if (current !== c) return;                                    // superseded while reading the grant
     if (mode === "edit") {
       if (prev && c.meta.version === prev.meta.version) return;      // e.g. normalization of the agent copy
       if (c.meta.version === ownSaveVersion) return;                  // our own save
@@ -1753,7 +1818,12 @@
     await readEngineSetting();                  // the first render already uses the right engine
     current = c;
     setHeader(c.meta);
-    mountFrame();
+    // An html canvas with a grant runs at once (canvas-html §2.6), never via a static frame first.
+    if (c.meta.kind === "html" && !compareView) {
+      try { htmlOn = CanvasStore.htmlEnabled((await chrome.storage.local.get(CanvasStore.HTML_ENABLED_KEY))[CanvasStore.HTML_ENABLED_KEY]); } catch (_) { /* apply() reads it too */ }
+      await reconcileHtml();
+    }
+    if (!frame) mountFrame();                   // no grant (or a refresh meanwhile left none mounted)
     if (compareView) return;
     deleteBtn.hidden = false;
     readConvTitle();

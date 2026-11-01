@@ -155,7 +155,7 @@
               <button id="canvas-html-on" class="mode-btn on" type="button">開</button>
               <button id="canvas-html-off" class="mode-btn" type="button">關</button>
             </div>
-            <span class="mode-hint">開著時，agent 可以開 html 畫布：先顯示不執行 script 的版本，你按 ▶ Run scripts 才會執行（每個版本按一次）。執行後，那個畫布的 script 可以把畫布內容、和你在裡面輸入的東西送出瀏覽器。關掉後，agent 不能再開 html 畫布，已經有的只顯示不執行 script 的版本。</span>
+            <span class="mode-hint">開著時，agent 可以開 html 畫布：先顯示不執行 script 的版本，你按 ▶ Run scripts 才會執行；這個授權對那個畫布一直有效（之後的新版本也直接執行），直到你按 ⏹ Stop scripts、把畫布移到其他對話或刪除它。執行後，那個畫布的 script 可以把畫布內容、和你在裡面輸入的東西送出瀏覽器。關掉後，agent 不能再開 html 畫布，已經有的只顯示不執行 script 的版本，所有畫布的授權也一併撤回。</span>
           </div>
 
           <!-- Diagram engine (ADR canvas-diagram-engine §2.1): Pele by default; canvas:diagramEngine in chrome.storage.local -->

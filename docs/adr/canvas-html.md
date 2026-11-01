@@ -1,10 +1,12 @@
 # ADR: `html` canvas — implementation spec, with Archify as the first user
 
-- **Status:** Accepted 2026-10-28 (§6 decided by Brett)
+- **Status:** Accepted 2026-10-28 (§6 decided by Brett); amended 2026-11-01 (§2.6: Run scripts once
+  per canvas, Brett)
 - **Date:** 2026-10-27
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [canvas](./canvas.md) §3.2 (isolation, `canvas-html-frame.html`, residual risk), §3.3
-  (kinds), §3.4 (agent tools), §6 Q2 (`html` on by default) and Q8 (click to run);
+  (kinds), §3.4 (agent tools), §6 Q2 (`html` on by default) and Q8 (click to run; once per canvas
+  since 2026-11-01);
   `katashiro.show_image` and its skill (bytes that skip the model); Archify
   (<https://github.com/tt-a1i/archify>, Apache-2.0, v3.2.0 checked).
 
@@ -107,10 +109,12 @@ view uses its own DOMPurify profile, not the markdown one:
   - Sanitize with `RETURN_DOM` and move the resulting nodes into the shadow root. Do not
     serialize and set `innerHTML` again: a second parse is where mutation XSS lives.
 
-The header shows **▶ Run scripts** and a line under it: *"Shown without its scripts. Run scripts
-to make it interactive — this canvas's script can then send what it contains, and what you type
-into it, out of the browser."* `canvas-frame.html`'s meta CSP `script-src 'self'` is the backstop
-if the profile ever lets a script through.
+The header shows **▶ Run scripts** and, beside it, a compact chip: 「靜態檢視 · 按 ▶ Run scripts
+互動」 (§2.6; until 2026-11-01 a full line under the header). What running allows — *this canvas's
+script can then send what it contains, and what you type into it, out of the browser; the
+authorization lasts for this canvas until ⏹* — is the chip's and the button's tooltip, and reaches
+screen readers through `aria-describedby`. `canvas-frame.html`'s meta CSP `script-src 'self'` is
+the backstop if the profile ever lets a script through.
 
 ### 2.4 After Run scripts: `canvas-html-frame.html`
 
@@ -133,8 +137,8 @@ if the profile ever lets a script through.
      is what actually holds;
   2. `securitypolicyviolation` → `error{msg}` (capped, `textContent` only on the host, as §3.2);
   3. then `rendered{version}`.
-  A second `render` is ignored. A new revision, or Run scripts again, is a host-caused reload with
-  a new nonce (§3.2), followed by a new `ready`.
+  A second `render` is ignored. A new revision (run at once under the canvas's grant, §2.6), or
+  Run scripts again, is a host-caused reload with a new nonce (§3.2), followed by a new `ready`.
 - **Host invariant: one `render` per nonce, and nothing else.** For an `html` frame the host posts
   exactly one message per nonce, the `render` answering that nonce's `ready`. It never posts a
   second `render`, a theme change, a scroll request or anything else to it. That is what bounds
@@ -183,10 +187,66 @@ A second skill, **`skills/katashiro-archify`**, sits on top of Archify's own ski
 4. Optional visual check: `katashiro.screenshot` of the canvas tab. Before Run scripts it shows the
    static SVG (§2.3), which is enough to check the layout. This stands in for Archify's
    `browser-check` and is reported as an automated check, not a perceptual review.
-5. Tell the user to press ▶ Run scripts for pan/zoom, tracing and themes.
+5. Tell the user to press ▶ Run scripts for pan/zoom, tracing and themes. The page itself never
+   says so (§2.6): Katashiro shows its own hint, and the page must read well without its scripts.
 
 The update check Archify's CLI does (a GET of its stable manifest) runs on the agent host, not in
 the browser. The HTML itself has none.
+
+### 2.6 Run scripts once per canvas (Brett, 2026-11-01)
+
+Decided by Brett on 2026-11-01 11:38 TPE (Katashiro chat message
+`acpmsg_460e0e3d-1560-47a4-83bd-5edaa6e0e7e4`); it replaces canvas §6 Q8's "a new revision needs a
+new click".
+
+- **The grant is per canvas id and persisted.** ▶ Run scripts stores
+  `canvas:<id>:runGrant = { conversationId, version, at }` in `chrome.storage.local`
+  (`CanvasStore.grantRun`, under the canvas lock; refused if the canvas moved or was deleted since
+  the tab read it, or `html` is off). Reloads, reopening the tab, every other tab of the canvas
+  (they follow the key through `storage.onChanged`) and the agent's new revisions then run directly,
+  never through the static view. A grant **holds** only while its `conversationId` is the canvas's
+  and `canvas:htmlEnabled` is not `false` (`CanvasStore.runGrantHolds`).
+- **Revoked by:**
+  - ⏹ Stop scripts — stop is revoke, in every tab of that canvas;
+  - moving the canvas to another conversation (`CanvasStore.move`, the user's ↪ and
+    `canvas_move` alike): another agent writes next. The key is removed under the canvas lock
+    before the meta changes, and the `conversationId` check is the second line;
+  - deleting the canvas (`CanvasStore.remove` removes the key with the rest);
+  - Settings → html 畫布 off: the side panel removes every grant (`revokeAllRuns`), each canvas tab
+    its own, and a grant never holds while off — turning it on again runs nothing by itself;
+  - the load gate dropping the running frame (the page navigated itself): a reload would otherwise
+    run it again unasked. Not in Brett's list; added because a page that tries to leave is the case
+    the gate exists for.
+- **Auto-run notice.** When a revision newer than the grant's `version` runs because of the grant
+  (a new revision in an open tab, or one written while no tab was open), the header's notice line
+  says 「v3 已自動執行（這個畫布已授權；⏹ 可撤回）」 (`textContent`), and the grant's `version`
+  moves up (`noteRun`). The version is in the text so the user knows the code changed.
+- **Compact hint.** The full lines under the header are gone: a chip beside the button says
+  「靜態檢視 · 按 ▶ Run scripts 互動」 or 「▶ script 執行中」 (amber); the risk and how long the
+  grant lasts are in the tooltip and `aria-describedby` (§2.3). There is no confirm dialog on the
+  first click (there was none before either): the button's label and tooltip say what it does, and
+  a modal would be clicked through like any other.
+- **Unchanged:** the host invariant (one `render` per nonce, nothing else, §2.4) — an auto-run
+  revision is a fresh frame load with a new nonce, never a second `render` into a running frame;
+  the sandbox (own frame, `allow-scripts allow-downloads` only), the CSP (no network, no eval,
+  no workers), the load gate, the banner, and act mode not gating `html` (canvas §3.4).
+- **Accepted risk: bait and switch.** A harmless first revision earns the grant; a later revision
+  from the same conversation's agent can behave differently, and runs without a click. Accepted
+  because a click per revision was not a real review either — nobody reads a 450 KB script before
+  pressing ▶ — so it added friction without adding a check. The boundary that holds is the
+  sandbox above, which a revision cannot change; what a later revision can do is what the first
+  could have done (canvas §3.2 residual risk). The notice makes the change of code visible, and a
+  move to another conversation (another agent) asks again.
+  What the per-revision click also held back, and this gives up, is **when** the code runs and
+  **what** it carries: a granted canvas reopens the act-mode bypass canvas §3.2 describes. An agent
+  steered by prompt injection later in the same conversation can put context from other tabs into a
+  new revision that sends it out with no action from the user; a navigation leaves before the load
+  gate revokes the grant, and the notice comes after the run, not before it.
+- **Pages do not tell the user to press Run scripts.** `canvas_open`'s description and the
+  `katashiro-canvas-file` / `katashiro-archify` skills say: no "press Run scripts" text or
+  placeholders in the page (Katashiro shows its own hint, and the page's would stay on screen after
+  the scripts run), and the page must read well without its scripts (content pre-rendered in the
+  HTML; script only adds interaction).
 
 ## 3. Consequences
 
@@ -213,9 +273,13 @@ the browser. The HTML itself has none.
   page can start a download with any name and content, with no further click (Chrome's own
   download UI and its multiple-download prompt still apply). This is the same kind of risk as the
   clipboard one (§6 Q2): a planted file the user may later open or run. It is accepted because it
-  needs the Run scripts click, the file does not run by itself, and Archify's exports need it.
+  needs the Run scripts click (once per canvas since §2.6), the file does not run by itself, and
+  Archify's exports need it.
   If it proves a problem, §6 Q2's option (c) (a host-mediated download with a confirm card) is
   the fallback.
+- **Later revisions run without a click** (§2.6, 2026-11-01): a revision that differs from the one
+  the user first ran (bait and switch) runs under the same grant. Accepted there; the header
+  announces each such revision with its version.
 - 0.85 MB a revision with the 10-version history is about 8.5 MB of the 200 MB budget per canvas;
   a canvas at the 4 MB cap keeps up to 40 MB.
 - Archify's Copy button fails (the clipboard stays closed, §6 Q2); its exports work.
@@ -290,10 +354,11 @@ any vendored Archify code.
   loads after `close()`, when our listener is back, and comes back as `error{}`. Only violations
   raised while `write()` runs the inline scripts are lost (§2.4).
 - **Header:** ▶ Run scripts becomes ⏹ Stop scripts while the scripts run (back to the static view).
-  A line under the header says which state the canvas is in and what running allows.
+  A line under the header said which state the canvas is in and what running allows; since §2.6 a
+  chip beside the button says the state, and the tooltip what running allows.
 - **Setting (canvas §6 Q2):** Settings → html 畫布 開/關 (`canvas:htmlEnabled`, on unless `false`).
   Off: the store refuses `canvas_open` kind html, canvas tabs hide Run scripts, and a running frame
-  goes back to the static view.
+  goes back to the static view; since §2.6 every canvas's grant is revoked too.
 - **Download:** the header's ⬇ saves an html canvas as `.html` (from the host, not the frame).
 - **`canvas_read`'s 16 K head** never ends between the halves of a surrogate pair (#208).
 - **`canvas-file.sh`** refuses a text file that is not UTF-8 (checked with `iconv` when present).

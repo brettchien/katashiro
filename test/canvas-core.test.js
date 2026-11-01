@@ -1296,3 +1296,43 @@ test("padContainerMarkers: CRLF and CR line ends are read as LF", () => {
   assert.equal(P("::: cards\r\n### A\r\n| a |\r\n|---|\r\n:::\r\nafter"), "::: cards\n\n### A\n| a |\n|---|\n\n:::\n\nafter");
   assert.equal(P("```\r:::\r```\r:::"), "```\n:::\n```\n\n:::");
 });
+
+// --- ▶ Run scripts once per canvas (canvas-html §2.6, Brett 2026-11-01) --------------------------
+test("htmlRunView: a compact chip, the risk in the tooltip; ⏹ while running; no Run while off or deleted", () => {
+  const st = C.htmlRunView({ running: 0, htmlOn: true });
+  assert.equal(st.chip, "靜態檢視 · 按 ▶ Run scripts 互動");
+  assert.equal(st.runHidden, false);
+  assert.equal(st.runLabel, "▶ Run scripts");
+  assert.equal(st.chipRunning, false);
+  assert.equal(st.chipTitle, C.HTML_RUN_RISK);
+  assert.match(st.runTitle, /送出瀏覽器/);
+  // The risk says what can leave and how long the grant lasts.
+  assert.match(C.HTML_RUN_RISK, /畫布的內容、和你在裡面輸入的東西送出瀏覽器/);
+  assert.match(C.HTML_RUN_RISK, /⏹ Stop scripts/);
+  assert.ok(st.chip.length <= 30, "the chip stays short");
+  const run = C.htmlRunView({ running: 3, htmlOn: true });
+  assert.equal(run.chip, "▶ script 執行中");
+  assert.equal(run.runLabel, "⏹ Stop scripts");
+  assert.equal(run.chipRunning, true);
+  assert.match(run.chipTitle, /v3/);
+  assert.match(run.runTitle, /撤回/);
+  // Off (Settings → html 畫布): no Run; a running frame (until the host remounts) can still stop.
+  const off = C.htmlRunView({ running: 0, htmlOn: false });
+  assert.equal(off.runHidden, true);
+  assert.match(off.chip, /設定裡關閉/);
+  assert.equal(C.htmlRunView({ running: 0, htmlOn: true, deleted: true }).runHidden, true);
+  assert.equal(C.htmlRunView({ running: 2, htmlOn: false }).runHidden, false);
+});
+
+test("htmlAutoRun: runs under a holding grant with html on; announces a revision newer than the grant's", () => {
+  const base = { kind: "html", holds: true, grantVersion: 2, version: 2, htmlOn: true, compareView: false, deleted: false };
+  assert.deepEqual(C.htmlAutoRun(base), { run: true, announce: false });                 // reload of the same revision
+  assert.deepEqual(C.htmlAutoRun({ ...base, version: 3 }), { run: true, announce: true }); // a new revision
+  assert.deepEqual(C.htmlAutoRun({ ...base, holds: false }), { run: false, announce: false });
+  assert.deepEqual(C.htmlAutoRun({ ...base, htmlOn: false, version: 3 }), { run: false, announce: false });
+  assert.deepEqual(C.htmlAutoRun({ ...base, kind: "markdown" }), { run: false, announce: false });
+  assert.deepEqual(C.htmlAutoRun({ ...base, compareView: true }), { run: false, announce: false });
+  assert.deepEqual(C.htmlAutoRun({ ...base, deleted: true }), { run: false, announce: false });
+  assert.deepEqual(C.htmlAutoRun({ ...base, grantVersion: undefined, version: 3 }), { run: true, announce: false });
+  assert.equal(C.htmlAutoRunNotice(3), "v3 已自動執行（這個畫布已授權；⏹ 可撤回）");
+});
