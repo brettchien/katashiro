@@ -99,7 +99,9 @@ and install them **where the agent runs** (its machine or container), not where 
 **Dependencies** — install these together: `katashiro-archify` needs `katashiro-canvas-file` (and
 Archify's own skill); `katashiro-guided-runbook` uses `katashiro-point-at` and `katashiro-ask-user`;
 `katashiro-web-task` refers to `katashiro-point-at`, `katashiro-ask-user` and
-`katashiro-canvas-writing`. Simplest: install them all.
+`katashiro-canvas-writing`; `katashiro-canvas-writing` refers to `katashiro-canvas-file`,
+`katashiro-archify` and `katashiro-point-at`. A skill that only refers to another still works
+without it. Simplest: install them all.
 
 For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them from a checkout of this
 repo into the agent's skills directory:
