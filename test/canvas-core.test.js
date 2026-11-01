@@ -1252,3 +1252,47 @@ test("diagram engine: summary, fallback note and engine-named errors with Pele's
   assert.equal(C.diagramErrorText(new Error("No diagram type detected"), 1, "mermaid"), "Mermaid diagram 1: No diagram type detected");
   assert.equal(C.diagramErrorText(new Error("Mermaid failed to load"), undefined, "mermaid"), "Mermaid: Mermaid failed to load");
 });
+
+// --- padContainerMarkers (ADR canvas §3.3 "Cards and callouts", before Milkdown §3.5) -------------
+test("padContainerMarkers: a blank line before and after every ::: marker line, unless already blank", () => {
+  const P = C.padContainerMarkers;
+  assert.equal(P("::: cards\n### A\n| a |\n|---|\n| 1 |\n:::\nAfter."), "::: cards\n\n### A\n| a |\n|---|\n| 1 |\n\n:::\n\nAfter.");
+  assert.equal(P("# T\n::: cards\n### A\n> q\n:::"), "# T\n\n::: cards\n\n### A\n> q\n\n:::");    // none after the last line
+  assert.equal(P("::: cards\n\n### A\n\n:::\n\nx"), "::: cards\n\n### A\n\n:::\n\nx");                // already padded
+  assert.equal(P("- a\n- b\n:::"), "- a\n- b\n\n:::");
+  assert.equal(P("   ::: cards\nx\n   :::"), "   ::: cards\n\nx\n\n   :::");                         // up to 3 spaces in
+  assert.equal(P("    :::\nx"), "    :::\nx");                                                    // 4: not a marker
+  assert.equal(P("::::\n:::\n::::"), "::::\n\n:::\n\n::::");                                         // longer markers too
+  assert.equal(P("x\n::: foo\ny"), "x\n::: foo\ny");                                              // not a cards marker: left alone
+  assert.equal(P("x\n:::cards\ny"), "x\n\n:::cards\n\ny");
+  assert.equal(P("> :::\nx"), "> :::\nx");                                                        // inside a quote: left alone
+  assert.equal(P("no markers\n\n\nhere  \n"), "no markers\n\n\nhere  \n");                          // nothing else changes
+  assert.equal(P(""), "");
+  assert.equal(P(null), "");
+});
+
+test("padContainerMarkers: lines inside fenced code are left alone (``` and ~~~, length and character)", () => {
+  const P = C.padContainerMarkers;
+  assert.equal(P("```md\n:::\n::: cards\n```\n:::"), "```md\n:::\n::: cards\n```\n\n:::");
+  assert.equal(P("~~~\n:::\n```\n:::\n~~~\n:::"), "~~~\n:::\n```\n:::\n~~~\n\n:::");                // ``` does not close ~~~
+  assert.equal(P("````\n```\n:::\n````\n:::"), "````\n```\n:::\n````\n\n:::");                      // a shorter fence does not close
+  assert.equal(P("```\n:::\n``` x\n:::\n```"), "```\n:::\n``` x\n:::\n```");                        // a closing fence has nothing after it
+  assert.equal(P("``` a`b\n:::"), "``` a`b\n\n:::");                                              // a backtick in the info string: not a fence
+  assert.equal(P("::: cards\n```js\nx\n```\n:::"), "::: cards\n\n```js\nx\n```\n\n:::");           // a fence right after / before a marker
+  assert.equal(P("- x\n\n  ```\n  :::\n  ```\n:::"), "- x\n\n  ```\n  :::\n  ```\n\n:::");          // an indented fence (list item)
+  assert.equal(P("```\n:::\nnever closed"), "```\n:::\nnever closed");
+});
+
+test("padContainerMarkers: idempotent", () => {
+  const P = C.padContainerMarkers;
+  for (const t of ["::: cards\n### A\n| a |\n|---|\n| 1 |\n:::\nAfter.", "x\n:::\n:::\n:::\ny", "```\n:::\n```\n:::", "::: cards\n> [!NOTE]\n> n\n:::", ":::"]) {
+    assert.equal(P(P(t)), P(t), JSON.stringify(t));
+  }
+  assert.equal(P("x\n:::\n:::\ny"), "x\n\n:::\n\n:::\n\ny");
+});
+
+test("padContainerMarkers: CRLF and CR line ends are read as LF", () => {
+  const P = C.padContainerMarkers;
+  assert.equal(P("::: cards\r\n### A\r\n| a |\r\n|---|\r\n:::\r\nafter"), "::: cards\n\n### A\n| a |\n|---|\n\n:::\n\nafter");
+  assert.equal(P("```\r:::\r```\r:::"), "```\n:::\n```\n\n:::");
+});

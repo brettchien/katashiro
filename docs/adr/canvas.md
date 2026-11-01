@@ -369,6 +369,49 @@ below is built around that.
     from the attribute, because an SVG `<a>`'s `href` property is an `SVGAnimatedString`, which
     `postMessage` cannot clone (before this fix, the click was swallowed and no `openLink` was sent).
     The host's confirm then applies as for any link (smoke test).
+- **Cards and callouts (2026-11-01).** A `markdown` (or `slides`) canvas can lay sections out as
+  cards and mark callouts; the chat gets the same, since both render through `markdown.js`'s one
+  sink.
+  - **Cards: `::: cards` … `:::`** (`markdown-it-container` 4.0.0, MIT). Every `###` that is a
+    direct child of the block starts a card, and the blocks before the first `###` (if any) are a
+    card of their own; an `h3` inside a list, quote, alert or nested container does not split it. A
+    small core rule wraps the tokens; the markup is `<div class="cards"><div class="card">…`, with
+    constant classes (the info string after `cards` is never copied into it). Only the name `cards`
+    is registered: any other `::: foo` stays text. Laid out as a CSS grid (`auto-fit`, 220 px
+    minimum), so 2–4 cards sit side by side and wrap on a narrow tab; a card is not split across
+    printed pages. A nested container needs a longer fence (`::::`), as in markdown-it-container.
+  - **Container syntax over a ```` ```cards ```` fence**, for interoperability: `:::` containers are
+    what VitePress, Docusaurus, markdown-it and remark-directive users already write, and the block's
+    contents stay ordinary markdown that other renderers show as text with headings, where a fence
+    would show it as a code block.
+  - **Callouts:** GitHub alerts `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
+    `[!CAUTION]` (`markdown-it-github-alerts` 1.0.1, MIT), with a title row (the marker's name, or
+    the text after it, escaped). Its SVG icons are off and our own `alert_open` renderer replaces
+    the plugin's, which pasted the title into the HTML raw. And emoji callouts, as in Claude's docs:
+    a quote whose first paragraph starts with ℹ️ / ✅ / ⚠️ (with or without U+FE0F) gets the
+    note / tip / warning classes, with the emoji kept in the text and no title row (a small core rule,
+    no dependency). The title glyphs are text in the stylesheets. Known limits of the alerts plugin
+    (kept, not patched): an alert holding a nested quote (`> > …`) closes at the inner quote's end,
+    so the text after it falls outside the box; and a quote whose first item is a list item starting
+    `[!WARNING]` is an alert too (GitHub does not do that). A marker line with nothing after it
+    and a blank `>` line leaves an empty paragraph, hidden in the stylesheets.
+  - **`DP_CONFIG` is unchanged** `[MD-ADR §3.2]`: everything above is `div` / `p` / `blockquote`
+    with a `class`, which the html profile keeps; no `svg` profile and no `ADD_TAGS` / `ADD_ATTR`.
+  - Both plugins are bundled into `vendor/markdown-it.iife.js` (globals `markdownitContainer`,
+    `markdownitGithubAlerts`), so no page loads another script and the load order is unchanged.
+  - **Milkdown normalization (§3.5)**, checked with the vendored crepe 7.22.3 (serializer(parser(text))):
+    Milkdown has no container node, so the marker lines are plain paragraphs to it, and a closing
+    `:::` right after a block is folded into that block — after a table it becomes a row `| ::: |`,
+    after a quote or alert `> :::` (the container then never closes), after a list `  :::`. With
+    a blank line before and after each marker line, tables, quotes, lists and paragraphs survive and
+    normalization stays idempotent. So **`CanvasCore.padContainerMarkers`** adds those blank lines
+    (an opening `::: cards …` or a bare closing `:::`, 0–3 spaces in, not inside fenced code; any
+    other `::: foo` line is text and stays as written) to every text the frame
+    hands Milkdown's parser: normalization, the editor's load and the post-save reset. markdown-it
+    reads the padded text the same. Normalization also writes `> [!NOTE]` back as `> \[!NOTE]`;
+    the alerts plugin accepts the escaped form, so a normalized canvas keeps its callouts (unit
+    test). `scripts/smoke-cards.mjs` checks all of it in the real frame, before and after
+    normalization and after an editor load + save.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 

@@ -10,6 +10,8 @@
     "esbuild": "0.28.2",
     "highlight.js": "11.12.0",
     "markdown-it": "15.0.2",
+    "markdown-it-container": "4.0.0",
+    "markdown-it-github-alerts": "1.0.1",
     "pele": "1.12.0",
     "reveal.js": "6.0.2"
   }

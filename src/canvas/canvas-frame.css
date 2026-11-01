@@ -64,6 +64,43 @@ body {
 
 [hidden] { display: none !important; }
 
+/* Cards and callouts (markdown.js; ADR canvas §3.3 "Cards and callouts"). Unscoped on purpose: the
+   same markup shows in the document (.doc) and on slides (.reveal, sized in canvas-slides.css).
+   A `::: cards` block is a grid that puts 2–4 cards side by side and wraps them on a narrow tab;
+   min-width: 0 lets a wide table or code block scroll inside its card instead of widening the grid. */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0.8em 0; }
+.card {
+  min-width: 0; padding: 12px 16px; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.card > :first-child, .doc .card > h3:first-child { margin-top: 0; }
+.card > :last-child { margin-bottom: 0; }
+/* Callouts: GitHub alerts (a title row) and emoji quotes (no title; the emoji leads the text). Each
+   kind sets one colour, --ks-alert; the box is a tinted panel with that colour on its left edge. The
+   blockquote rules (.doc blockquote above, reveal's .reveal blockquote) are outranked by the
+   two-class selectors here. */
+.markdown-alert-note { --ks-alert: #60a5fa; --ks-alert-bg: rgba(96, 165, 250, 0.1); }
+.markdown-alert-tip { --ks-alert: #34d399; --ks-alert-bg: rgba(52, 211, 153, 0.1); }
+.markdown-alert-important { --ks-alert: #c4b5fd; --ks-alert-bg: rgba(196, 181, 253, 0.1); }
+.markdown-alert-warning { --ks-alert: #fbbf24; --ks-alert-bg: rgba(251, 191, 36, 0.1); }
+.markdown-alert-caution { --ks-alert: #f87171; --ks-alert-bg: rgba(248, 113, 113, 0.1); }
+:is(.doc, .reveal) .markdown-alert {
+  width: auto; margin: 0.8em 0; padding: 8px 14px; border-left: 4px solid var(--ks-alert, #475569); border-radius: 6px;
+  background: var(--ks-alert-bg, transparent); color: inherit; font-style: normal; box-shadow: none;
+}
+:is(.doc, .reveal) .markdown-alert > :first-child { margin-top: 0; }
+:is(.doc, .reveal) .markdown-alert > :last-child { margin-bottom: 0; }
+.markdown-alert .markdown-alert-title { margin: 0 0 4px; font-weight: 600; color: var(--ks-alert); line-height: 1.4; }
+:is(.doc, .reveal) .markdown-alert-title + * { margin-top: 0; }
+.markdown-alert > p:empty { display: none; }
+/* The title row's glyph is text from this sheet (the sanitizer keeps no <svg> icon, by design). */
+.markdown-alert-title::before { margin-right: 6px; }
+.markdown-alert-note .markdown-alert-title::before { content: "\2139\FE0E"; }
+.markdown-alert-tip .markdown-alert-title::before { content: "\2713\FE0E"; }
+.markdown-alert-important .markdown-alert-title::before { content: "!"; font-weight: 700; }
+.markdown-alert-warning .markdown-alert-title::before { content: "\26A0\FE0E"; }
+.markdown-alert-caution .markdown-alert-title::before { content: "\2716\FE0E"; }
+
 /* Mermaid diagrams (§3.3): centered, never wider than the page; the copy button copies the source.
    A diagram that failed keeps its source below the error. */
 .doc figure.ks-mermaid { position: relative; margin: 12px 0; text-align: center; overflow-x: auto; }
@@ -147,6 +184,14 @@ figure.ks-mermaid[data-engine="pele"] {
   .ks-mermaid-fallback { color: #57606a; }
   body.mode-mermaid .doc figure.ks-mermaid svg { max-height: none; }
   .ks-mermaid-error { color: #82071e; background: #ffebe9; }
+  /* Cards and callouts on paper: grey card borders, GitHub's light alert colours, never split. */
+  .card { border-color: #d0d7de; background: none; break-inside: avoid; }
+  .markdown-alert { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .markdown-alert-note { --ks-alert: #0969da; --ks-alert-bg: #ddf4ff; }
+  .markdown-alert-tip { --ks-alert: #1a7f37; --ks-alert-bg: #dafbe1; }
+  .markdown-alert-important { --ks-alert: #8250df; --ks-alert-bg: #fbefff; }
+  .markdown-alert-warning { --ks-alert: #9a6700; --ks-alert-bg: #fff8c5; }
+  .markdown-alert-caution { --ks-alert: #cf222e; --ks-alert-bg: #ffebe9; }
 }
 
 /* Showing what changed (ADR §3.10). Outline, background and our own marker line only: a glow never

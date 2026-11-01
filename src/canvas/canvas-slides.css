@@ -33,3 +33,9 @@ body.mode-slides { background: var(--r-background-color); }
 /* Pele on the deck's background (canvas-frame.css sets the document's; edge labels are opaque). */
 .reveal figure.ks-mermaid[data-engine="pele"] { --pele-bg: #191919; --pele-surface: #262626; --pele-surface-alt: #333333; }
 .reveal .ks-mermaid-fallback { font-size: 0.4em; }
+/* Cards and callouts on a slide (canvas-frame.css styles them): smaller text so 2–4 cards fit the
+   960 px slide side by side, and an alert as wide as the slide (dracula's quote is 70%, centered). */
+.reveal .cards { gap: 0.4em; margin: 0.4em 0; }
+.reveal .card { font-size: 0.55em; padding: 0.6em 0.9em; }
+.reveal .card h3 { font-size: 1.3em; margin: 0.4em 0 0.3em; }
+.reveal .markdown-alert { font-size: 0.6em; }

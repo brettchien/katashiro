@@ -2921,7 +2921,9 @@
         "back to (a report, a design doc, a plan, a deck), instead of a long chat reply. `kind`: " +
         "`markdown` (default; GFM tables, task lists, fenced code; a ```mermaid fence is drawn as a " +
         "diagram — flowchart, sequence, class, state, ER, gantt, pie, journey, C4, mindmap, architecture, …; " +
-        "drawn by Pele unless the user picked Mermaid, each engine the other's fallback), `slides` (markdown, slides separated " +
+        "drawn by Pele unless the user picked Mermaid, each engine the other's fallback; a `::: cards` … `:::` block " +
+        "shows each `###` section as a card, 2–4 side by side (to nest one, the outer block uses `::::`); callouts: `> [!NOTE]` / TIP / IMPORTANT / WARNING / " +
+        "CAUTION, or a quote starting `> ⚠️` / `ℹ️` / `✅`), `slides` (markdown, slides separated " +
         "by lines that are exactly `---`; arrow keys to navigate; mermaid fences work there too), " +
         "`mermaid` (the whole canvas is one diagram: `content` is Mermaid source, no fence), `image` " +
         "(give `imageId` from screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an " +

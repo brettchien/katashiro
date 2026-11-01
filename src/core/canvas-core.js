@@ -459,6 +459,54 @@
     return { text: out.join("\n"), lines: from };
   }
 
+  /**
+   * Cards (§3.3 "Cards and callouts") before Milkdown (§3.5): a `:::` container marker line must be a
+   * paragraph of its own, or the parser folds it into the block next to it and the serializer writes
+   * it back as part of that block (crepe 7.22.3: a closing `:::` right after a table becomes a row
+   * `| ::: |`, after a quote or alert `> :::`, after a list `  :::`). So every marker line
+   * (0–3 spaces in: an opening `::: cards …`, or a bare closing `:::`; any other `::: foo` is plain
+   * text, never registered, and stays as written) gets a blank line before
+   * and after it unless that neighbour is already blank (or there is none). Lines inside fenced code
+   * (``` / ~~~) are left alone: a fence closes only on a line of its own character, at least as
+   * long, and nothing else; a backtick fence whose info string holds a backtick is not a fence
+   * (CommonMark). Any indent counts as a fence, like cleanEditorMarkdown (a fence in a list item
+   * starts 4+ spaces in). That has two known misses, accepted since tracking list and quote context
+   * is out of scope: a top-level indented-code line of ``` (4+ spaces or a tab) is taken for a fence
+   * opening, so with no matching ``` after it no later marker is padded; and inside a real fence a
+   * 4+-space-indented ``` line is taken for its close, so `:::` lines after it in that code get
+   * padded. A marker inside a quote (`> ::: cards`) is not padded (not supported). A bare `:::` with
+   * no opening is padded too (harmless: it was a paragraph break anyway). CRLF / CR line ends are
+   * read as LF (like splitSlidesAt); the result is LF. Idempotent; a text with no marker line comes
+   * back unchanged apart from line ends. markdown-it reads the padded text the same (blank lines inside a container are
+   * just blank lines).
+   */
+  const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*(cards\b.*)?$/;
+  function padContainerMarkers(text) {
+    const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
+    const out = [];
+    let fence = null;
+    let padNext = false;                    // the previous line was a marker: blank before this one
+    for (const line of lines) {
+      const f = /^\s*(`{3,}|~{3,})(.*)$/.exec(line);
+      if (f) {
+        if (fence === null) {
+          if (!(f[1][0] === "`" && f[2].includes("`"))) fence = f[1];
+        } else if (f[1][0] === fence[0] && f[1].length >= fence.length && f[2].trim() === "") {
+          fence = null;                       // the closing fence line itself is no marker
+          out.push(line);
+          continue;
+        }
+      }
+      const marker = fence === null && CONTAINER_LINE.test(line);
+      const blank = line.trim() === "";
+      if (padNext && !blank) out.push("");
+      if (marker && out.length && out[out.length - 1].trim() !== "") out.push("");
+      out.push(line);
+      padNext = marker;
+    }
+    return out.join("\n");
+  }
+
   // --- Showing what changed (§3.10) ------------------------------------------------------------
   // The frame turns its rendered DOM into one key per block (paragraph, heading, list item, table
   // row, code block; one per slide for slides) and these pure functions decide what to glow.
@@ -1222,5 +1270,5 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  return { padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
 });
