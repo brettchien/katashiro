@@ -2929,8 +2929,10 @@
         "(give `imageId` from screenshot, or base64 `data` + `mimeType` sent by a shell helper, plus an " +
         "optional `caption`; no `content`), or `html` (a standalone HTML page with its own inline script and " +
         "style, ≤ 4 MB — for something the user interacts with: a calculator, a sortable table, an interactive " +
-        "diagram; shown first WITHOUT its scripts, which run only after the user clicks ▶ Run scripts, once per " +
-        "revision; no network, no eval; replaced whole, never patched; send a large file with the " +
+        "diagram; shown first WITHOUT its scripts, which run only after the user clicks ▶ Run scripts — once per " +
+        "canvas: later revisions then run at once until the user stops them; Katashiro shows its own hint, so never " +
+        "write \"press Run scripts\" text into the page, and make it readable without scripts (content pre-rendered " +
+        "in the HTML, script only adds interaction); no network, no eval; replaced whole, never patched; send a large file with the " +
         "katashiro-canvas-file skill's script, never as tool arguments; may be turned off by the user). A diagram with a syntax error shows the error and its source " +
         "in place (the rest of the canvas still renders) and the user can send you the error. In diagrams " +
         "`click` callbacks are off; a `click X \"https://…\"` link opens only after the user confirms. Without `id` it creates a canvas, opens its tab in the background " +

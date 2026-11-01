@@ -289,10 +289,12 @@ below is built around that.
   data out **without act mode**: an agent steered by prompt injection on a page it read could put
   context from other tabs into an `html` canvas that navigates to `evil.com?d=…` or uses a STUN
   server, where doing the same through the browser tools would need act mode. Click to run closes
-  that bypass. **What remains:** once the user clicks Run scripts, that revision can exfiltrate
+  that bypass. **What remains:** once the user clicks Run scripts, that canvas can exfiltrate
   exactly as described above, both what the agent put in and what the user types into it. The
   click authorizes running the script; it does not make the content trustworthy, and the banner
-  stays.
+  stays. Since 2026-11-01 the click authorizes the **canvas**, not one revision (§6 Q8 revised,
+  [canvas-html](./canvas-html.md) §2.6): the agent's later revisions of it run without another
+  click, until the user stops them, moves or deletes the canvas, or turns `html` off.
 
 ### 3.3 Content kinds, in phases
 
@@ -302,7 +304,7 @@ below is built around that.
 | 1 | `slides` | reveal.js 6.0.2, fed by markdown-it + DOMPurify | `---` between slides; PDF via print |
 | 1 | `image` | existing `show_image` decode path | `imageId` (screenshot) or `data` |
 | 2 | `chart` | Chart.js 4.5.1 | JSON config only; no JS callbacks |
-| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run** per revision (§6 Q8); a setting can turn it off; implementation spec: [canvas-html](./canvas-html.md) |
+| 2 | `html` | none (agent HTML + inline JS) | own frame (§3.2); approved by Brett; **click to run**, once per canvas (§6 Q8, revised 2026-11-01); a setting can turn it off; implementation spec: [canvas-html](./canvas-html.md) |
 | 3 → done (2026-10-11) | `mermaid` | `@mermaid-js/tiny` 12.1.0 (Pele by default, Mermaid as the other engine: [canvas-diagram-engine](./canvas-diagram-engine.md)) | also renders ```` ```mermaid ```` fences in `markdown` (and `slides`) |
 
 - Phase 1 runs **no agent-authored script**. Every engine is our own vendored code.
@@ -319,7 +321,9 @@ below is built around that.
   comparison with toggles; a small simulation or animated explainer; a quiz or flashcards. Static
   documents, decks, charts and diagrams do **not** need it; the safer kinds cover them.
 - **Click to run (§6 Q8).** An `html` canvas first renders without script in `canvas-frame.html`;
-  only the user's **Run scripts** click loads it into `canvas-html-frame.html`, once per revision.
+  only the user's **Run scripts** click loads it into `canvas-html-frame.html`. The click holds for
+  the canvas (revised 2026-11-01): its later revisions load there directly, each a fresh frame with
+  a new nonce, until ⏹ Stop scripts, a move, a delete or the setting off ([canvas-html](./canvas-html.md) §2.6).
 - Phase 2's `html` kind is the first to run agent script, only in `canvas-html-frame.html` (§3.2).
   Still no fetch and no eval, but not leak-proof (§3.2 residual risk).
 - **Mermaid supersedes the markdown ADR's dagre lean** `[MD-ADR §3.6]`. That lean existed because
@@ -435,8 +439,8 @@ below is built around that.
   the content does not pass through model output twice.
 - **Not gated by act mode, for every kind.** Like `show_image`, they change nothing on any web page.
   Every kind except `html` also has no way out of the sandbox (§3.2). An `html` canvas can send data
-  out only after the user clicks **Run scripts** for that revision (click to run, §6 Q8, §3.2
-  residual risk), so it needs no act-mode gate.
+  out only after the user clicks **Run scripts** for that canvas (click to run, once per canvas since
+  2026-11-01: §6 Q8, §3.2 residual risk), so it needs no act-mode gate.
 
 ### 3.5 Versions and concurrency (markdown editing in phase 1, slides in phase 2)
 
@@ -1511,6 +1515,18 @@ Each has a recommendation from the review (Jellyfish, 2026-10-10), which this dr
      mode, like the browser tools; the other kinds stay ungated.
    *Recommended (Jellyfish, Orca): (a). It keeps working outside act mode, and every script run
    is a deliberate user action on content the user can see first.*
+   **Revised (Brett, 2026-11-01 11:38 TPE, Katashiro chat message
+   `acpmsg_460e0e3d-1560-47a4-83bd-5edaa6e0e7e4`): once per canvas, not once per revision.** The
+   Run scripts click authorizes the canvas: reloads, reopening its tab, every tab of it and the
+   agent's new revisions run without going back to the static view. It is revoked by ⏹ Stop
+   scripts, by moving the canvas to another conversation (another agent writes next), by deleting
+   it, and by turning `html` off in Settings (a grant never outlives or bypasses the setting); a
+   revision that runs because of the grant is announced in the header with its version. Accepted
+   risk: bait and switch — a harmless first revision earns the grant and a later one behaves
+   differently. Accepted because a click per revision is not a review either (nobody reads 450 KB
+   of script before clicking); the boundary that holds is the sandbox, which is unchanged (own
+   frame, no network, no eval, CSP, load gate, one render per nonce). Spec and details:
+   [canvas-html](./canvas-html.md) §2.6.
 
 ---
 

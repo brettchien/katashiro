@@ -41,8 +41,13 @@ directly, and you only see one line back.
 ## html canvases
 
 - The user first sees the page **without its scripts** (its HTML, CSS and SVG, sanitized). Its
-  scripts run only after they click **▶ Run scripts**, once per revision; a new revision goes back
-  to the view without scripts. Tell them to press it when the page needs interaction.
+  scripts run only after they click **▶ Run scripts**, once per canvas: your later revisions of it
+  then run at once (the header says `vN 已自動執行`) until they press ⏹ Stop scripts. Tell them to
+  press it when the page needs interaction.
+- **Make the page readable without scripts**: put the content in the HTML (pre-rendered text,
+  tables, SVG); script only adds interaction. **Never write "press Run scripts" text or
+  placeholders into the page** — Katashiro shows its own hint, and yours stays on screen after the
+  scripts run.
 - No network (`fetch`, XHR, WebSocket are blocked), no `eval`, no workers, no storage (an opaque
   origin), no clipboard. Fonts and images must be inline (`data:`). Downloads work after Run scripts.
 - Links the page draws open in a new tab only after the user confirms.

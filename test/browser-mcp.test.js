@@ -3686,6 +3686,14 @@ test("katashiro.canvas_patch refuses image canvases; redact never shows the text
   assert.match((await callTool(none, "katashiro.canvas_patch", { id: "cv_1", baseVersion: 1, edits: [] })).content[0].text, /not available in this host/);
 });
 
+test("canvas_open kind html (canvas-html §2.6): the description says once per canvas, no Run-scripts text in the page, readable without scripts", () => {
+  const d = BrowserMcp.TOOLS["katashiro.canvas_open"].description;
+  assert.match(d, /once per canvas/);
+  assert.doesNotMatch(d, /once per revision/);
+  assert.match(d, /never write "press Run scripts" text into the page/);
+  assert.match(d, /readable without scripts/);
+});
+
 test("canvas_open kind:mermaid (Brett 2026-10-11): stored as sent, not normalized; the description teaches fences and the kind", async () => {
   const def = BrowserMcp.TOOLS["katashiro.canvas_open"];
   assert.ok(def.inputSchema.properties.kind.enum.includes("mermaid"));

@@ -1263,3 +1263,71 @@ test("diagram engine setting: Pele unless canvas:diagramEngine is \"mermaid\"", 
   assert.equal(CanvasStore.diagramEngine(true), "pele");
   assert.equal(CanvasStore.PELE_NOTICE_KEY, "canvas:peleNoticeShown");
 });
+
+// --- ▶ Run scripts once per canvas (canvas-html §2.6, Brett 2026-11-01) --------------------------
+test("run grant (canvas-html §2.6): per canvas id, holds across revisions; only for html, its conversation, setting on", async () => {
+  const { s, storage } = store();
+  const h = await s.agentWrite({ conversationId: "c_a", title: "Page", kind: "html", content: "<p>1</p>" });
+  const md = await s.agentWrite({ conversationId: "c_a", title: "Doc", content: "# x" });
+  assert.equal(await s.grantRun({ id: md.id, conversationId: "c_a", version: 1 }), false);       // not html
+  assert.equal(await s.grantRun({ id: h.id, conversationId: "c_b", version: 1 }), false);        // moved meanwhile
+  assert.equal(await s.grantRun({ id: "cv_000000000999", conversationId: "c_a", version: 1 }), false);
+  assert.equal(await s.grantRun({ id: h.id, conversationId: "c_a", version: 1 }), true);
+  assert.deepEqual(storage.data[CanvasStore.runGrantKey(h.id)], { conversationId: "c_a", version: 1, at: storage.data[CanvasStore.runGrantKey(h.id)].at });
+  // A new revision: the grant still holds; noteRun moves its version forward only.
+  await s.agentWrite({ conversationId: "c_a", id: h.id, baseVersion: 1, title: "Page", kind: "html", content: "<p>2</p>" });
+  let g = await s.readRunGrant(h.id);
+  assert.equal(g.holds, true);
+  assert.equal(g.grant.version, 1);
+  await s.noteRun({ id: h.id, version: 2 });
+  await s.noteRun({ id: h.id, version: 1 });
+  assert.equal((await s.readRunGrant(h.id)).grant.version, 2);
+  // Setting off: a grant never holds (and cannot be given).
+  await storage.set({ [CanvasStore.HTML_ENABLED_KEY]: false });
+  assert.equal((await s.readRunGrant(h.id)).holds, false);
+  assert.equal(await s.grantRun({ id: h.id, conversationId: "c_a", version: 2 }), false);
+  await storage.set({ [CanvasStore.HTML_ENABLED_KEY]: true });
+  assert.equal((await s.readRunGrant(h.id)).holds, true);
+  // ⏹ Stop scripts revokes.
+  await s.revokeRun({ id: h.id });
+  assert.equal(CanvasStore.runGrantKey(h.id) in storage.data, false);
+  assert.deepEqual(await s.readRunGrant(h.id), { grant: null, holds: false });
+  await s.noteRun({ id: h.id, version: 3 });                                  // no grant: nothing written
+  assert.equal(CanvasStore.runGrantKey(h.id) in storage.data, false);
+});
+
+test("run grant (canvas-html §2.6): a move and a delete revoke it; revokeAllRuns clears every grant", async () => {
+  const { s, storage } = store();
+  const a = await s.agentWrite({ conversationId: "c_a", title: "A", kind: "html", content: "<p>a</p>" });
+  const b = await s.agentWrite({ conversationId: "c_a", title: "B", kind: "html", content: "<p>b</p>" });
+  await s.grantRun({ id: a.id, conversationId: "c_a", version: 1 });
+  await s.grantRun({ id: b.id, conversationId: "c_a", version: 1 });
+  // A move to the same conversation is no move: the grant stays.
+  await s.move({ id: a.id, from: "c_a", to: "c_a" });
+  assert.equal(CanvasStore.runGrantKey(a.id) in storage.data, true);
+  await s.move({ id: a.id, from: "c_a", to: "c_b" });
+  assert.equal(CanvasStore.runGrantKey(a.id) in storage.data, false);
+  // Even a grant left behind would not hold for the new conversation.
+  assert.equal(CanvasStore.runGrantHolds({ conversationId: "c_a", version: 1 }, storage.data[CanvasStore.metaKey(a.id)]), false);
+  await s.remove({ id: b.id });
+  assert.equal(CanvasStore.runGrantKey(b.id) in storage.data, false);
+  await s.grantRun({ id: a.id, conversationId: "c_b", version: 1 });
+  storage.data["canvas:runGrant:not-a-grant"] = 1;                            // other shapes are not touched
+  assert.equal(await s.revokeAllRuns(), 1);
+  assert.equal(CanvasStore.runGrantKey(a.id) in storage.data, false);
+  assert.equal(storage.data["canvas:runGrant:not-a-grant"], 1);
+});
+
+test("runGrantHolds: needs a well-formed grant, an html meta of the same conversation, and the setting not false", () => {
+  const meta = { kind: "html", conversationId: "c_a" };
+  const grant = { conversationId: "c_a", version: 2 };
+  assert.equal(CanvasStore.runGrantHolds(grant, meta), true);
+  assert.equal(CanvasStore.runGrantHolds(grant, meta, true), true);
+  assert.equal(CanvasStore.runGrantHolds(grant, meta, false), false);
+  assert.equal(CanvasStore.runGrantHolds(grant, { ...meta, kind: "markdown" }), false);
+  assert.equal(CanvasStore.runGrantHolds(grant, { ...meta, conversationId: "c_b" }), false);
+  assert.equal(CanvasStore.runGrantHolds({ conversationId: "c_a" }, meta), false);
+  assert.equal(CanvasStore.runGrantHolds(null, meta), false);
+  assert.equal(CanvasStore.runGrantHolds(true, meta), false);
+  assert.equal(CanvasStore.runGrantHolds(grant, null), false);
+});

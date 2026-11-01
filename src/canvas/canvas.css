@@ -83,15 +83,20 @@ body {
 .canvas-notice { display: flex; align-items: center; gap: 8px; }
 .canvas-notice #canvas-notice { flex: 1 1 auto; }
 
-/* An html canvas (canvas-html §2.3): shown with or without its scripts. */
-.canvas-html-bar {
-  padding: 6px 16px;
+/* An html canvas (canvas-html §2.3, §2.6): a chip in the header says whether its scripts run; the
+   risk is in its tooltip. Amber while they run. */
+.canvas-html-chip {
+  padding: 1px 8px;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 999px;
   background: rgba(96, 165, 250, 0.1);
-  border-bottom: 1px solid rgba(96, 165, 250, 0.35);
-  font-size: 13px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: help;
 }
-.canvas-html-bar.running { background: rgba(245, 158, 11, 0.12); border-bottom-color: rgba(245, 158, 11, 0.4); color: var(--warn); }
-.canvas-html-bar[hidden] { display: none; }
+.canvas-html-chip.running { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warn); }
+.canvas-html-chip[hidden] { display: none; }
 
 .canvas-main {
   flex: 1 1 auto;

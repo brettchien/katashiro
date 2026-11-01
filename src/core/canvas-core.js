@@ -1270,5 +1270,43 @@
     return `${Array.from(s).slice(0, 100).join("").trim()}.${ext}`;
   }
 
-  return { padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX };
+  // --- ▶ Run scripts, once per canvas (canvas-html §2.6; canvas §6 Q8 revised, Brett 2026-11-01) ---
+  // The risk of running, said once in the chip's and the button's tooltip (and to screen readers
+  // through aria-describedby), not in a line under the header.
+  const HTML_RUN_RISK = "按 ▶ Run scripts 後，這個畫布的 script 可以把畫布的內容、和你在裡面輸入的東西送出瀏覽器。" +
+    "授權對這個畫布一直有效：重新整理、重開分頁、agent 的新版本都會直接執行，" +
+    "直到你按 ⏹ Stop scripts、把它移到其他對話、刪除它，或在設定裡關掉 html 畫布。";
+  // What the header shows for an html canvas: the ▶ / ⏹ button and the compact chip beside it.
+  // running: the version whose scripts run, or 0; htmlOn: Settings → html 畫布.
+  function htmlRunView({ running = 0, htmlOn = true, deleted = false } = {}) {
+    if (running) {
+      return {
+        runHidden: false, runLabel: "⏹ Stop scripts", runTitle: "停止這個畫布的 script 並撤回授權，回到靜態檢視",
+        chip: "▶ script 執行中", chipRunning: true,
+        chipTitle: `正在執行 v${running} 的 script。這個畫布已授權：它可以把畫布的內容、和你在裡面輸入的東西送出瀏覽器；新的版本也會直接執行。按 ⏹ Stop scripts 撤回。`,
+      };
+    }
+    if (!htmlOn) {
+      return {
+        runHidden: true, runLabel: "▶ Run scripts", runTitle: "",
+        chip: "靜態檢視 · script 已在設定裡關閉", chipRunning: false,
+        chipTitle: "html 畫布的 script 已在側邊欄的設定裡關閉（設定 → html 畫布），這裡只顯示不執行 script 的版本。",
+      };
+    }
+    return {
+      runHidden: deleted, runLabel: "▶ Run scripts", runTitle: `執行這個畫布的 script。${HTML_RUN_RISK}`,
+      chip: "靜態檢視 · 按 ▶ Run scripts 互動", chipRunning: false, chipTitle: HTML_RUN_RISK,
+    };
+  }
+  // On load, or a new revision: run without a click when the canvas holds a grant
+  // (CanvasStore.runGrantHolds) and html canvases are on. announce: a revision newer than the last one
+  // that ran under the grant — the header says so (htmlAutoRunNotice), so a change of code is never
+  // silent. Never in a compare tab or for a deleted canvas.
+  function htmlAutoRun({ kind, holds, grantVersion, version, htmlOn, compareView, deleted }) {
+    const run = kind === "html" && !!holds && !!htmlOn && !compareView && !deleted && Number.isInteger(version);
+    return { run, announce: run && Number.isInteger(grantVersion) && grantVersion < version };
+  }
+  const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
+
+  return { padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

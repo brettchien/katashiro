@@ -1592,7 +1592,8 @@ if (canvasHistoryMaxInput) {
 }
 
 // Settings → html 畫布 (canvas §6 Q2): on unless set to false. The store refuses canvas_open kind
-// html while it is off; canvas tabs show html canvases without their scripts only.
+// html while it is off; canvas tabs show html canvases without their scripts only. Off also revokes
+// every canvas's ▶ Run scripts grant (canvas-html §2.6): on again, nothing runs by itself.
 const canvasHtmlOnBtn = document.getElementById("canvas-html-on");
 const canvasHtmlOffBtn = document.getElementById("canvas-html-off");
 if (canvasHtmlOnBtn && canvasHtmlOffBtn) {
@@ -1604,7 +1605,10 @@ if (canvasHtmlOnBtn && canvasHtmlOffBtn) {
   };
   chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
   canvasHtmlOnBtn.addEventListener("click", () => { show(true); chrome.storage.local.set({ [K]: true }).catch(() => {}); });
-  canvasHtmlOffBtn.addEventListener("click", () => { show(false); chrome.storage.local.set({ [K]: false }).catch(() => {}); });
+  canvasHtmlOffBtn.addEventListener("click", () => {
+    show(false);
+    chrome.storage.local.set({ [K]: false }).then(() => canvasStore.revokeAllRuns()).catch(() => {});
+  });
   chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
 }
 
