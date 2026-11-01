@@ -18,9 +18,20 @@ body {
 .doc a { color: #60a5fa; }
 .doc code { background: rgba(255, 255, 255, 0.08); padding: 0.1em 0.35em; border-radius: 4px; font-size: 0.9em; }
 .doc blockquote { margin: 0.8em 0; padding: 0.2em 1em; border-left: 3px solid #475569; color: #94a3b8; }
-.doc table { border-collapse: collapse; margin: 0.8em 0; display: block; overflow-x: auto; }
-.doc th, .doc td { border: 1px solid rgba(255, 255, 255, 0.15); padding: 6px 12px; text-align: left; }
-.doc th { background: rgba(255, 255, 255, 0.05); }
+/* Tables (ADR canvas §3.3 "Tables", Brett 2026-11-01: the editorial style of Claude's artifacts):
+   full width, no vertical rules, small uppercase muted headers over a strong rule, a faint rule
+   between rows, tabular figures. A wide table scrolls inside .table-wrap (markdown.js). A cell's
+   alignment from the `---:` row stays (markdown-it's inline text-align wins over text-align: left). */
+.doc .table-wrap { overflow-x: auto; margin: 1.2em 0; }
+.doc table { border-collapse: collapse; width: 100%; font-size: 0.95em; font-variant-numeric: tabular-nums; }
+.doc th, .doc td { padding: 0.6em 1.1em 0.6em 0; text-align: left; vertical-align: top; }
+.doc th:last-child, .doc td:last-child { padding-right: 0; }
+.doc th {
+  font-size: 0.75em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: #94a3b8; border-bottom: 1.5px solid #cbd5e1;
+}
+.doc td { border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.doc tbody tr:last-child td { border-bottom: 0; }
 .doc img { max-width: 100%; }
 .doc hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); margin: 1.5em 0; }
 
@@ -163,14 +174,15 @@ figure.ks-mermaid[data-engine="pele"] {
   .doc pre.hljs code { color: #24292f; }
   .doc .hljs-addition { color: #116329; background: #dafbe1; }
   .doc .hljs-deletion { color: #82071e; background: #ffebe9; }
-  /* The screen borders are white at 15%: invisible on paper. A table prints whole width (no
-     scroller), its rows not split across pages. A long URL or code span in a cell may break
-     anywhere; plain words are left whole (.doc's word-break: break-word is undone), so a short
-     column is never squeezed into splitting mid-word. */
-  .doc table { display: table; overflow: visible; border-collapse: collapse; }
-  .doc th, .doc td { border: 1px solid #d0d7de; padding: 6px 12px; word-break: normal; }
+  /* The screen rules are light on dark: invisible on paper, so the same editorial style in ink. A
+     table prints whole width (no scroller), its rows not split across pages. A long URL or code
+     span in a cell may break anywhere; plain words are left whole (.doc's word-break: break-word
+     is undone), so a short column is never squeezed into splitting mid-word. */
+  .doc .table-wrap { overflow: visible; }
+  .doc th, .doc td { word-break: normal; }
+  .doc th { color: #57606a; border-bottom-color: #1f2328; }
+  .doc td { border-bottom-color: #d0d7de; }
   .doc td code, .doc th code, .doc td a, .doc th a { overflow-wrap: anywhere; }
-  .doc th { background: #f6f8fa; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .doc tr { break-inside: avoid; }
   /* Diagrams for paper: Mermaid's are re-rendered with its light theme (canvas-frame.js, print);
      Pele's take light variables here, in a document only — a deck prints dark (§3.8). Colours and

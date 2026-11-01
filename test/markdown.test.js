@@ -203,6 +203,15 @@ const cardsOf = (html) => {
   return m ? (m[1].match(/<div class="card">/g) || []).length : -1;
 };
 
+test("tables: each <table> sits in a constant .table-wrap div; source lines stay on the table", () => {
+  const h = md.render("| a | b |\n|---|--:|\n| 1 | 2 |\n");
+  assert.match(h, /^<div class="table-wrap">\n<table>\n[\s\S]*<\/table>\n<\/div>\n$/);
+  assert.match(h, /<td style="text-align:right">2<\/td>/);
+  const s = md.render("x\n\n| a |\n|---|\n| 1 |\n", { sourceLines: true });
+  assert.match(s, /<div class="table-wrap">\n<table data-line-start="2" data-line-end="5">/);
+  assert.equal((md.render("| a |\n|---|\n| 1 |\n\n| b |\n|---|\n| 2 |\n").match(/<div class="table-wrap">/g) || []).length, 2);
+});
+
 test("cards: the plugins are bundled with markdown-it (one vendor file, load order unchanged)", () => {
   assert.equal(typeof globalThis.markdownitContainer, "function");
   assert.equal(typeof globalThis.markdownitGithubAlerts, "function");
@@ -212,7 +221,7 @@ test("cards: every direct-child ### starts a card; text before the first ### is 
   const h = md.render("::: cards\nIntro **text**.\n\n### One\nBody 1\n\n### Two\n- a\n- b\n\n### Three\n| x |\n|---|\n| 1 |\n:::\n");
   assert.equal(cardsOf(h), 4);
   assert.match(h, /^<div class="cards">\n<div class="card">\n<p>Intro <strong>text<\/strong>\.<\/p>\n<\/div>\n<div class="card">\n<h3>One<\/h3>\n<p>Body 1<\/p>\n<\/div>\n<div class="card">\n<h3>Two<\/h3>/);
-  assert.match(h, /<h3>Three<\/h3>\n<table>[\s\S]*<\/table>\n<\/div>\n<\/div>\n$/);
+  assert.match(h, /<h3>Three<\/h3>\n<div class="table-wrap">\n<table>[\s\S]*<\/table>\n<\/div>\n<\/div>\n<\/div>\n$/);
   // no preamble: the first card is the first ###
   assert.match(md.render("::: cards\n### A\nx\n### B\ny\n:::"), /^<div class="cards">\n<div class="card">\n<h3>A<\/h3>/);
   assert.equal(cardsOf(md.render("::: cards\n### A\nx\n### B\ny\n:::")), 2);

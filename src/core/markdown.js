@@ -161,6 +161,15 @@
       }
     });
 
+    // Tables (ADR canvas §3.3 "Tables"): every <table> sits in a `<div class="table-wrap">` (a
+    // CONSTANT class), so the table itself can be width 100% while a wide one scrolls sideways in
+    // the wrapper instead of being made `display: block` (which left its border and rules at the
+    // content's width). The table keeps its own attributes (source lines below).
+    md.renderer.rules.table_open = (tokens, idx, options, env, slf) =>
+      '<div class="table-wrap">\n' + slf.renderToken(tokens, idx, options);
+    md.renderer.rules.table_close = (tokens, idx, options, env, slf) =>
+      slf.renderToken(tokens, idx, options) + "</div>\n";
+
     // Source lines (canvas Ask agent, ADR canvas §3.7): with env.sourceLines, every block element
     // markdown-it maps to source lines carries them as data-line-start / data-line-end (its
     // token.map: 0-based, end exclusive), so the canvas frame can say which lines a selection is in.

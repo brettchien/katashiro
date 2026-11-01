@@ -19,7 +19,15 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal .slides section { text-align: left; }
 .reveal .slides section h1, .reveal .slides section h2 { text-align: left; }
 .reveal table { font-size: 0.7em; }
-.reveal th, .reveal td { border: 1px solid rgba(255, 255, 255, 0.15); padding: 0.3em 0.6em; }
+/* The document's editorial table style (canvas-frame.css), at slide scale: the .doc rules do not
+   reach a deck, so the borders are set here. The dracula theme styles `.reveal table th/td` (0,1,2),
+   so these selectors carry `table` too to replace its borders, padding and bold headers. */
+.reveal .table-wrap { overflow-x: auto; }
+.reveal table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.reveal table th, .reveal table td { border: 0; padding: 0.3em 0.9em 0.3em 0; }
+.reveal table th { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; border-bottom: 2px solid #cbd5e1; }
+.reveal table td { border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.reveal table tbody tr:last-child td { border-bottom: 0; }
 .reveal pre { width: 100%; box-shadow: none; font-size: 0.5em; }
 .reveal pre.hljs { background: #0d1117; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 0.6em 0.8em; position: relative; }
 .reveal pre.hljs code { max-height: none; color: #c9d1d9; padding: 0; }

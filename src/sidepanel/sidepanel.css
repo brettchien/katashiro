@@ -1251,19 +1251,27 @@ button.tool-pill:focus-visible { outline: 1px solid var(--text-secondary); outli
 }
 
 /* Tables (GFM pipe tables — the motivating readability fix, §1.1) */
+/* The canvas's editorial style (ADR canvas §3.3 "Tables"), denser for a bubble: no vertical rules,
+   small uppercase headers over a strong rule, a faint rule between rows; .table-wrap scrolls. */
+.bubble .table-wrap { overflow-x: auto; margin: 6px 0; }
 .bubble table {
   border-collapse: collapse;
-  margin: 6px 0;
+  width: 100%;
   font-size: 0.92em;
-  display: block;
-  overflow-x: auto;
+  font-variant-numeric: tabular-nums;
 }
 .bubble th, .bubble td {
-  border: 1px solid var(--border-color);
-  padding: 4px 8px;
+  padding: 4px 10px 4px 0;
   text-align: left;
+  vertical-align: top;
 }
-.bubble th { background: rgba(0, 0, 0, 0.22); font-weight: 600; }
+.bubble th:last-child, .bubble td:last-child { padding-right: 0; }
+.bubble th {
+  font-size: 0.78em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-secondary); border-bottom: 1.5px solid var(--text-secondary);
+}
+.bubble td { border-bottom: 1px solid var(--border-color); }
+.bubble tbody tr:last-child td { border-bottom: 0; }
 
 /* Code blocks + copy button */
 .bubble pre.hljs {
