@@ -116,8 +116,11 @@
   // ready only after its own load, and document.open on a loaded document fires a second load (before
   // that, whether the render beat the first load decided it — a race the first pin happened to win).
   // The expectation is armed with the render and dropped by that load or the timer, not by
-  // rendered{}: the frame posts rendered{} right after close(), before the load comes.
+  // rendered{}: the frame posts rendered{} right after close(), before the load comes. The timer
+  // is HTML_RENDER_ARM_MS until rendered{} (the page's synchronous script runs inside write(): a
+  // heavy page must not be taken for a navigation and lose its grant), then HTML_ARM_MS from it.
   const HTML_WRITE_FIRES_LOAD = true;
+  const HTML_RENDER_ARM_MS = 30000;
   const HTML_ARM_MS = 5000;
 
   // A notice line, optionally with one action button (e.g. Send error to agent).
@@ -851,16 +854,19 @@
     // The running page is gone: what it was asked and has not answered never will be (§2.7).
     if (pageSelReq) finishPageSelection(pageSelReq.reqId, null);
     if (pendingCss) onStyled({ reqId: pendingCss.reqId, timeout: true });
+    // A highlight it was sent goes again to the next frame (on its ready / rendered{}), within its timeout.
+    if (pendingHighlight) pendingHighlight.sent = false;
+  }
+  function armHtmlLoad(token, ms) {
+    if (htmlArm && htmlArm.token === token) clearTimeout(htmlArm.timer);
+    htmlArm = { token, timer: setTimeout(() => { gate.disarm(token); if (htmlArm && htmlArm.token === token) htmlArm = null; }, ms) };
   }
   // The one message this html frame ever gets (canvas-html §2.4 host invariant): render, answering
   // the ready of its nonce. Nothing else is posted to it — toFrame() drops everything for it.
   function sendHtmlRender() {
     if (!frame || !frameReady || htmlRenderSent || !htmlRun) return;
     htmlRenderSent = true;
-    if (HTML_WRITE_FIRES_LOAD) {
-      const token = gate.arm();
-      htmlArm = { token, timer: setTimeout(() => { gate.disarm(token); if (htmlArm && htmlArm.token === token) htmlArm = null; }, HTML_ARM_MS) };
-    }
+    if (HTML_WRITE_FIRES_LOAD) armHtmlLoad(gate.arm(), HTML_RENDER_ARM_MS);
     frame.contentWindow.postMessage({ type: "render", nonce, kind: "html", content: htmlRun.content, version: htmlRun.version }, "*");
   }
   // ▶ Run scripts grants this canvas (CanvasStore.grantRun, under its lock: refused if it moved or
@@ -1589,6 +1595,7 @@
       case "rendered":
         if (!htmlRun || m.version !== htmlRun.version) break;
         rendered = true;
+        if (htmlArm) armHtmlLoad(htmlArm.token, HTML_ARM_MS);   // the write is done: its load is near
         if (agentSheets.length) postHtmlCss(null);
         if (pendingHighlight && !pendingHighlight.sent) sendHighlight();
         updateButtons();
@@ -1722,8 +1729,7 @@
   // canvas_inject_css, from the side panel like highlight (browser-mcp checked the sheet). This tab
   // keeps the sheets and the frame gets all of them on every change and on every (re)mount; a
   // reload of the tab drops them. Refused while the user edits; clear always works.
-  const CSS_SHEETS_MAX = 10;
-  const CSS_SHEET_MAX = 20000;
+  const { CSS_SHEETS_MAX, CSS_SHEET_MAX } = CanvasCore;
   let agentSheets = [];
   // An html canvas (canvas-html §2.7): its static view takes the sheets as markdown does (inside its
   // shadow root); a RUNNING page gets them as css{reqId, sheets} and answers styled{} — without that

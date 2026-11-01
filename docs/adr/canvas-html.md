@@ -173,7 +173,12 @@ the backstop if the profile ever lets a script through.
      that load. The host may count its navigation as the expected load, or the expected load may
      be counted as the navigation. The cost is detection only: the frame may not be dropped, but
      under the invariant above it has nothing more to leak than the content it already holds
-     (canvas §3.2 already states that this content can leave).
+     (canvas §3.2 already states that this content can leave). *Since §2.7 (2026-11-01):* not
+     quite only that — after `rendered{}` the host also posts the agent's `highlight` find/label,
+     its `css` sheets and the nonce, and a page that navigated away unseen receives them too. They
+     are the agent's own strings about the same content (§2.7), so nothing of the user's, but more
+     than the content alone. And with §8 (the write's load is expected) this race now happens
+     for real: a cross-site navigation commits in another process and can take the expected load.
 - **Known gap: violations during the first run are not reported.** `document.open` drops our
   `securitypolicyviolation` listener, and it is added back only after `close()`. A violation
   raised by the page's inline script while `write()` runs it (a blocked `eval`, `Worker` or
@@ -300,7 +305,9 @@ document as our listener, so anything that frame says is **page-reported**: it m
 for, or whatever the page chose to send. Since §2.6 a granted canvas runs at once on open and on
 every revision, so this is the path the user usually sees; the static view (A) is what an
 ungranted canvas, or one after ⏹ Stop scripts, shows. An auto-run revision is a fresh frame: the
-agent's sheets are posted again after its `rendered{}`, a glow is not carried over.
+agent's sheets are posted again after its `rendered{}`, a glow is not carried over. A
+`canvas_highlight` the old frame was sent but did not answer is sent again to the new one (within
+its 5 s), instead of timing out with the misleading "may have replaced Katashiro's listener".
 
 - **The host invariant is relaxed, not dropped.** Besides the one `render`, after `rendered{}` the
   host may post exactly three things, each rebuilt field by field by `CanvasCore.htmlFramePost`
@@ -482,9 +489,14 @@ any vendored Archify code.
   and always fires one more load. `canvas.js` sets `HTML_WRITE_FIRES_LOAD = true`: the single-use
   expectation of §2.4 point 2 is armed with the render and used by that load; it is **not** dropped
   on `rendered{}` (the frame posts it right after `close()`, before the load arrives) but by the
-  load itself or the 5 s timer. `e2e/cases/html-canvas.mjs` pins exactly two loads (the `src`, the
-  write); a self-navigation after them is still dropped (same test). The known gap of §2.4 point 3
-  (a navigation during `write()`) is unchanged.
+  load itself or the timer: 30 s from the render (the page's synchronous script runs inside
+  `write()`, and a heavy page taken for a navigation would lose its grant, §2.6), restarted at 5 s
+  on `rendered{}`. `e2e/cases/html-canvas.mjs` pins exactly two loads (the `src`, the write); a
+  self-navigation after them is still dropped (same test). The known gap of §2.4 point 3 (a
+  navigation before the write's load) is now real, and up to that window long: an inline
+  `location = …` followed by heavy script can take the expected load, and the frame is neither
+  dropped nor its grant revoked. Detection only — the navigation is itself the way out, and the
+  gate only ever noticed it afterwards. Not yet pinned in e2e (about:blank vs same-origin target).
 - The rest is as §2.7 describes; `e2e/cases/html-canvas.mjs` covers each part in real Chrome.
 - **Mirror:** `<slug>.html`, conflict files `<slug>.katashiro-<time>.html`; the file record keeps
   `ext: "html"` so every path check knows the extension.
