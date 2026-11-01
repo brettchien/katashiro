@@ -341,7 +341,20 @@ test("plugins: footnotes render a superscript reference and a footnotes section"
   assert.match(h, /<hr class="footnotes-sep">\n<section class="footnotes">\n<ol class="footnotes-list">\n<li id="fn1" class="footnote-item"><p>The note\./);
 });
 
-test("plugins: source lines still reach a definition list and the footnotes section", () => {
+test("plugins: source lines still reach a definition list and a footnote's text", () => {
   const h = md.render("x\n\nTerm\n: def\n", { sourceLines: true });
   assert.match(h, /<dl data-line-start="2" data-line-end="4">/);
+  const f = md.render("x[^1]\n\n[^1]: note\n", { sourceLines: true });
+  assert.match(f, /<li id="fn1" class="footnote-item"><p data-line-start="2" data-line-end="3">note /);
+});
+
+test("plugins: `==` inside words stays text (x==1 or y==2), CJK and spaced highlights still work", () => {
+  for (const p of [md, mdUser]) {
+    assert.match(p.render("if x==1 or y==2 then"), /<p>if x==1 or y==2 then<\/p>/);
+    assert.match(p.render("a==b and c==d"), /<p>a==b and c==d<\/p>/);
+  }
+  assert.match(md.render("x==**b**==y"), /<p>x==<strong>b<\/strong>==y<\/p>/);
+  assert.match(md.render("==hi== there"), /<p><mark>hi<\/mark> there<\/p>/);
+  assert.match(md.render("中文==重點==中文"), /<p>中文<mark>重點<\/mark>中文<\/p>/);
+  assert.match(md.render("x ==a== y==b==z"), /<p>x <mark>a<\/mark> y==b==z<\/p>/);
 });

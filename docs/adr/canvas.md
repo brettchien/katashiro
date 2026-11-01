@@ -439,7 +439,10 @@ below is built around that.
   `DP_CONFIG` is unchanged and so is the link hook: a footnote's `#fn1` / `#fnref1` hrefs are removed
   (http(s)/mailto only), so a reference is a plain superscript number and the ↩ back-links are
   hidden in CSS — no fragment navigation inside the frame. `scripts/smoke-cards.mjs` checks the
-  rendering and that normalization keeps all four.
+  rendering and that normalization keeps all four. A `==` pair whose opener follows an ASCII
+  letter/digit and whose closer is followed by one stays plain text (`x==1 or y==2` is code, not a
+  highlight; like GFM's intraword `_`); CJK text still highlights. The plugin's inline footnote
+  `^[note]` also renders, but is not part of this choice: Milkdown keeping it was not checked.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 
