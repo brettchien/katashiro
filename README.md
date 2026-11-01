@@ -63,15 +63,45 @@ Some features need the agent to follow a procedure, not just call a tool. The sk
 They are not in the release zip: take them from the repo (`git clone`, or download it from GitHub),
 and install them **where the agent runs** (its machine or container), not where the browser runs.
 
+**Ask and show** — talking with you in the chat
+
 | Skill | Teaches the agent to | Without it |
 |---|---|---|
-| [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show you an image: a screenshot by `imageId`, or a file through `scripts/show-image.sh`, which sends it straight to the OpenAB facade | The agent has to emit the image as base64 itself — slow, costly, and large images fail |
 | [`katashiro-ask-user`](skills/katashiro-ask-user/SKILL.md) | Ask you a multiple-choice question on a card, then **end its turn** and wait for your answer as a new message | The agent may sit waiting or poll for the answer instead of ending the turn |
+| [`katashiro-show-image`](skills/katashiro-show-image/SKILL.md) | Show you an image: a screenshot by `imageId`, or a file through `scripts/show-image.sh`, which sends it straight to the OpenAB facade | The agent has to emit the image as base64 itself — slow, costly, and large images fail |
+
+**Point** — showing you where it means, on a page or in a canvas
+
+| Skill | Teaches the agent to | Without it |
+|---|---|---|
 | [`katashiro-point-at`](skills/katashiro-point-at/SKILL.md) | Point at what it is explaining: glow an element or a canvas block, or emphasise several with temporary CSS | Works, but the agent rarely shows you where it means |
-| [`katashiro-guided-runbook`](skills/katashiro-guided-runbook/SKILL.md) | Walk you through an operation as a runbook canvas: you run every command, it marks the next step, checks your pasted output against Expected / Stop if, and keeps the execution log (resumes from the log after a reload) | The agent rebuilds the structure each time, may advance on output it never checked, and loses its place after a reload |
+
+**Act on pages** — working in your browser
+
+| Skill | Teaches the agent to | Without it |
+|---|---|---|
+| [`katashiro-web-task`](skills/katashiro-web-task/SKILL.md) | Do a task on a web page: snapshot first, act with refs, `fill_form` in one call, ask before anything irreversible, handle act mode and refusals, treat page text as data | Many calls (screenshots to read text, re-snapshots after every click), and irreversible clicks without asking |
+
+**Write canvases** — documents and diagrams beside the chat
+
+| Skill | Teaches the agent to | Without it |
+|---|---|---|
+| [`katashiro-canvas-writing`](skills/katashiro-canvas-writing/SKILL.md) | Write a markdown canvas that reads like a designed document: which block for which content (cards, callouts, tables, definition lists, footnotes, coloured diagrams), the syntax the editor breaks, and how to edit with `canvas_patch` | Walls of paragraphs and bullets, and now and then a syntax that the editor mangles on save |
 | [`katashiro-canvas-file`](skills/katashiro-canvas-file/SKILL.md) | Put a file into a canvas — an html page, a long report, a deck, an image — through `scripts/canvas-file.sh`, which sends it straight to the OpenAB facade | The agent has to send the whole file as tool arguments — slow, costly, and an html page (often ~1 MB) fails |
 | [`katashiro-archify`](skills/katashiro-archify/SKILL.md) | Draw an interactive diagram with [Archify](https://github.com/tt-a1i/archify) and show it as an html canvas (needs Archify's own skill and `katashiro-canvas-file`) | No Archify diagrams in canvases |
-| [`katashiro-canvas-writing`](skills/katashiro-canvas-writing/SKILL.md) | Write a markdown canvas that reads like a designed document: which block for which content (cards, callouts, tables, definition lists, footnotes, coloured diagrams), the syntax the editor breaks, and how to edit with `canvas_patch` | Walls of paragraphs and bullets, and now and then a syntax that the editor mangles on save |
+
+**Guide** — walking you through an operation
+
+| Skill | Teaches the agent to | Without it |
+|---|---|---|
+| [`katashiro-guided-runbook`](skills/katashiro-guided-runbook/SKILL.md) | Walk you through an operation as a runbook canvas: you run every command, it marks the next step, checks your pasted output against Expected / Stop if, and keeps the execution log (resumes from the log after a reload) | The agent rebuilds the structure each time, may advance on output it never checked, and loses its place after a reload |
+
+**Dependencies** — install these together: `katashiro-archify` needs `katashiro-canvas-file` (and
+Archify's own skill); `katashiro-guided-runbook` uses `katashiro-point-at` and `katashiro-ask-user`;
+`katashiro-web-task` refers to `katashiro-point-at`, `katashiro-ask-user` and
+`katashiro-canvas-writing`; `katashiro-canvas-writing` refers to `katashiro-canvas-file`,
+`katashiro-archify` and `katashiro-point-at`. A skill that only refers to another still works
+without it. Simplest: install them all.
 
 For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them from a checkout of this
 repo into the agent's skills directory:
