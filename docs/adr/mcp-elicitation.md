@@ -105,13 +105,15 @@ part stays **downstream only**.
 
 ```
 claude-agent-acp ── elicitation/create ──▶ openab core (ACP client)
+                                             │ reader loop → the turn's elicitation sink (§2.3)
                                              │ per-session capability (§2.2), timeout owner (§2.5)
                                              ▼ GatewayReply command="elicitation_create" + request_id
                                            openab gateway (ACP server)
-                                             │ client declared elicitation.form? else error → cancel
-                                             ▼ JSON-RPC request elicitation/create (existing send_request)
+                                             │ handle_reply → ReplyChunk::Elicit → the connection's
+                                             │ prompt task; not delivered / not declared → success:false
+                                             ▼ JSON-RPC request elicitation/create (§2.4)
                                            Katashiro side panel ── card (§2.6) ── user
-answer ◀── core ◀── GatewayResponse{request_id, result} ◀── gateway ◀── { action, content? }
+answer ◀── core ◀── GatewayResponse{request_id, result} (event_tx) ◀── gateway ◀── { action, content? }
 ```
 
 One question, one card, one answer. Nothing in this path answers on the user's behalf.
@@ -127,23 +129,48 @@ capability can differ per session.
   passes them on the prompt event to core (new optional field on the `GatewayEvent`, e.g.
   `client_capabilities: { elicitation: { form: true } }`; absent = none).
 - **core → agent.** When the pool spawns an agent for a thread, `initialize` declares exactly the
-  modes the triggering event carried. Discord and Slack events carry none (until §2.9), so those
-  sessions keep today's behaviour: no handler, the SDK auto-declines, nothing hangs.
-- **Capability drift.** The agent's capability is fixed at spawn. If the conversation later
-  reconnects from a client that no longer declares the mode (an older Katashiro, another ACP
-  client), the gateway answers core's request with an error and the adapter settles it as
-  `cancel` (§1.2). It never hangs and never claims the user declined.
+  modes the triggering event carried. `SessionPool::get_or_create(thread_id, working_dir_override)`
+  does not see the event today, so it gets one more parameter (the event's capabilities, e.g.
+  `Option<&ClientCapabilities>`), passed down to the `initialize` call. Discord and Slack events
+  carry none (until §2.9), so those sessions keep today's behaviour: no handler, the SDK
+  auto-declines, nothing hangs.
+- **Capability drift.** The agent's capability is fixed at spawn, in both directions:
+  - If the conversation later reconnects from a client that no longer declares the mode (an older
+    Katashiro, another ACP client), the gateway answers core's request with an error and the adapter
+    settles it as `cancel` (§1.2). It never hangs and never claims the user declined.
+  - If the agent was spawned **without** the capability (first prompt came from an older Katashiro),
+    a client that declares it later does not change that session: the agent keeps auto-declining and
+    `AskUserQuestion` stays out of its tool list until the session is evicted (idle TTL) or the user
+    runs `/reset`. The Katashiro release note says so.
 
 ### 2.3 openab core
 
-- **Accept `elicitation/create` from the agent** (today `-32601`). Handling runs on its own task so
-  the reader loop keeps reading — the agent may send `$/cancel_request`, `session/update` or a second
-  elicitation (subagents) while the first waits.
+- **Accept `elicitation/create` from the agent** (today `-32601`). `run_reader_loop` classifies it by
+  method, next to `session/request_permission`, before any response matching. Handling runs on its
+  own task so the reader loop keeps reading — the agent may send `$/cancel_request`,
+  `session/update` or a second elicitation (subagents) while the first waits.
+- **Routing inside core.** The reader loop has no adapter and the pool does not know which adapter a
+  connection serves, so the reader cannot call the gateway itself. Instead the connection gets an
+  **elicitation sink**, set by `adapter.rs`'s prompt loop for the length of each turn (that loop holds
+  `adapter` and `thread_channel`) and cleared when the turn ends. The reader hands
+  `elicitation/create` (agent request id + params) to that sink; the prompt loop's side forwards it
+  and later writes the agent's reply. **No sink (no turn running) → the reader answers `cancel` at
+  once.**
+  - **Not through `notify_tx`.** The prompt loop treats every message with an `id` on `notify_tx` as
+    the prompt's response (`adapter.rs:1044`). Agent request ids and core's ids are numbered
+    independently: a different id would be dropped as a stale response (the elicitation hangs), an
+    equal one would end the turn.
+  - **`$/cancel_request`** (agent notification, `{ requestId }`) is also classified in the reader by
+    method and sent to the same sink, which looks the agent request id up in its open elicitations
+    and cancels that one (below). Unknown id → ignored. It never goes to `notify_tx`.
 - **Forward to the gateway** as a `GatewayReply` with `command: "elicitation_create"`, a fresh
-  `request_id`, and the agent's `params` verbatim in a new optional JSON field (e.g. `payload`).
-  Core adds only `_meta["openab/deadline"]` (§2.5); the server name comes from the adapter (§2.10).
+  `request_id`, the turn's event id in `reply_to` (so the gateway's stale-turn fence applies), and
+  the agent's `params` verbatim in a new optional JSON field (e.g. `payload`). Core adds only
+  `_meta["openab/deadline"]` (§2.5); the server name comes from the adapter (§2.10).
 - **Wait for the answer** on the existing `PendingRequests` map, with its own timeout
-  (§2.5) instead of the short delivery-ack timeout.
+  (§2.5) instead of the short delivery-ack timeout. When core's gateway WebSocket reconnects,
+  `gateway.rs:933` builds a new pending map; the old oneshot then fails with `RecvError`, which core
+  treats as `cancel`.
 - **Reply to the agent** with exactly what the user chose: `{ action: "accept", content }`,
   `{ action: "decline" }` or `{ action: "cancel" }`. Core validates the shape only (action is one of
   the three; `content` is an object, only with accept); it does not rewrite content.
@@ -151,6 +178,10 @@ capability can differ per session.
   (`request_id`) to the gateway so the card closes:** timeout; the agent's `$/cancel_request` for that
   id; the turn ending (`session/cancel`, hard timeout, agent exit); the gateway connection dropping.
   After a cancel the pending entry is gone, so a late answer from the gateway is dropped.
+- **Order at turn end.** The gateway removes the turn's reply sink on the final `send_message`
+  (§2.4), after which an `elicitation_cancel` has nowhere to go. So when a turn ends, core first
+  cancels every open elicitation of that turn (agent `cancel` + `elicitation_cancel` to the gateway),
+  then clears the elicitation sink, then sends the final message.
 - **`elicitation/complete`** (agent notification) is forwarded as `command: "elicitation_complete"`
   with the `elicitationId`.
 - **Audit.** One `info` line per elicitation: session, mode, outcome action, wait time. **No
@@ -162,16 +193,35 @@ capability can differ per session.
 
 - Remember each connection's `clientCapabilities.elicitation` from `initialize` and pass it to core
   (§2.2).
-- On `elicitation_create`: if the conversation's live client declared the mode, send it a JSON-RPC
-  request `elicitation/create` (params as received) through the existing `send_request` pending
-  map; otherwise answer core at once with an error (→ adapter `cancel`, §1.2). Relay the client's
-  `result` back to core as a `GatewayResponse` carrying a new optional `result` field; a client
-  JSON-RPC error goes back as `success: false`.
-- On `elicitation_cancel`: send the client `$/cancel_request { requestId: <the gateway's id> }` and
-  drop the pending entry, so a late client answer is discarded.
+- **Path to the client.** `handle_reply(reply, registry)` only pushes chunks into the turn's
+  `ReplySink { tx, turn_id }`; it cannot reach the connection's `out_tx` / `pending` / `next_id` and
+  cannot answer core. So `elicitation_create` / `elicitation_cancel` / `elicitation_complete` become
+  new `ReplyChunk` variants (e.g. `Elicit { request_id, params }`, `ElicitCancel { request_id }`,
+  `ElicitComplete { elicitation_id }`) sent through the sink like text. The connection's prompt task,
+  which owns `out_tx` / `pending` / `next_id`, sends the client request, and answers core with a
+  `GatewayResponse` on `state.event_tx` (the same channel the gateway already uses toward core). It
+  does this on a spawned task so text and tool progress keep flowing while a card waits.
+- **The request helper.** `send_request` is not reused as it is: on timeout it sends `mcp/cancel`
+  (elicitation needs `$/cancel_request`), it mints the id inside and only returns at the end (so an
+  `elicitation_cancel` arriving meanwhile cannot find the gateway id), and it has its own timeout.
+  Split out a start step that registers the pending entry, writes the frame and returns
+  `(gateway_id, rx)`; the prompt task keeps a per-connection map **core `request_id` → gateway id**
+  and awaits `rx` with **no timeout of its own** — core owns the timeout (§2.5) and ends the wait
+  with `elicitation_cancel`. The existing tunnel calls keep `send_request` unchanged.
+- **Nothing is dropped silently.** Every `elicitation_create` that does not reach the client is
+  answered to core at once with `success: false` (→ core replies `cancel` to the agent): no sink for
+  the channel (`None`), stopped by the stale-turn fence (the reply's `reply_to` is not the active
+  turn), the client did not declare the mode, the sink send fails, or the client is gone. Today those
+  branches just `return`, which would leave core waiting the full 10 minutes.
+- **The answer.** The client's `result` goes back to core as a `GatewayResponse` carrying a new
+  optional `result` field; a client JSON-RPC error goes back as `success: false`.
+- On `elicitation_cancel`: look up the gateway id, send the client
+  `$/cancel_request { requestId: <gateway id> }` and drop the pending entry, so a late client answer
+  is discarded. Unknown `request_id` → nothing to do.
 - On `elicitation_complete`: send the client `elicitation/complete { elicitationId }`.
 - **Client disconnect** with requests open: fail each to core (→ core `cancel`). A reconnect does
   not revive them.
+- The final `send_message` still removes the sink; core cancels open elicitations before it (§2.3).
 - The prompt idle timer keeps running on `keepalive` as today; nothing to change there.
 
 ### 2.5 Timeout
@@ -195,11 +245,19 @@ look.
 
 **Who is asking — the title is built by the panel, never taken from the request:**
 
-| Source (detected from the request shape, §1.2) | Title |
-|---|---|
-| Has `toolCallId` and `question_<n>` fields → `AskUserQuestion` | `<agent name> 問你（AskUserQuestion）` |
-| Single `choice` field with consts `retry_fallback` / `cancelled` | `<agent name>：模型切換確認` |
-| Anything else → MCP elicitation | `MCP server 提問 · <name>`, `<name>` = `_meta["claudecode/serverName"]` (§2.10; `displayName` beside it when sent). Missing → `· 來源未知` (only if the image was built without the patch — §2.10 makes that a build failure) |
+Checked **in this order**; the first match wins:
+
+| # | Source | Title |
+|---|---|---|
+| 1 | `_meta["claudecode/serverName"]` present → MCP elicitation, **whatever the fields look like** | `MCP server 提問 · <name>` (`displayName` beside it when sent) |
+| 2 | Has `toolCallId` and `question_<n>` fields → `AskUserQuestion` | `<agent name> 問你（AskUserQuestion）` |
+| 3 | Single `choice` field with consts `retry_fallback` / `cancelled` | `<agent name>：模型切換確認` |
+| 4 | Anything else | `MCP server 提問 · 來源未知` (only if the image was built without the patch — §2.10 makes that a build failure) |
+
+The server name goes first because the request shape is chosen by the server: an MCP server that
+names a field `question_1`, or offers `retry_fallback` / `cancelled` options, must not pass as the
+agent's own `AskUserQuestion` or the model-switch card. The adapter never adds `serverName` to its
+own two requests (§2.10 patches only `mcpElicitationToCreateRequest`).
 
 The MCP card has a distinct border and an `MCP` badge, different from both the indigo `ask_user`
 card and the amber 🔒 confirm card, and a one-line note: 「這是 MCP server 的問題，不是 agent 寫的；agent 看不到你的回答。」
@@ -290,9 +348,18 @@ adds `_meta: { "claudecode/serverName": request.serverName }`, plus `displayName
 SDK provides them, to both the form and the URL request. Only `_meta` changes — the ACP schema
 reserves it for exactly this, and clients that do not read it are unaffected.
 
-- **Enforced at build time.** The patch step checks that the patched line is present afterwards and
-  fails the build otherwise, so an adapter upgrade that moves the code cannot ship silently without
-  the name. Upgrading `CLAUDE_AGENT_ACP_VERSION` therefore means re-checking the patch.
+- **Pinned version.** `CLAUDE_AGENT_ACP_VERSION` is an exact version (e.g. `0.99.1`), never a `^` /
+  `~` range, so the code being patched is the code that was read.
+- **Applied by a node script, not `sed`.** A small script finds `mcpElicitationToCreateRequest` and
+  its return objects by anchor and inserts `_meta`; it exits non-zero if an anchor is missing or
+  matches more than once.
+- **Enforced at build time.** After patching, the build (1) greps the patched file for
+  `claudecode/serverName`, and (2) runs `node -e` that imports the installed adapter's
+  `dist/elicitation.js` (an exported function there), calls
+  `mcpElicitationToCreateRequest(request, sessionId)` with a sample form request and a sample URL request, and fails
+  unless both results carry `_meta["claudecode/serverName"]`. An adapter upgrade that moves the code
+  cannot ship silently without the name; upgrading `CLAUDE_AGENT_ACP_VERSION` means re-checking the
+  patch.
 - **Not sent upstream for now** (Brett, 2026-11-03: "fix in downstream first"). An upstream PR to
   `claude-agent-acp` is a later option; once it lands, the patch goes away.
 - This is a deliberate exception to the task brief's "no change to `claude-agent-acp`".
@@ -347,7 +414,10 @@ reserves it for exactly this, and clients that do not read it are unaffected.
 - A Discord session, or a Katashiro build without the capability, keeps auto-`decline` with no wait.
 - Tests: capability per front-end (core spawn + gateway pass-through); schema → widget mapping incl.
   unrenderable → `-32602`; the three actions; timeout; `$/cancel_request`; client disconnect; late
-  answer dropped.
+  answer dropped; an `elicitation/create` with no turn running → `cancel` at once; an
+  `elicitation_create` with no sink / stopped by the fence → `success: false` at once (no 10-minute
+  wait); an agent request id equal to the prompt's id does not end the turn; core WS reconnect →
+  `cancel`; an MCP request shaped like `AskUserQuestion` but carrying `serverName` gets the MCP card.
 
 ## 5. Decisions (Brett, 2026-11-03)
 
