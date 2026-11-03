@@ -237,6 +237,12 @@ AskUserQuestion card the labels are 送出 / 略過 / 取消, since decline ther
 | disconnected | **未回答（連線中斷）** | nothing |
 | unrenderable | one line, no card | error → `cancel` |
 
+**When the user is not looking (Brett, 2026-11-03 16:18 TPE).** The timeout is wall-clock (§2.5),
+unlike `ask_user`'s visible-time count, so a card must not wait unseen. It uses the same signals as a
+waiting `ask_user` card: a pending card in a background conversation marks that conversation's tab ❓,
+and a card that arrives while the panel is hidden, or in a background conversation, raises a Chrome
+notification (「MCP server <name> 在等你回答」, with the deadline). Both clear when the card settles.
+
 Unlike `ask_user`, a reconnect does **not** revive a pending card: the gateway already failed the
 request (§2.4), and a late answer would go nowhere.
 
