@@ -359,3 +359,12 @@ reserves it for exactly this, and clients that do not read it are unaffected.
 - **Q4 — MCP server name:** enforce it; patch the adapter in `downstream` first (15:51; §2.10).
 - **Q5 — End-to-end test:** move the mrtr-probe harness into Orca's container and run it there against
   the `downstream` build (15:51).
+
+### 5.1 Still open (recommended default in brackets — implementation follows it unless Brett says otherwise)
+
+- **Q6 — Refusal-fallback consent becomes a card** (§1.2): today a model refusal ends the turn; with
+  `form` declared the user is asked "retry with <fallback>?" first, and cancel / timeout keep the
+  refusal. [Accept.]
+- **Q7 — Concurrent questions:** at most **3 pending elicitation cards per conversation**; a 4th is
+  answered `cancel` at once with one chat line, so a looping agent or server cannot bury the chat.
+  [3, like `ask_user`.]
