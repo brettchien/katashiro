@@ -6,8 +6,8 @@
 - **Related:** [ask-user](./ask-user.md) (agent-authored question cards); [multi-conversation](./multi-conversation.md)
   §3.8 (cards belong to their conversation); [agent-per-conversation](./agent-per-conversation.md);
   [browser-tunnel-liveness](./browser-tunnel-liveness.md); the turn idle timeout (#82, `RoomCore.TURN_IDLE_TIMEOUT_MS`).
-- **Spans two repos:** openab (core + gateway, developed on the `brettchien/openab` fork, merged into
-  `downstream`, sent upstream after testing) and Katashiro (this repo).
+- **Spans two repos:** openab (core + gateway, **`downstream` only** on the `brettchien/openab` fork —
+  not sent upstream, see §1.4) and Katashiro (this repo).
 
 ---
 
@@ -75,6 +75,25 @@ actually pressed Decline.
   `keepalive` resets it while the agent is silent, and a waiting elicitation is silence.
 - Katashiro: `TURN_IDLE_TIMEOUT_MS` 10 min and `TURN_MAX_TIMEOUT_MS` 35 min. The gateway swallows
   `keepalive` (it does not reach the client), so the panel sees a silent turn while a card waits.
+
+### 1.4 Prior art upstream: openabdev/openab#1533 (closed, not merged)
+
+`feat(discord): support ACP form elicitation` (gandazgul, closed 2026-09-20 by the stale bot):
++6250/−251 in 19 files — a platform-neutral coordinator (`acp/elicitation.rs`, 1885 lines: form
+schema parsing/validation, one-pending lease, generation checks), a Discord presenter in core
+(`discord.rs` +2065) and a 1289-line subprocess test. Maintainers endorsed the direction but held it
+on ROI: on the wire only `claude-agent-acp` emitted `elicitation/create` (Kiro, the default agent,
+cannot; Codex did not in three runs), so they asked for evidence beyond Claude, or for the feature
+to be scoped as Claude Code support. Its independent protocol fix — classify agent → client requests
+before matching responses — was split out as #1540 and is merged (in `downstream` too,
+`connection.rs:278`).
+
+What this ADR takes from it: the capability-per-session idea, `question_<n>_custom` rendered as the
+"Other" box of its select (the maintainers' finding 4), releasing a settled request's slot before
+replying so a follow-up question is not refused as busy, and its schema rules as a reference for
+§2.6. What differs: our form UI lives in Katashiro behind the gateway, so core is only a relay and
+carries no presenter. Given the upstream stance and that our only producer is Claude, the openab
+part stays **downstream only**.
 
 ## 2. Decision
 
@@ -276,8 +295,8 @@ which to use (Q2).
 ### 4.1 PRs
 
 1. This ADR.
-2. **openab** (fork, branch from upstream main, PR into `downstream`): core §2.2/§2.3/§2.5, gateway
-   §2.2/§2.4, with tests. Upstream PR after the end-to-end test, following the upstream rules.
+2. **openab** (fork, PR into `downstream`, carried as a downstream commit — no upstream PR, §1.4):
+   core §2.2/§2.3/§2.5, gateway §2.2/§2.4, with tests.
 3. **Katashiro**: capability, `elicit-core.js` + card, idle-timer pause, skill note (§2.8), with tests.
 4. Later: URL mode (§2.7); Discord/Slack (§2.9).
 
