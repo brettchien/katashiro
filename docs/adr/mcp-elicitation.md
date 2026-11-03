@@ -245,6 +245,12 @@ request (§2.4), and a late answer would go nowhere.
 answering the server; act mode is unchanged. Answers are not written to the chat history or
 scrollback — the card shows the outcome, and accepted values are not kept after the card settles.
 
+**No secrets in a form (Brett, 2026-11-03 16:18 TPE).** MCP forbids servers to request sensitive
+information through form mode (that is what URL mode is for), but a server may ignore it. Every MCP
+form card with at least one text field therefore shows a fixed warning line above its fields:
+「請不要在這裡輸入密碼、token 或其他機密資料。」 The panel builds the line; the request cannot remove or
+restyle it. Same idea as openabdev/openab#1533's Discord form warning (§1.4).
+
 ### 2.7 URL mode (in the first Katashiro PR, Q3)
 
 Declared (`elicitation.url`) from the start. The card shows the message and the URL's origin in
