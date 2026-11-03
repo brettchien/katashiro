@@ -1,6 +1,6 @@
 # ADR: MCP elicitation reaches the user — openab forwards ACP `elicitation/create` to Katashiro
 
-- **Status:** Proposed
+- **Status:** Proposed — Q1–Q5 decided 2026-11-03 (§5)
 - **Date:** 2026-11-03
 - **Author:** Brett Chien (drafted by Orca)
 - **Related:** [ask-user](./ask-user.md) (agent-authored question cards); [multi-conversation](./multi-conversation.md)
@@ -54,10 +54,14 @@ Three things differ from what one would guess from the MCP side, and they shape 
      <fallback>?" — one `choice` field whose `oneOf` consts are `retry_fallback` / `cancelled`.
 
    The adapter ties all three to the one capability; openab cannot enable one without the others
-   (changing the adapter is a non-goal).
+   (the one adapter change this ADR makes is §2.10, and it does not touch this).
 2. **The MCP server's name is not in the request.** `mcpElicitationToCreateRequest` copies only
    `message` and `requestedSchema` (plus `sessionId`); there is no server name and no `_meta`. The
    only exception is the OAuth URL flow, whose message is `Authenticate with MCP server <name>`.
+   The name is not lost upstream of the adapter: the Agent SDK (0.3.312) hands `onElicitation` an
+   `ElicitationRequest` whose `serverName` is **required**, plus optional `displayName` / `title` /
+   `description` from the server’s `_meta["anthropic/permissionDisplay"]`. The adapter drops them; §2.10
+   puts them back.
 3. **Interrupts use `$/cancel_request`.** When the callback's abort signal fires, the SDK sends the
    notification `$/cancel_request { requestId }` for the pending `elicitation/create`, and the
    adapter stops waiting at once (`elicitFromClient`, `:7719`). A reply that arrives afterwards is
@@ -118,7 +122,7 @@ openab spawns one agent process per thread and runs `initialize` per spawn (`poo
 capability can differ per session.
 
 - **Katashiro → gateway.** Katashiro's `initialize` declares
-  `clientCapabilities.elicitation = { form: {} }`. `url` is declared only once §2.7 ships.
+  `clientCapabilities.elicitation = { form: {}, url: {} }` (URL mode ships in the first Katashiro PR, Q3).
 - **gateway → core.** The gateway remembers each ACP connection's declared `elicitation` modes and
   passes them on the prompt event to core (new optional field on the `GatewayEvent`, e.g.
   `client_capabilities: { elicitation: { form: true } }`; absent = none).
@@ -137,8 +141,7 @@ capability can differ per session.
   elicitation (subagents) while the first waits.
 - **Forward to the gateway** as a `GatewayReply` with `command: "elicitation_create"`, a fresh
   `request_id`, and the agent's `params` verbatim in a new optional JSON field (e.g. `payload`).
-  Core adds one thing under `_meta["openab/openToolCalls"]`: the turn's currently open tool calls
-  (`toolCallId`, `title`), so the card can name the MCP tool that is asking (§2.6).
+  Core adds only `_meta["openab/deadline"]` (§2.5); the server name comes from the adapter (§2.10).
 - **Wait for the answer** on the existing `PendingRequests` map, with its own timeout
   (§2.5) instead of the short delivery-ack timeout.
 - **Reply to the agent** with exactly what the user chose: `{ action: "accept", content }`,
@@ -196,7 +199,7 @@ look.
 |---|---|
 | Has `toolCallId` and `question_<n>` fields → `AskUserQuestion` | `<agent name> 問你（AskUserQuestion）` |
 | Single `choice` field with consts `retry_fallback` / `cancelled` | `<agent name>：模型切換確認` |
-| Anything else → MCP elicitation | `MCP server 提問` + `· <tool>` when exactly one open tool call in `_meta["openab/openToolCalls"]` has an `mcp__<server>__<tool>` title; otherwise `· 來源未知` |
+| Anything else → MCP elicitation | `MCP server 提問 · <name>`, `<name>` = `_meta["claudecode/serverName"]` (§2.10; `displayName` beside it when sent). Missing → `· 來源未知` (only if the image was built without the patch — §2.10 makes that a build failure) |
 
 The MCP card has a distinct border and an `MCP` badge, different from both the indigo `ask_user`
 card and the amber 🔒 confirm card, and a one-line note: 「這是 MCP server 的問題，不是 agent 寫的；agent 看不到你的回答。」
@@ -242,9 +245,9 @@ request (§2.4), and a late answer would go nowhere.
 answering the server; act mode is unchanged. Answers are not written to the chat history or
 scrollback — the card shows the outcome, and accepted values are not kept after the card settles.
 
-### 2.7 URL mode (second step, same ADR)
+### 2.7 URL mode (in the first Katashiro PR, Q3)
 
-Declared (`elicitation.url`) only when this ships. The card shows the message and the URL's origin in
+Declared (`elicitation.url`) from the start. The card shows the message and the URL's origin in
 full; **開啟連結** opens it in a new tab only after the click, and only for `https:`; the card then
 waits. `elicitation/complete` with its `elicitationId` closes it (**已完成**). Decline / Cancel as in
 form mode. This is the path the adapter uses for MCP OAuth (`Authenticate with MCP server <name>`).
@@ -254,7 +257,8 @@ form mode. This is the path the adapter uses for MCP OAuth (`Authenticate with M
 Declaring `form` re-enables the built-in `AskUserQuestion` tool for Katashiro sessions (§1.2). It is
 **blocking** — the turn waits for the answer, up to the §2.5 timeout — while `katashiro.ask_user` is
 non-blocking and survives the turn. Both stay; the `katashiro-ask-user` skill gets one paragraph on
-which to use (Q2).
+which to use (Q2, decided): **`AskUserQuestion` when the turn cannot continue without the answer;
+`katashiro.ask_user` for everything else.**
 
 ### 2.9 Discord / Slack (follow-up, not in the first PRs)
 
@@ -265,6 +269,21 @@ which to use (Q2).
 - Otherwise do not declare it, so the adapter keeps auto-declining instead of hanging.
 - Only the user who sent the triggering message may answer; other users' clicks get an ephemeral
   rejection.
+
+### 2.10 Downstream patch: the adapter forwards the MCP server name (Q4)
+
+The `downstream` image patches `claude-agent-acp` after `npm install -g` (`Dockerfile.claude`; the same
+step in `Dockerfile.package` / `Dockerfile.unified` if we build those): `mcpElicitationToCreateRequest`
+adds `_meta: { "claudecode/serverName": request.serverName }`, plus `displayName` / `title` when the
+SDK provides them, to both the form and the URL request. Only `_meta` changes — the ACP schema
+reserves it for exactly this, and clients that do not read it are unaffected.
+
+- **Enforced at build time.** The patch step checks that the patched line is present afterwards and
+  fails the build otherwise, so an adapter upgrade that moves the code cannot ship silently without
+  the name. Upgrading `CLAUDE_AGENT_ACP_VERSION` therefore means re-checking the patch.
+- **Not sent upstream for now** (Brett, 2026-11-03: "fix in downstream first"). An upstream PR to
+  `claude-agent-acp` is a later option; once it lands, the patch goes away.
+- This is a deliberate exception to the task brief's "no change to `claude-agent-acp`".
 
 ## 3. Alternatives considered
 
@@ -278,6 +297,9 @@ which to use (Q2).
   facade talks to. The facade path stays as it is.
 - **A tunnel tool (`katashiro.*`) the core calls.** Rejected: tunnel calls are bounded by the 170 s
   tunnel timeout and tied to the MCP tunnel's session; this is an ACP request with its own lifetime.
+- **Guess the server from the open tool call** (`mcp__<server>__<tool>` title of the only open
+  tool call). Rejected for Q4: ambiguous with parallel tool calls and subagents, and the SDK already
+  has the exact name.
 - **Timeout in Katashiro only.** Rejected: a panel that is closed or asleep would never fire it, and
   the turn would hang until the 30-minute hard timeout.
 
@@ -296,13 +318,15 @@ which to use (Q2).
 
 1. This ADR.
 2. **openab** (fork, PR into `downstream`, carried as a downstream commit — no upstream PR, §1.4):
-   core §2.2/§2.3/§2.5, gateway §2.2/§2.4, with tests.
-3. **Katashiro**: capability, `elicit-core.js` + card, idle-timer pause, skill note (§2.8), with tests.
-4. Later: URL mode (§2.7); Discord/Slack (§2.9).
+   core §2.2/§2.3/§2.5, gateway §2.2/§2.4, the adapter patch §2.10, with tests.
+3. **Katashiro**: capability, `elicit-core.js` + form and URL cards, idle-timer pause, skill note
+   (§2.8), with tests.
+4. Later: Discord/Slack (§2.9); an upstream PR for §2.10.
 
 ### 4.2 Acceptance
 
 - Katashiro session: `AskUserQuestion` is in the tool list.
+- The MCP card names the probe server (`_meta["claudecode/serverName"]`, §2.10).
 - With the mrtr-probe server (form: `choice` enum `approve|reject` + optional `note`), the server's
   logged `input_responses` action matches the button exactly: Accept → `accept` with content,
   Decline → `decline`, ✕ / timeout / interrupt → `cancel`.
@@ -313,16 +337,13 @@ which to use (Q2).
   unrenderable → `-32602`; the three actions; timeout; `$/cancel_request`; client disconnect; late
   answer dropped.
 
-## 5. Open questions (for Brett)
+## 5. Decisions (Brett, 2026-11-03)
 
-- **Q1 — Timeout.** 10 minutes by default (§2.5)? Shorter keeps a forgotten card from holding the turn;
-  longer suits a user who steps away.
-- **Q2 — `AskUserQuestion`.** Accept that it comes with the capability (§2.8), and tell agents in the
-  skill: blocking `AskUserQuestion` when the answer is needed to continue this turn, `katashiro.ask_user`
-  otherwise? Or prefer `katashiro.ask_user` always?
-- **Q3 — URL mode.** In the first Katashiro PR, or a follow-up (§2.7)?
-- **Q4 — Naming the MCP server.** The adapter does not send it (§1.2). Is the open-tool-call
-  heuristic (§2.6) good enough for now, or should we also file an upstream issue asking
-  `claude-agent-acp` to put the server name in `_meta`?
-- **Q5 — End-to-end test.** The probe harness is on the k08 pod. Do I get access there, or does k01 /
-  k08 run it against the `downstream` image?
+- **openab part:** `downstream` only (15:43 TPE; §1.4).
+- **Q1 — Timeout:** 10 minutes (15:50; §2.5).
+- **Q2 — `AskUserQuestion`:** blocking `AskUserQuestion` when the turn needs the answer to continue,
+  `katashiro.ask_user` otherwise (15:50; §2.8).
+- **Q3 — URL mode:** in the first Katashiro PR (15:50; §2.7).
+- **Q4 — MCP server name:** enforce it; patch the adapter in `downstream` first (15:51; §2.10).
+- **Q5 — End-to-end test:** move the mrtr-probe harness into Orca's container and run it there against
+  the `downstream` build (15:51).
