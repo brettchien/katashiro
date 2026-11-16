@@ -256,7 +256,8 @@ async function suite(engine) {
     workers: window.__ksWorkers,
     hasMermaid: typeof window.mermaid === "object",
     elk: !!(window.mermaid && window.mermaid.mermaidAPI && JSON.stringify(window.mermaid.mermaidAPI.getConfig()).includes('"layout":"elk"')),
-    theme: window.mermaid && window.mermaid.mermaidAPI.getConfig().theme,
+    // The Mermaid theme the figures show (not mermaid's last config: the other theme is drawn in the background).
+    theme: (() => { const t = Array.from(document.querySelectorAll('#doc figure.ks-mermaid[data-engine="mermaid"]'), (f) => f.dataset.mermaidTheme); return t.length ? (new Set(t).size === 1 ? t[0] : "mixed") : null; })(),
     nodeFill: (() => { const r = document.querySelector('#doc figure.ks-mermaid[data-engine="mermaid"] .node rect'); return r && getComputedStyle(r).fill; })(),
   }));
   const s1 = await shape();

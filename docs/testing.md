@@ -564,8 +564,8 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   navy, code light; a Mermaid diagram is redrawn light and a Pele one recolours. A slides canvas
   stays dark in either theme (the header follows). Reopen a canvas with ☀ 淺色 chosen: no dark
   flash before it turns light. 🖨 PDF — or Ctrl/⌘+P, with the focus in the header or the
-  document — prints a document light from either theme, Mermaid diagrams included, and the screen
-  is back afterwards; a deck prints dark. An `html` canvas's own page does not
+  document, or the browser's File → Print — prints a document light from either theme, Mermaid
+  diagrams included, and the screen is back afterwards; a deck prints dark. An `html` canvas's own page does not
   change. A flowchart with `class A ks-blue-strong` shows a blue node with a thick outline in both
   themes and on paper.
 - **Canvas header in a narrow tab:** open a canvas you edited (v2（你的修改）) in a Split View half
