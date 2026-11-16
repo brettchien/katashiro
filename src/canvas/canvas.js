@@ -1133,8 +1133,9 @@
   // gets only the resolved "dark" | "light" (a constant, like narrow). A deck stays dark.
   function applyTheme() {
     const b = CanvasCore.themeButton(themeSetting);
-    themeBtn.textContent = b.label;
-    themeBtn.title = b.title;
+    // Only on a change: an unchanged header is not touched (no repaint for nothing).
+    if (themeBtn.textContent !== b.label) themeBtn.textContent = b.label;
+    if (themeBtn.title !== b.title) themeBtn.title = b.title;
     const page = CanvasCore.resolveTheme(themeSetting, themeMedia.matches);
     if (document.documentElement.dataset.ksTheme !== page) document.documentElement.dataset.ksTheme = page;
     const shown = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
