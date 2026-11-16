@@ -129,6 +129,52 @@ try {
     check(s.host === "light" && s.frame === "light" && /#[0-9a-f]+\.light$/.test(src), "淺色 on a dark OS: header light, frame created light", { ...s, src });
     await page.close();
   }
+  // 5. Ctrl/⌘+P: with 🖨 offered, from the frame or the header, it prints as 🖨 does — the frame's
+  //    print() runs on light paper, the screen is dark again after. In the compare tab (no 🖨) the
+  //    browser keeps the key. Synthetic keydowns: the handlers do not need a trusted event, and a real
+  //    one would open the print dialog where it is not taken.
+  {
+    const page = await open(MD, "dark");
+    await page.evaluate(() => localStorage.removeItem("katashiro.canvasTheme"));
+    await page.reload({ waitUntil: "load" });
+    await state(page, "dark");
+    await sleep(300);                     // updateButtons has told the frame whether 🖨 is offered
+    const frame = page.frames().find((f) => f.url().includes("canvas-frame.html"));
+    await frame.evaluate(() => { window.__printed = []; window.print = () => { window.__printed.push(document.documentElement.dataset.ksTheme); }; });
+    const press = (where) => where.evaluate(() => {
+      const ev = new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true, cancelable: true });
+      document.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    });
+    const printedAfter = async (n) => { for (let i = 0; i < 40; i++) { const p = await frame.evaluate(() => window.__printed); if (p.length >= n) return p; await sleep(100); } return frame.evaluate(() => window.__printed); };
+    const inFrame = await press(frame);
+    const p1 = await printedAfter(1);
+    check(inFrame && p1[0] === "light", "Ctrl+P in the document: taken, printed through 🖨 on light paper", { inFrame, printed: p1 });
+    const back = await state(page, "dark");
+    check(back.frame === "dark", "after the print the document is dark again", back);
+    const inHost = await press(page);
+    const p2 = await printedAfter(2);
+    check(inHost && p2.length === 2 && p2[1] === "light", "Ctrl+P in the header: taken, printed the same way", { inHost, printed: p2 });
+    await page.close();
+  }
+  {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1100, height: 700 });
+    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: "dark" }]);
+    page.on("pageerror", (e) => fail(`compare: page error: ${e.message}`));
+    await page.goto(`${origin}/canvas.html?id=${MD}&view=agent`, { waitUntil: "load" });
+    await state(page, "dark");
+    await sleep(300);
+    const frame = page.frames().find((f) => f.url().includes("canvas-frame.html"));
+    const press = (where) => where.evaluate(() => {
+      const ev = new KeyboardEvent("keydown", { key: "p", ctrlKey: true, bubbles: true, cancelable: true });
+      document.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    });
+    const r = { frame: await press(frame), host: await press(page) };
+    check(!r.frame && !r.host, "compare tab (no 🖨): Ctrl+P is left to the browser, in the document and the header", r);
+    await page.close();
+  }
 } catch (e) {
   fail(`threw: ${(e && e.stack) || e}`);
 } finally {
