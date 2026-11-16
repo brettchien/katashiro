@@ -1639,7 +1639,11 @@ if (canvasEnginePeleBtn && canvasEngineMermaidBtn) {
   if (Object.values(btns).every(Boolean)) {
     const show = (raw) => { const v = CanvasCore.themeSetting(raw); for (const [t, b] of Object.entries(btns)) b.classList.toggle("on", t === v); };
     chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
-    for (const [t, b] of Object.entries(btns)) b.addEventListener("click", () => { show(t); chrome.storage.local.set({ [K]: t }).catch(() => {}); });
+    for (const [t, b] of Object.entries(btns)) b.addEventListener("click", () => {
+      show(t);
+      try { localStorage.setItem(CanvasCore.THEME_BOOT_KEY, t); } catch (_) { /* canvas pages fall back to the OS */ }
+      chrome.storage.local.set({ [K]: t }).catch(() => {});
+    });
     chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
   }
 }

@@ -422,7 +422,11 @@
   // Canvas theme (ADR canvas-themes §2.2): the gallery resolves the setting itself, on its own root.
   const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
   let themeSetting = "system";
-  const applyTheme = () => { document.documentElement.dataset.ksTheme = CanvasCore.resolveTheme(themeSetting, themeMedia.matches); };
+  const applyTheme = () => {
+    try { localStorage.setItem(CanvasCore.THEME_BOOT_KEY, themeSetting); } catch (_) { /* boot falls back to the OS */ }
+    const t = CanvasCore.resolveTheme(themeSetting, themeMedia.matches);
+    if (document.documentElement.dataset.ksTheme !== t) document.documentElement.dataset.ksTheme = t;
+  };
   themeMedia.addEventListener("change", applyTheme);
   chrome.storage.local.get(CanvasCore.THEME_KEY).then((got) => { themeSetting = CanvasCore.themeSetting(got[CanvasCore.THEME_KEY]); applyTheme(); }, () => {});
   chrome.storage.onChanged.addListener((changes, area) => {

@@ -24,7 +24,9 @@
 (function () {
   "use strict";
 
-  const nonce = location.hash.slice(1);
+  // "#<nonce>" or "#<nonce>.light": the host says the starting theme (canvas-themes §2.2), no dark flash.
+  const [nonce, bootTheme] = location.hash.slice(1).split(".");
+  if (bootTheme === "light") document.documentElement.dataset.ksTheme = "light";
   const doc = document.getElementById("doc");
   const deck = document.getElementById("deck");
   const pic = document.getElementById("pic");
@@ -457,7 +459,17 @@
     const clean = CanvasCore.cleanEditorMarkdownMap(content);
     shownSource = { stored: content, map: clean.lines };
     renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true });
-    return renderDiagrams(doc, "markdown", gen, seq, viewTheme());
+    return renderThemed("markdown", gen, seq);
+  }
+
+  // The document's diagrams in the current theme; a theme switch while they were being drawn redraws
+  // them once they are done (rethemeDiagrams only reaches the figures already there).
+  function renderThemed(kind, gen, seq) {
+    const theme = viewTheme();
+    return renderDiagrams(doc, kind, gen, seq, theme).then((r) => {
+      if (gen === renderGen && viewTheme() !== theme) rethemeDiagrams(doc, viewTheme()).catch(() => {});
+      return r;
+    });
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
@@ -472,7 +484,7 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, seq, viewTheme());
+    return renderThemed("mermaid", gen, seq);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
@@ -1034,7 +1046,7 @@
   // mouse press here is reported (armedKey{}); the host decides what it means. Enter / Esc are kept
   // from the page while armed. Capture phase, on window: ahead of everything in the frame.
   let armedKeys = false;
-  let wantedTheme = "dark";               // canvas theme from the host ({type:"theme"}); slides stay dark
+  let wantedTheme = bootTheme === "light" ? "light" : "dark";   // from the host ({type:"theme"}); slides stay dark
   let printing = false;                   // the paper is light whatever the screen shows (§2.2)
   function applyFrameTheme() {
     const t = shownKind === "slides" ? "dark" : printing ? "light" : wantedTheme;
@@ -1046,6 +1058,14 @@
   // Native print (Ctrl/⌘+P on the tab) as well as the PDF button: a document goes light for the paper.
   window.addEventListener("beforeprint", () => { if (deck.hidden) { printing = true; applyFrameTheme(); } });
   window.addEventListener("afterprint", () => { if (printing) { printing = false; applyFrameTheme(); } });
+  // Ctrl/⌘+P with the focus in the frame: the host prints as from 🖨 PDF (the diagrams are redrawn for
+  // the paper first, which native print cannot wait for). Only where the host offers it: a text
+  // canvas in view mode; elsewhere the browser prints.
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "p" || editing || !CanvasCore.textKind(shownKind)) return;
+    e.preventDefault();
+    post({ type: "printKey" });
+  });
   function reportArmed(e, key) {
     if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier

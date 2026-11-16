@@ -27,6 +27,9 @@ const STUB = `(() => {
   };
   const ev = () => ({ addListener() {}, removeListener() {} });
   const pick = (keys) => { const out = {}; for (const k of keys == null ? Object.keys(data) : [].concat(keys)) if (k in data) out[k] = data[k]; return out; };
+  // A reload keeps the setting, as chrome.storage would (mirrored by theme-boot's localStorage key).
+  const kept = localStorage.getItem("katashiro.canvasTheme");
+  if (kept) data["canvas:theme"] = kept;
   window.__data = data;
   window.chrome = {
     runtime: { id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined, sendMessage: async () => undefined },
@@ -103,6 +106,8 @@ try {
       await page.click("#canvas-theme");
       const s = await state(page, shown);
       check(s.stored === stored && s.button === label && s.host === shown && s.frame === shown, `click → ${stored}: stored, "${label}", host + frame ${shown}`, s);
+      const boot = await page.evaluate(() => localStorage.getItem("katashiro.canvasTheme"));
+      check(boot === stored, `click → ${stored}: mirrored for theme-boot.js`, boot);
     }
     await page.close();
   }
@@ -111,6 +116,17 @@ try {
     const page = await open(DECK, "light");
     const s = await state(page, "dark");
     check(s.frame === "dark" && s.host === "light", "slides: frame dark on a light OS, header light", s);
+    await page.close();
+  }
+  // 4. A new tab with ☀ 淺色 mirrored: the frame is created light ("#<nonce>.light"), not told later.
+  {
+    const page = await open(MD, "dark");
+    await state(page, "dark");
+    await page.evaluate(() => localStorage.setItem("katashiro.canvasTheme", "light"));
+    await page.reload({ waitUntil: "load" });
+    const s = await state(page, "light");
+    const src = await page.evaluate(() => document.querySelector("iframe").getAttribute("src"));
+    check(s.host === "light" && s.frame === "light" && /#[0-9a-f]+\.light$/.test(src), "淺色 on a dark OS: header light, frame created light", { ...s, src });
     await page.close();
   }
 } catch (e) {
