@@ -815,7 +815,9 @@
     });
     gate.reset();
     gate.expect();
-    frame.src = `canvas-frame.html${query || ""}#${nonce}`;
+    // The frame starts in the theme it will be told ("#<nonce>.light"): no dark flash before {type:"theme"}.
+    frameTheme = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
+    frame.src = `canvas-frame.html${query || ""}#${nonce}${frameTheme === "light" ? ".light" : ""}`;
     mainEl.appendChild(frame);
   }
 
@@ -1136,6 +1138,7 @@
     // Only on a change: an unchanged header is not touched (no repaint for nothing).
     if (themeBtn.textContent !== b.label) themeBtn.textContent = b.label;
     if (themeBtn.title !== b.title) themeBtn.title = b.title;
+    try { localStorage.setItem(CanvasCore.THEME_BOOT_KEY, themeSetting); } catch (_) { /* boot falls back to the OS */ }
     const page = CanvasCore.resolveTheme(themeSetting, themeMedia.matches);
     if (document.documentElement.dataset.ksTheme !== page) document.documentElement.dataset.ksTheme = page;
     const shown = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
@@ -1510,6 +1513,9 @@
     closeIfCanvasGone();
   }
   document.addEventListener("keydown", (e) => {
+    // Ctrl/⌘+P: print as 🖨 PDF does (the document goes light and its diagrams are redrawn first —
+    // native print cannot wait for that). Where the button is not offered, the browser prints.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "p" && !printBtn.hidden && !printBtn.disabled) { e.preventDefault(); printBtn.click(); return; }
     if (mode === "edit" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); toFrame({ type: "requestSave" }); }
     // Focus in the header (not the editor) while editing: Ctrl/⌘+Z still undoes the editor's edits.
     if (mode === "edit" && conflictEl.hidden && (e.ctrlKey || e.metaKey) && !e.altKey) {
@@ -1528,8 +1534,7 @@
       case "ready":
         frameReady = true;
         if (narrow) toFrame({ type: "narrow", on: true });
-        frameTheme = null;
-        applyTheme();
+        applyTheme();                     // the frame booted in frameTheme; a change since is sent
         if (agentSheets.length) toFrame({ type: "css", sheets: agentSheets });
         sendRender();
         updateButtons();
@@ -1562,6 +1567,9 @@
       case "save":
         if (mode === "edit") saveFromEditor(m.content, m.baseVersion, m.droppedBlank === true);
         break;
+      case "printKey":
+        if (!printBtn.hidden && !printBtn.disabled) printBtn.click();
+        return;
       case "escape":
         // The frame's dirty state as of the keypress; its "dirty" message may still be debounced.
         dirty = m.dirty;

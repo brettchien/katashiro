@@ -27,6 +27,7 @@
     dirty: (m) => typeof m.dirty === "boolean",
     // Esc in the editor (Brett, 2026-10-11): asks the host to leave edit mode, like 結束編輯.
     escape: (m) => typeof m.dirty === "boolean",
+    printKey: () => true,             // Ctrl/⌘+P in the frame: the host prints as from 🖨 PDF (canvas-themes §2.2)
     // The editor's undo stack (§3.5, Brett 2026-10-11): enables the edit-mode ↶ 復原 / ↷ 重做 buttons.
     undoState: (m) => typeof m.canUndo === "boolean" && typeof m.canRedo === "boolean",
     // canvas_goto: the slide now shown (1-based) and the deck's length.
@@ -897,6 +898,8 @@
   // tab, the gallery and Settings (chrome.storage.local). Each surface resolves it itself; the
   // sandboxed frame only gets the resolved "dark" | "light". Slides stay dark in v1.
   const THEME_KEY = "canvas:theme";
+  // localStorage mirror of the setting, read synchronously by src/canvas/theme-boot.js before the first paint.
+  const THEME_BOOT_KEY = "katashiro.canvasTheme";
   const THEMES = ["system", "dark", "light"];
   const THEME_LABEL = { system: "跟隨系統", dark: "深色", light: "淺色" };
   const themeSetting = (v) => (THEMES.includes(v) ? v : "system");
@@ -1510,5 +1513,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_RAMPS, ksClassDefs, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_RAMPS, ksClassDefs, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

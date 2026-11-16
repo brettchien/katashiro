@@ -16,7 +16,8 @@ npm run chrome:full && npm run e2e         # T2 E2E: the real extension + side p
 
 CI also runs **theme-shots**: `scripts/theme-shots.mjs` screenshots fixed canvas fixtures (dark and
 light, print, the header, the gallery) of `main` and of the PR in the same runner and Chrome and
-fails on any byte difference, except the shots the PR lists in `scripts/theme-shots-changed.txt`.
+fails on any byte difference, except the shots listed for the PR's own branch in
+`scripts/theme-shots-changed.txt` (`<branch> <shot>` lines; another branch never inherits them).
 Both sets, and a `review/` set with a CJK font, are in the run's `theme-shots` artifact.
 
 Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [CONTRIBUTING → Running the tests](../CONTRIBUTING.md#running-the-tests).
@@ -561,8 +562,10 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   without a reload. The header's ◑ button cycles ☾ 深色 → ☀ 淺色 → ◑ 跟隨系統, every open canvas tab
   and 🗂️ follow, and Settings shows the choice. In light: callouts are tinted panels, headings
   navy, code light; a Mermaid diagram is redrawn light and a Pele one recolours. A slides canvas
-  stays dark in either theme (the header follows). 🖨 PDF of a document prints light from either
-  theme and the screen is back afterwards; a deck prints dark. An `html` canvas's own page does not
+  stays dark in either theme (the header follows). Reopen a canvas with ☀ 淺色 chosen: no dark
+  flash before it turns light. 🖨 PDF — or Ctrl/⌘+P, with the focus in the header or the
+  document — prints a document light from either theme, Mermaid diagrams included, and the screen
+  is back afterwards; a deck prints dark. An `html` canvas's own page does not
   change. A flowchart with `class A ks-blue-strong` shows a blue node with a thick outline in both
   themes and on paper.
 - **Canvas header in a narrow tab:** open a canvas you edited (v2（你的修改）) in a Split View half
