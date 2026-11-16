@@ -112,6 +112,118 @@
       t.splice(h, 0, open);
     });
 
+    // `::: matrix` and `::: bars` (ADR canvas-themes §2.4 d, e) around a table. Constant classes only:
+    //   - matrix: a column whose body cells are all empty or a dot (● ○ ◐, at least one) — and, in a
+    //     totals row, a number — is a MARK column: .ks-mark + a hue class in the accent order, counted
+    //     over mark columns; a dot cell gets .ks-dot-full / -ring / -half (canvas-frame.css draws the
+    //     dot; the character stays, for copy and screen readers). A last row whose first non-empty
+    //     cell is bold is .ks-total; in it `5 (4●)` shows the part in parentheses as .ks-sub.
+    //   - matrix and bars: a cell whose whole text is `n/N` (integers, 0 ≤ n ≤ N ≤ 1000, N > 0) becomes
+    //     a <progress value=n max=N> and n; the row takes a hue (accent order over body rows) for it.
+    //     The stored text keeps `n/N`; outside these wrappers it stays text.
+    if (global.markdownitContainer) {
+      for (const name of ["matrix", "bars"]) {
+        md.use(global.markdownitContainer, name, {
+          validate: (params) => params.trim().split(/\s+/, 1)[0] === name,
+          render: (tokens, idx, options, env, slf) => {
+            if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", name);
+            return slf.renderToken(tokens, idx, options);
+          },
+        });
+      }
+    }
+    const ACCENT = ["orange", "blue", "purple", "green", "yellow", "pink", "teal", "sand", "slate"];
+    const DOTS = { "●": "ks-dot-full", "○": "ks-dot-ring", "◐": "ks-dot-half" };
+    const BAR = /^(\d{1,4})\/(\d{1,4})$/;
+    const TOTAL_NUM = /^(\d+)(?:\s*(\(.+\)))?$/;
+    md.renderer.rules.ks_bar = (tokens, idx) => {
+      const { n, N } = tokens[idx].meta;          // integers, checked when the token was made
+      return `<progress class="ks-bar-track" value="${n}" max="${N}">${n}/${N}</progress> `;
+    };
+    md.renderer.rules.ks_sub_open = () => '<span class="ks-sub">';
+    md.renderer.rules.ks_sub_close = () => "</span>";
+    function shapeTable(state, t, from, to, kind) {
+      const rows = [];
+      let section = null;
+      for (let k = from; k < to; k++) {
+        const x = t[k];
+        if (x.type === "thead_open") section = "head";
+        else if (x.type === "tbody_open") section = "body";
+        else if (x.type === "tr_open") rows.push({ tr: x, section, cells: [] });
+        else if ((x.type === "th_open" || x.type === "td_open") && rows.length) rows[rows.length - 1].cells.push({ open: x, inline: t[k + 1] });
+      }
+      const text = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.trim() : "");
+      const head = rows.filter((r) => r.section === "head");
+      let body = rows.filter((r) => r.section === "body");
+      const last = body[body.length - 1];
+      const firstFilled = last && last.cells.find((c) => text(c) !== "");
+      const lead = firstFilled && (firstFilled.inline.children || []).find((ch) => !(ch.type === "text" && ch.content === ""));
+      const total = lead && lead.type === "strong_open" ? last : null;
+      if (total) { total.tr.attrJoin("class", "ks-total"); body = body.slice(0, -1); }
+      if (kind === "matrix") {
+        const cols = Math.max(0, ...rows.map((r) => r.cells.length));
+        let marks = 0;
+        for (let c = 0; c < cols; c++) {
+          const cells = body.map((r) => r.cells[c]);
+          const isMark = cells.length > 0 && cells.every((x) => text(x) === "" || DOTS[text(x)]) && cells.some((x) => DOTS[text(x)])
+            && (!total || text(total.cells[c]) === "" || TOTAL_NUM.test(text(total.cells[c])));
+          if (!isMark) continue;
+          const hue = `ks-hue-${ACCENT[marks++ % ACCENT.length]}`;
+          for (const r of [...head, ...body, ...(total ? [total] : [])]) {
+            const x = r.cells[c];
+            if (!x) continue;
+            x.open.attrJoin("class", `ks-mark ${hue}`);
+            if (DOTS[text(x)]) x.open.attrJoin("class", `ks-dot ${DOTS[text(x)]}`);
+          }
+        }
+        if (total) {
+          for (const x of total.cells) {
+            const m = TOTAL_NUM.exec(text(x));
+            const ch = x.inline && x.inline.children;
+            if (!m || !m[2] || !ch || ch.length !== 1 || ch[0].type !== "text") continue;
+            const a = new state.Token("text", "", 0); a.content = `${m[1]} `;
+            const o = new state.Token("ks_sub_open", "span", 1);
+            const b = new state.Token("text", "", 0); b.content = m[2];
+            const cl = new state.Token("ks_sub_close", "span", -1);
+            x.inline.children = [a, o, b, cl];
+          }
+        }
+      }
+      let barRows = 0;
+      for (const r of body) {
+        let any = false;
+        for (const x of r.cells) {
+          const m = BAR.exec(text(x));
+          if (!m) continue;
+          const n = Number(m[1]), N = Number(m[2]);
+          if (!(N > 0 && n <= N && N <= 1000)) continue;
+          const bar = new state.Token("ks_bar", "progress", 0);
+          bar.meta = { n, N };
+          const num = new state.Token("text", "", 0); num.content = String(n);
+          x.inline.children = [bar, num];
+          x.open.attrJoin("class", "ks-bar");
+          any = true;
+        }
+        if (any) r.tr.attrJoin("class", `ks-hue-${ACCENT[barRows++ % ACCENT.length]}`);
+      }
+    }
+    md.core.ruler.after("inline", "matrix_bars", (state) => {
+      const t = state.tokens;
+      if (!t.some((x) => x.type === "container_matrix_open" || x.type === "container_bars_open")) return;
+      const stack = [];
+      for (let i = 0; i < t.length; i++) {
+        const x = t[i];
+        if (x.type === "container_matrix_open" || x.type === "container_bars_open") stack.push(x.type === "container_matrix_open" ? "matrix" : "bars");
+        else if (x.type === "container_matrix_close" || x.type === "container_bars_close") stack.pop();
+        else if (x.type === "table_open" && stack.length) {
+          let end = i + 1;
+          while (end < t.length && t[end].type !== "table_close") end++;
+          shapeTable(state, t, i, end, stack[stack.length - 1]);
+          i = end;
+        }
+      }
+    });
+
     // Each card: every DIRECT-child `###` of a cards container starts one; blocks before the first
     // `###` (if any) are a card of their own. Direct child = one level below the container's token,
     // so an h3 inside a list, quote, alert or nested container never splits the outer row (a nested

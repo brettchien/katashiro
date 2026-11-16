@@ -8,6 +8,9 @@
 //     top edge and its text colour on the ###, dark and light; a plain `::: cards` gets none of it;
 //   - `::: stats` after # Title: three tiles, the number in the accent colour, beside the title on a
 //     wide frame and below it on a narrow one;
+//   - `::: matrix` / `::: bars`: vertical mark headers in their hue, dots drawn in the column's mark
+//     colour with a text-colour edge (the character hidden), the totals row, <progress> bars that
+//     keep value/max through DOMPurify; in both themes;
 //   - the round trip: normalized text and the editor's saved text keep `::: cards accent` and the
 //     stats block, and render the same.
 import http from "node:http";
@@ -37,6 +40,20 @@ ${cards(2)}
 
 ::: cards
 ${cards(2)}
+:::
+
+::: matrix
+| Day | 信任 | 工廠 | 提及 / 18 |
+|---|:-:|:-:|---|
+| D1 | ● | ○ | 5/18 |
+| D2 | ◐ |  | 12/18 |
+| **合計** | 5 (4●) | 1 | |
+:::
+
+::: bars
+| x | n |
+|---|---|
+| a | 3/4 |
 :::
 `;
 // Accent order (§2.3) and the ramps the CSS must resolve to: [mark, text] per theme.
@@ -120,6 +137,25 @@ try {
     return { row: !!row, tiles: tiles.length, num: num && getComputedStyle(num).color, accent: getComputedStyle(document.documentElement).getPropertyValue("--ks-accent").trim(),
       beside: !!(a && b && b.left > a.right && b.top < a.bottom), below: !!(a && b && b.top >= a.bottom - 1) };
   });
+  const matrix = () => frame.evaluate(() => {
+    const th = document.querySelector("#doc .matrix th.ks-mark");
+    const dot = document.querySelector("#doc .matrix td.ks-dot-full");
+    const ring = document.querySelector("#doc .matrix td.ks-dot-ring");
+    const bars = Array.from(document.querySelectorAll("#doc progress.ks-bar-track"), (p) => [p.value, p.max, getComputedStyle(p.closest("tr")).getPropertyValue("--ks-hue-mid").trim()]);
+    const b = dot && getComputedStyle(dot, "::before");
+    return { marks: document.querySelectorAll("#doc .matrix th.ks-mark").length, wm: th && getComputedStyle(th).writingMode,
+      dotFill: b && b.backgroundColor, dotEdge: b && b.borderTopColor, dotText: dot && getComputedStyle(dot).color,
+      ringFill: ring && getComputedStyle(ring, "::before").backgroundColor,
+      total: !!document.querySelector("#doc .matrix tr.ks-total .ks-sub"), bars,
+      orangeMid: getComputedStyle(document.documentElement).getPropertyValue("--ks-orange-mid").trim(),
+      orange: getComputedStyle(document.documentElement).getPropertyValue("--ks-orange").trim() };
+  });
+  const matrixOk = async (what) => {
+    const m = await matrix();
+    check(m.marks === 2 && m.wm === "vertical-rl" && m.total, `${what}: ::: matrix — 2 vertical mark headers, a totals row`, m);
+    check(m.dotFill === rgb(m.orangeMid) && m.dotEdge === rgb(m.orange) && m.dotText === "rgba(0, 0, 0, 0)" && m.ringFill === "rgba(0, 0, 0, 0)", `${what}: ● filled in the mark colour with a text-colour edge, ○ a ring, characters hidden`, m);
+    check(JSON.stringify(m.bars.map((b) => [b[0], b[1]])) === "[[5,18],[12,18],[3,4]]" && m.bars[0][2] !== "", `${what}: three bars keep value/max, each row has a hue`, m.bars);
+  };
   const statsOk = async (what) => {
     const s = await stats();
     check(s.row && s.tiles === 3 && s.num === rgb(s.accent), `${what}: ::: stats — a title row, 3 tiles, the number in the accent`, s);
@@ -138,10 +174,12 @@ try {
   await page.evaluate(() => { document.getElementById("f").style.width = "1100px"; });
   await sleep(200);
   await hues("dark", "as written");
+  await matrixOk("dark");
   await send({ type: "theme", value: "light" });
   await sleep(200);
   await hues("light", "as written");
   await statsOk("light");
+  await matrixOk("light");
   await send({ type: "theme", value: "dark" });
 
   // 2. Normalization (the agent-write path) keeps the info word.
@@ -154,6 +192,8 @@ try {
     await waitFor((m) => m.type === "rendered" && m.seq === 3, "render normalized");
     await hues("dark", "after normalization");
     await statsOk("after normalization");
+    await matrixOk("after normalization");
+    check(/^::: matrix$/m.test(norm) && /^::: bars$/m.test(norm) && /5\/18/.test(norm) && /\*\*合計\*\*/.test(norm), "normalized text keeps ::: matrix / ::: bars, n/N and the bold total", norm);
     check(/^::: stats$/m.test(norm) && /\*\*42\*\* 場/.test(norm), "normalized text keeps ::: stats and its bold numbers", norm);
   }
 
@@ -169,6 +209,7 @@ try {
   await waitFor((m) => m.type === "rendered" && m.seq === 4, "render saved");
   await hues("dark", "after an editor load + save");
   await statsOk("after an editor load + save");
+  await matrixOk("after an editor load + save");
   const v = await frame.evaluate(() => window.__ksViolations || []);
   check(v.length === 0, "no CSP violation", v);
 } catch (e) {

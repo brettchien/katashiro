@@ -170,6 +170,41 @@ body {
 
 [hidden] { display: none !important; }
 
+/* `::: matrix` / `::: bars` (ADR canvas-themes §2.4 d, e; markdown.js sets the classes). A hue class sets
+   the --ks-hue* variables for a mark column (its cells) or a bar row. Mark columns: a tinted band
+   (header in the tint, body ~45 %), vertical headers, centred dots. Dots never rely on colour alone
+   (§2.3): ● = mark fill + a 1.5 px edge in the hue's text colour, ○ = a 2 px ring, ◐ = half fill +
+   edge; the character stays in the cell for copy and screen readers, hidden. */
+.ks-hue-orange { --ks-hue: var(--ks-orange); --ks-hue-mid: var(--ks-orange-mid); --ks-hue-line: var(--ks-orange-line); --ks-hue-tint: var(--ks-orange-tint); }
+.ks-hue-blue { --ks-hue: var(--ks-blue); --ks-hue-mid: var(--ks-blue-mid); --ks-hue-line: var(--ks-blue-line); --ks-hue-tint: var(--ks-blue-tint); }
+.ks-hue-purple { --ks-hue: var(--ks-purple); --ks-hue-mid: var(--ks-purple-mid); --ks-hue-line: var(--ks-purple-line); --ks-hue-tint: var(--ks-purple-tint); }
+.ks-hue-green { --ks-hue: var(--ks-green); --ks-hue-mid: var(--ks-green-mid); --ks-hue-line: var(--ks-green-line); --ks-hue-tint: var(--ks-green-tint); }
+.ks-hue-yellow { --ks-hue: var(--ks-yellow); --ks-hue-mid: var(--ks-yellow-mid); --ks-hue-line: var(--ks-yellow-line); --ks-hue-tint: var(--ks-yellow-tint); }
+.ks-hue-pink { --ks-hue: var(--ks-pink); --ks-hue-mid: var(--ks-pink-mid); --ks-hue-line: var(--ks-pink-line); --ks-hue-tint: var(--ks-pink-tint); }
+.ks-hue-teal { --ks-hue: var(--ks-teal); --ks-hue-mid: var(--ks-teal-mid); --ks-hue-line: var(--ks-teal-line); --ks-hue-tint: var(--ks-teal-tint); }
+.ks-hue-sand { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
+.ks-hue-slate { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
+.doc th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left; vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
+.doc td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
+.doc td.ks-dot { position: relative; color: transparent; }
+.doc td.ks-dot::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  box-sizing: border-box; border-radius: 50%; border: 1.5px solid var(--ks-hue);
+}
+.doc td.ks-dot-full::before { background: var(--ks-hue-mid); }
+.doc td.ks-dot-ring::before { border-width: 2px; }
+.doc td.ks-dot-half::before { background: linear-gradient(90deg, var(--ks-hue-mid) 50%, transparent 50%); }
+.doc tr.ks-total td { border-top: 2px solid var(--ks-border-strong); font-weight: 700; color: var(--ks-heading); }
+.doc .ks-sub { font-size: 0.8em; font-weight: 400; color: var(--ks-muted); }
+.doc td.ks-bar { white-space: nowrap; font-variant-numeric: tabular-nums; }
+progress.ks-bar-track {
+  appearance: none; -webkit-appearance: none; width: 72px; height: 6px; margin: 0 6px 0 0; vertical-align: middle;
+  border: 0; border-radius: 3px; background: var(--ks-surface-alt); overflow: hidden;
+}
+progress.ks-bar-track::-webkit-progress-bar { background: var(--ks-surface-alt); border-radius: 3px; }
+progress.ks-bar-track::-webkit-progress-value { background: var(--ks-hue-mid, var(--ks-accent)); border-radius: 3px; }
+@media print { .doc td.ks-mark, .doc th.ks-mark, .doc td.ks-dot::before, progress.ks-bar-track { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+
 /* `::: stats` (ADR canvas-themes §2.4 b): KPI tiles — the bold run large in the accent, the rest
    muted below it. After the first # Title (.ks-title-row, markdown.js) they sit right of the title on
    a wide tab and wrap below it on a narrow one; the row carries the title's rule. */

@@ -522,7 +522,7 @@
    * back unchanged apart from line ends. markdown-it reads the padded text the same (blank lines inside a container are
    * just blank lines).
    */
-  const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*((cards|stats)\b.*)?$/;   // the containers markdown.js registers
+  const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*((cards|stats|matrix|bars)\b.*)?$/;   // the containers markdown.js registers
   function padContainerMarkers(text) {
     const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
     const out = [];

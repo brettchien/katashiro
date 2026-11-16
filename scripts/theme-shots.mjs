@@ -118,6 +118,15 @@ Orange.
 ### Card 2
 Blue.
 :::
+
+::: matrix
+| Day | 場次 | 信任 | 工廠 | 記憶 | 提及 / 18 |
+|---|---|:-:|:-:|:-:|---|
+| D1 | Keynote | ● | ○ |  | 5/18 |
+| D1 | Panel | ◐ | ● | ● | 12/18 |
+| D2 | Workshop |  | ● | ○ | 3/18 |
+| **合計** | | 2 (1●) | 3 (2●) | 2 (1●) | |
+:::
 `;
 
 const MERMAID = `sequenceDiagram

@@ -381,3 +381,27 @@ test("stats: `::: stats` is a constant .stats around its list; after the first #
   assert.doesNotMatch(md.render("::: stats onclick=x\n- **1** a\n:::\n"), /onclick/);
   assert.doesNotMatch(md.render("::: statsx\n- **1** a\n:::\n"), /class="stats"/);
 });
+
+test("matrix: mark columns, dots, totals row; bars in matrix and ::: bars; n/N stays text elsewhere", () => {
+  const h = md.render("::: matrix\n| Day | 信任 | 工廠 | 提及 / 18 |\n|---|:-:|:-:|---|\n| D1 | ● | ○ | 5/18 |\n| D2 | ◐ |  | 12/18 |\n| **合計** | 5 (4●) | 1 | |\n:::\n");
+  assert.match(h, /^<div class="matrix">/);
+  assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-orange">信任<\/th>/);
+  assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-blue">工廠<\/th>/);
+  assert.match(h, /<th>Day<\/th>/);                      // a text column keeps a plain header
+  assert.match(h, /class="ks-mark ks-hue-orange ks-dot ks-dot-full">●</);
+  assert.match(h, /class="ks-mark ks-hue-blue ks-dot ks-dot-ring">○</);
+  assert.match(h, /class="ks-mark ks-hue-orange ks-dot ks-dot-half">◐</);
+  assert.match(h, /<tr class="ks-total">\n<td><strong>合計<\/strong><\/td>\n<td style="text-align:center" class="ks-mark ks-hue-orange">5 <span class="ks-sub">\(4●\)<\/span><\/td>/);
+  assert.match(h, /<tr class="ks-hue-orange">\n<td>D1<\/td>[\s\S]*<td class="ks-bar"><progress class="ks-bar-track" value="5" max="18">5\/18<\/progress> 5<\/td>/);
+  assert.match(h, /<tr class="ks-hue-blue">\n<td>D2<\/td>/);
+  // A column with text in it is not a mark column; out-of-range n/N stays text.
+  const t = md.render("::: matrix\n| a | b |\n|---|---|\n| ● | x |\n| ○ | ● |\n:::\n");
+  assert.match(t, /<th class="ks-mark ks-hue-orange">a<\/th>\n<th>b<\/th>/);
+  const b = md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n| b | 2001/3000 |\n| c | 5/4 |\n| d | 1/0 |\n:::\n");
+  assert.equal((b.match(/<progress /g) || []).length, 1);
+  assert.match(b, /<td>2001\/3000<\/td>[\s\S]*<td>5\/4<\/td>[\s\S]*<td>1\/0<\/td>/);
+  // Outside the wrappers: plain text, no classes.
+  const o = md.render("| out | 12/18 |\n|---|---|\n| a | ● |\n");
+  assert.doesNotMatch(o, /progress|ks-/);
+  assert.doesNotMatch(md.render("::: matrix onclick=x\n| a |\n|---|\n| ● |\n:::\n"), /onclick/);
+});
