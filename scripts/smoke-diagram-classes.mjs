@@ -88,7 +88,8 @@ try {
     await page.evaluate((m) => __send(m), { type: "render", kind: "markdown", version: 1, seq: 1, content: FIXTURE, engine });
     await waitFor((m) => m.type === "rendered" && m.seq === 1, "rendered");
     const before = await verify("dark", "as rendered");
-    check(before.length === 3, `${engine}: three diagrams`, before.length);
+    const errs = await frame.evaluate(() => Array.from(document.querySelectorAll("#doc .ks-mermaid-error, #doc pre"), (e) => e.textContent.slice(0, 300)));
+    check(before.length === 3, `${engine}: three diagrams`, { figures: before.length, errors: errs });
     await page.evaluate(() => __send({ type: "theme", value: "light" }));
     await sleep(1500);   // Mermaid redraws in its light theme; Pele only restyles (the classes are var()s)
     const after = await verify("light", "after a switch to light");
