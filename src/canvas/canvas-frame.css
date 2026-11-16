@@ -185,6 +185,8 @@ body {
 .ks-hue-sand { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
 .ks-hue-slate { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
 .doc th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left; vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
+/* Mark columns stay narrow (as in the reference); the text columns take the width. */
+.doc th.ks-mark, .doc td.ks-mark { width: 2.4em; }
 .doc td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
 .doc td.ks-dot { position: relative; color: transparent; }
 .doc td.ks-dot::before {
