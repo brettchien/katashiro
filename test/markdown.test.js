@@ -361,8 +361,8 @@ test("plugins: `==` inside words stays text (x==1 or y==2), CJK and spaced highl
 
 test("cards accent: `::: cards accent` adds the constant class cards-accent; other words are ignored", () => {
   const h = md.render("::: cards accent\n### A\nx\n### B\ny\n:::\n");
-  assert.match(h, /^<div class="cards cards-accent">\n<div class="card">\n<h3>A<\/h3>/);
-  assert.equal((h.match(/<div class="card">/g) || []).length, 2);
+  assert.match(h, /^<div class="cards cards-accent">\n<div class="card ks-hue-orange">\n<h3>A<\/h3>/);
+  assert.equal((h.match(/<div class="card ks-hue-/g) || []).length, 2);
   assert.match(md.render("::: cards accent wide\n### A\nx\n:::\n"), /^<div class="cards cards-accent">/);
   assert.match(md.render("::: cards\n### A\nx\n:::\n"), /^<div class="cards">/);
   assert.match(md.render("::: cards <b>accent</b>\n### A\nx\n:::\n"), /^<div class="cards">/);
@@ -397,11 +397,50 @@ test("matrix: mark columns, dots, totals row; bars in matrix and ::: bars; n/N s
   // A column with text in it is not a mark column; out-of-range n/N stays text.
   const t = md.render("::: matrix\n| a | b |\n|---|---|\n| ● | x |\n| ○ | ● |\n:::\n");
   assert.match(t, /<th class="ks-mark ks-hue-orange">a<\/th>\n<th>b<\/th>/);
-  const b = md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n| b | 2001/3000 |\n| c | 5/4 |\n| d | 1/0 |\n:::\n");
-  assert.equal((b.match(/<progress /g) || []).length, 1);
-  assert.match(b, /<td>2001\/3000<\/td>[\s\S]*<td>5\/4<\/td>[\s\S]*<td>1\/0<\/td>/);
+  // Bars: only a column whose header states N (`/ 4`) and whose cells are all n/4; else plain text.
+  const b = md.render("::: bars\n| x | n / 4 | when |\n|---|---|---|\n| a | 3/4 | 11/12 |\n| b | 0/4 | 11/13 |\n:::\n");
+  assert.equal((b.match(/<progress /g) || []).length, 2);
+  assert.match(b, /<tr class="ks-hue-orange">\n<td>a<\/td>\n<td class="ks-bar"><progress class="ks-bar-track" value="3" max="4">3\/4<\/progress> 3<\/td>\n<td>11\/12<\/td>/);
+  for (const bad of ["| a | 3/4 |\n| b | 5/4 |", "| a | 3/4 |\n| b | 3/5 |", "| a | 3/4 |\n| b | x |"]) {
+    assert.doesNotMatch(md.render(`::: bars\n| x | n / 4 |\n|---|---|\n${bad}\n:::\n`), /progress/, bad);
+  }
+  assert.doesNotMatch(md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n:::\n"), /progress/, "no N in the header");
   // Outside the wrappers: plain text, no classes.
   const o = md.render("| out | 12/18 |\n|---|---|\n| a | ● |\n");
   assert.doesNotMatch(o, /progress|ks-/);
   assert.doesNotMatch(md.render("::: matrix onclick=x\n| a |\n|---|\n| ● |\n:::\n"), /onclick/);
+});
+
+test("matrix: bold row labels are labels, not a totals row; a header cell never becomes a dot", () => {
+  const h = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| **Ann** | ● | ○ |\n| **Bob** | ◐ | ● |\n:::\n");
+  assert.doesNotMatch(h, /ks-total/);
+  assert.equal((h.match(/ks-dot /g) || []).length, 4);
+  assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-blue">B<\/th>/);
+  const t = md.render("::: matrix\n| Who | A |\n|---|---|\n| Ann | ● |\n| Bob | ○ |\n| **Total** | 2 |\n:::\n");
+  assert.match(t, /<tr class="ks-total">/);
+  const d = md.render("::: matrix\n| x | ● |\n|---|---|\n| a | ● |\n:::\n");
+  assert.match(d, /<th class="ks-mark ks-hue-orange">●<\/th>/);
+  // ::: bars has no totals row.
+  assert.doesNotMatch(md.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 1/4 |\n| **T** | 2/4 |\n:::\n"), /ks-total/);
+});
+
+test("cards accent: each card carries its hue class in the accent order, restarting per block", () => {
+  const h = md.render("::: cards accent\n### A\nx\n### B\ny\n:::\n\n::: cards accent\n### C\nz\n:::\n\n::: cards\n### D\nw\n:::\n");
+  assert.deepEqual(h.match(/<div class="card(?: [^"]*)?">/g), ["<div class=\"card ks-hue-orange\">", "<div class=\"card ks-hue-blue\">", "<div class=\"card ks-hue-orange\">", "<div class=\"card\">"]);
+});
+
+test("own section numbers: if a document numbers its own ##, every top-level h2 is .ks-own-number", () => {
+  assert.equal((md.render("## 1. A\n\n## B\n").match(/<h2 class="ks-own-number">/g) || []).length, 2);
+  for (const n of ["## 1) A", "## 3、A", "## 2: A"]) assert.match(md.render(n), /ks-own-number/, n);
+  assert.doesNotMatch(md.render("## A\n\n## 2026 plans\n\n### 1. sub\n"), /ks-own-number/);
+});
+
+test("CONTAINER_NAMES: markdown.js registers exactly the containers the normalizer pads", () => {
+  const C = require("../src/core/canvas-core.js");
+  const { CONTAINER_NAMES } = require("../src/core/markdown.js");
+  assert.deepEqual([...CONTAINER_NAMES].sort(), [...C.CONTAINER_NAMES].sort());
+  for (const name of C.CONTAINER_NAMES) {
+    assert.equal(C.padContainerMarkers(`| a |\n|---|\n| 1 |\n:::\n::: ${name} x\ntext`), `| a |\n|---|\n| 1 |\n\n:::\n\n::: ${name} x\n\ntext`, name);
+  }
+  assert.equal(C.padContainerMarkers("text\n::: foo\nmore"), "text\n::: foo\nmore");
 });

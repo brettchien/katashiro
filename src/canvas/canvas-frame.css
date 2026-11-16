@@ -184,7 +184,8 @@ body {
 .ks-hue-teal { --ks-hue: var(--ks-teal); --ks-hue-mid: var(--ks-teal-mid); --ks-hue-line: var(--ks-teal-line); --ks-hue-tint: var(--ks-teal-tint); }
 .ks-hue-sand { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
 .ks-hue-slate { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
-.doc th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left; vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
+.doc th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left !important;   /* over markdown-it's inline `:-:` centring */
+  vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
 /* Mark columns stay narrow (as in the reference); the text columns take the width. */
 .doc th.ks-mark, .doc td.ks-mark { width: 2.4em; }
 .doc td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
@@ -211,6 +212,8 @@ progress.ks-bar-track::-webkit-progress-value { background: var(--ks-hue-mid, va
    top-level ## of a document gets its number in a blue-ramp circle. No syntax: CSS on the theme. */
 :root[data-ks-theme="light"] .doc { counter-reset: ks-sec; }
 :root[data-ks-theme="light"] .doc > h2 { counter-increment: ks-sec; }
+/* A document that numbers its own ## (markdown.js .ks-own-number): no second number. */
+:root[data-ks-theme="light"] .doc > h2.ks-own-number::before { content: none; }
 :root[data-ks-theme="light"] .doc > h2::before {
   content: counter(ks-sec); display: inline-flex; align-items: center; justify-content: center;
   width: 1.6em; height: 1.6em; margin-right: 0.5em; vertical-align: 0.1em; box-sizing: border-box;
@@ -243,18 +246,10 @@ progress.ks-bar-track::-webkit-progress-value { background: var(--ks-hue-mid, va
 .card > :first-child, .doc .card > h3:first-child { margin-top: 0; }
 /* `::: cards accent` (ADR canvas-themes §2.4 a): each card takes a hue in the accent order (§2.3:
    orange, blue, purple, green, yellow, pink, teal, sand, slate, then again), restarting per block —
+   markdown.js gives it the .ks-hue-* class (below, with the matrix) —
    tint fill, hue border, a 3 px top edge in the mark colour, the card's ### in the hue's text colour. */
 .cards-accent > .card { background: var(--ks-hue-tint); border-color: var(--ks-hue-line); border-top: 3px solid var(--ks-hue-mid); }
 .cards-accent > .card > h3 { color: var(--ks-hue); }
-.cards-accent > .card:nth-child(9n+1) { --ks-hue: var(--ks-orange); --ks-hue-mid: var(--ks-orange-mid); --ks-hue-line: var(--ks-orange-line); --ks-hue-tint: var(--ks-orange-tint); }
-.cards-accent > .card:nth-child(9n+2) { --ks-hue: var(--ks-blue); --ks-hue-mid: var(--ks-blue-mid); --ks-hue-line: var(--ks-blue-line); --ks-hue-tint: var(--ks-blue-tint); }
-.cards-accent > .card:nth-child(9n+3) { --ks-hue: var(--ks-purple); --ks-hue-mid: var(--ks-purple-mid); --ks-hue-line: var(--ks-purple-line); --ks-hue-tint: var(--ks-purple-tint); }
-.cards-accent > .card:nth-child(9n+4) { --ks-hue: var(--ks-green); --ks-hue-mid: var(--ks-green-mid); --ks-hue-line: var(--ks-green-line); --ks-hue-tint: var(--ks-green-tint); }
-.cards-accent > .card:nth-child(9n+5) { --ks-hue: var(--ks-yellow); --ks-hue-mid: var(--ks-yellow-mid); --ks-hue-line: var(--ks-yellow-line); --ks-hue-tint: var(--ks-yellow-tint); }
-.cards-accent > .card:nth-child(9n+6) { --ks-hue: var(--ks-pink); --ks-hue-mid: var(--ks-pink-mid); --ks-hue-line: var(--ks-pink-line); --ks-hue-tint: var(--ks-pink-tint); }
-.cards-accent > .card:nth-child(9n+7) { --ks-hue: var(--ks-teal); --ks-hue-mid: var(--ks-teal-mid); --ks-hue-line: var(--ks-teal-line); --ks-hue-tint: var(--ks-teal-tint); }
-.cards-accent > .card:nth-child(9n+8) { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
-.cards-accent > .card:nth-child(9n+9) { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
 .card > :last-child { margin-bottom: 0; }
 /* Callouts: GitHub alerts (a title row) and emoji quotes (no title; the emoji leads the text). Each
    kind sets one colour, --ks-alert; the box is a tinted panel with that colour on its left edge. The

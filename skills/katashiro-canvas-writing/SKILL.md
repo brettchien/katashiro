@@ -24,7 +24,7 @@ which job**, the few syntaxes that break, and how to edit without fighting the e
 | Parallel themes that should each read as their own colour (trends, findings, tracks) | `::: cards accent` — the same, each card takes the next hue | colouring cards yourself |
 | 2–5 headline numbers (days, sessions, cost) | `::: stats` with `- **3** 天` per number, right after `# Title` | a sentence of numbers |
 | Items × categories (who covered what) | `::: matrix` around a table, `●` / `○` / `◐` in the cells, a `**Total**` last row | ✓ / x text in a plain table |
-| A count out of a total, per row | `n/N` in a cell inside `::: matrix` or `::: bars` (draws a bar) | a percentage column |
+| A count out of a total, per row | `n/N` in every cell of a column headed `… / N`, inside `::: matrix` or `::: bars` (draws a bar) | a percentage column |
 | A rule, a warning, a caveat the reader must not miss | `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` (optional title after the marker) | bold text in a paragraph |
 | A short good/bad example line | `> ✅ …` / `> ⚠️ …` / `> ℹ️ …` (emoji callout, no title row; only these three, and the emoji must be the first character — `❌` / `💡` stay a plain quote) | a quote with no colour |
 | Fields, options, numbers with several attributes | a table (header row, `---:` for numbers) | nested bullets |
@@ -69,10 +69,11 @@ Headline numbers, right after the title (they sit beside it on a wide tab):
 :::
 ```
 
-A matrix — a mark column is one whose cells are only `●` (yes) / `○` (partly) / `◐` (half) or empty;
-it gets a vertical header and its own hue. Text columns stay as they are. A last row whose first
-cell is bold is the totals row; `5 (4●)` shows the part in brackets small. `n/N` draws a bar and n
-(state N once, in the header):
+A matrix — a mark column is one whose cells are only `●` (central) / `◐` (discussed) / `○`
+(mentioned) or empty; it gets a vertical header and its own hue. Text columns stay as they are. The
+last row is the totals row when its first filled cell is bold and no row above starts bold (bold
+labels on every row are just labels); `5 (4●)` shows the part in brackets small. A **bar column**
+has a header ending in `/ N` and `n/N` (that N) in every filled cell: each draws a bar and n.
 
 ```markdown
 ::: matrix
@@ -86,7 +87,9 @@ cell is bold is the totals row; `5 (4●)` shows the part in brackets small. `n/
 
 - The dots are drawn with an outline, so they never rely on colour alone; still say in a footnote
   what ● / ○ / ◐ mean.
-- Outside `::: matrix` / `::: bars`, `12/18` stays text (dates, fractions). Write the totals yourself.
+- Write `n/N` in full in every cell — the header's `/ N` says which columns are bars, the cells give
+  the values. Any other `12/18` (a date, a fraction, outside the wrappers) stays text. Write the
+  totals yourself.
 
 Callout with a title:
 

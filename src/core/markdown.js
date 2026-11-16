@@ -33,6 +33,15 @@
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>\n";
   }
 
+  // The ::: containers buildMd registers (see there): name → extra constant classes from the info
+  // words, or null. Exported as CONTAINER_NAMES for the test against CanvasCore.CONTAINER_NAMES.
+  const CONTAINERS = {
+    cards: (words) => (words.includes("accent") ? ["cards-accent"] : []),
+    stats: null,
+    matrix: null,
+    bars: null,
+  };
+
   // html:false ⇒ any raw HTML in the message is ESCAPED to text before it ever reaches the
   // sanitizer (double defense); linkify auto-links bare URLs. GFM-style pipe tables are on in
   // markdown-it's default preset — the readability fix this ADR is motivated by (§1.1).
@@ -61,38 +70,36 @@
       }
     });
 
-    // Cards (ADR canvas §3.3, "Cards and callouts"): a `::: cards` … `:::` block (markdown-it-container,
-    // vendored in the markdown-it bundle) is a row of cards. Only the name `cards` is registered, so any
-    // other `::: foo` stays plain text. The class is a CONSTANT string: the info string after `cards`
-    // is never copied into the markup (only the word `accent` adds a second constant class). markdown-it-container's own default render would also
-    // only use the name; ours spells it out so that stays true whatever the plugin does.
+    // Containers (markdown-it-container, vendored in the markdown-it bundle): `::: cards` (ADR canvas §3.3
+    // "Cards and callouts") and the briefing blocks of ADR canvas-themes §2.4 — `::: stats`, `::: matrix`,
+    // `::: bars`. Only these names are registered, so any other `::: foo` stays plain text. Each gets one
+    // CONSTANT class, its name; the info string after the name is never copied into the markup — the
+    // only word read from it is `accent` after `cards` (§2.4 a), which adds a second constant class.
+    // markdown-it-container's own default render would also only use the name; ours spells it out so that
+    // stays true whatever the plugin does. CanvasCore.CONTAINER_NAMES (the normalizer's marker padding,
+    // canvas §3.5) must list the same names — a unit test checks it.
     if (global.markdownitContainer) {
-      md.use(global.markdownitContainer, "cards", {
-        validate: (params) => params.trim().split(/\s+/, 1)[0] === "cards",
-        render: (tokens, idx, options, env, slf) => {
-          if (tokens[idx].nesting === 1) {
-            tokens[idx].attrJoin("class", "cards");
-            // `::: cards accent` (ADR canvas-themes §2.4 a): one more CONSTANT class; the hues come from
-            // the card order in CSS (canvas-frame.css), restarting in each block. Other words: ignored.
-            if (tokens[idx].info.trim().split(/\s+/).slice(1).includes("accent")) tokens[idx].attrJoin("class", "cards-accent");
-          }
-          return slf.renderToken(tokens, idx, options);
-        },
-      });
+      for (const [name, extra] of Object.entries(CONTAINERS)) {
+        md.use(global.markdownitContainer, name, {
+          validate: (params) => params.trim().split(/\s+/, 1)[0] === name,
+          render: (tokens, idx, options, env, slf) => {
+            if (tokens[idx].nesting === 1) {
+              tokens[idx].attrJoin("class", name);
+              for (const c of extra ? extra(tokens[idx].info.trim().split(/\s+/).slice(1)) : []) tokens[idx].attrJoin("class", c);
+            }
+            return slf.renderToken(tokens, idx, options);
+          },
+        });
+      }
     }
-    // `::: stats` (ADR canvas-themes §2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold
-    // run the number, the rest the label (canvas-frame.css). A constant class; the info string after
-    // `stats` is ignored. Right after the document's first `# Title`, the two are wrapped in a
-    // constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
-    if (global.markdownitContainer) {
-      md.use(global.markdownitContainer, "stats", {
-        validate: (params) => params.trim().split(/\s+/, 1)[0] === "stats",
-        render: (tokens, idx, options, env, slf) => {
-          if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", "stats");
-          return slf.renderToken(tokens, idx, options);
-        },
-      });
-    }
+    // The accent order (ADR canvas-themes §2.3): accent cards, matrix mark columns and bar rows take their
+    // hue in it, as the constant class ks-hue-<name> (canvas-frame.css sets the --ks-hue* variables).
+    const ACCENT = ["orange", "blue", "purple", "green", "yellow", "pink", "teal", "sand", "slate"];
+    const hueClass = (i) => `ks-hue-${ACCENT[i % ACCENT.length]}`;
+
+    // `::: stats` (§2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold run the number, the
+    // rest the label (canvas-frame.css). Right after the document's first `# Title`, the two are wrapped in
+    // a constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
     md.core.ruler.after("block", "stats_title_row", (state) => {
       const t = state.tokens;
       const h = t.findIndex((x) => x.type === "heading_open" && x.tag === "h1" && x.level === 0);
@@ -112,29 +119,22 @@
       t.splice(h, 0, open);
     });
 
-    // `::: matrix` and `::: bars` (ADR canvas-themes §2.4 d, e) around a table. Constant classes only:
-    //   - matrix: a column whose body cells are all empty or a dot (● ○ ◐, at least one) — and, in a
-    //     totals row, a number — is a MARK column: .ks-mark + a hue class in the accent order, counted
-    //     over mark columns; a dot cell gets .ks-dot-full / -ring / -half (canvas-frame.css draws the
-    //     dot; the character stays, for copy and screen readers). A last row whose first non-empty
-    //     cell is bold is .ks-total; in it `5 (4●)` shows the part in parentheses as .ks-sub.
-    //   - matrix and bars: a cell whose whole text is `n/N` (integers, 0 ≤ n ≤ N ≤ 1000, N > 0) becomes
-    //     a <progress value=n max=N> and n; the row takes a hue (accent order over body rows) for it.
-    //     The stored text keeps `n/N`; outside these wrappers it stays text.
-    if (global.markdownitContainer) {
-      for (const name of ["matrix", "bars"]) {
-        md.use(global.markdownitContainer, name, {
-          validate: (params) => params.trim().split(/\s+/, 1)[0] === name,
-          render: (tokens, idx, options, env, slf) => {
-            if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", name);
-            return slf.renderToken(tokens, idx, options);
-          },
-        });
-      }
-    }
-    const ACCENT = ["orange", "blue", "purple", "green", "yellow", "pink", "teal", "sand", "slate"];
+    // Numbered sections (§2.4 c) are CSS on the light theme. A document that numbers its own top-level
+    // `##` (`## 1. …`, `## 2) …`, `## 3、…`) would show both numbers: then every top-level h2 gets the
+    // constant class ks-own-number, which the CSS leaves unnumbered.
+    const OWN_NUMBER = /^\s*\d+\s*[.)、．:]\s*/;
+    md.core.ruler.after("inline", "own_section_numbers", (state) => {
+      const t = state.tokens;
+      const h2 = [];
+      for (let i = 0; i < t.length; i++) if (t[i].type === "heading_open" && t[i].tag === "h2" && t[i].level === 0) h2.push(i);
+      if (!h2.some((i) => t[i + 1] && OWN_NUMBER.test(t[i + 1].content))) return;
+      for (const i of h2) t[i].attrJoin("class", "ks-own-number");
+    });
+
+    // `::: matrix` and `::: bars` (§2.4 d, e) around a table: constant classes and two token kinds only.
     const DOTS = { "●": "ks-dot-full", "○": "ks-dot-ring", "◐": "ks-dot-half" };
     const BAR = /^(\d{1,4})\/(\d{1,4})$/;
+    const BAR_HEAD = /\/\s*(\d{1,4})\s*$/;          // the column header states N: `提及場次 / 18`
     const TOTAL_NUM = /^(\d+)(?:\s*(\(.+\)))?$/;
     md.renderer.rules.ks_bar = (tokens, idx) => {
       const { n, N } = tokens[idx].meta;          // integers, checked when the token was made
@@ -142,70 +142,106 @@
     };
     md.renderer.rules.ks_sub_open = () => '<span class="ks-sub">';
     md.renderer.rules.ks_sub_close = () => "</span>";
-    function shapeTable(state, t, from, to, kind) {
-      const rows = [];
+    const cellText = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.trim() : "");
+    // markdown-it puts an empty text token before a leading **: the first child that carries something.
+    const ledByBold = (c) => {
+      const lead = c && (c.inline.children || []).find((ch) => !(ch.type === "text" && ch.content === ""));
+      return !!lead && lead.type === "strong_open";
+    };
+    /** The table's rows: { head: [row], body: [row] }, a row = { tr, cells: [{ open, inline }] }. */
+    function tableRows(t, from, to) {
+      const head = [], body = [];
       let section = null;
       for (let k = from; k < to; k++) {
         const x = t[k];
-        if (x.type === "thead_open") section = "head";
-        else if (x.type === "tbody_open") section = "body";
-        else if (x.type === "tr_open") rows.push({ tr: x, section, cells: [] });
-        else if ((x.type === "th_open" || x.type === "td_open") && rows.length) rows[rows.length - 1].cells.push({ open: x, inline: t[k + 1] });
+        if (x.type === "thead_open") section = head;
+        else if (x.type === "tbody_open") section = body;
+        else if (x.type === "tr_open" && section) section.push({ tr: x, cells: [] });
+        else if ((x.type === "th_open" || x.type === "td_open") && section && section.length) section[section.length - 1].cells.push({ open: x, inline: t[k + 1] });
       }
-      const text = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.trim() : "");
-      const head = rows.filter((r) => r.section === "head");
-      let body = rows.filter((r) => r.section === "body");
+      return { head, body };
+    }
+    /** matrix: the totals row — the last body row led by bold text (`**合計**`), when no row above it is:
+     *  bold row labels everywhere are labels, not a total. */
+    function totalsRow(body) {
+      const lead = (r) => r.cells.find((c) => cellText(c) !== "");
       const last = body[body.length - 1];
-      const firstFilled = last && last.cells.find((c) => text(c) !== "");
-      const lead = firstFilled && (firstFilled.inline.children || []).find((ch) => !(ch.type === "text" && ch.content === ""));
-      const total = lead && lead.type === "strong_open" ? last : null;
-      if (total) { total.tr.attrJoin("class", "ks-total"); body = body.slice(0, -1); }
-      if (kind === "matrix") {
-        const cols = Math.max(0, ...rows.map((r) => r.cells.length));
-        let marks = 0;
-        for (let c = 0; c < cols; c++) {
-          const cells = body.map((r) => r.cells[c]);
-          const isMark = cells.length > 0 && cells.every((x) => text(x) === "" || DOTS[text(x)]) && cells.some((x) => DOTS[text(x)])
-            && (!total || text(total.cells[c]) === "" || TOTAL_NUM.test(text(total.cells[c])));
-          if (!isMark) continue;
-          const hue = `ks-hue-${ACCENT[marks++ % ACCENT.length]}`;
-          for (const r of [...head, ...body, ...(total ? [total] : [])]) {
-            const x = r.cells[c];
-            if (!x) continue;
-            x.open.attrJoin("class", `ks-mark ${hue}`);
-            if (DOTS[text(x)]) x.open.attrJoin("class", `ks-dot ${DOTS[text(x)]}`);
-          }
+      if (!last || body.length < 2 || !ledByBold(lead(last))) return null;
+      return body.slice(0, -1).some((r) => ledByBold(lead(r))) ? null : last;
+    }
+    /** matrix: mark columns (body cells only dots or empty, at least one dot; a number or nothing in the
+     *  totals row) get .ks-mark + a hue, their dot cells .ks-dot-*; a header cell never becomes a dot. */
+    function markColumns(head, data, total) {
+      const cols = Math.max(0, ...[...head, ...data].map((r) => r.cells.length));
+      let marks = 0;
+      for (let c = 0; c < cols; c++) {
+        const cells = data.map((r) => r.cells[c]);
+        const isMark = cells.length > 0 && cells.every((x) => cellText(x) === "" || DOTS[cellText(x)]) && cells.some((x) => DOTS[cellText(x)])
+          && (!total || cellText(total.cells[c]) === "" || TOTAL_NUM.test(cellText(total.cells[c])));
+        if (!isMark) continue;
+        const hue = hueClass(marks++);
+        for (const r of head) if (r.cells[c]) r.cells[c].open.attrJoin("class", `ks-mark ${hue}`);
+        for (const r of [...data, ...(total ? [total] : [])]) {
+          const x = r.cells[c];
+          if (!x) continue;
+          x.open.attrJoin("class", `ks-mark ${hue}`);
+          if (DOTS[cellText(x)]) x.open.attrJoin("class", `ks-dot ${DOTS[cellText(x)]}`);
         }
-        if (total) {
-          for (const x of total.cells) {
-            const m = TOTAL_NUM.exec(text(x));
-            const ch = x.inline && x.inline.children;
-            if (!m || !m[2] || !ch || ch.length !== 1 || ch[0].type !== "text") continue;
-            const a = new state.Token("text", "", 0); a.content = `${m[1]} `;
-            const o = new state.Token("ks_sub_open", "span", 1);
-            const b = new state.Token("text", "", 0); b.content = m[2];
-            const cl = new state.Token("ks_sub_close", "span", -1);
-            x.inline.children = [a, o, b, cl];
-          }
-        }
+      }
+    }
+    /** matrix totals row: `5 (4●)` → 5 and the bracket as .ks-sub. */
+    function totalsSubs(state, total) {
+      for (const x of total.cells) {
+        const m = TOTAL_NUM.exec(cellText(x));
+        const ch = x.inline && x.inline.children;
+        if (!m || !m[2] || !ch || ch.length !== 1 || ch[0].type !== "text") continue;
+        const a = new state.Token("text", "", 0); a.content = `${m[1]} `;
+        const o = new state.Token("ks_sub_open", "span", 1);
+        const b = new state.Token("text", "", 0); b.content = m[2];
+        const cl = new state.Token("ks_sub_close", "span", -1);
+        x.inline.children = [a, o, b, cl];
+      }
+    }
+    /** matrix and bars: a BAR column — its header ends in `/ N` and every filled body cell is `n/N` with
+     *  that N (0 ≤ n ≤ N ≤ 1000) — gets a <progress> and n per cell; the rows with a bar take a hue. A
+     *  date `11/12` in another column stays text. */
+    function barColumns(state, head, data) {
+      const cols = Math.max(0, ...head.map((r) => r.cells.length));
+      const barCols = [];
+      for (let c = 0; c < cols; c++) {
+        const hm = head.length && BAR_HEAD.exec(cellText(head[head.length - 1].cells[c]));
+        const N = hm ? Number(hm[1]) : 0;
+        if (!(N > 0 && N <= 1000)) continue;
+        const filled = data.map((r) => cellText(r.cells[c])).filter((x) => x !== "");
+        if (filled.length && filled.every((x) => { const m = BAR.exec(x); return m && Number(m[2]) === N && Number(m[1]) <= N; })) barCols.push(c);
       }
       let barRows = 0;
-      for (const r of body) {
+      for (const r of data) {
         let any = false;
-        for (const x of r.cells) {
-          const m = BAR.exec(text(x));
+        for (const c of barCols) {
+          const x = r.cells[c];
+          const m = BAR.exec(cellText(x));
           if (!m) continue;
-          const n = Number(m[1]), N = Number(m[2]);
-          if (!(N > 0 && n <= N && N <= 1000)) continue;
           const bar = new state.Token("ks_bar", "progress", 0);
-          bar.meta = { n, N };
-          const num = new state.Token("text", "", 0); num.content = String(n);
+          bar.meta = { n: Number(m[1]), N: Number(m[2]) };
+          const num = new state.Token("text", "", 0); num.content = m[1].replace(/^0+(?=\d)/, "");
           x.inline.children = [bar, num];
           x.open.attrJoin("class", "ks-bar");
           any = true;
         }
-        if (any) r.tr.attrJoin("class", `ks-hue-${ACCENT[barRows++ % ACCENT.length]}`);
+        if (any) r.tr.attrJoin("class", hueClass(barRows++));
       }
+    }
+    function shapeTable(state, t, from, to, kind) {
+      const { head, body } = tableRows(t, from, to);
+      const total = kind === "matrix" ? totalsRow(body) : null;
+      const data = total ? body.slice(0, -1) : body;
+      if (total) {
+        total.tr.attrJoin("class", "ks-total");
+        totalsSubs(state, total);
+      }
+      if (kind === "matrix") markColumns(head, data, total);
+      barColumns(state, head, data);
     }
     md.core.ruler.after("inline", "matrix_bars", (state) => {
       const t = state.tokens;
@@ -230,11 +266,12 @@
     // cards container gets its own cards; the outer one needs the longer fence, `::::`, or the inner
     // `:::` closes it). The card tokens are plain `div`s with a constant class
     // (rendered by markdown-it's renderToken, no rule needed); their source lines run from their
-    // first block to the next card (or the closing `:::`), so the canvas's Ask agent can name them.
+    // first block to the next card (or the closing `:::`), so the canvas's Ask agent can name them. In a
+    // `::: cards accent` block each card also takes the next hue class (the order restarts per block).
     md.core.ruler.after("block", "cards", (state) => {
       if (!state.tokens.some((t) => t.type === "container_cards_open")) return;
       const out = [];
-      const stack = [];                   // open cards containers: { open, orig level, card }
+      const stack = [];                   // open cards containers: { open, orig level, card, accent, n }
       const closeCard = (top, end) => {
         if (!top.card) return;
         if (top.card.map && end != null) top.card.map[1] = end;
@@ -262,6 +299,7 @@
             c.block = true;
             c.level = top.open.level + 1;
             c.attrSet("class", "card");
+            if (top.accent) c.attrJoin("class", hueClass(top.n++));
             if (t.map) c.map = [t.map[0], t.map[1]];
             out.push(c);
             top.card = c;
@@ -269,7 +307,7 @@
         }
         t.level = orig + stack.length;    // everything inside a container now sits inside a card
         out.push(t);
-        if (t.type === "container_cards_open") stack.push({ open: t, level: orig, card: null });
+        if (t.type === "container_cards_open") stack.push({ open: t, level: orig, card: null, accent: t.info.trim().split(/\s+/).slice(1).includes("accent"), n: 0 });
       }
       state.tokens = out;
     });
@@ -490,6 +528,6 @@
   global.renderMarkdownInto = renderMarkdownInto;
   // node (test) — jsdom supplies window for DOMPurify.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG };
+    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG, CONTAINER_NAMES: Object.keys(CONTAINERS) };
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

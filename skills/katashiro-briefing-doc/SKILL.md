@@ -28,7 +28,8 @@ Write the sections in this order, all as `##` — **unnumbered**: the light them
    and a last line `→ source` (session, speaker).
 3. **Timeline** — `::: cards`, one card per day (`### Day 1 · 11/10`), 3–5 bullets each.
 4. **Keywords** — a table `| 關鍵字 | 是什麼 | 為何重要 | 提及場次 / N |` inside `::: bars`, the last
-   column `n/N` (N once, in the header). Sorted by n, highest first.
+   column `n/N` in every cell — the header states N (`/ 18`), each cell still writes `5/18` in full.
+   Sorted by n, highest first.
 5. **Analysis** — `::: cards accent`, 2–4 cards: what it means for the reader's organisation.
 6. **Full matrix** — `::: matrix` around a table of every session × keyword: text columns first
    (Day, Session · Speaker · Company, Summary), then one mark column per keyword with `●` (central),
