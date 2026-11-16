@@ -563,34 +563,23 @@
 
   // Theme-aware diagram classes (ADR canvas-themes §2.5): `class X ks-blue` / `ks-blue-strong` in a
   // flowchart, state or class diagram. When a source uses one, the frame appends the classDef lines
-  // for the resolved theme before drawing (the stored source is not changed) and draws it again on a
-  // switch. Literal colours: neither engine parses var() in a classDef. They repeat the --ks-* ramps
-  // of canvas-frame.css (§2.3) — keep the two in step.
-  const KS_RAMPS = {   // hue: [tint, mark, text] — dark, then light
-    dark: {
-      blue: ["#162333", "#58a6ff", "#58a6ff"], orange: ["#281f1c", "#f0883e", "#f0883e"], purple: ["#222033", "#bc8cff", "#bc8cff"],
-      green: ["#13251e", "#3fb950", "#3fb950"], yellow: ["#252118", "#d29922", "#d29922"], pink: ["#291d2b", "#f778ba", "#f778ba"],
-      teal: ["#12272d", "#39c5cf", "#39c5cf"], sand: ["#242221", "#c9a26d", "#c9a26d"], slate: ["#1c2127", "#8b949e", "#8b949e"],
-      red: ["#29191d", "#f85149", "#f85149"],
-    },
-    light: {
-      blue: ["#e6f0fb", "#86addb", "#2f5d8a"], orange: ["#fdeee4", "#e8a983", "#9a5630"], purple: ["#efeafb", "#a898d8", "#6a55b0"],
-      green: ["#e8f5ee", "#7dc0a0", "#2f7a55"], yellow: ["#fdf8dc", "#d9c25e", "#7a6a1e"], pink: ["#fbe9ee", "#e09aae", "#9e4862"],
-      teal: ["#e4f6f7", "#6fbfc4", "#26777c"], sand: ["#f3eee6", "#c2a57d", "#7d6440"], slate: ["#eef1f4", "#97a6b6", "#4a5668"],
-      red: ["#fbe4e4", "#e07a7a", "#b4302a"],
-    },
-  };
-  const KS_HUES = Object.keys(KS_RAMPS.dark);
+  // below before drawing (the stored source is not changed). Neither engine parses var() in a
+  // classDef, so the lines carry SENTINEL colours — #0c01<hue index><role> — and the frame turns them
+  // into var(--ks-<hue>-tint / -mid / …) in the drawn SVG (ksSentinelToVar). The colours are therefore
+  // the CSS tokens of canvas-frame.css, the only source: a theme switch or print needs no redraw.
+  const KS_HUES = ["blue", "orange", "purple", "green", "yellow", "pink", "teal", "sand", "slate", "red"];
+  const KS_ROLES = ["-tint", "-mid", ""];             // sentinel role 1 fill, 2 stroke, 3 text
+  const ksSentinel = (hue, role) => `#0c01${KS_HUES.indexOf(hue)}${role}`;
+  const KS_CLASS_DEFS = KS_HUES.flatMap((h) => {
+    const base = `fill:${ksSentinel(h, 1)},stroke:${ksSentinel(h, 2)},color:${ksSentinel(h, 3)}`;
+    return [`classDef ks-${h} ${base}`, `classDef ks-${h}-strong ${base},stroke-width:3px`];
+  });
+  const KS_SENTINEL = /#0c01([0-9])([1-3])(?![0-9a-f])/gi;
+  /** Text (a style attribute, a <style> sheet, an attribute value) with every sentinel as its var(). */
+  const ksSentinelToVar = (text) => String(text).replace(KS_SENTINEL, (_, i, r) => `var(--ks-${KS_HUES[Number(i)]}${KS_ROLES[Number(r) - 1]})`);
+  const hasKsSentinel = (text) => { KS_SENTINEL.lastIndex = 0; return KS_SENTINEL.test(String(text)); };
   const KS_CLASS_TYPES = /^(flowchart|graph|stateDiagram(-v2)?|classDiagram(-v2)?)\b/;
   const KS_CLASS_USE = new RegExp(`\\bks-(${KS_HUES.join("|")})(-strong)?\\b`);
-  function ksClassDefs(theme) {
-    const ramps = KS_RAMPS[theme === "light" ? "light" : "dark"];
-    return KS_HUES.flatMap((h) => {
-      const [tint, mark, text] = ramps[h];
-      const base = `fill:${tint},stroke:${mark},color:${text}`;
-      return [`classDef ks-${h} ${base}`, `classDef ks-${h}-strong ${base},stroke-width:3px`];
-    });
-  }
   /** The diagram's type keyword: the first line that is not blank, a %% comment or a front-matter block. */
   function diagramType(source) {
     const lines = String(source).split("\n");
@@ -602,12 +591,13 @@
     }
     return "";
   }
-  /** Does this diagram use a ks-* class (and is it a type that has classes)? */
-  const usesKsClasses = (source) => KS_CLASS_TYPES.test(diagramType(source)) && KS_CLASS_USE.test(String(source));
-  /** source + the ks-* classDef lines for theme ("dark" | "light") when it uses one; else source as is. */
-  function withKsClasses(source, theme) {
+  /** Does this diagram use a ks-* class (outside %% comments), and is it a type that has classes? */
+  const usesKsClasses = (source) => KS_CLASS_TYPES.test(diagramType(source))
+    && KS_CLASS_USE.test(String(source).split("\n").filter((l) => !l.trim().startsWith("%%")).join("\n"));
+  /** source + the ks-* classDef lines (sentinel colours) when it uses one; else source as is. */
+  function withKsClasses(source) {
     if (!usesKsClasses(source)) return source;
-    return `${String(source).replace(/\s+$/, "")}\n${ksClassDefs(theme).join("\n")}\n`;
+    return `${String(source).replace(/\s+$/, "")}\n${KS_CLASS_DEFS.join("\n")}\n`;
   }
   /** Does this rendered view need mermaid? `root` = the rendered element (querySelector). */
   function wantsMermaid(kind, root) {
@@ -908,6 +898,29 @@
     if (kind === "slides") return "dark";
     const s = themeSetting(setting);
     return s === "system" ? (prefersDark ? "dark" : "light") : s;
+  }
+  /**
+   * The canvas theme setting for a page that shows it (the canvas tab, the gallery; ADR canvas-themes
+   * §2.2), in one place: reads chrome.storage.local, follows storage.onChanged and the OS appearance,
+   * mirrors the setting into localStorage for theme-boot.js, and calls apply(setting, osDark) on each
+   * change. set(v) stores a new setting (other pages follow). → { setting(), osDark(), set(v) }
+   */
+  function themeWatcher({ chromeApi, win, apply }) {
+    let setting = "system";
+    const media = win.matchMedia("(prefers-color-scheme: dark)");
+    const take = (v) => {
+      setting = themeSetting(v);
+      try { win.localStorage.setItem(THEME_BOOT_KEY, setting); } catch (_) { /* boot falls back to the OS */ }
+      apply(setting, media.matches);
+    };
+    media.addEventListener("change", () => apply(setting, media.matches));
+    chromeApi.storage.local.get(THEME_KEY).then((got) => take(got[THEME_KEY]), () => {});
+    chromeApi.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[THEME_KEY]) take(changes[THEME_KEY].newValue); });
+    return {
+      setting: () => setting,
+      osDark: () => media.matches,
+      set: (v) => { take(v); chromeApi.storage.local.set({ [THEME_KEY]: setting }).catch(() => {}); },
+    };
   }
   /** The header button cycles 跟隨系統 → 深色 → 淺色 → 跟隨系統. */
   const nextTheme = (v) => THEMES[(THEMES.indexOf(themeSetting(v)) + 1) % THEMES.length];
@@ -1513,5 +1526,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_RAMPS, ksClassDefs, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_CLASS_DEFS, ksSentinelToVar, hasKsSentinel, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, themeWatcher, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

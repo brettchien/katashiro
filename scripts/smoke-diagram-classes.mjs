@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // smoke-diagram-classes.mjs — the theme-aware diagram classes (ADR docs/adr/canvas-themes.md §2.5) in
-// the real canvas frame: `class A ks-blue-strong` in a flowchart, with the classDef lines the frame
+// the real canvas frame: `class A ks-blue-strong` in a flowchart, a state and a class diagram, with the classDef lines the frame
 // appends, under each engine (Pele, Mermaid) and each theme. Needs a Chrome (`npm run smoke`). Checks,
 // per engine and theme: some shape of the diagram is filled with the hue's tint, outlined in its mark
 // colour, and the -strong one is 3 px; no fallback note (the engine drew it itself); a theme switch
-// recolours it (drawn again with the light classDefs: literal colours, neither engine parses var()).
+// recolours it — Pele by the CSS variables alone (same SVG), Mermaid by a redraw in its light theme.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -12,7 +12,8 @@ import { fileURLToPath } from "node:url";
 import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const FIXTURE = "# Classes\n\n```mermaid\nflowchart LR\n  A[Alpha] --> B[Beta]\n  class A ks-blue-strong\n  class B ks-orange\n```\n";
+const FIXTURE = "# Classes\n\n```mermaid\nflowchart LR\n  A[Alpha] --> B[Beta]\n  class A ks-blue-strong\n  class B ks-orange\n```\n\n```mermaid\nstateDiagram-v2\n  [*] --> Idle\n  Idle --> Busy\n  class Idle ks-blue-strong\n  class Busy ks-orange\n```\n\n```mermaid\nclassDiagram\n  class Alpha\n  class Beta\n  Alpha --> Beta\n  class Alpha:::ks-blue-strong\n  class Beta:::ks-orange\n```\n";
+const KINDS = ["flowchart", "state", "class"];
 const TINT = { dark: { blue: "#162333", orange: "#281f1c" }, light: { blue: "#e6f0fb", orange: "#fdeee4" } };
 const MID = { dark: { blue: "#58a6ff", orange: "#f0883e" }, light: { blue: "#86addb", orange: "#e8a983" } };
 const rgb = (hex) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
@@ -64,26 +65,34 @@ try {
     await waitFor((m) => m.type === "ready", "ready");
     const frame = page.frames().find((f) => f.url().endsWith("#nonce0"));
     // Every shape's computed fill / stroke / stroke-width, and the figure's engine + fallback note.
-    const shapes = () => frame.evaluate(() => {
-      const fig = document.querySelector("#doc figure.ks-mermaid");
+    const shapes = () => frame.evaluate(() => Array.from(document.querySelectorAll("#doc figure.ks-mermaid"), (fig, i) => {
+      const svg = fig.querySelector("svg");
+      if (svg && !svg.dataset.smokeId) svg.dataset.smokeId = String(i) + ":" + Math.random();
       return {
-        engine: fig && fig.dataset.engine, note: !!(fig && fig.querySelector(".ks-mermaid-fallback")),
-        shapes: fig ? Array.from(fig.querySelectorAll("svg rect, svg polygon, svg path, svg circle, svg ellipse"), (e) => { const c = getComputedStyle(e); return [c.fill, c.stroke, c.strokeWidth]; }) : [],
+        engine: fig.dataset.engine, note: fig.querySelector(".ks-mermaid-fallback") ? fig.querySelector(".ks-mermaid-fallback").textContent : null,
+        svgId: svg ? svg.dataset.smokeId : null,
+        shapes: Array.from(fig.querySelectorAll("svg rect, svg polygon, svg path, svg circle, svg ellipse"), (e) => { const c = getComputedStyle(e); return [c.fill, c.stroke, c.strokeWidth]; }),
       };
-    });
+    }));
     const verify = async (theme, what) => {
-      const s = await shapes();
-      const has = (hue, strong) => s.shapes.some(([f, st, w]) => f === rgb(TINT[theme][hue]) && st === rgb(MID[theme][hue]) && (!strong || w === "3px"));
-      check(s.engine === engine && !s.note, `${engine} ${what}: drawn by ${engine}, no fallback note`, { engine: s.engine, note: s.note });
-      check(has("blue", true), `${engine} ${what} (${theme}): ks-blue-strong — blue tint, mark stroke, 3 px`, s.shapes.slice(0, 12));
-      check(has("orange", false), `${engine} ${what} (${theme}): ks-orange — orange tint, mark stroke`, s.shapes.slice(0, 12));
+      const figs = await shapes();
+      figs.forEach((s, i) => {
+        const has = (hue, strong) => s.shapes.some(([f, st, w]) => f === rgb(TINT[theme][hue]) && st === rgb(MID[theme][hue]) && (!strong || w === "3px"));
+        const k = KINDS[i];
+        check(s.engine === engine && !s.note, `${engine} ${k} ${what}: drawn by ${engine}, no fallback note`, { engine: s.engine, note: s.note });
+        check(has("blue", true), `${engine} ${k} ${what} (${theme}): ks-blue-strong — blue tint, mark stroke, 3 px`, s.shapes.slice(0, 12));
+        check(has("orange", false), `${engine} ${k} ${what} (${theme}): ks-orange — orange tint, mark stroke`, s.shapes.slice(0, 12));
+      });
+      return figs;
     };
     await page.evaluate((m) => __send(m), { type: "render", kind: "markdown", version: 1, seq: 1, content: FIXTURE, engine });
     await waitFor((m) => m.type === "rendered" && m.seq === 1, "rendered");
-    await verify("dark", "as rendered");
+    const before = await verify("dark", "as rendered");
+    check(before.length === 3, `${engine}: three diagrams`, before.length);
     await page.evaluate(() => __send({ type: "theme", value: "light" }));
-    await sleep(1500);   // a diagram that uses ks-* classes is drawn again with the light classDefs
-    await verify("light", "after a switch to light");
+    await sleep(1500);   // Mermaid redraws in its light theme; Pele only restyles (the classes are var()s)
+    const after = await verify("light", "after a switch to light");
+    if (engine === "pele") check(after.every((s, i) => s.svgId && s.svgId === before[i].svgId), "pele: the switch restyles the same SVGs (no redraw)", after.map((s) => s.svgId));
     await page.close();
   }
 } catch (e) {
