@@ -1494,16 +1494,17 @@ test("canvas theme: setting, resolve, cycle, button", () => {
 });
 
 // ks-* diagram classes (ADR canvas-themes §2.5).
-test("withKsClasses: a flowchart / state / class diagram that uses ks-* gets the sentinel classDefs", () => {
+test("withKsClasses: a flowchart that uses ks-* gets the sentinel classDefs; other types nothing", () => {
   assert.equal(C.KS_CLASS_DEFS.length, 20);
   assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-blue fill:#0c0101,stroke:#0c0102,color:#0c0103"));
   assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-red-strong fill:#0c0191,stroke:#0c0192,color:#0c0193,stroke-width:3px"));
-  for (const src of ["flowchart LR\n  A --> B\n  class A ks-blue", "graph TD\nA-->B\nclass B ks-red-strong", "stateDiagram-v2\n  [*] --> S\n  class S ks-teal", "classDiagram\n  class A\n  cssClass \"A\" ks-sand", "%% c\n\nflowchart LR\nA:::ks-pink", "---\ntitle: x\n---\nflowchart LR\nA\nclass A ks-slate"]) {
+  for (const src of ["flowchart LR\n  A --> B\n  class A ks-blue", "graph TD\nA-->B\nclass B ks-red-strong", "%% c\n\nflowchart LR\nA:::ks-pink", "---\ntitle: x\n---\nflowchart LR\nA\nclass A ks-slate"]) {
     assert.ok(C.usesKsClasses(src), src);
     assert.equal(C.withKsClasses(src), `${src}\n${C.KS_CLASS_DEFS.join("\n")}\n`, src);
   }
   // No ks-* class used (a %% comment does not count), another type, or a near miss: unchanged.
-  for (const src of ["flowchart LR\n  A --> B", "flowchart LR\n  %% use ks-blue later\n  A --> B", "sequenceDiagram\n  A->>B: ks-blue", "gantt\n  title ks-blue", "", "flowchart LR\n  A[ks-bluegrass]", "flowchart LR\n  class A ks-magenta"]) {
+  // State and class diagrams: both engines reject a "-" in a classDef name there (smoke-diagram-classes).
+  for (const src of ["stateDiagram-v2\n  [*] --> S\n  class S ks-teal", "classDiagram\n  class A\n  cssClass \"A\" ks-sand", "flowchart LR\n  A --> B", "flowchart LR\n  %% use ks-blue later\n  A --> B", "sequenceDiagram\n  A->>B: ks-blue", "gantt\n  title ks-blue", "", "flowchart LR\n  A[ks-bluegrass]", "flowchart LR\n  class A ks-magenta"]) {
     assert.equal(C.withKsClasses(src), src, src);
   }
 });

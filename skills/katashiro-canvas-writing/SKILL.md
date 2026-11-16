@@ -76,8 +76,9 @@ Diagrams are drawn by Pele or Mermaid — the user's setting, the switch in the 
 or `canvas_view({engine})`. Colour the nodes with the canvas's **`ks-*` classes**: `class X ks-blue`, or
 `ks-blue-strong` (3 px outline) for the main node. Hues: `blue`, `orange`, `purple`, `green`, `teal`,
 `yellow`, `pink`, `sand`, `slate`, `red`. The canvas adds their `classDef`s when it draws a
-flowchart, state or class diagram, in the colours of the reader's theme (dark, light, and paper);
-both engines apply them. Do not write `classDef` for them.
+**flowchart** (`flowchart` / `graph`), in the colours of the reader's theme (dark, light, and paper);
+both engines apply them. Do not write `classDef` for them. State and class diagrams cannot use
+them (their grammar rejects the `-`): leave those uncoloured.
 
 ````markdown
 ```mermaid

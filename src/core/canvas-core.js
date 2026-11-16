@@ -562,7 +562,8 @@
   const MERMAID_SEL = "pre > code.language-mermaid";
 
   // Theme-aware diagram classes (ADR canvas-themes §2.5): `class X ks-blue` / `ks-blue-strong` in a
-  // flowchart, state or class diagram. When a source uses one, the frame appends the classDef lines
+  // flowchart. (State and class diagrams have classes too, but both engines' grammars reject a "-" in
+  // a class name there, so they get nothing and draw uncoloured.) When a source uses one, the frame appends the classDef lines
   // below before drawing (the stored source is not changed). Neither engine parses var() in a
   // classDef, so the lines carry SENTINEL colours — #0c01<hue index><role> — and the frame turns them
   // into var(--ks-<hue>-tint / -mid / …) in the drawn SVG (ksSentinelToVar). The colours are therefore
@@ -578,7 +579,7 @@
   /** Text (a style attribute, a <style> sheet, an attribute value) with every sentinel as its var(). */
   const ksSentinelToVar = (text) => String(text).replace(KS_SENTINEL, (_, i, r) => `var(--ks-${KS_HUES[Number(i)]}${KS_ROLES[Number(r) - 1]})`);
   const hasKsSentinel = (text) => { KS_SENTINEL.lastIndex = 0; return KS_SENTINEL.test(String(text)); };
-  const KS_CLASS_TYPES = /^(flowchart|graph|stateDiagram(-v2)?|classDiagram(-v2)?)\b/;
+  const KS_CLASS_TYPES = /^(flowchart|graph)\b/;
   const KS_CLASS_USE = new RegExp(`\\bks-(${KS_HUES.join("|")})(-strong)?\\b`);
   /** The diagram's type keyword: the first line that is not blank, a %% comment or a front-matter block. */
   function diagramType(source) {
@@ -591,7 +592,7 @@
     }
     return "";
   }
-  /** Does this diagram use a ks-* class (outside %% comments), and is it a type that has classes? */
+  /** Does this flowchart use a ks-* class (outside %% comments)? */
   const usesKsClasses = (source) => KS_CLASS_TYPES.test(diagramType(source))
     && KS_CLASS_USE.test(String(source).split("\n").filter((l) => !l.trim().startsWith("%%")).join("\n"));
   /** source + the ks-* classDef lines (sentinel colours) when it uses one; else source as is. */
