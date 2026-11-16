@@ -358,3 +358,13 @@ test("plugins: `==` inside words stays text (x==1 or y==2), CJK and spaced highl
   assert.match(md.render("中文==重點==中文"), /<p>中文<mark>重點<\/mark>中文<\/p>/);
   assert.match(md.render("x ==a== y==b==z"), /<p>x <mark>a<\/mark> y==b==z<\/p>/);
 });
+
+test("cards accent: `::: cards accent` adds the constant class cards-accent; other words are ignored", () => {
+  const h = md.render("::: cards accent\n### A\nx\n### B\ny\n:::\n");
+  assert.match(h, /^<div class="cards cards-accent">\n<div class="card">\n<h3>A<\/h3>/);
+  assert.equal((h.match(/<div class="card">/g) || []).length, 2);
+  assert.match(md.render("::: cards accent wide\n### A\nx\n:::\n"), /^<div class="cards cards-accent">/);
+  assert.match(md.render("::: cards\n### A\nx\n:::\n"), /^<div class="cards">/);
+  assert.match(md.render("::: cards <b>accent</b>\n### A\nx\n:::\n"), /^<div class="cards">/);
+  assert.doesNotMatch(md.render("::: cards accent onclick=x\n### A\nx\n:::\n"), /onclick/);
+});

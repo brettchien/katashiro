@@ -97,6 +97,34 @@ flowchart LR
 [^1]: The footnote text.
 `;
 
+// The briefing blocks (canvas-themes §2.4), one section each as they land.
+const BLOCKS = `# Briefing blocks
+
+::: cards accent
+### Decision models
+Orange.
+### Coding agents
+Blue.
+### Harness
+Purple.
+### Factories
+Green.
+:::
+
+::: cards accent
+### Frontier
+Yellow.
+### FDE
+Pink.
+### Memory
+Teal.
+### Dreaming
+Sand.
+### Neutral
+Slate.
+:::
+`;
+
 const MERMAID = `sequenceDiagram
   participant U as User
   participant K as Katashiro
@@ -142,6 +170,7 @@ const FIXTURES = [
   { name: "slides", kind: "slides", content: SLIDES },
   { name: "slides-2", kind: "slides", content: SLIDES, slide: 1 },
   { name: "image", kind: "image", content: { dataUrl: IMAGE, caption: "A caption" } },
+  { name: "blocks", kind: "markdown", engine: "pele", content: BLOCKS },
 ];
 // The same under the light theme (canvas-themes §2.2: the host sends {type:"theme"}; a deck stays dark).
 for (const fx of FIXTURES.filter((x) => !x.media && x.kind !== "slides")) FIXTURES.push({ ...fx, name: `${fx.name}-light`, theme: "light" });

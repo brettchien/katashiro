@@ -12,3 +12,6 @@ page-canvas-light.png
 page-gallery-light.png
 # Print is the light theme now (canvas-themes §2.2), instead of the hand-kept Primer Light colours.
 markdown-print.png
+# Briefing blocks (canvas-themes §2.4): main renders them as plain cards / text.
+blocks.png
+blocks-light.png

@@ -64,13 +64,18 @@
     // Cards (ADR canvas §3.3, "Cards and callouts"): a `::: cards` … `:::` block (markdown-it-container,
     // vendored in the markdown-it bundle) is a row of cards. Only the name `cards` is registered, so any
     // other `::: foo` stays plain text. The class is a CONSTANT string: the info string after `cards`
-    // is ignored, never copied into the markup. markdown-it-container's own default render would also
+    // is never copied into the markup (only the word `accent` adds a second constant class). markdown-it-container's own default render would also
     // only use the name; ours spells it out so that stays true whatever the plugin does.
     if (global.markdownitContainer) {
       md.use(global.markdownitContainer, "cards", {
         validate: (params) => params.trim().split(/\s+/, 1)[0] === "cards",
         render: (tokens, idx, options, env, slf) => {
-          if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", "cards");
+          if (tokens[idx].nesting === 1) {
+            tokens[idx].attrJoin("class", "cards");
+            // `::: cards accent` (ADR canvas-themes §2.4 a): one more CONSTANT class; the hues come from
+            // the card order in CSS (canvas-frame.css), restarting in each block. Other words: ignored.
+            if (tokens[idx].info.trim().split(/\s+/).slice(1).includes("accent")) tokens[idx].attrJoin("class", "cards-accent");
+          }
           return slf.renderToken(tokens, idx, options);
         },
       });
