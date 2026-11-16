@@ -1,19 +1,20 @@
 /* canvas-slides.css — Katashiro palette and CJK fonts over reveal.js's dracula theme (vendor/reveal),
-   for slide canvases in the sandboxed canvas-frame.html. No url() / @import (the sandbox CSP). */
+   for slide canvases in the sandboxed canvas-frame.html. No url() / @import (the sandbox CSP).
+   Colours are canvas-frame.css --ks-* tokens (ADR canvas-themes §2.1); the slide-only ones are there too. */
 :root {
-  --r-background: #0d1117;
-  --r-background-color: #0d1117;
+  --r-background: var(--ks-bg);
+  --r-background-color: var(--ks-bg);
   --r-main-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
   --r-heading-font: var(--r-main-font);
   --r-main-font-size: 36px;
-  --r-main-color: #e6edf3;
-  --r-heading-color: #f0f6fc;
+  --r-main-color: var(--ks-fg);
+  --r-heading-color: var(--ks-slide-heading);
   --r-heading-font-weight: 700;
-  --r-link-color: #4493f8;
-  --r-link-color-hover: #79c0ff;
-  --r-bold-color: #fbbf24;
-  --r-italic-color: #c4b5fd;
-  --r-selection-background-color: #30363d;
+  --r-link-color: var(--ks-accent);
+  --r-link-color-hover: var(--ks-slide-link-hover);
+  --r-bold-color: var(--ks-slide-bold);
+  --r-italic-color: var(--ks-slide-italic);
+  --r-selection-background-color: var(--ks-surface-alt);
 }
 body.mode-slides { background: var(--r-background-color); }
 .reveal .slides section { text-align: left; }
@@ -25,12 +26,12 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal .table-wrap { overflow-x: auto; }
 .reveal table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .reveal table th, .reveal table td { border: 0; padding: 0.3em 0.9em 0.3em 0; }
-.reveal table th { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: #8b949e; border-bottom: 2px solid #c9d1d9; }
-.reveal table td { border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.reveal table th { font-size: 0.8em; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--ks-muted); border-bottom: 2px solid var(--ks-border-strong); }
+.reveal table td { border-bottom: 1px solid var(--ks-border); }
 .reveal table tbody tr:last-child td { border-bottom: 0; }
 .reveal pre { width: 100%; box-shadow: none; font-size: 0.5em; }
-.reveal pre.hljs { background: #161b22; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; padding: 0.6em 0.8em; position: relative; }
-.reveal pre.hljs code { max-height: none; color: #c9d1d9; padding: 0; }
+.reveal pre.hljs { background: var(--ks-code); border: 1px solid var(--ks-border-soft); border-radius: 8px; padding: 0.6em 0.8em; position: relative; }
+.reveal pre.hljs code { max-height: none; color: var(--ks-fg-soft); padding: 0; }
 .reveal li.task-list-item { list-style: none; }
 .reveal .copy-btn { font-size: 0.4em; }
 /* A diagram on a slide uses the slide's width (mermaid's inline max-width is its natural size). */
@@ -39,7 +40,7 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal figure.ks-mermaid:hover .copy-btn { opacity: 1; }
 .reveal .ks-mermaid-error { font-size: 0.45em; text-align: left; }
 /* Pele on the deck's background (canvas-frame.css sets the document's; edge labels are opaque). */
-.reveal figure.ks-mermaid[data-engine="pele"] { --pele-bg: #0d1117; --pele-surface: #161b22; --pele-surface-alt: #30363d; }
+.reveal figure.ks-mermaid[data-engine="pele"] { --pele-bg: var(--ks-bg); --pele-surface: var(--ks-surface); --pele-surface-alt: var(--ks-surface-alt); }
 .reveal .ks-mermaid-fallback { font-size: 0.4em; }
 /* Cards and callouts on a slide (canvas-frame.css styles them): smaller text so 2–4 cards fit the
    960 px slide side by side, and an alert as wide as the slide (dracula's quote is 70%, centered). */

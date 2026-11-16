@@ -12,6 +12,8 @@
   --ks-fill: rgba(255, 255, 255, 0.08); --ks-fill-soft: rgba(255, 255, 255, 0.06);
   --ks-fg: #e6edf3; --ks-fg-soft: #c9d1d9; --ks-muted: #8b949e; --ks-faint: #6e7681; --ks-accent: #4493f8;
   --ks-mark: rgba(250, 204, 21, 0.28);
+  /* Slides (canvas-slides.css, over reveal.js dracula). */
+  --ks-slide-heading: #f0f6fc; --ks-slide-link-hover: #79c0ff; --ks-slide-bold: #fbbf24; --ks-slide-italic: #c4b5fd;
   /* Callout hues (text / panel fill). */
   --ks-blue: #4493f8; --ks-blue-tint: rgba(68, 147, 248, 0.1);
   --ks-green: #3fb950; --ks-green-tint: rgba(63, 185, 80, 0.1);

@@ -10,7 +10,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
 }
-.gallery-search:focus { outline: 1px solid #4493f8; border-color: #4493f8; }
+.gallery-search:focus { outline: 1px solid var(--ks-accent); border-color: var(--ks-accent); }
 
 .gallery-main {
   flex: 1 1 auto;
@@ -39,7 +39,7 @@
   gap: 6px;
   border-bottom: 1px solid var(--border);
 }
-.gallery-row:hover { background: rgba(255, 255, 255, 0.04); }
+.gallery-row:hover { background: var(--ks-fill-faint); }
 
 .gallery-open {
   flex: 1 1 auto;
@@ -53,7 +53,7 @@
   border: 0;
   cursor: pointer;
 }
-.gallery-open:focus-visible { outline: 1px solid #4493f8; }
+.gallery-open:focus-visible { outline: 1px solid var(--ks-accent); }
 
 .gallery-icon { font-size: 16px; text-align: center; }
 .gallery-name { min-width: 0; }
@@ -107,9 +107,9 @@
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
-.conv-row:hover { background: rgba(255, 255, 255, 0.04); }
+.conv-row:hover { background: var(--ks-fill-faint); }
 .conv-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .conv-reopen, .conv-delete { white-space: nowrap; }
 /* The conversation's agent (agent-per-conversation §7 I2). */
-.conv-agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent, #4493f8); }
+.conv-agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--accent, var(--ks-accent)); }
 .conv-agent.missing { color: var(--muted); font-style: italic; }
