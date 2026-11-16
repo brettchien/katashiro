@@ -286,6 +286,8 @@
   // (Pele's switch through CSS variables, no re-render). A deck prints on its own dark slides
   // (reveal's print-pdf layout), so it stays dark.
   const PRINT_THEME = "default", SCREEN_THEME = "dark";
+  // Mermaid's theme for the view (canvas-themes §2.2): its light one (the paper's) under the light theme.
+  const viewTheme = () => (document.documentElement.dataset.ksTheme === "light" ? PRINT_THEME : SCREEN_THEME);
   // Mermaid scopes this under the diagram's id, after its own rules: SVG-text labels (rect) and
   // HTML ones (a directive can turn htmlLabels on) alike.
   const PRINT_EDGE_LABEL_CSS = ".edgeLabel rect, .edgeLabel .label rect { opacity: 1; fill: #ffffff; } " +
@@ -452,7 +454,7 @@
     const clean = CanvasCore.cleanEditorMarkdownMap(content);
     shownSource = { stored: content, map: clean.lines };
     renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true });
-    return renderDiagrams(doc, "markdown", gen, seq, SCREEN_THEME);
+    return renderDiagrams(doc, "markdown", gen, seq, viewTheme());
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
@@ -467,7 +469,7 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, seq, SCREEN_THEME);
+    return renderDiagrams(doc, "mermaid", gen, seq, viewTheme());
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
@@ -1030,10 +1032,17 @@
   // from the page while armed. Capture phase, on window: ahead of everything in the frame.
   let armedKeys = false;
   let wantedTheme = "dark";               // canvas theme from the host ({type:"theme"}); slides stay dark
+  let printing = false;                   // the paper is light whatever the screen shows (§2.2)
   function applyFrameTheme() {
-    const t = shownKind === "slides" ? "dark" : wantedTheme;
-    if (document.documentElement.dataset.ksTheme !== t) document.documentElement.dataset.ksTheme = t;
+    const t = shownKind === "slides" ? "dark" : printing ? "light" : wantedTheme;
+    if (document.documentElement.dataset.ksTheme === t) return;
+    document.documentElement.dataset.ksTheme = t;
+    // Pele follows the tokens; Mermaid's diagrams are drawn again in the matching theme.
+    if (shownKind === "markdown" || shownKind === "mermaid") rethemeDiagrams(doc, viewTheme()).catch(() => {});
   }
+  // Native print (Ctrl/⌘+P on the tab) as well as the PDF button: a document goes light for the paper.
+  window.addEventListener("beforeprint", () => { if (deck.hidden) { printing = true; applyFrameTheme(); } });
+  window.addEventListener("afterprint", () => { if (printing) { printing = false; applyFrameTheme(); } });
   function reportArmed(e, key) {
     if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier
@@ -1084,12 +1093,15 @@
       // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
       // reveal's print-pdf layout; give it a moment to lay the pages out. A document's diagrams go
       // light for the paper first, and dark again after the (blocking) print dialog.
-      const light = deck.hidden && mermaidFigures(doc).length > 0;
-      (light ? rethemeDiagrams(doc, PRINT_THEME) : Promise.resolve()).catch(() => {}).then(() => {
+      // The document goes light first (canvas-themes §2.2), its Mermaid diagrams with it.
+      const paper = deck.hidden && document.documentElement.dataset.ksTheme !== "light";
+      if (deck.hidden) printing = true;
+      (paper ? (document.documentElement.dataset.ksTheme = "light", rethemeDiagrams(doc, PRINT_THEME)) : Promise.resolve()).catch(() => {}).then(() => {
         setTimeout(() => {
           try { window.print(); } finally {
             post({ type: "printed" });
-            if (light) rethemeDiagrams(doc, SCREEN_THEME).catch(() => {});
+            printing = false;
+            applyFrameTheme();
           }
         }, deck.hidden ? 50 : 800);
       });

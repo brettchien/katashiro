@@ -21,6 +21,21 @@
   --muted: var(--ks-muted);
   --warn: var(--ks-warn);
 }
+/* Light (ADR canvas-themes §2.3 neutrals; the hue ramps for the accents and states). */
+:root[data-ks-theme="light"] {
+  color-scheme: light;
+  --ks-bg: #ffffff; --ks-surface: #f3f6fa; --ks-surface-alt: #eef1f4;
+  --ks-border-soft: #d5dde7;
+  --ks-fg: #2b3440; --ks-muted: #56657a;
+  --ks-accent: #2f5d8a; --ks-accent-hover: #24415e; --ks-on-accent: #ffffff;
+  --ks-accent-line: #b5cdeb; --ks-accent-tint: #e6f0fb; --ks-accent-ring: rgba(47, 93, 138, 0.4);
+  --ks-fill-faint: rgba(36, 65, 94, 0.04); --ks-fill-soft: rgba(36, 65, 94, 0.06); --ks-fill-hover: rgba(36, 65, 94, 0.08);
+  --ks-fill-neutral: rgba(36, 65, 94, 0.08);
+  --ks-warn: #9a5630; --ks-warn-bg: #fdeee4; --ks-warn-line: #f0c7ae;
+  --ks-ok: #2f7a55; --ks-pressed-bg: #e8f5ee; --ks-pressed-line: #7dc0a0;
+  --ks-scrim: rgba(43, 52, 64, 0.45); --ks-backdrop: rgba(43, 52, 64, 0.3);
+  --ks-shadow: rgba(0, 0, 0, 0.15); --ks-shadow-strong: rgba(0, 0, 0, 0.2);
+}
 
 html, body {
   margin: 0;

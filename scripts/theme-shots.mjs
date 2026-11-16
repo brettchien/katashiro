@@ -143,6 +143,8 @@ const FIXTURES = [
   { name: "slides-2", kind: "slides", content: SLIDES, slide: 1 },
   { name: "image", kind: "image", content: { dataUrl: IMAGE, caption: "A caption" } },
 ];
+// The same under the light theme (canvas-themes §2.2: the host sends {type:"theme"}; a deck stays dark).
+for (const fx of FIXTURES.filter((x) => !x.media && x.kind !== "slides")) FIXTURES.push({ ...fx, name: `${fx.name}-light`, theme: "light" });
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2" };
@@ -177,9 +179,12 @@ const STUB = `(() => {
     sidePanel: { open: async () => {} },
   };
 })();`;
+// 跟隨系統 (no setting stored): the OS appearance decides, so each page is shot both ways.
 const PAGES = [
-  { name: "page-canvas", path: `/canvas.html?id=${ID}` },
-  { name: "page-gallery", path: "/canvas-gallery.html" },
+  { name: "page-canvas", path: `/canvas.html?id=${ID}`, scheme: "dark" },
+  { name: "page-gallery", path: "/canvas-gallery.html", scheme: "dark" },
+  { name: "page-canvas-light", path: `/canvas.html?id=${ID}`, scheme: "light" },
+  { name: "page-gallery-light", path: "/canvas-gallery.html", scheme: "light" },
 ];
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
@@ -223,6 +228,9 @@ try {
     await waitFor((m) => m.type === "ready", "ready");
     const frame = page.frames().find((f) => f.url().endsWith("#nonce0"));
     await frame.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+    if (fx.theme) await page.evaluate((v) => __send({ type: "theme", value: v }), fx.theme);
+    // Print: what the frame does before the paper (beforeprint → light theme), then print media.
+    if (fx.media === "print") await frame.evaluate(() => window.dispatchEvent(new Event("beforeprint")));
     if (fx.media) await page.emulateMediaType(fx.media);
     await page.evaluate((m) => __send(m), { type: "render", kind: fx.kind, version: 1, seq: 1, content: fx.content, ...(fx.engine ? { engine: fx.engine } : {}) });
     await waitFor((m) => m.type === "rendered" && m.seq === 1, "rendered");
@@ -242,6 +250,7 @@ try {
   for (const pg of PAGES) {
     const page = await browser.newPage();
     await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
+    await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: pg.scheme }]);
     page.on("pageerror", (e) => { console.log(`FAIL ${pg.name}: page error: ${e.message}`); failed++; });
     await page.goto(`${origin}${pg.path}`, { waitUntil: "networkidle0" });
     // #canvas-theme: the header's theme button (canvas-themes §2.2) is new in PR B and absent from the

@@ -123,10 +123,14 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/shots"
           diff <(cd main && ls) <(cd head && ls)
+          # scripts/theme-shots-changed.txt: the shots this branch changes on purpose (reported, not failed).
+          expected=$(grep -v "^#" "$GITHUB_WORKSPACE/scripts/theme-shots-changed.txt" 2>/dev/null | sed "/^\s*$/d" || true)
           bad=0
           for f in main/*.png; do
             n=$(basename "$f")
-            if cmp -s "$f" "head/$n"; then echo "same    $n"; else echo "DIFFERS $n"; bad=1; fi
+            if cmp -s "$f" "head/$n"; then echo "same    $n"
+            elif grep -qxF "$n" <<<"$expected"; then echo "changed $n (expected)"
+            else echo "DIFFERS $n"; bad=1; fi
           done
           exit $bad
 

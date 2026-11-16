@@ -1,0 +1,14 @@
+# theme-shots: shots this branch changes ON PURPOSE, compared with main (one name per line, # comments).
+# CI's compare step reports them as "changed" instead of failing; every other shot must stay
+# byte-identical. Empty this list once the branch is merged (main then has the same baseline).
+#
+# Light theme (canvas-themes §2.3): main has no light theme, so its "light" shots are dark.
+markdown-pele-light.png
+markdown-mermaid-light.png
+diagram-pele-light.png
+diagram-mermaid-light.png
+image-light.png
+page-canvas-light.png
+page-gallery-light.png
+# Print is the light theme now (canvas-themes §2.2), instead of the hand-kept Primer Light colours.
+markdown-print.png

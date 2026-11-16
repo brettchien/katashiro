@@ -14,12 +14,25 @@
   --ks-mark: rgba(250, 204, 21, 0.28);
   /* Slides (canvas-slides.css, over reveal.js dracula). */
   --ks-slide-heading: #f0f6fc; --ks-slide-link-hover: #79c0ff; --ks-slide-bold: #fbbf24; --ks-slide-italic: #c4b5fd;
-  /* Callout hues (text / panel fill). */
-  --ks-blue: #4493f8; --ks-blue-tint: rgba(68, 147, 248, 0.1);
-  --ks-green: #3fb950; --ks-green-tint: rgba(63, 185, 80, 0.1);
-  --ks-purple: #ab7df8; --ks-purple-tint: rgba(171, 125, 248, 0.1);
-  --ks-yellow: #d29922; --ks-yellow-tint: rgba(210, 153, 34, 0.1);
-  --ks-red: #f85149; --ks-red-tint: rgba(248, 81, 73, 0.1);
+  --ks-heading: #e6edf3; --ks-star: #e3b341; --ks-mark-line: none;
+  --ks-diagram-line: #c9d1d9; --ks-on-light: #0d1117;
+  /* Callouts (text / panel fill): today's Primer fills in dark (ADR §2.3: the ramps are for new blocks). */
+  --ks-callout-note: #4493f8; --ks-callout-note-bg: rgba(68, 147, 248, 0.1);
+  --ks-callout-tip: #3fb950; --ks-callout-tip-bg: rgba(63, 185, 80, 0.1);
+  --ks-callout-important: #ab7df8; --ks-callout-important-bg: rgba(171, 125, 248, 0.1);
+  --ks-callout-warning: #d29922; --ks-callout-warning-bg: rgba(210, 153, 34, 0.1);
+  --ks-callout-caution: #f85149; --ks-callout-caution-bg: rgba(248, 81, 73, 0.1);
+  /* Hue ramps (ADR §2.3 "Dark ramps"): text = mark, tint and line flattened over the page. */
+  --ks-blue: #58a6ff; --ks-blue-mid: #58a6ff; --ks-blue-line: #2b4d74; --ks-blue-tint: #162333;
+  --ks-orange: #f0883e; --ks-orange-mid: #f0883e; --ks-orange-line: #684127; --ks-orange-tint: #281f1c;
+  --ks-purple: #bc8cff; --ks-purple-mid: #bc8cff; --ks-purple-line: #534274; --ks-purple-tint: #222033;
+  --ks-green: #3fb950; --ks-green-mid: #3fb950; --ks-green-line: #21542e; --ks-green-tint: #13251e;
+  --ks-yellow: #d29922; --ks-yellow-mid: #d29922; --ks-yellow-line: #5c471b; --ks-yellow-tint: #252118;
+  --ks-pink: #f778ba; --ks-pink-mid: #f778ba; --ks-pink-line: #6b3a58; --ks-pink-tint: #291d2b;
+  --ks-teal: #39c5cf; --ks-teal-mid: #39c5cf; --ks-teal-line: #1f5961; --ks-teal-tint: #12272d;
+  --ks-sand: #c9a26d; --ks-sand-mid: #c9a26d; --ks-sand-line: #584b39; --ks-sand-tint: #242221;
+  --ks-slate: #8b949e; --ks-slate-mid: #8b949e; --ks-slate-line: #3f454d; --ks-slate-tint: #1c2127;
+  --ks-red: #f85149; --ks-red-mid: #f85149; --ks-red-line: #6b2b2b; --ks-red-tint: #29191d;
   --ks-error: #f87171; --ks-error-fg: #fecaca; --ks-error-bg: rgba(248, 113, 113, 0.12);
   /* highlight.js */
   --ks-hl-comment: #8b949e; --ks-hl-keyword: #ff7b72; --ks-hl-string: #a5d6ff; --ks-hl-number: #79c0ff;
@@ -34,6 +47,40 @@
   --ks-note-fg: #1e1b4b; --ks-note-bg: #c4b5fd;
   --ks-on-dark: #ffffff;
 }
+/* Light (ADR §2.3, from the reference): neutrals and the four-step hue ramps; what is not set here
+   (the glow, point and note colours, the slide colours — a deck stays dark) keeps the values above. */
+:root[data-ks-theme="light"] {
+  color-scheme: light;
+  --ks-bg: #ffffff; --ks-surface: #f3f6fa; --ks-surface-low: #f6f8fa; --ks-surface-alt: #eef1f4;
+  --ks-code: #f6f8fa;
+  --ks-border: #d5dde7; --ks-border-soft: #e3e8ef; --ks-rule-h1: #d5dde7; --ks-border-strong: #bac5d1;
+  --ks-quote-line: #cbd3dc; --ks-fill: #eef1f4; --ks-fill-soft: #f3f6fa;
+  --ks-fg: #2b3440; --ks-fg-soft: #2b3440; --ks-heading: #24415e; --ks-muted: #56657a; --ks-faint: #9aa7b6;
+  --ks-accent: #2f5d8a; --ks-star: #e0a100;
+  --ks-mark: #fdf8dc; --ks-mark-line: inset 0 -2px 0 #d9c25e;
+  --ks-diagram-line: #56657a; --ks-on-light: #1f2328;
+  --ks-blue: #2f5d8a; --ks-blue-mid: #86addb; --ks-blue-line: #b5cdeb; --ks-blue-tint: #e6f0fb;
+  --ks-green: #2f7a55; --ks-green-mid: #7dc0a0; --ks-green-line: #b3dcc6; --ks-green-tint: #e8f5ee;
+  --ks-orange: #9a5630; --ks-orange-mid: #e8a983; --ks-orange-line: #f0c7ae; --ks-orange-tint: #fdeee4;
+  --ks-purple: #6a55b0; --ks-purple-mid: #a898d8; --ks-purple-line: #cfc4ee; --ks-purple-tint: #efeafb;
+  --ks-teal: #26777c; --ks-teal-mid: #6fbfc4; --ks-teal-line: #a9dadd; --ks-teal-tint: #e4f6f7;
+  --ks-yellow: #7a6a1e; --ks-yellow-mid: #d9c25e; --ks-yellow-line: #e5d48a; --ks-yellow-tint: #fdf8dc;
+  --ks-pink: #9e4862; --ks-pink-mid: #e09aae; --ks-pink-line: #edc0cd; --ks-pink-tint: #fbe9ee;
+  --ks-sand: #7d6440; --ks-sand-mid: #c2a57d; --ks-sand-line: #c2a57d; --ks-sand-tint: #f3eee6;
+  --ks-slate: #4a5668; --ks-slate-mid: #97a6b6; --ks-slate-line: #cbd3dc; --ks-slate-tint: #eef1f4;
+  --ks-red: #b4302a; --ks-red-mid: #e07a7a; --ks-red-line: #f0b8b8; --ks-red-tint: #fbe4e4;
+  /* Callouts map onto the hues (§2.1): the hue's text on its tint. */
+  --ks-callout-note: var(--ks-blue); --ks-callout-note-bg: var(--ks-blue-tint);
+  --ks-callout-tip: var(--ks-green); --ks-callout-tip-bg: var(--ks-green-tint);
+  --ks-callout-important: var(--ks-purple); --ks-callout-important-bg: var(--ks-purple-tint);
+  --ks-callout-warning: var(--ks-yellow); --ks-callout-warning-bg: var(--ks-yellow-tint);
+  --ks-callout-caution: var(--ks-red); --ks-callout-caution-bg: var(--ks-red-tint);
+  --ks-error: #cf222e; --ks-error-fg: #82071e; --ks-error-bg: #ffebe9;
+  /* highlight.js: GitHub Light. */
+  --ks-hl-comment: #6e7781; --ks-hl-keyword: #cf222e; --ks-hl-string: #0a3069; --ks-hl-number: #0550ae;
+  --ks-hl-title: #8250df; --ks-hl-attr: #953800; --ks-hl-tag: #116329;
+  --ks-hl-add: #116329; --ks-hl-add-bg: #dafbe1; --ks-hl-del: #82071e; --ks-hl-del-bg: #ffebe9;
+}
 /* Palette (ADR canvas §3.3 "Palette", Brett 2026-11-01): GitHub Dark (Primer) — the --ks-* dark
    values above. canvas.css (header) and canvas-slides.css use the same. */
 html, body { margin: 0; background: var(--ks-bg); color: var(--ks-fg); }
@@ -46,6 +93,7 @@ body {
    tab, ~5% of the width on a normal one, at most 96px on a very wide screen. */
 .doc { padding: 20px clamp(32px, 5vw, 96px) 48px; word-break: break-word; }
 .doc h1, .doc h2, .doc h3, .doc h4 { line-height: 1.3; margin: 1.4em 0 0.5em; }
+.doc h1, .doc h2, .doc h3 { color: var(--ks-heading); }
 .doc h1 { font-size: 1.8em; border-bottom: 1px solid var(--ks-rule-h1); padding-bottom: 0.3em; }
 .doc h2 { font-size: 1.4em; border-bottom: 1px solid var(--ks-border-soft); padding-bottom: 0.2em; }
 .doc h3 { font-size: 1.15em; }
@@ -71,7 +119,7 @@ body {
 .doc hr { border: 0; border-top: 1px solid var(--ks-border); margin: 1.5em 0; }
 /* ==highlight==, ++underline++, definition lists, footnotes (ADR canvas §3.3). A footnote reference
    has no href (markdown.js), so it is a plain superscript; the ↩ back-links go nowhere and are hidden. */
-.doc mark { background: var(--ks-mark); color: inherit; padding: 0 0.15em; border-radius: 3px; }
+.doc mark { background: var(--ks-mark); box-shadow: var(--ks-mark-line); color: inherit; padding: 0 0.15em; border-radius: 3px; }
 .doc ins { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 0.18em; }
 .doc dl { margin: 0.8em 0; }
 .doc dt { font-weight: 600; margin-top: 0.6em; }
@@ -137,11 +185,11 @@ body {
    kind sets one colour, --ks-alert; the box is a tinted panel with that colour on its left edge. The
    blockquote rules (.doc blockquote above, reveal's .reveal blockquote) are outranked by the
    two-class selectors here. */
-.markdown-alert-note { --ks-alert: var(--ks-blue); --ks-alert-bg: var(--ks-blue-tint); }
-.markdown-alert-tip { --ks-alert: var(--ks-green); --ks-alert-bg: var(--ks-green-tint); }
-.markdown-alert-important { --ks-alert: var(--ks-purple); --ks-alert-bg: var(--ks-purple-tint); }
-.markdown-alert-warning { --ks-alert: var(--ks-yellow); --ks-alert-bg: var(--ks-yellow-tint); }
-.markdown-alert-caution { --ks-alert: var(--ks-red); --ks-alert-bg: var(--ks-red-tint); }
+.markdown-alert-note { --ks-alert: var(--ks-callout-note); --ks-alert-bg: var(--ks-callout-note-bg); }
+.markdown-alert-tip { --ks-alert: var(--ks-callout-tip); --ks-alert-bg: var(--ks-callout-tip-bg); }
+.markdown-alert-important { --ks-alert: var(--ks-callout-important); --ks-alert-bg: var(--ks-callout-important-bg); }
+.markdown-alert-warning { --ks-alert: var(--ks-callout-warning); --ks-alert-bg: var(--ks-callout-warning-bg); }
+.markdown-alert-caution { --ks-alert: var(--ks-callout-caution); --ks-alert-bg: var(--ks-callout-caution-bg); }
 :is(.doc, .reveal) .markdown-alert {
   width: auto; margin: 0.8em 0; padding: 8px 14px; border-left: 4px solid var(--ks-alert, var(--ks-quote-line)); border-radius: 6px;
   background: var(--ks-alert-bg, transparent); color: inherit; font-style: normal; box-shadow: none;
@@ -177,9 +225,9 @@ body.mode-mermaid .doc figure.ks-mermaid svg { width: 100%; max-width: 100% !imp
    also the opaque background of edge labels, so it must equal what the diagram sits on. --pele-font
    repeats body's font: Pele measured the labels with it (canvas-frame.js renderWithPele). */
 figure.ks-mermaid[data-engine="pele"] {
-  --pele-bg: var(--ks-bg); --pele-fg: var(--ks-fg); --pele-muted: var(--ks-muted); --pele-line: var(--ks-border-strong);
+  --pele-bg: var(--ks-bg); --pele-fg: var(--ks-fg); --pele-muted: var(--ks-muted); --pele-line: var(--ks-diagram-line);
   --pele-surface: var(--ks-surface); --pele-surface-alt: var(--ks-surface-alt); --pele-border: var(--ks-faint); --pele-accent: var(--ks-accent);
-  --pele-fg-on-dark: var(--ks-on-dark); --pele-fg-on-light: var(--ks-bg); --pele-error: var(--ks-error); --pele-critical: var(--ks-error);
+  --pele-fg-on-dark: var(--ks-on-dark); --pele-fg-on-light: var(--ks-on-light); --pele-error: var(--ks-error); --pele-critical: var(--ks-error);
   --pele-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
 }
 /* A diagram drawn by the other engine (§2.4): which one, and why the chosen one did not. */
@@ -223,53 +271,29 @@ figure.ks-mermaid[data-engine="pele"] {
   }
 }
 
-/* Print (PDF export, §3.8): white paper, no editor chrome or copy buttons. */
+/* Print (PDF export, §3.8; canvas-themes §2.2): a document prints in the light theme — the frame sets
+   data-ks-theme="light" for the paper (canvas-frame.js, beforeprint / the print message) — so print keeps
+   only layout: no editor chrome or copy buttons, no scrollers, nothing split across pages. A deck
+   stays dark (the frame keeps it dark in slides mode). */
 @media print {
-  /* Light controls on paper: under the dark scheme a task-list checkbox prints as a dark square,
-     checked or not. */
-  :root { color-scheme: light; }
-  html, body { background: #fff !important; color: #000 !important; }
-  .doc { padding: 0 !important; color: #000; }
-  .doc a { color: #1d4ed8; }
+  .doc { padding: 0 !important; }
   .copy-btn, .editor { display: none !important; }
   /* Paper has no scroller: a long code line wraps instead of being cut at the page edge. */
-  .doc pre.hljs { background: #f6f8fa; border-color: #d0d7de; overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .doc pre.hljs code { color: #24292f; }
-  .doc .hljs-addition { color: #116329; background: #dafbe1; }
-  .doc .hljs-deletion { color: #82071e; background: #ffebe9; }
-  /* The screen rules are light on dark: invisible on paper, so the same editorial style in ink. A
-     table prints whole width (no scroller), its rows not split across pages. A long URL or code
+  .doc pre.hljs { overflow: visible; white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* A table prints whole width (no scroller), its rows not split across pages. A long URL or code
      span in a cell may break anywhere; plain words are left whole (.doc's word-break: break-word
      is undone), so a short column is never squeezed into splitting mid-word. */
   .doc .table-wrap { overflow: visible; }
   .doc th, .doc td { word-break: normal; }
-  .doc th { color: #57606a; border-bottom-color: #1f2328; }
-  .doc td { border-bottom-color: #d0d7de; }
   .doc td code, .doc th code, .doc td a, .doc th a { overflow-wrap: anywhere; }
   .doc tr { break-inside: avoid; }
-  .doc mark { background: #fff3a3; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .doc dd { color: inherit; }
-  .doc section.footnotes { color: #57606a; }
-  /* Diagrams for paper: Mermaid's are re-rendered with its light theme (canvas-frame.js, print);
-     Pele's take light variables here, in a document only — a deck prints dark (§3.8). Colours and
-     the font only: Pele measured the labels with the screen font, so print must not change it. */
+  /* Fills (code, cards, callouts, highlights) print as on screen. */
+  .doc pre.hljs, .doc code, .doc mark, .card, .markdown-alert { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  /* Mermaid's diagrams are re-rendered for the paper (canvas-frame.js, print); Pele's follow the
+     tokens. Colours only: Pele measured the labels with the screen font, so print must not change it. */
   .doc figure.ks-mermaid { overflow: visible; break-inside: avoid; }
-  .doc figure.ks-mermaid[data-engine="pele"] {
-    --pele-bg: #ffffff; --pele-fg: #1f2328; --pele-muted: #57606a; --pele-line: #1f2328;
-    --pele-surface: #f6f8fa; --pele-surface-alt: #eaeef2; --pele-border: #8c959f; --pele-accent: #0969da;
-    --pele-fg-on-dark: #ffffff; --pele-fg-on-light: #1f2328; --pele-error: #cf222e; --pele-critical: #cf222e;
-  }
-  .ks-mermaid-fallback { color: #57606a; }
   body.mode-mermaid .doc figure.ks-mermaid svg { max-height: none; }
-  .ks-mermaid-error { color: #82071e; background: #ffebe9; }
-  /* Cards and callouts on paper: grey card borders, GitHub's light alert colours, never split. */
-  .card { border-color: #d0d7de; background: none; break-inside: avoid; }
-  .markdown-alert { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .markdown-alert-note { --ks-alert: #0969da; --ks-alert-bg: #ddf4ff; }
-  .markdown-alert-tip { --ks-alert: #1a7f37; --ks-alert-bg: #dafbe1; }
-  .markdown-alert-important { --ks-alert: #8250df; --ks-alert-bg: #fbefff; }
-  .markdown-alert-warning { --ks-alert: #9a6700; --ks-alert-bg: #fff8c5; }
-  .markdown-alert-caution { --ks-alert: #cf222e; --ks-alert-bg: #ffebe9; }
+  .card, .markdown-alert { break-inside: avoid; }
 }
 
 /* Showing what changed (ADR §3.10). Outline, background and our own marker line only: a glow never
