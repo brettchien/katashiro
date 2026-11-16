@@ -4,7 +4,7 @@
 // appends, under each engine (Pele, Mermaid) and each theme. Needs a Chrome (`npm run smoke`). Checks,
 // per engine and theme: some shape of the diagram is filled with the hue's tint, outlined in its mark
 // colour, and the -strong one is 3 px; no fallback note (the engine drew it itself); a theme switch
-// recolours without a new render for Pele (the classes are CSS variables).
+// recolours it (drawn again with the light classDefs: literal colours, neither engine parses var()).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -82,7 +82,7 @@ try {
     await waitFor((m) => m.type === "rendered" && m.seq === 1, "rendered");
     await verify("dark", "as rendered");
     await page.evaluate(() => __send({ type: "theme", value: "light" }));
-    await sleep(engine === "mermaid" ? 1500 : 200);   // Mermaid redraws in its light theme; Pele only restyles
+    await sleep(1500);   // a diagram that uses ks-* classes is drawn again with the light classDefs
     await verify("light", "after a switch to light");
     await page.close();
   }

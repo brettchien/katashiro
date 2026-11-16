@@ -1494,14 +1494,19 @@ test("canvas theme: setting, resolve, cycle, button", () => {
 });
 
 // ks-* diagram classes (ADR canvas-themes §2.5).
-test("withKsClasses: flowchart / state / class diagrams get the ks-* classDefs, others nothing", () => {
-  assert.equal(C.KS_CLASS_DEFS.length, 20);
-  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-blue fill:var(--ks-blue-tint),stroke:var(--ks-blue-mid),color:var(--ks-blue)"));
-  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-red-strong fill:var(--ks-red-tint),stroke:var(--ks-red-mid),color:var(--ks-red),stroke-width:3px"));
-  for (const src of ["flowchart LR\n  A --> B", "graph TD\nA-->B", "stateDiagram-v2\n  [*] --> S", "classDiagram\n  class A", "%% c\n\nflowchart LR\nA", "---\ntitle: x\n---\nflowchart LR\nA"]) {
-    const out = C.withKsClasses(src);
-    assert.ok(out.startsWith(src.replace(/\s+$/, "") + "\n"), src);
-    assert.match(out, /\nclassDef ks-red-strong .*stroke-width:3px\n$/);
+test("withKsClasses: a flowchart / state / class diagram that uses ks-* gets the classDefs of the theme", () => {
+  assert.equal(C.ksClassDefs("dark").length, 20);
+  assert.ok(C.ksClassDefs("dark").includes("classDef ks-blue fill:#162333,stroke:#58a6ff,color:#58a6ff"));
+  assert.ok(C.ksClassDefs("light").includes("classDef ks-orange-strong fill:#fdeee4,stroke:#e8a983,color:#9a5630,stroke-width:3px"));
+  assert.deepEqual(C.ksClassDefs(undefined), C.ksClassDefs("dark"));
+  for (const src of ["flowchart LR\n  A --> B\n  class A ks-blue", "graph TD\nA-->B\nclass B ks-red-strong", "stateDiagram-v2\n  [*] --> S\n  class S ks-teal", "classDiagram\n  class A\n  cssClass \"A\" ks-sand", "%% c\n\nflowchart LR\nA:::ks-pink", "---\ntitle: x\n---\nflowchart LR\nA\nclass A ks-slate"]) {
+    assert.ok(C.usesKsClasses(src), src);
+    const out = C.withKsClasses(src, "light");
+    assert.ok(out.startsWith(src + "\n"), src);
+    assert.match(out, /\nclassDef ks-blue fill:#e6f0fb,stroke:#86addb,color:#2f5d8a\n/);
   }
-  for (const src of ["sequenceDiagram\n  A->>B: x", "gantt\n  title x", "pie\n  \"a\": 1", "", "mindmap\n  root"]) assert.equal(C.withKsClasses(src), src);
+  // No ks-* class used, another type, or a near miss: unchanged (existing diagrams draw as before).
+  for (const src of ["flowchart LR\n  A --> B", "sequenceDiagram\n  A->>B: ks-blue", "gantt\n  title ks-blue", "", "flowchart LR\n  A[ks-bluegrass]", "flowchart LR\n  class A ks-magenta"]) {
+    assert.equal(C.withKsClasses(src, "dark"), src, src);
+  }
 });
