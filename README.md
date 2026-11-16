@@ -87,6 +87,7 @@ and install them **where the agent runs** (its machine or container), not where 
 | Skill | Teaches the agent to | Without it |
 |---|---|---|
 | [`katashiro-canvas-writing`](skills/katashiro-canvas-writing/SKILL.md) | Write a markdown canvas that reads like a designed document: which block for which content (cards, callouts, tables, definition lists, footnotes, coloured diagrams), the syntax the editor breaks, and how to edit with `canvas_patch` | Walls of paragraphs and bullets, and now and then a syntax that the editor mangles on save |
+| [`katashiro-briefing-doc`](skills/katashiro-briefing-doc/SKILL.md) | Write an executive or conference summary in a fixed briefing shape: headline numbers, colour-coded trends, a day-by-day timeline, keywords with bars, a session × topic matrix — prints as a clean light document | A long report the agent has to design from scratch each time |
 | [`katashiro-canvas-file`](skills/katashiro-canvas-file/SKILL.md) | Put a file into a canvas — an html page, a long report, a deck, an image — through `scripts/canvas-file.sh`, which sends it straight to the OpenAB facade | The agent has to send the whole file as tool arguments — slow, costly, and an html page (often ~1 MB) fails |
 | [`katashiro-archify`](skills/katashiro-archify/SKILL.md) | Draw an interactive diagram with [Archify](https://github.com/tt-a1i/archify) and show it as an html canvas (needs Archify's own skill and `katashiro-canvas-file`) | No Archify diagrams in canvases |
 
@@ -100,7 +101,7 @@ and install them **where the agent runs** (its machine or container), not where 
 Archify's own skill); `katashiro-guided-runbook` uses `katashiro-point-at` and `katashiro-ask-user`;
 `katashiro-web-task` refers to `katashiro-point-at`, `katashiro-ask-user` and
 `katashiro-canvas-writing`; `katashiro-canvas-writing` refers to `katashiro-canvas-file`,
-`katashiro-archify` and `katashiro-point-at`. A skill that only refers to another still works
+`katashiro-archify` and `katashiro-point-at`; `katashiro-briefing-doc` uses `katashiro-canvas-writing`. A skill that only refers to another still works
 without it. Simplest: install them all.
 
 For Claude Code (including OpenAB's `claude-agent-acp`), copy or symlink them from a checkout of this

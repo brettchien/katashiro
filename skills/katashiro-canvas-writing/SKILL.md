@@ -1,6 +1,6 @@
 ---
 name: katashiro-canvas-writing
-description: Write a good Katashiro markdown canvas — a report, a design doc, an RFC, a comparison, a reference page — that reads like a designed document, not a wall of text, using the canvas's own blocks (::: cards, > [!NOTE] callouts, editorial tables, definition lists, footnotes, ==highlight==, coloured mermaid diagrams), and edit it without breaking it. Use when you are chatting through Katashiro and are about to write or restyle a markdown (or slides) canvas, or the user asks for a document "like that artifact" / "make it look better". Keywords — canvas, write a document, report, design doc, RFC, make it look nice, cards, callout, layout, 畫布, 寫文件, 排版, 好看一點, 像 artifact 那樣.
+description: Write a good Katashiro markdown canvas — a report, a design doc, an RFC, a comparison, a reference page — that reads like a designed document, not a wall of text, using the canvas's own blocks (::: cards, ::: cards accent, ::: stats, ::: matrix, bars, > [!NOTE] callouts, editorial tables, definition lists, footnotes, ==highlight==, coloured mermaid diagrams), and edit it without breaking it. Use when you are chatting through Katashiro and are about to write or restyle a markdown (or slides) canvas, or the user asks for a document "like that artifact" / "make it look better". Keywords — canvas, write a document, report, design doc, RFC, make it look nice, cards, callout, layout, 畫布, 寫文件, 排版, 好看一點, 像 artifact 那樣.
 ---
 
 # katashiro-canvas-writing
@@ -21,6 +21,10 @@ which job**, the few syntaxes that break, and how to edit without fighting the e
 | The content is… | Write it as | Not as |
 |---|---|---|
 | 2–4 parallel things to compare (options, axes, principles) | `::: cards` with one `###` per card | three paragraphs in a row |
+| Parallel themes that should each read as their own colour (trends, findings, tracks) | `::: cards accent` — the same, each card takes the next hue | colouring cards yourself |
+| 2–5 headline numbers (days, sessions, cost) | `::: stats` with `- **3** 天` per number, right after `# Title` | a sentence of numbers |
+| Items × categories (who covered what) | `::: matrix` around a table, `●` / `○` / `◐` in the cells, a `**Total**` last row | ✓ / x text in a plain table |
+| A count out of a total, per row | `n/N` in a cell inside `::: matrix` or `::: bars` (draws a bar) | a percentage column |
 | A rule, a warning, a caveat the reader must not miss | `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` / `[!CAUTION]` (optional title after the marker) | bold text in a paragraph |
 | A short good/bad example line | `> ✅ …` / `> ⚠️ …` / `> ℹ️ …` (emoji callout, no title row; only these three, and the emoji must be the first character — `❌` / `💡` stay a plain quote) | a quote with no colour |
 | Fields, options, numbers with several attributes | a table (header row, `---:` for numbers) | nested bullets |
@@ -49,6 +53,40 @@ Works for claude, codex, gemini, kiro.
 - 2–4 cards read best; more wrap to the next row.
 - A `###` inside a list or a quote does not start a card. To nest a cards block, the outer one uses
   `::::`.
+- `::: cards accent`: the cards take hues in a fixed order (orange, blue, purple, green, yellow, pink,
+  teal, sand, slate) and the order restarts in each block. There is no per-card colour: to give a card
+  another hue, reorder the cards.
+
+Headline numbers, right after the title (they sit beside it on a wide tab):
+
+```markdown
+# AIE Code Summit 2026
+
+::: stats
+- **3** 天
+- **42** 場
+- **9** 家公司
+:::
+```
+
+A matrix — a mark column is one whose cells are only `●` (yes) / `○` (partly) / `◐` (half) or empty;
+it gets a vertical header and its own hue. Text columns stay as they are. A last row whose first
+cell is bold is the totals row; `5 (4●)` shows the part in brackets small. `n/N` draws a bar and n
+(state N once, in the header):
+
+```markdown
+::: matrix
+| Day | Session | Trust | Memory | 提及 / 18 |
+|---|---|:-:|:-:|---|
+| D1 | Keynote | ● | ○ | 5/18 |
+| D2 | Panel | ◐ |  | 12/18 |
+| **Total** | | 2 (1●) | 1 | |
+:::
+```
+
+- The dots are drawn with an outline, so they never rely on colour alone; still say in a footnote
+  what ● / ○ / ◐ mean.
+- Outside `::: matrix` / `::: bars`, `12/18` stays text (dates, fractions). Write the totals yourself.
 
 Callout with a title:
 
@@ -62,10 +100,14 @@ Callout with a title:
 1. A one-line **eyebrow** above the title for context: `**RFC · DRAFT** / org / repo / v1`.
 2. `# Title`, then a two- or three-sentence lede with one `==highlight==` on the key phrase.
 3. A diagram early if there is a system or a flow.
-4. `##` sections, each starting with one sentence that says what the section answers.
+4. `##` sections, each starting with one sentence that says what the section answers. **Never number
+   `##` by hand** (`## 1. …`): the light theme and print number them; a hand number shows twice.
 5. Comparisons as cards, rules as callouts, specs as tables.
 6. End with open questions (numbered, each with a **bold question** and one line of context) or next
    steps, then footnotes.
+
+**Colours are the theme's, not the document's.** The reader picks dark or light and paper is light:
+use the blocks (callouts, `accent`, `ks-*` diagram classes), never colours of your own.
 
 Keep paragraphs short (≤ 4 lines). Tables are full width with no vertical rules: keep a table to the
 columns that matter, and put long prose in the last column.
