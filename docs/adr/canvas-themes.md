@@ -1,8 +1,8 @@
 # ADR: Canvas themes (light / dark / system) and briefing blocks
 
-- **Status:** Proposed 2026-11-16 — §6 decided (Brett), §7 open; preview §4a approved
+- **Status:** Proposed 2026-11-16 — §6 decided (D1–D5, Brett), §7 open (Q5–Q7); preview §4a approved
 - **Date:** 2026-11-16
-- **Author:** Brett Chien (drafted by Jellyfish)
+- **Author:** Brett Chien (drafted by Claude)
 - **Related:** [canvas](./canvas.md) §3.1 (reading width toggle), §3.3 ("Palette", "Cards and
   callouts", "Tables"), §3.8 (print); [canvas-diagram-engine](./canvas-diagram-engine.md) §2.6 (Pele
   CSS variables); [canvas-html](./canvas-html.md); skill `katashiro-canvas-writing`.
@@ -110,7 +110,8 @@ for review). The same fixtures are reused for the light theme in step 2.
 
 ### 2.2 Choosing the theme
 
-- **Setting** (Settings → 畫布): `深色` / `淺色` / `跟隨系統` (default: **`跟隨系統`** —
+- **Setting:** a new Settings row **畫布主題** next to 圖表引擎 (Settings has one row per option, no
+  section), stored in `chrome.storage.local` like `DIAGRAM_ENGINE_KEY`: `深色` / `淺色` / `跟隨系統` (default: **`跟隨系統`** —
   Brett, 2026-11-16. Existing users on a light OS see the canvas turn light on upgrade; the
   release note says where the switch is).
 - **Header button** beside the reading-width ↔: cycles the three; persisted in
@@ -166,8 +167,15 @@ edges, number badges) and text (titles, tags):
   steps as the other hues.
 
 Neutrals (exact): text `#2b3440` (12.59 on white), headings `#24415e`, muted `#56657a` (5.94),
-secondary `#6a7789` (4.55, AA only at normal size — use for ≥ 14 px), faint `#9aa7b6` (non-text
-only), star `#e0a100` (dark `#e3b341`). Mark colours are decorative (2–3 : 1) and never carry text.
+secondary `#6a7789` (4.55 — passes AA for text of any size, by a small margin), faint `#9aa7b6` (non-text
+only), star `#e0a100` (dark `#e3b341`).
+
+**Mark colours never carry information alone.** Light marks are 2–3 : 1 on white, below WCAG
+1.4.11's 3 : 1 for graphics needed to understand content. So: a matrix dot is drawn with a 1.5 px
+edge in the hue's **text** colour (≥ 4.5 : 1) — ● = mark fill + that edge, ○ = that edge only (2 px),
+◐ = half fill + that edge; the fill/no-fill shape tells ● from ○, not the colour. A bar may use the
+mark colour because its value is always printed next to it (§2.4 e). Card top edges and column
+bands are decorative.
 
 Other measured pairs: heading `#24415e` on surface `#f3f6fa` 9.72, accent `#2f5d8a` on white 6.88.
 
@@ -215,7 +223,7 @@ block; a writer who wants a different hue for a card reorders the cards.
 the number (large, accent), the rest the label (muted). Placed right after `# Title` it floats right
 of the title on a wide tab and drops below it on a narrow one.
 
-**c. Numbered sections** — **always on in the light theme, off in dark** (Brett, 2026-11-16, Q4).
+**c. Numbered sections** — **always on in the light theme, off in dark** (Brett, 2026-11-16, D4).
 No flag, no tool argument, no header button, no markdown syntax: a pure CSS rule on
 `:root[data-ks-theme=light] .doc` — counters draw a circle with the number before each `##` (blue
 ramp: tint fill, border line, text-colour digit — as in the preview).
@@ -228,9 +236,9 @@ ramp: tint fill, border line, text-colour digit — as in the preview).
 
 **d. `::: matrix`** wrapping a table:
 
-- a cell whose whole text is `●` / `○` / `◐` renders as a coloured dot (primary = filled mark colour /
-  secondary = 2 px ring in the mark colour / partial = half-filled; hue = the column's hue, cycling
-  like accent cards);
+- a cell whose whole text is `●` / `○` / `◐` renders as a coloured dot (primary = mark fill with a 1.5 px
+  text-colour edge / secondary = 2 px ring in the text colour / partial = half fill + edge — §2.3
+  "Mark colours never carry information alone"; hue = the column's hue, cycling like accent cards);
 - each mark column carries its hue as a faint band: the header cell in the tint, body cells in the
   tint at ~45 %;
 - a column is a **mark column** when every body cell in it is empty, a dot (`●` / `○` / `◐`) or,
@@ -251,16 +259,17 @@ text, so dates and fractions elsewhere are untouched.
 **f. Tag pills** — deferred. Every inline syntax tried so far (subscript, abbreviations) was
 mangled by the editor; `[補充]` would collide with links. Revisit with a measured round-trip (Q6).
 
-**g. Seen in the full PDF (pp. 2–5), not covered above** — candidates, not decided:
+**g. Seen in the full reference (pp. 2–5), not covered above** — candidates, not decided ("ref."
+= page of the private reference, not a section of this ADR):
 
 | Pattern | Where | Possible mapping |
 |---|---|---|
-| Step chips joined by ➜, wrapping to a second row, a `↻` loop line under them | §6 each session card, §7 request-path diagram | `flowchart LR` with `ks-*` classes; or a `::: flow` list block (each item = chip, bold = title, rest = sub-label) |
-| Key-figure tiles: big coloured number + 2-line caption, 4 per row | ★ 關鍵數據 | `::: stats` with a caption line under each item (b. extended) |
-| A card's tinted footer band (a bold "takeaway：" line) | §6 every card | inside `::: cards accent`, a last paragraph starting with `**…：**` gets the tint band |
-| Number badge + tag pills in the card header | §6 cards | badge = card index (CSS counter, like c.); pills wait for f. |
-| Table whose first column is tinted per row, hue by row order | §3, §7 tables | `::: matrix` variant without dots: `::: rows accent` |
-| Dashed group frame around a set of cards | §7 two side-by-side groups | nested cards with an outer `:::: group` |
+| Step chips joined by ➜, wrapping to a second row, a `↻` loop line under them | ref. pp. 3–5: session cards, request-path diagram | `flowchart LR` with `ks-*` classes; or a `::: flow` list block (each item = chip, bold = title, rest = sub-label) |
+| Key-figure tiles: big coloured number + 2-line caption, 4 per row | ref. p. 2: key figures | `::: stats` with a caption line under each item (b. extended) |
+| A card's tinted footer band (a bold "takeaway：" line) | ref. pp. 3–4: every session card | inside `::: cards accent`, a last paragraph starting with `**…：**` gets the tint band |
+| Number badge + tag pills in the card header | ref. pp. 3–4: session cards | badge = card index (CSS counter, like c.); pills wait for f. |
+| Table whose first column is tinted per row, hue by row order | ref. pp. 1, 5: keyword tables | `::: matrix` variant without dots: `::: rows accent` |
+| Dashed group frame around a set of cards | ref. p. 5: two side-by-side groups | nested cards with an outer `:::: group` |
 
 ### 2.5 Diagrams in two themes
 
@@ -354,15 +363,16 @@ round-trip tests.
 
 ## 6. Decisions (Brett, 2026-11-16)
 
-1. **Default theme** — `跟隨系統` (§2.2).
-2. **Light hues** — exact, read from the original PDF Brett supplied; three text colours darkened for AA (§2.3).
-3. **Per-card colour** — order-based only (§2.4 a).
-4. **Numbered sections** — always on in the light theme, off in dark; CSS only (§2.4 c).
-5. **PRs** — three (A ADR, B themes, C blocks); the loop may open them, Brett merges (§5).
+- **D1 Default theme** — `跟隨系統` (§2.2).
+- **D2 Light hues** — exact, read from the original PDF Brett supplied; three text colours darkened for AA (§2.3).
+- **D3 Per-card colour** — order-based only (§2.4 a).
+- **D4 Numbered sections** (was Q4) — always on in the light theme, off in dark; CSS only (§2.4 c).
+- **D5 PRs** — three (A ADR, B themes, C blocks); PRs may be opened by the implementing agent, Brett
+  merges (§5).
 
 ## 7. Open questions (for Brett)
 
-5. **Side panel** — follow the canvas theme later, or stay dark?
-6. **Tag pills** — needed in v1?
-7. **Old canvases** — leave literal dark `classDef` fills as they are, or offer a one-time rewrite
+- **Q5 Side panel** — follow the canvas theme later, or stay dark?
+- **Q6 Tag pills** — needed in v1?
+- **Q7 Old canvases** — leave literal dark `classDef` fills as they are, or offer a one-time rewrite
    to `ks-*`?
