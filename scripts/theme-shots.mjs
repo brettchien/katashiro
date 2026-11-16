@@ -140,6 +140,7 @@ const FIXTURES = [
   { name: "diagram-pele", kind: "mermaid", engine: "pele", content: MERMAID },
   { name: "diagram-mermaid", kind: "mermaid", engine: "mermaid", content: MERMAID },
   { name: "slides", kind: "slides", content: SLIDES },
+  { name: "slides-2", kind: "slides", content: SLIDES, slide: 1 },
   { name: "image", kind: "image", content: { dataUrl: IMAGE, caption: "A caption" } },
 ];
 
@@ -152,9 +153,44 @@ const HOST = `<!doctype html><meta charset="utf-8"><body style="margin:0">
   addEventListener("message", (e) => { if (e.data && e.data.nonce === "nonce0") __msgs.push(e.data); });
   window.__send = (msg) => document.getElementById("f").contentWindow.postMessage({ ...msg, nonce: "nonce0" }, "*");
 </script>`;
+// The extension pages (canvas.html's header, the gallery) with the chrome.* they read stubbed in memory
+// (as scripts/smoke-ask-popover.mjs). Fixed past timestamps, so the time labels do not move.
+const ID = "cv_0123456789ab";
+const AT = Date.UTC(2026, 0, 15, 9, 30);
+const STUB = `(() => {
+  const data = {
+    "canvas:${ID}:meta": { id: "${ID}", title: "Theme fixture", kind: "markdown", version: 4, agentVersion: 4, author: "agent", conversationId: "c_0123456789ab", normalized: true, createdAt: ${AT}, updatedAt: ${AT} },
+    "canvas:${ID}:latest": ${JSON.stringify(MARKDOWN)},
+    "canvas:cv_0123456789ac:meta": { id: "cv_0123456789ac", title: "Deck", kind: "slides", version: 1, author: "agent", conversationId: "c_0123456789ab", createdAt: ${AT - 864e5}, updatedAt: ${AT - 864e5} },
+    "conv:index": {
+      c_0123456789ab: { title: "Plan chat", createdAt: ${AT - 2 * 864e5}, lastMessageAt: ${AT} },
+      c_0123456789ac: { title: "Archived chat", createdAt: ${AT - 9 * 864e5}, lastMessageAt: ${AT - 5 * 864e5}, archivedAt: ${AT - 4 * 864e5} },
+    },
+  };
+  const ev = () => ({ addListener() {}, removeListener() {} });
+  const pick = (keys) => { const out = {}; for (const k of keys == null ? Object.keys(data) : [].concat(keys)) if (k in data) out[k] = data[k]; return out; };
+  window.chrome = {
+    runtime: { id: "stub", getURL: (p) => location.origin + "/" + p, onMessage: ev(), lastError: undefined, sendMessage: async () => undefined },
+    storage: { local: { get: async (k) => pick(k), set: async (o) => { Object.assign(data, o); }, remove: async () => {} }, session: { get: async () => ({}), set: async () => {} }, onChanged: ev() },
+    tabs: { query: async () => [], getCurrent: (cb) => { const t = { id: 1, windowId: 3, index: 0 }; if (cb) cb(t); return Promise.resolve(t); }, onRemoved: ev(), onUpdated: ev(), onAttached: ev(), create: async () => ({}), update: async () => ({}), remove: async () => {} },
+    windows: { getAll: async () => [], update: async () => ({}), onRemoved: ev() },
+    sidePanel: { open: async () => {} },
+  };
+})();`;
+const PAGES = [
+  { name: "page-canvas", path: `/canvas.html?id=${ID}` },
+  { name: "page-gallery", path: "/canvas-gallery.html" },
+];
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/__host.html") { res.writeHead(200, { "content-type": "text/html" }); res.end(HOST); return; }
+  if (url.pathname === "/__stub.js") { res.writeHead(200, { "content-type": "text/javascript" }); res.end(STUB); return; }
+  if (url.pathname === "/canvas.html" || url.pathname === "/canvas-gallery.html") {
+    const html = fs.readFileSync(path.join(ROOT, url.pathname), "utf8");
+    res.writeHead(200, { "content-type": "text/html" });
+    res.end(html.replace('<script src="src/core/canvas-store.js">', '<script src="__stub.js"></script><script src="src/core/canvas-store.js">'));
+    return;
+  }
   const file = path.join(ROOT, path.normalize(decodeURIComponent(url.pathname)));
   if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) { res.writeHead(404); res.end(); return; }
   const headers = { "content-type": TYPES[path.extname(file)] || "application/octet-stream" };
@@ -191,6 +227,7 @@ try {
     await page.evaluate((m) => __send(m), { type: "render", kind: fx.kind, version: 1, seq: 1, content: fx.content, ...(fx.engine ? { engine: fx.engine } : {}) });
     await waitFor((m) => m.type === "rendered" && m.seq === 1, "rendered");
     await frame.evaluate(() => document.fonts.ready);
+    if (fx.slide) await frame.evaluate((i) => Reveal.slide(i), fx.slide);
     // The whole document in one shot (slides keep their fixed frame).
     if (fx.kind !== "slides") {
       const h = await frame.evaluate(() => document.documentElement.scrollHeight);
@@ -199,6 +236,20 @@ try {
     await sleep(300);
     const file = path.join(OUT, `${fx.name}.png`);
     await (await page.$("#f")).screenshot({ path: file });
+    console.log(`shot ${file}`);
+    await page.close();
+  }
+  for (const pg of PAGES) {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
+    page.on("pageerror", (e) => { console.log(`FAIL ${pg.name}: page error: ${e.message}`); failed++; });
+    await page.goto(`${origin}${pg.path}`, { waitUntil: "networkidle0" });
+    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+    await page.evaluate(() => document.fonts.ready);
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await sleep(1500);                     // the canvas frame renders after the page's load
+    const file = path.join(OUT, `${pg.name}.png`);
+    await page.screenshot({ path: file });
     console.log(`shot ${file}`);
     await page.close();
   }
