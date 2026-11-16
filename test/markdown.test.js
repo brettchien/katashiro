@@ -368,3 +368,16 @@ test("cards accent: `::: cards accent` adds the constant class cards-accent; oth
   assert.match(md.render("::: cards <b>accent</b>\n### A\nx\n:::\n"), /^<div class="cards">/);
   assert.doesNotMatch(md.render("::: cards accent onclick=x\n### A\nx\n:::\n"), /onclick/);
 });
+
+test("stats: `::: stats` is a constant .stats around its list; after the first # Title the two share a .ks-title-row", () => {
+  const h = md.render("# Brief\n\n::: stats\n- **3** 天\n- **42** 場\n:::\n\nText.\n");
+  assert.match(h, /^<div class="ks-title-row">\n<h1>Brief<\/h1>\n<div class="stats">\n<ul>\n<li><strong>3<\/strong> 天<\/li>\n<li><strong>42<\/strong> 場<\/li>\n<\/ul>\n<\/div>\n<\/div>\n<p>Text\.<\/p>/);
+  // Not right after the title: no row.
+  const h2 = md.render("# Brief\n\nIntro.\n\n::: stats\n- **3** 天\n:::\n");
+  assert.doesNotMatch(h2, /ks-title-row/);
+  assert.match(h2, /<div class="stats">/);
+  // The info string is never copied; `::: statsx` is not a container.
+  assert.match(md.render("::: stats big onclick=x\n- **1** a\n:::\n"), /^<div class="stats">/);
+  assert.doesNotMatch(md.render("::: stats onclick=x\n- **1** a\n:::\n"), /onclick/);
+  assert.doesNotMatch(md.render("::: statsx\n- **1** a\n:::\n"), /class="stats"/);
+});

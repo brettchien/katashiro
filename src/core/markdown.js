@@ -80,6 +80,38 @@
         },
       });
     }
+    // `::: stats` (ADR canvas-themes §2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold
+    // run the number, the rest the label (canvas-frame.css). A constant class; the info string after
+    // `stats` is ignored. Right after the document's first `# Title`, the two are wrapped in a
+    // constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
+    if (global.markdownitContainer) {
+      md.use(global.markdownitContainer, "stats", {
+        validate: (params) => params.trim().split(/\s+/, 1)[0] === "stats",
+        render: (tokens, idx, options, env, slf) => {
+          if (tokens[idx].nesting === 1) tokens[idx].attrJoin("class", "stats");
+          return slf.renderToken(tokens, idx, options);
+        },
+      });
+    }
+    md.core.ruler.after("block", "stats_title_row", (state) => {
+      const t = state.tokens;
+      const h = t.findIndex((x) => x.type === "heading_open" && x.tag === "h1" && x.level === 0);
+      if (h < 0 || !t[h + 3] || t[h + 3].type !== "container_stats_open") return;
+      let end = h + 3, depth = 0;
+      for (; end < t.length; end++) {
+        if (t[end].type === "container_stats_open") depth++;
+        else if (t[end].type === "container_stats_close" && --depth === 0) break;
+      }
+      if (end >= t.length) return;
+      const open = new state.Token("title_row_open", "div", 1);
+      open.block = true;
+      open.attrSet("class", "ks-title-row");
+      const close = new state.Token("title_row_close", "div", -1);
+      close.block = true;
+      t.splice(end + 1, 0, close);
+      t.splice(h, 0, open);
+    });
+
     // Each card: every DIRECT-child `###` of a cards container starts one; blocks before the first
     // `###` (if any) are a card of their own. Direct child = one level below the container's token,
     // so an h3 inside a list, quote, alert or nested container never splits the outer row (a nested

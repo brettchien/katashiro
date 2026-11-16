@@ -100,6 +100,12 @@ flowchart LR
 // The briefing blocks (canvas-themes §2.4), one section each as they land.
 const BLOCKS = `# Briefing blocks
 
+::: stats
+- **3** 天
+- **42** 場
+- **9** 家公司
+:::
+
 ::: cards accent
 ### Card 1\nOrange.\n### Card 2\nBlue.\n### Card 3\nPurple.\n### Card 4\nGreen.\n### Card 5\nYellow.\n### Card 6\nPink.\n### Card 7\nTeal.\n### Card 8\nSand.\n### Card 9\nSlate.
 :::

@@ -170,6 +170,18 @@ body {
 
 [hidden] { display: none !important; }
 
+/* `::: stats` (ADR canvas-themes §2.4 b): KPI tiles — the bold run large in the accent, the rest
+   muted below it. After the first # Title (.ks-title-row, markdown.js) they sit right of the title on
+   a wide tab and wrap below it on a narrow one; the row carries the title's rule. */
+.stats ul { display: flex; flex-wrap: wrap; gap: 10px; margin: 0.8em 0; padding: 0; list-style: none; }
+.stats li { min-width: 88px; padding: 8px 14px; border: 1px solid var(--ks-border); border-radius: 10px; background: var(--ks-surface); color: var(--ks-muted); font-size: 0.85em; line-height: 1.35; }
+.stats li > strong:first-child, .stats li > p > strong:first-child { display: block; color: var(--ks-accent); font-size: 1.7em; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stats li > p { margin: 0; }
+.doc .ks-title-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 4px 24px; border-bottom: 1px solid var(--ks-rule-h1); margin-bottom: 0.5em; }
+.doc .ks-title-row > h1 { border-bottom: 0; margin-bottom: 0.3em; }
+.doc .ks-title-row > .stats ul { margin: 0 0 0.6em; }
+.doc > .ks-title-row:first-child > h1 { margin-top: 0; }
+
 /* Cards and callouts (markdown.js; ADR canvas §3.3 "Cards and callouts"). Unscoped on purpose: the
    same markup shows in the document (.doc) and on slides (.reveal, sized in canvas-slides.css).
    A `::: cards` block is a grid that puts 2–4 cards side by side and wraps them on a narrow tab;

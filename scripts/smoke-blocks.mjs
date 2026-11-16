@@ -6,8 +6,10 @@
 //   - `::: cards accent`: the constant class; each card takes its hue in the accent order (orange,
 //     blue, purple, …), restarting per block and repeating after nine; the hue's mark colour on the
 //     top edge and its text colour on the ###, dark and light; a plain `::: cards` gets none of it;
-//   - the round trip: normalized text and the editor's saved text keep `::: cards accent`, and render
-//     the same.
+//   - `::: stats` after # Title: three tiles, the number in the accent colour, beside the title on a
+//     wide frame and below it on a narrow one;
+//   - the round trip: normalized text and the editor's saved text keep `::: cards accent` and the
+//     stats block, and render the same.
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -18,6 +20,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const cards = (n) => Array.from({ length: n }, (_, i) => `### Card ${i + 1}\nText ${i + 1}.`).join("\n");
 const FIXTURE = `# Blocks
+
+::: stats
+- **3** 天
+- **42** 場
+- **9** 家公司
+:::
 
 ::: cards accent
 ${cards(10)}
@@ -103,13 +111,37 @@ try {
     check(plain && plain.cards.every((c) => c.width === "1px"), `${what} (${theme}): a plain ::: cards has no accent edge`, plain && plain.cards);
   };
 
+  const stats = () => frame.evaluate(() => {
+    const row = document.querySelector("#doc > .ks-title-row");
+    const h1 = row && row.querySelector(":scope > h1");
+    const tiles = Array.from(document.querySelectorAll("#doc .stats li"));
+    const num = tiles[0] && tiles[0].querySelector("strong");
+    const a = h1 && h1.getBoundingClientRect(), b = tiles[0] && tiles[0].getBoundingClientRect();
+    return { row: !!row, tiles: tiles.length, num: num && getComputedStyle(num).color, accent: getComputedStyle(document.documentElement).getPropertyValue("--ks-accent").trim(),
+      beside: !!(a && b && b.left > a.right && b.top < a.bottom), below: !!(a && b && b.top >= a.bottom - 1) };
+  });
+  const statsOk = async (what) => {
+    const s = await stats();
+    check(s.row && s.tiles === 3 && s.num === rgb(s.accent), `${what}: ::: stats — a title row, 3 tiles, the number in the accent`, s);
+    return s;
+  };
+
   // 1. As written, dark then light.
   await send({ type: "render", kind: "markdown", version: 1, seq: 1, content: FIXTURE });
   await waitFor((m) => m.type === "rendered" && m.seq === 1, "render 1");
+  const wide = await statsOk("as written");
+  check(wide.beside, "wide frame: the tiles sit right of the title", wide);
+  await page.evaluate(() => { document.getElementById("f").style.width = "360px"; });
+  await sleep(300);
+  const narrowS = await stats();
+  check(narrowS.below, "narrow frame: the tiles drop below the title", narrowS);
+  await page.evaluate(() => { document.getElementById("f").style.width = "1100px"; });
+  await sleep(200);
   await hues("dark", "as written");
   await send({ type: "theme", value: "light" });
   await sleep(200);
   await hues("light", "as written");
+  await statsOk("light");
   await send({ type: "theme", value: "dark" });
 
   // 2. Normalization (the agent-write path) keeps the info word.
@@ -121,6 +153,8 @@ try {
     await send({ type: "render", kind: "markdown", version: 3, seq: 3, content: norm });
     await waitFor((m) => m.type === "rendered" && m.seq === 3, "render normalized");
     await hues("dark", "after normalization");
+    await statsOk("after normalization");
+    check(/^::: stats$/m.test(norm) && /\*\*42\*\* 場/.test(norm), "normalized text keeps ::: stats and its bold numbers", norm);
   }
 
   // 3. The editor: load, save, render the saved text.
@@ -134,6 +168,7 @@ try {
   await send({ type: "render", kind: "markdown", version: 4, seq: 4, content: sv.content });
   await waitFor((m) => m.type === "rendered" && m.seq === 4, "render saved");
   await hues("dark", "after an editor load + save");
+  await statsOk("after an editor load + save");
   const v = await frame.evaluate(() => window.__ksViolations || []);
   check(v.length === 0, "no CSP violation", v);
 } catch (e) {
