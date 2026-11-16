@@ -466,7 +466,8 @@ below is built around that.
   (`canvas.css`), slides, Pele's variables and the editor follow; print keeps its light Primer colours;
   the canvas gallery takes the same accent; the chat panel is not changed. Semantic colours stay:
   the slides' bold amber `#fbbf24` and italic violet `#c4b5fd`, the `.ks-note` badge, and the
-  status green `#34d399` / amber `#f59e0b`.
+  status green `#34d399` / amber `#f59e0b`. Light / dark / system themes and the light palette:
+  [canvas-themes](./canvas-themes.md) (2026-11-16); GitHub Dark stays the dark theme.
 - React/Babel: not planned. Babel needs eval, and `html` + Preact (`htm`, no build step) covers
   the cases.
 
