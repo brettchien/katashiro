@@ -559,6 +559,33 @@
   // get no class); the frame renders exactly those, and loads the 2.7 MB engine only if there is one.
   // A `mermaid` canvas is shown as one such fence.
   const MERMAID_SEL = "pre > code.language-mermaid";
+
+  // Theme-aware diagram classes (ADR canvas-themes §2.5): `class X ks-blue` / `ks-blue-strong` in a
+  // flowchart, state or class diagram. The frame appends these classDef lines before rendering (the
+  // stored source is not changed); the colours are the --ks-* tokens, so a theme switch needs no
+  // redraw for them. Other diagram types have no class statement and get nothing.
+  const KS_HUES = ["blue", "orange", "purple", "green", "teal", "yellow", "pink", "sand", "slate", "red"];
+  const KS_CLASS_TYPES = /^(flowchart|graph|stateDiagram(-v2)?|classDiagram(-v2)?)\b/;
+  const KS_CLASS_DEFS = KS_HUES.flatMap((h) => {
+    const base = `fill:var(--ks-${h}-tint),stroke:var(--ks-${h}-mid),color:var(--ks-${h})`;
+    return [`classDef ks-${h} ${base}`, `classDef ks-${h}-strong ${base},stroke-width:3px`];
+  });
+  /** The diagram's type keyword: the first line that is not blank, a %% comment or a front-matter block. */
+  function diagramType(source) {
+    const lines = String(source).split("\n");
+    let i = 0;
+    if (/^---\s*$/.test(lines[0] || "")) { i = 1; while (i < lines.length && !/^---\s*$/.test(lines[i])) i++; i++; }
+    for (; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t && !t.startsWith("%%")) return t;
+    }
+    return "";
+  }
+  /** source + the ks-* classDef lines, for the diagram types that have classes; else source as is. */
+  function withKsClasses(source) {
+    if (!KS_CLASS_TYPES.test(diagramType(source))) return source;
+    return `${String(source).replace(/\s+$/, "")}\n${KS_CLASS_DEFS.join("\n")}\n`;
+  }
   /** Does this rendered view need mermaid? `root` = the rendered element (querySelector). */
   function wantsMermaid(kind, root) {
     if (kind === "mermaid") return true;
@@ -1461,5 +1488,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_CLASS_DEFS, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

@@ -329,6 +329,7 @@
   /** One diagram with one engine → its SVG text (throws as the engine does, or when it did not load). */
   async function renderDiagram(engine, source, theme) {
     const E = await loadEngine(engine);
+    source = CanvasCore.withKsClasses(source);   // canvas-themes §2.5: the ks-* classes
     return engine === "pele" ? renderWithPele(E, source) : renderWithMermaid(E, source, theme);
   }
   // The engine for this canvas, from the host's render{engine} (anything else: Pele, the default).

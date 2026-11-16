@@ -1492,3 +1492,16 @@ test("canvas theme: setting, resolve, cycle, button", () => {
   assert.equal(C.themeButton("light").label, "☀ 淺色");
   assert.match(C.themeButton("dark").title, /改成淺色.*所有畫布分頁/);
 });
+
+// ks-* diagram classes (ADR canvas-themes §2.5).
+test("withKsClasses: flowchart / state / class diagrams get the ks-* classDefs, others nothing", () => {
+  assert.equal(C.KS_CLASS_DEFS.length, 20);
+  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-blue fill:var(--ks-blue-tint),stroke:var(--ks-blue-mid),color:var(--ks-blue)"));
+  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-red-strong fill:var(--ks-red-tint),stroke:var(--ks-red-mid),color:var(--ks-red),stroke-width:3px"));
+  for (const src of ["flowchart LR\n  A --> B", "graph TD\nA-->B", "stateDiagram-v2\n  [*] --> S", "classDiagram\n  class A", "%% c\n\nflowchart LR\nA", "---\ntitle: x\n---\nflowchart LR\nA"]) {
+    const out = C.withKsClasses(src);
+    assert.ok(out.startsWith(src.replace(/\s+$/, "") + "\n"), src);
+    assert.match(out, /\nclassDef ks-red-strong .*stroke-width:3px\n$/);
+  }
+  for (const src of ["sequenceDiagram\n  A->>B: x", "gantt\n  title x", "pie\n  \"a\": 1", "", "mindmap\n  root"]) assert.equal(C.withKsClasses(src), src);
+});
