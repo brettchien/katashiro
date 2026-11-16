@@ -1494,19 +1494,57 @@ test("canvas theme: setting, resolve, cycle, button", () => {
 });
 
 // ks-* diagram classes (ADR canvas-themes §2.5).
-test("withKsClasses: a flowchart / state / class diagram that uses ks-* gets the classDefs of the theme", () => {
-  assert.equal(C.ksClassDefs("dark").length, 20);
-  assert.ok(C.ksClassDefs("dark").includes("classDef ks-blue fill:#162333,stroke:#58a6ff,color:#58a6ff"));
-  assert.ok(C.ksClassDefs("light").includes("classDef ks-orange-strong fill:#fdeee4,stroke:#e8a983,color:#9a5630,stroke-width:3px"));
-  assert.deepEqual(C.ksClassDefs(undefined), C.ksClassDefs("dark"));
-  for (const src of ["flowchart LR\n  A --> B\n  class A ks-blue", "graph TD\nA-->B\nclass B ks-red-strong", "stateDiagram-v2\n  [*] --> S\n  class S ks-teal", "classDiagram\n  class A\n  cssClass \"A\" ks-sand", "%% c\n\nflowchart LR\nA:::ks-pink", "---\ntitle: x\n---\nflowchart LR\nA\nclass A ks-slate"]) {
+test("withKsClasses: a flowchart that uses ks-* gets the sentinel classDefs; other types nothing", () => {
+  assert.equal(C.KS_CLASS_DEFS.length, 20);
+  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-blue fill:#0c0101,stroke:#0c0102,color:#0c0103"));
+  assert.ok(C.KS_CLASS_DEFS.includes("classDef ks-red-strong fill:#0c0191,stroke:#0c0192,color:#0c0193,stroke-width:3px"));
+  for (const src of ["flowchart LR\n  A --> B\n  class A ks-blue", "graph TD\nA-->B\nclass B ks-red-strong", "%% c\n\nflowchart LR\nA:::ks-pink", "---\ntitle: x\n---\nflowchart LR\nA\nclass A ks-slate"]) {
     assert.ok(C.usesKsClasses(src), src);
-    const out = C.withKsClasses(src, "light");
-    assert.ok(out.startsWith(src + "\n"), src);
-    assert.match(out, /\nclassDef ks-blue fill:#e6f0fb,stroke:#86addb,color:#2f5d8a\n/);
+    assert.equal(C.withKsClasses(src), `${src}\n${C.KS_CLASS_DEFS.join("\n")}\n`, src);
   }
-  // No ks-* class used, another type, or a near miss: unchanged (existing diagrams draw as before).
-  for (const src of ["flowchart LR\n  A --> B", "sequenceDiagram\n  A->>B: ks-blue", "gantt\n  title ks-blue", "", "flowchart LR\n  A[ks-bluegrass]", "flowchart LR\n  class A ks-magenta"]) {
-    assert.equal(C.withKsClasses(src, "dark"), src, src);
+  // No ks-* class used (a %% comment does not count), another type, or a near miss: unchanged.
+  // State and class diagrams: both engines reject a "-" in a classDef name there (smoke-diagram-classes).
+  for (const src of ["stateDiagram-v2\n  [*] --> S\n  class S ks-teal", "classDiagram\n  class A\n  cssClass \"A\" ks-sand", "flowchart LR\n  A --> B", "flowchart LR\n  %% use ks-blue later\n  A --> B", "sequenceDiagram\n  A->>B: ks-blue", "gantt\n  title ks-blue", "", "flowchart LR\n  A[ks-bluegrass]", "flowchart LR\n  class A ks-magenta"]) {
+    assert.equal(C.withKsClasses(src), src, src);
   }
+});
+
+test("ksSentinelToVar: every sentinel colour becomes its --ks-* variable; other colours stay", () => {
+  assert.equal(C.ksSentinelToVar("fill:#0c0101;stroke:#0C0102;color:#0c0103"), "fill:var(--ks-blue-tint);stroke:var(--ks-blue-mid);color:var(--ks-blue)");
+  assert.equal(C.ksSentinelToVar(".ks-red-strong>*{fill:#0c0191!important}"), ".ks-red-strong>*{fill:var(--ks-red-tint)!important}");
+  assert.equal(C.ksSentinelToVar("#0c0101a #0c0104 #0c01x1 #123456"), "#0c0101a #0c0104 #0c01x1 #123456");
+  assert.ok(C.hasKsSentinel("x #0c0152 y"));
+  assert.ok(!C.hasKsSentinel("#0c0104"));
+  assert.ok(C.hasKsSentinel("#0c0152"), "no lastIndex left over from a previous call");
+});
+
+test("themeWatcher: reads, follows storage and the OS, mirrors for theme-boot, set() stores", async () => {
+  const listeners = [];
+  const media = { matches: true, l: null, addEventListener(_, f) { this.l = f; } };
+  const stored = {}, ls = {};
+  const calls = [];
+  const w = C.themeWatcher({
+    chromeApi: { storage: { local: { get: async () => ({ "canvas:theme": "light" }), set: async (o) => Object.assign(stored, o) }, onChanged: { addListener: (f) => listeners.push(f) } } },
+    win: { matchMedia: () => media, localStorage: { setItem: (k, v) => { ls[k] = v; } } },
+    apply: (s, dark) => calls.push([s, dark]),
+  });
+  assert.equal(w.setting(), "system");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls.at(-1), ["light", true]);
+  assert.equal(ls[C.THEME_BOOT_KEY], "light");
+  listeners[0]({ "canvas:theme": { newValue: "bogus" } }, "local");
+  assert.deepEqual(calls.at(-1), ["system", true]);
+  listeners[0]({ "canvas:theme": { newValue: "dark" } }, "sync");
+  assert.equal(w.setting(), "system", "only the local area counts");
+  media.matches = false; media.l();
+  assert.deepEqual(calls.at(-1), ["system", false]);
+  w.set("dark");
+  assert.deepEqual(calls.at(-1), ["dark", false]);
+  assert.equal(stored["canvas:theme"], "dark");
+  assert.equal(ls[C.THEME_BOOT_KEY], "dark");
+});
+
+test("theme-boot.js reads the key the pages mirror (CanvasCore.THEME_BOOT_KEY)", () => {
+  const boot = require("node:fs").readFileSync(require("node:path").join(__dirname, "../src/canvas/theme-boot.js"), "utf8");
+  assert.ok(boot.includes(`localStorage.getItem("${C.THEME_BOOT_KEY}")`));
 });

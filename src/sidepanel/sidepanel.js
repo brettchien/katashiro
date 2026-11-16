@@ -1632,19 +1632,13 @@ if (canvasEnginePeleBtn && canvasEngineMermaidBtn) {
 }
 
 // Settings → 畫布主題 (ADR canvas-themes §2.2): 跟隨系統 unless set. Canvas tabs and the gallery follow
-// through storage.onChanged.
+// through storage.onChanged; CanvasCore.themeWatcher also mirrors the setting for theme-boot.js.
 {
-  const K = CanvasCore.THEME_KEY;
   const btns = Object.fromEntries(CanvasCore.THEMES.map((t) => [t, document.getElementById(`canvas-theme-${t}`)]));
   if (Object.values(btns).every(Boolean)) {
-    const show = (raw) => { const v = CanvasCore.themeSetting(raw); for (const [t, b] of Object.entries(btns)) b.classList.toggle("on", t === v); };
-    chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
-    for (const [t, b] of Object.entries(btns)) b.addEventListener("click", () => {
-      show(t);
-      try { localStorage.setItem(CanvasCore.THEME_BOOT_KEY, t); } catch (_) { /* canvas pages fall back to the OS */ }
-      chrome.storage.local.set({ [K]: t }).catch(() => {});
-    });
-    chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
+    const show = (setting) => { for (const [t, b] of Object.entries(btns)) b.classList.toggle("on", t === setting); };
+    const theme = CanvasCore.themeWatcher({ chromeApi: chrome, win: window, apply: show });
+    for (const [t, b] of Object.entries(btns)) b.addEventListener("click", () => theme.set(t));
   }
 }
 

@@ -45,9 +45,10 @@
   const showChangesBtn = document.getElementById("canvas-show-changes");
   const narrowBtn = document.getElementById("canvas-narrow");
   const themeBtn = document.getElementById("canvas-theme");
-  const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");   // canvas theme: applyTheme()
-  let themeSetting = "system";
-  let frameTheme = null;
+  // Canvas theme (ADR canvas-themes §2.2): the setting, followed across tabs and the OS (applyTheme).
+  const theme = CanvasCore.themeWatcher({ chromeApi: chrome, win: window, apply: () => applyTheme() });
+  let frameTheme = null;                  // what the frame was last told ({type:"theme"})
+  let framePrintKey = null;               // … and whether its Ctrl/⌘+P goes to 🖨 ({type:"printKey"})
   const runBtn = document.getElementById("canvas-run");
   const pageSelBtn = document.getElementById("canvas-page-sel");
   const engineBtn = document.getElementById("canvas-engine");
@@ -219,6 +220,8 @@
     printBtn.hidden = !(textKind && !!frame && mode === "view");
     printBtn.disabled = (mode === "edit" && dirty) || !!printing;
     printBtn.title = printing ? "正在準備列印…" : printBtn.disabled ? "先儲存再匯出" : "列印／存成 PDF";
+    // Ctrl/⌘+P in the frame goes to 🖨 only while 🖨 is offered here (busy: swallowed); else the browser prints.
+    if (frameReady && framePrintKey !== !printBtn.hidden) { framePrintKey = !printBtn.hidden; toFrame({ type: "printKey", on: framePrintKey }); }
     editBtn.disabled = !!printing;
     updateEngineBtn();
     updateHtmlBar();
@@ -816,7 +819,7 @@
     gate.reset();
     gate.expect();
     // The frame starts in the theme it will be told ("#<nonce>.light"): no dark flash before {type:"theme"}.
-    frameTheme = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
+    frameTheme = CanvasCore.resolveTheme(theme.setting(), theme.osDark(), current && current.meta.kind);
     frame.src = `canvas-frame.html${query || ""}#${nonce}${frameTheme === "light" ? ".light" : ""}`;
     mainEl.appendChild(frame);
   }
@@ -1134,23 +1137,18 @@
   // set here or in Settings). The host page sets data-ks-theme on its own root; the sandboxed frame
   // gets only the resolved "dark" | "light" (a constant, like narrow). A deck stays dark.
   function applyTheme() {
-    const b = CanvasCore.themeButton(themeSetting);
+    const setting = theme.setting(), osDark = theme.osDark();
+    const b = CanvasCore.themeButton(setting);
     // Only on a change: an unchanged header is not touched (no repaint for nothing).
     if (themeBtn.textContent !== b.label) themeBtn.textContent = b.label;
     if (themeBtn.title !== b.title) themeBtn.title = b.title;
-    try { localStorage.setItem(CanvasCore.THEME_BOOT_KEY, themeSetting); } catch (_) { /* boot falls back to the OS */ }
-    const page = CanvasCore.resolveTheme(themeSetting, themeMedia.matches);
+    if (themeBtn.dataset.icon !== b.icon) themeBtn.dataset.icon = b.icon;   // the narrow-tab header shows it
+    const page = CanvasCore.resolveTheme(setting, osDark);
     if (document.documentElement.dataset.ksTheme !== page) document.documentElement.dataset.ksTheme = page;
-    const shown = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
+    const shown = CanvasCore.resolveTheme(setting, osDark, current && current.meta.kind);
     if (frameReady && shown !== frameTheme) { frameTheme = shown; toFrame({ type: "theme", value: shown }); }
   }
-  themeMedia.addEventListener("change", () => applyTheme());
-  chrome.storage.local.get(CanvasCore.THEME_KEY).then((got) => { themeSetting = CanvasCore.themeSetting(got[CanvasCore.THEME_KEY]); applyTheme(); }, () => {});
-  themeBtn.addEventListener("click", () => {
-    themeSetting = CanvasCore.nextTheme(themeSetting);
-    applyTheme();
-    chrome.storage.local.set({ [CanvasCore.THEME_KEY]: themeSetting }).catch(() => {});   // other canvas tabs follow
-  });
+  themeBtn.addEventListener("click", () => theme.set(CanvasCore.nextTheme(theme.setting())));   // other canvas tabs follow
 
   // Settings → html 畫布 (canvas §6 Q2): off → html canvases show without their scripts only; a
   // running one goes back to that view.
@@ -1534,6 +1532,7 @@
       case "ready":
         frameReady = true;
         if (narrow) toFrame({ type: "narrow", on: true });
+        framePrintKey = null;
         applyTheme();                     // the frame booted in frameTheme; a change since is sent
         if (agentSheets.length) toFrame({ type: "css", sheets: agentSheets });
         sendRender();
@@ -1862,8 +1861,6 @@
     if (sc && !compareView) setShowChanges(sc.newValue === true);
     const nc = changes[CanvasCore.NARROW_KEY];
     if (nc && !compareView) setNarrow(nc.newValue === true);
-    const tc = changes[CanvasCore.THEME_KEY];
-    if (tc) { themeSetting = CanvasCore.themeSetting(tc.newValue); applyTheme(); }
     const mc = changes[CanvasStore.metaKey(canvasId)];
     if (!mc && !changes[CanvasStore.latestKey(canvasId)]) return;
     // Only the folder mirror's bookkeeping changed: update the file status, no re-render.

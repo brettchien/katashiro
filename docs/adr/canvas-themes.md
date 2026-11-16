@@ -308,11 +308,12 @@ works and stays as written (the skill says: prefer `ks-*`).
 
 > **As implemented (PR B):** Pele was tested first (`scripts/smoke-diagram-classes.mjs`) and applies
 > the injected classes — fill, stroke and the 3 px `-strong` outline — in both themes, so no diagram
-> falls back to Mermaid for them. Neither engine parses `var()` in a `classDef` (both reject the
-> diagram), so the lines carry the resolved theme's hex values (`CanvasCore.KS_RAMPS`, a copy of the
-> §2.3 ramps — keep it in step with `canvas-frame.css`), and a theme switch or print redraws the
-> diagrams that use them, Pele's included. The lines are appended only when the source uses a
-> `ks-*` class, so every other diagram draws exactly as before.
+> falls back to Mermaid for them. **Flowcharts only:** in state and class diagrams both engines'
+> grammars reject a `-` in a class name, so those types get no classDefs and draw uncoloured (never
+> broken). Neither engine parses `var()` in a `classDef`, so the lines carry sentinel colours
+> (`#0c01<hue><role>`) that the frame turns into `var(--ks-*)` in the drawn SVG: the CSS ramps stay
+> the only source, and a theme switch or print restyles Pele's ks-* diagrams with no redraw. The
+> lines are appended only when the source uses a `ks-*` class, so every other diagram draws exactly as before.
 
 ### 2.6 Skills
 
