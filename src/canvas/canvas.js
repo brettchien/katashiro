@@ -44,6 +44,10 @@
   const endCompareBtn = document.getElementById("canvas-end-compare");
   const showChangesBtn = document.getElementById("canvas-show-changes");
   const narrowBtn = document.getElementById("canvas-narrow");
+  const themeBtn = document.getElementById("canvas-theme");
+  const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");   // canvas theme: applyTheme()
+  let themeSetting = "system";
+  let frameTheme = null;
   const runBtn = document.getElementById("canvas-run");
   const pageSelBtn = document.getElementById("canvas-page-sel");
   const engineBtn = document.getElementById("canvas-engine");
@@ -190,6 +194,8 @@
     compareBtn.hidden = !(canRevert && textKind && !!frame);
     showChangesBtn.hidden = !textKind;
     narrowBtn.hidden = !(current && CanvasCore.narrowKind(current.meta.kind));   // markdown only (§3.1)
+    themeBtn.hidden = !current || compareView;   // canvas-themes §2.2: every kind (a deck stays dark)
+    applyTheme();
     updateShowChangesBtn();             // editing changes its title (#110)
     // Send to agent: only when there are saved edits the agent has not been shown (§3.5/§3.7).
     const seen = current ? (current.meta.agentSeenVersion || current.meta.agentVersion || 0) : 0;
@@ -1122,6 +1128,26 @@
     });
   }
 
+  // Canvas theme (ADR canvas-themes §2.2): 深色 / 淺色 / 跟隨系統 for every canvas tab (chrome.storage.local,
+  // set here or in Settings). The host page sets data-ks-theme on its own root; the sandboxed frame
+  // gets only the resolved "dark" | "light" (a constant, like narrow). A deck stays dark.
+  function applyTheme() {
+    const b = CanvasCore.themeButton(themeSetting);
+    themeBtn.textContent = b.label;
+    themeBtn.title = b.title;
+    const page = CanvasCore.resolveTheme(themeSetting, themeMedia.matches);
+    if (document.documentElement.dataset.ksTheme !== page) document.documentElement.dataset.ksTheme = page;
+    const shown = CanvasCore.resolveTheme(themeSetting, themeMedia.matches, current && current.meta.kind);
+    if (frameReady && shown !== frameTheme) { frameTheme = shown; toFrame({ type: "theme", value: shown }); }
+  }
+  themeMedia.addEventListener("change", () => applyTheme());
+  chrome.storage.local.get(CanvasCore.THEME_KEY).then((got) => { themeSetting = CanvasCore.themeSetting(got[CanvasCore.THEME_KEY]); applyTheme(); }, () => {});
+  themeBtn.addEventListener("click", () => {
+    themeSetting = CanvasCore.nextTheme(themeSetting);
+    applyTheme();
+    chrome.storage.local.set({ [CanvasCore.THEME_KEY]: themeSetting }).catch(() => {});   // other canvas tabs follow
+  });
+
   // Settings → html 畫布 (canvas §6 Q2): off → html canvases show without their scripts only; a
   // running one goes back to that view.
   if (!compareView) {
@@ -1501,6 +1527,8 @@
       case "ready":
         frameReady = true;
         if (narrow) toFrame({ type: "narrow", on: true });
+        frameTheme = null;
+        applyTheme();
         if (agentSheets.length) toFrame({ type: "css", sheets: agentSheets });
         sendRender();
         updateButtons();
@@ -1825,6 +1853,8 @@
     if (sc && !compareView) setShowChanges(sc.newValue === true);
     const nc = changes[CanvasCore.NARROW_KEY];
     if (nc && !compareView) setNarrow(nc.newValue === true);
+    const tc = changes[CanvasCore.THEME_KEY];
+    if (tc) { themeSetting = CanvasCore.themeSetting(tc.newValue); applyTheme(); }
     const mc = changes[CanvasStore.metaKey(canvasId)];
     if (!mc && !changes[CanvasStore.latestKey(canvasId)]) return;
     // Only the folder mirror's bookkeeping changed: update the file status, no re-render.

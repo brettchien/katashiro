@@ -844,6 +844,26 @@
       ? { label: "↔ 全寬", title: "目前是窄欄閱讀寬度（置中欄位）— 按一下改回全寬。所有畫布分頁一起切換；不影響列印" }
       : { label: "↔ 窄欄", title: "改成窄欄閱讀寬度（置中、約 46rem）— 所有畫布分頁一起切換；不影響列印" };
   }
+  // Canvas theme (ADR canvas-themes §2.2): 深色 / 淺色 / 跟隨系統 (default), one setting for every canvas
+  // tab, the gallery and Settings (chrome.storage.local). Each surface resolves it itself; the
+  // sandboxed frame only gets the resolved "dark" | "light". Slides stay dark in v1.
+  const THEME_KEY = "canvas:theme";
+  const THEMES = ["system", "dark", "light"];
+  const THEME_LABEL = { system: "跟隨系統", dark: "深色", light: "淺色" };
+  const themeSetting = (v) => (THEMES.includes(v) ? v : "system");
+  /** The theme a surface shows: the setting, "system" through prefers-color-scheme; a deck is dark. */
+  function resolveTheme(setting, prefersDark, kind) {
+    if (kind === "slides") return "dark";
+    const s = themeSetting(setting);
+    return s === "system" ? (prefersDark ? "dark" : "light") : s;
+  }
+  /** The header button cycles 跟隨系統 → 深色 → 淺色 → 跟隨系統. */
+  const nextTheme = (v) => THEMES[(THEMES.indexOf(themeSetting(v)) + 1) % THEMES.length];
+  function themeButton(v) {
+    const s = themeSetting(v);
+    const icon = s === "dark" ? "☾" : s === "light" ? "☀" : "◑";
+    return { icon, label: `${icon} ${THEME_LABEL[s]}`, title: `畫布主題：${THEME_LABEL[s]} — 按一下改成${THEME_LABEL[nextTheme(s)]}。所有畫布分頁一起切換` };
+  }
   // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
   const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
   // 💬 Ask agent / 📨 To chat input on a selection in the view (§3.7): the text kinds, and an html
@@ -1441,5 +1461,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEMES, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

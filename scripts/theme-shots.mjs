@@ -244,7 +244,9 @@ try {
     await page.setViewport({ width: 1100, height: 700, deviceScaleFactor: 1 });
     page.on("pageerror", (e) => { console.log(`FAIL ${pg.name}: page error: ${e.message}`); failed++; });
     await page.goto(`${origin}${pg.path}`, { waitUntil: "networkidle0" });
-    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+    // #canvas-theme: the header's theme button (canvas-themes §2.2) is new in PR B and absent from the
+    // main baseline; hidden so the header compares like for like. Drop this once PR B is on main.
+    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important} #canvas-theme{display:none!important}" });
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await sleep(1500);                     // the canvas frame renders after the page's load

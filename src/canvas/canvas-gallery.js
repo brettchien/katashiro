@@ -419,6 +419,16 @@
   // --- Live updates ---------------------------------------------------------------------------------
   // Metas change on every write, delete and mirror bookkeeping; one re-read per burst.
   let reloadTimer = 0;
+  // Canvas theme (ADR canvas-themes §2.2): the gallery resolves the setting itself, on its own root.
+  const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+  let themeSetting = "system";
+  const applyTheme = () => { document.documentElement.dataset.ksTheme = CanvasCore.resolveTheme(themeSetting, themeMedia.matches); };
+  themeMedia.addEventListener("change", applyTheme);
+  chrome.storage.local.get(CanvasCore.THEME_KEY).then((got) => { themeSetting = CanvasCore.themeSetting(got[CanvasCore.THEME_KEY]); applyTheme(); }, () => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[CanvasCore.THEME_KEY]) { themeSetting = CanvasCore.themeSetting(changes[CanvasCore.THEME_KEY].newValue); applyTheme(); }
+  });
+
   chrome.storage.onChanged.addListener((changes, area) => {
     // §7 I2: the rows name the agents (ConvCore.AGENTS_SEEN_KEY).
     if (area !== "local" || !Object.keys(changes).some((k) => META_KEY_RE.test(k) || k === ConvCore.INDEX_KEY || k === ConvCore.AGENTS_SEEN_KEY || k.startsWith(ConvCore.WINDOW_PREFIX))) return;

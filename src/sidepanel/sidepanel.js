@@ -1631,6 +1631,19 @@ if (canvasEnginePeleBtn && canvasEngineMermaidBtn) {
   chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
 }
 
+// Settings → 畫布主題 (ADR canvas-themes §2.2): 跟隨系統 unless set. Canvas tabs and the gallery follow
+// through storage.onChanged.
+{
+  const K = CanvasCore.THEME_KEY;
+  const btns = Object.fromEntries(CanvasCore.THEMES.map((t) => [t, document.getElementById(`canvas-theme-${t}`)]));
+  if (Object.values(btns).every(Boolean)) {
+    const show = (raw) => { const v = CanvasCore.themeSetting(raw); for (const [t, b] of Object.entries(btns)) b.classList.toggle("on", t === v); };
+    chrome.storage.local.get(K).then((got) => show(got[K]), () => {});
+    for (const [t, b] of Object.entries(btns)) b.addEventListener("click", () => { show(t); chrome.storage.local.set({ [K]: t }).catch(() => {}); });
+    chrome.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[K]) show(changes[K].newValue); });
+  }
+}
+
 const canvasFolderPickBtn = document.getElementById("canvas-folder-pick");
 const canvasFolderReconnectBtn = document.getElementById("canvas-folder-reconnect");
 const canvasFolderStopBtn = document.getElementById("canvas-folder-stop");

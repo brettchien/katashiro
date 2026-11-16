@@ -1470,3 +1470,25 @@ test("renderErrorHeader pageReported (canvas-html §2.7): a running html page's 
   assert.equal(C.selectableKind("image"), false);
   assert.equal(C.selectableKind("markdown"), true);
 });
+
+// Canvas theme (ADR canvas-themes §2.2).
+test("canvas theme: setting, resolve, cycle, button", () => {
+  assert.equal(C.THEME_KEY, "canvas:theme");
+  assert.equal(C.themeSetting(undefined), "system");
+  assert.equal(C.themeSetting("bogus"), "system");
+  for (const t of ["system", "dark", "light"]) assert.equal(C.themeSetting(t), t);
+  assert.equal(C.resolveTheme("system", true, "markdown"), "dark");
+  assert.equal(C.resolveTheme("system", false, "markdown"), "light");
+  assert.equal(C.resolveTheme(undefined, false), "light");
+  assert.equal(C.resolveTheme("dark", false, "mermaid"), "dark");
+  assert.equal(C.resolveTheme("light", true, "image"), "light");
+  for (const t of ["system", "dark", "light"]) for (const p of [true, false]) assert.equal(C.resolveTheme(t, p, "slides"), "dark", "slides stay dark");
+  assert.equal(C.nextTheme("system"), "dark");
+  assert.equal(C.nextTheme("dark"), "light");
+  assert.equal(C.nextTheme("light"), "system");
+  assert.equal(C.nextTheme("bogus"), "dark");
+  assert.equal(C.themeButton("system").label, "◑ 跟隨系統");
+  assert.equal(C.themeButton("dark").label, "☾ 深色");
+  assert.equal(C.themeButton("light").label, "☀ 淺色");
+  assert.match(C.themeButton("dark").title, /改成淺色.*所有畫布分頁/);
+});

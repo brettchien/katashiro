@@ -1029,6 +1029,11 @@
   // mouse press here is reported (armedKey{}); the host decides what it means. Enter / Esc are kept
   // from the page while armed. Capture phase, on window: ahead of everything in the frame.
   let armedKeys = false;
+  let wantedTheme = "dark";               // canvas theme from the host ({type:"theme"}); slides stay dark
+  function applyFrameTheme() {
+    const t = shownKind === "slides" ? "dark" : wantedTheme;
+    if (document.documentElement.dataset.ksTheme !== t) document.documentElement.dataset.ksTheme = t;
+  }
   function reportArmed(e, key) {
     if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier
@@ -1049,6 +1054,8 @@
     if (!m || m.nonce !== nonce) return;
     // Reading width (§3.1): only a boolean; a constant class on the root, applied by the CSS.
     if (m.type === "narrow") { document.documentElement.classList.toggle("ks-narrow", m.on === true); return; }
+    // Canvas theme (canvas-themes §2.2): only the resolved constant; a deck stays dark whatever it says.
+    if (m.type === "theme") { wantedTheme = m.value === "light" ? "light" : "dark"; applyFrameTheme(); return; }
     if (m.type === "armKeys") { armedKeys = m.on === true && !editing; return; }
     if (m.type === "copied") {
       const done = pendingCopies.get(m.reqId);
@@ -1114,6 +1121,7 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
+    applyFrameTheme();
     shownSource = null;
     lastSelection = "";
     const gen = ++renderGen;
