@@ -329,6 +329,7 @@
   /** One diagram with one engine → its SVG text (throws as the engine does, or when it did not load). */
   async function renderDiagram(engine, source, theme) {
     const E = await loadEngine(engine);
+    source = CanvasCore.withKsClasses(source, theme === PRINT_THEME ? "light" : "dark");   // canvas-themes §2.5
     return engine === "pele" ? renderWithPele(E, source) : renderWithMermaid(E, source, theme);
   }
   // The engine for this canvas, from the host's render{engine} (anything else: Pele, the default).
@@ -433,12 +434,14 @@
   }
   // Print (§3.8): the Mermaid diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Pele's follow the print CSS variables. Failures keep the old SVG.
-  const mermaidFigures = (root) => Array.from(root.querySelectorAll('figure.ks-mermaid[data-engine="mermaid"]'));
+  // What a theme switch (or the paper) redraws: Mermaid's diagrams, and Pele's that use ks-* classes
+  // (their classDef colours are literal, §2.5); other Pele diagrams follow the variables.
+  const themedFigures = (root) => Array.from(root.querySelectorAll("figure.ks-mermaid[data-engine]"))
+    .filter((f) => f.dataset.engine === "mermaid" || CanvasCore.usesKsClasses(diagramSource.get(f) || ""));
   async function rethemeDiagrams(root, theme) {
-    const figs = mermaidFigures(root);
-    if (!figs.length) return;
-    for (const fig of figs) {
-      try { setDiagramSvg(fig, await renderDiagram("mermaid", diagramSource.get(fig) || "", theme), "mermaid"); } catch (_) { /* keeps the old one */ }
+    for (const fig of themedFigures(root)) {
+      const engine = fig.dataset.engine;
+      try { setDiagramSvg(fig, await renderDiagram(engine, diagramSource.get(fig) || "", theme), engine); } catch (_) { /* keeps the old one */ }
     }
   }
 
