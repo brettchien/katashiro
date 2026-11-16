@@ -72,6 +72,68 @@ jobs:
       - name: Smoke
         run: npm run smoke
 
+  # Canvas screenshots (scripts/theme-shots.mjs) of this commit vs main, same runner and same pinned
+  # Chrome: a CSS refactor must leave them byte-identical (ADR docs/adr/canvas-themes.md). Both sets
+  # are uploaded as the "theme-shots" artifact, on success too, so a visual change can be looked at.
+  theme-shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Chrome version
+        id: chrome
+        run: echo "version=$(node -p "require('./package.json').config.chromeVersion")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache headless Chrome
+        uses: actions/cache@v4
+        with:
+          path: .cache/chrome
+          key: chrome-headless-shell-${{ runner.os }}-${{ steps.chrome.outputs.version }}
+
+      - name: Install headless Chrome
+        run: npm run chrome
+
+      # main's canvas files, shot by this commit's script and browser.
+      - name: Baseline (main)
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/main" origin/main
+          node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/main" "$RUNNER_TEMP/main"
+
+      - name: This commit
+        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/head"
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/shots"
+          diff <(cd main && ls) <(cd head && ls)
+          bad=0
+          for f in main/*.png; do
+            n=$(basename "$f")
+            if cmp -s "$f" "head/$n"; then echo "same    $n"; else echo "DIFFERS $n"; bad=1; fi
+          done
+          exit $bad
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: theme-shots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+
   # T2 E2E (e2e/): the REAL extension loaded in full Chrome for Testing (new headless), its real
   # side panel, tab groups, runtime messaging and notifications, against a fake ACP gateway
   # (e2e/fake-gateway.mjs). Same pinned Chrome version as the smokes, but the full build.
