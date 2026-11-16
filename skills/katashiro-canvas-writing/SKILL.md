@@ -73,9 +73,11 @@ columns that matter, and put long prose in the last column.
 ## 3. Diagrams
 
 Diagrams are drawn by Pele or Mermaid — the user's setting, the switch in the canvas tab's header,
-or `canvas_view({engine})`. Colour the nodes with `classDef` / `class`. Both engines apply it today,
-but Pele does not guarantee it: a style it drops vanishes without an error, so check with a
-screenshot after writing.
+or `canvas_view({engine})`. Colour the nodes with the canvas's **`ks-*` classes**: `class X ks-blue`, or
+`ks-blue-strong` (3 px outline) for the main node. Hues: `blue`, `orange`, `purple`, `green`, `teal`,
+`yellow`, `pink`, `sand`, `slate`, `red`. The canvas adds their `classDef`s when it draws a
+flowchart, state or class diagram, in the colours of the reader's theme (dark, light, and paper);
+both engines apply them. Do not write `classDef` for them.
 
 ````markdown
 ```mermaid
@@ -83,20 +85,19 @@ flowchart LR
   P["Platform"] <-->|messages| O["OAB<br/>thin bridge"]
   O <-->|ACP| A["Agent CLI"]
   O -.->|telemetry| E["session.started · turn.completed"]
-  classDef platform fill:#16233a,stroke:#4a86e8,stroke-width:2px
-  classDef core fill:#2b1a14,stroke:#e89a4d,stroke-width:3px
-  classDef agent fill:#173326,stroke:#3fb97a,stroke-width:2px
-  classDef events fill:#3a2a18,stroke:#e89a4d,stroke-dasharray:6 4
-  class P platform
-  class O core
-  class A agent
-  class E events
+  class P ks-blue
+  class O ks-orange-strong
+  class A ks-green
+  class E ks-slate
 ```
 ````
 
-- Dark fills with a brighter stroke read well on the dark canvas; give the main node the thickest
-  stroke. The canvas is dark on screen and turns light only when printed, but `classDef` fills stay
-  as written — dark fills print dark.
+- **Colours are the theme's.** The reader picks dark or light, and paper is light: a hand-written
+  `classDef` keeps its colours in every theme (dark fills on a light page), so use `ks-*`. A literal
+  `classDef` still works where you need a style the classes do not have (a dashed border:
+  `classDef x stroke-dasharray:6 4` with no colours). Outside the canvas (export, GitHub) a `ks-*`
+  class draws uncoloured, not broken.
+- Give the main node the `-strong` class; use one hue per role, not per node.
 - Keep labels short; put detail in the text, not in the boxes.
 - If one engine fails, the other draws the diagram and a small note under it says why; fix the
   source anyway. Only when both fail does the error show in place of the diagram.

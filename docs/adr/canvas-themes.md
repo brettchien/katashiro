@@ -108,6 +108,14 @@ fixed viewport, and compares them byte for byte with shots taken the same way on
 change (same Chrome build, so no fuzzy diff and no new dependency; on a mismatch both PNGs are kept
 for review). The same fixtures are reused for the light theme in step 2.
 
+> **As implemented (PR B):** the check is `scripts/theme-shots.mjs` and its own CI job `theme-shots`, not an
+> `e2e/` case: it renders the fixtures in the canvas frame (and the header and gallery pages, with
+> `chrome.*` stubbed) in the pinned headless shell, once for a worktree of `main` and once for the
+> PR, and compares byte for byte. Shots a PR changes on purpose are listed in
+> `scripts/theme-shots-changed.txt` (reported, not failed). The compare runs without a CJK font —
+> with Noto CJK installed the page shots were not byte-stable between Chrome launches (±1 at button
+> corners) — and a `review/` set of the PR is shot afterwards with the font, for review.
+
 ### 2.2 Choosing the theme
 
 - **Setting:** a new Settings row **畫布主題** next to 圖表引擎 (Settings has one row per option, no
@@ -207,6 +215,13 @@ The callouts keep today's dark fills (`rgba(…, 0.1)`, §2.1); the ramps are fo
 Method: inflate each FlateDecode content stream and count the `r g b rg|RG` operators (a 30-line
 Node script, kept out of the repo).
 
+> **As implemented (PR B):** values the reference does not give were derived in the same family:
+> light `--ks-border-soft` `#e3e8ef` (row rules), inline-code fill `#eef1f4` (slate tint),
+> `--ks-diagram-line` `#56657a` (Pele edges; dark keeps `#c9d1d9`), and the host header's light
+> states (hover fills `rgba(36,65,94,.04–.08)`, the notice in the orange ramp, pressed in the green
+> ramp). Print is the light theme: the frame sets `data-ks-theme="light"` on `beforeprint` and for
+> the 🖨 PDF button, and `@media print` keeps layout rules only.
+
 ### 2.4 Briefing blocks
 
 All are opt-in, carry no inline styling, and are classes set by our plugins. Each needs a
@@ -290,6 +305,14 @@ light canvas. Add predefined theme-aware classes, one per hue of §2.3 — `ks-b
 
 An agent writes `class O ks-orange-strong`; the colours follow the theme. A literal `classDef` still
 works and stays as written (the skill says: prefer `ks-*`).
+
+> **As implemented (PR B):** Pele was tested first (`scripts/smoke-diagram-classes.mjs`) and applies
+> the injected classes — fill, stroke and the 3 px `-strong` outline — in both themes, so no diagram
+> falls back to Mermaid for them. Neither engine parses `var()` in a `classDef` (both reject the
+> diagram), so the lines carry the resolved theme's hex values (`CanvasCore.KS_RAMPS`, a copy of the
+> §2.3 ramps — keep it in step with `canvas-frame.css`), and a theme switch or print redraws the
+> diagrams that use them, Pele's included. The lines are appended only when the source uses a
+> `ks-*` class, so every other diagram draws exactly as before.
 
 ### 2.6 Skills
 
