@@ -259,8 +259,17 @@ try {
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await sleep(1500);                     // the canvas frame renders after the page's load
+    // Settled: two shots in a row the same (a late repaint must not decide the bytes).
     const file = path.join(OUT, `${pg.name}.png`);
-    await page.screenshot({ path: file });
+    let prev = await page.screenshot();
+    for (let i = 0; i < 5; i++) {
+      await sleep(300);
+      const next = await page.screenshot();
+      if (Buffer.compare(Buffer.from(prev), Buffer.from(next)) === 0) break;
+      console.log(`${pg.name}: still changing (${i + 1})`);
+      prev = next;
+    }
+    fs.writeFileSync(file, prev);
     console.log(`shot ${file}`);
     await page.close();
   }
