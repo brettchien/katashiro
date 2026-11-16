@@ -5,7 +5,8 @@
 // appends, under each engine (Pele, Mermaid) and each theme. Needs a Chrome (`npm run smoke`). Checks,
 // per engine and theme: some shape of the diagram is filled with the hue's tint, outlined in its mark
 // colour, and the -strong one is 3 px; no fallback note (the engine drew it itself); a theme switch
-// recolours it — Pele by the CSS variables alone (same SVG), Mermaid by a redraw in its light theme.
+// recolours it — Pele by the CSS variables alone (same SVG), Mermaid by its light SVG (drawn in the
+// background, shown at once — beforeprint relies on that).
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -95,6 +96,19 @@ try {
     const before = await verify("dark", "as rendered");
     const errs = await frame.evaluate(() => Array.from(document.querySelectorAll("#doc .ks-mermaid-error, #doc pre"), (e) => e.textContent.slice(0, 300)));
     check(before.length === 2, `${engine}: both diagrams drawn`, { figures: before.length, errors: errs });
+    if (engine === "mermaid") {
+      // Native print (the browser menu) cannot wait for a redraw: once the light SVGs are drawn in the
+      // background, beforeprint must show them synchronously, and afterprint the dark ones again.
+      await sleep(2500);
+      const p = await frame.evaluate(() => {
+        const themes = () => Array.from(document.querySelectorAll("#doc figure.ks-mermaid"), (f) => f.dataset.mermaidTheme);
+        window.dispatchEvent(new Event("beforeprint"));
+        const during = themes();
+        window.dispatchEvent(new Event("afterprint"));
+        return { during, after: themes() };
+      });
+      check(p.during.length === 2 && p.during.every((t) => t === "default") && p.after.every((t) => t === "dark"), "mermaid: beforeprint shows the light SVGs at once (kept), afterprint the dark ones", p);
+    }
     await page.evaluate(() => __send({ type: "theme", value: "light" }));
     await sleep(1500);   // Mermaid redraws in its light theme; Pele only restyles (the classes are var()s)
     const after = await verify("light", "after a switch to light");

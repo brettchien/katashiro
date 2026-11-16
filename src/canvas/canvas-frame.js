@@ -435,6 +435,7 @@
       if (svg !== undefined) {
         const why = err1 !== undefined ? CanvasCore.diagramErrorText(err1, i + 1, first) : "";
         const fig = diagramFigure(source, svg, engine, why ? CanvasCore.diagramFallbackNote(engine, why) : "");
+        if (engine === "mermaid") keepMermaidSvg(fig, theme, svg);
         for (const a of ["data-line-start", "data-line-end"]) if (pre.hasAttribute(a)) fig.setAttribute(a, pre.getAttribute(a));
         pre.replaceWith(fig);
         if (why) fallbacks.push(`${why} → drawn by ${CanvasCore.ENGINE_LABEL[engine]}`);
@@ -451,12 +452,46 @@
   }
   // Print (§3.8): the Mermaid diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Pele's follow the print CSS variables. Failures keep the old SVG.
-  // A theme switch or print redraws Mermaid's diagrams in place (same figures, so glow and highlight
-  // state stay); Pele's — ks-* classes included — follow the variables. Failures keep the old SVG.
+  // Mermaid's diagrams in both of its themes (canvas-themes §2.2). Each figure keeps the SVG text it was
+  // drawn with per theme; after a document's diagrams are drawn, the other theme's are drawn in the
+  // background (precacheOtherTheme). A theme switch — and beforeprint, which cannot wait — then puts
+  // the kept SVG in place synchronously; only a figure with none for that theme is drawn again, in
+  // place (same figure, so glow and highlight state stay). Pele's — ks-* classes included — follow
+  // the variables. Failures keep the old SVG.
   const mermaidFigures = (root) => Array.from(root.querySelectorAll('figure.ks-mermaid[data-engine="mermaid"]'));
-  async function rethemeDiagrams(root, theme) {
+  const mermaidSvgs = new WeakMap();      // figure → { [mermaid theme]: svg text }
+  function keepMermaidSvg(fig, theme, svg) {
+    const kept = mermaidSvgs.get(fig) || {};
+    kept[theme] = svg;
+    mermaidSvgs.set(fig, kept);
+    fig.dataset.mermaidTheme = theme;     // the one shown
+  }
+  /** Put the kept SVGs for theme in place now; → the figures that have none (to be drawn). */
+  function showKeptMermaid(root, theme) {
+    const missing = [];
     for (const fig of mermaidFigures(root)) {
-      try { setDiagramSvg(fig, await renderDiagram("mermaid", diagramSource.get(fig) || "", theme), "mermaid"); } catch (_) { /* keeps the old one */ }
+      const svg = (mermaidSvgs.get(fig) || {})[theme];
+      if (svg === undefined) { missing.push(fig); continue; }
+      if (fig.dataset.mermaidTheme !== theme) { setDiagramSvg(fig, svg, "mermaid"); fig.dataset.mermaidTheme = theme; }
+    }
+    return missing;
+  }
+  async function rethemeDiagrams(root, theme) {
+    for (const fig of showKeptMermaid(root, theme)) {   // synchronous up to here (beforeprint relies on it)
+      try {
+        const svg = await renderDiagram("mermaid", diagramSource.get(fig) || "", theme);
+        setDiagramSvg(fig, svg, "mermaid");
+        keepMermaidSvg(fig, theme, svg);
+      } catch (_) { /* keeps the old one */ }
+    }
+  }
+  /** The other Mermaid theme's SVGs for root's figures, drawn in the background; nothing is shown. */
+  async function precacheOtherTheme(root, gen) {
+    const other = viewTheme() === MERMAID_LIGHT ? MERMAID_DARK : MERMAID_LIGHT;
+    for (const fig of mermaidFigures(root)) {
+      if (gen !== renderGen || !fig.isConnected) return;
+      if ((mermaidSvgs.get(fig) || {})[other] !== undefined) continue;
+      try { const svg = await renderDiagram("mermaid", diagramSource.get(fig) || "", other); (mermaidSvgs.get(fig) || {})[other] = svg; } catch (_) { /* drawn when needed */ }
     }
   }
 
@@ -483,6 +518,7 @@
     drawing++;
     return renderDiagrams(doc, kind, gen, seq, theme).finally(() => { drawing--; }).then((r) => {
       if (gen === renderGen && viewTheme() !== theme) rethemeDiagrams(doc, viewTheme()).catch(() => {});
+      if (gen === renderGen) setTimeout(() => { precacheOtherTheme(doc, gen).catch(() => {}); }, 0);
       return r;
     });
   }

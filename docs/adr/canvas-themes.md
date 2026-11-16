@@ -220,7 +220,10 @@ Node script, kept out of the repo).
 > `--ks-diagram-line` `#56657a` (Pele edges; dark keeps `#c9d1d9`), and the host header's light
 > states (hover fills `rgba(36,65,94,.04–.08)`, the notice in the orange ramp, pressed in the green
 > ramp). Print is the light theme: the frame sets `data-ks-theme="light"` on `beforeprint` and for
-> the 🖨 PDF button, and `@media print` keeps layout rules only.
+> the 🖨 PDF button, and `@media print` keeps layout rules only. Mermaid diagrams keep their SVG for both
+> of its themes (the other one drawn in the background after a render), so a theme switch — and a
+> print from the browser menu, whose `beforeprint` cannot wait for a redraw — shows the right one at
+> once; Ctrl/⌘+P goes through 🖨 PDF.
 
 ### 2.4 Briefing blocks
 
