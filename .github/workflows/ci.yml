@@ -104,6 +104,10 @@ jobs:
       - name: Install headless Chrome
         run: npm run chrome
 
+      # CJK glyphs for the header, gallery and Settings text in the shots (both sets get the same font).
+      - name: CJK font
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+
       # main's canvas files, shot by this commit's script and browser.
       - name: Baseline (main)
         run: |
