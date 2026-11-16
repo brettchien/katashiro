@@ -207,6 +207,18 @@ progress.ks-bar-track::-webkit-progress-bar { background: var(--ks-surface-alt);
 progress.ks-bar-track::-webkit-progress-value { background: var(--ks-hue-mid, var(--ks-accent)); border-radius: 3px; }
 @media print { .doc td.ks-mark, .doc th.ks-mark, .doc td.ks-dot::before, progress.ks-bar-track { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 
+/* Numbered sections (ADR canvas-themes §2.4 c): in the light theme only (and so on paper), each
+   top-level ## of a document gets its number in a blue-ramp circle. No syntax: CSS on the theme. */
+:root[data-ks-theme="light"] .doc { counter-reset: ks-sec; }
+:root[data-ks-theme="light"] .doc > h2 { counter-increment: ks-sec; }
+:root[data-ks-theme="light"] .doc > h2::before {
+  content: counter(ks-sec); display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6em; height: 1.6em; margin-right: 0.5em; vertical-align: 0.1em; box-sizing: border-box;
+  border-radius: 50%; border: 1px solid var(--ks-blue-line); background: var(--ks-blue-tint);
+  color: var(--ks-blue); font-size: 0.72em; font-weight: 700;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+
 /* `::: stats` (ADR canvas-themes §2.4 b): KPI tiles — the bold run large in the accent, the rest
    muted below it. After the first # Title (.ks-title-row, markdown.js) they sit right of the title on
    a wide tab and wrap below it on a narrow one; the row carries the title's rule. */

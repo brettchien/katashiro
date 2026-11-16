@@ -11,6 +11,7 @@
 //   - `::: matrix` / `::: bars`: vertical mark headers in their hue, dots drawn in the column's mark
 //     colour with a text-colour edge (the character hidden), the totals row, <progress> bars that
 //     keep value/max through DOMPurify; in both themes;
+//   - numbered sections: the ## get a number in the light theme and on paper, not in dark;
 //   - the round trip: normalized text and the editor's saved text keep `::: cards accent` and the
 //     stats block, and render the same.
 import http from "node:http";
@@ -30,6 +31,8 @@ const FIXTURE = `# Blocks
 - **9** 家公司
 :::
 
+## First section
+
 ::: cards accent
 ${cards(10)}
 :::
@@ -41,6 +44,8 @@ ${cards(2)}
 ::: cards
 ${cards(2)}
 :::
+
+## Second section
 
 ::: matrix
 | Day | 信任 | 工廠 | 提及 / 18 |
@@ -156,6 +161,7 @@ try {
     check(m.dotFill === rgb(m.orangeMid) && m.dotEdge === rgb(m.orange) && m.dotText === "rgba(0, 0, 0, 0)" && m.ringFill === "rgba(0, 0, 0, 0)", `${what}: ● filled in the mark colour with a text-colour edge, ○ a ring, characters hidden`, m);
     check(JSON.stringify(m.bars.map((b) => [b[0], b[1]])) === "[[5,18],[12,18],[3,4]]" && m.bars[0][2] !== "", `${what}: three bars keep value/max, each row has a hue`, m.bars);
   };
+  const numbered = () => frame.evaluate(() => Array.from(document.querySelectorAll("#doc > h2"), (h) => getComputedStyle(h, "::before").content));
   const statsOk = async (what) => {
     const s = await stats();
     check(s.row && s.tiles === 3 && s.num === rgb(s.accent), `${what}: ::: stats — a title row, 3 tiles, the number in the accent`, s);
@@ -175,12 +181,23 @@ try {
   await sleep(200);
   await hues("dark", "as written");
   await matrixOk("dark");
+  const nd = await numbered();
+  check(nd.length === 2 && nd.every((c) => c === "none" || c === "normal"), "dark: ## not numbered", nd);
   await send({ type: "theme", value: "light" });
   await sleep(200);
   await hues("light", "as written");
   await statsOk("light");
   await matrixOk("light");
+  const nl = await numbered();
+  check(nl.length === 2 && nl.every((c) => /counter\(ks-sec\)/.test(c)), "light: each ## numbered", nl);
   await send({ type: "theme", value: "dark" });
+  await sleep(200);
+  await frame.evaluate(() => window.dispatchEvent(new Event("beforeprint")));
+  await page.emulateMediaType("print");
+  const np = await numbered();
+  check(np.length === 2 && np.every((c) => /counter\(ks-sec\)/.test(c)), "print from dark: each ## numbered (paper is light)", np);
+  await page.emulateMediaType(null);
+  await frame.evaluate(() => window.dispatchEvent(new Event("afterprint")));
 
   // 2. Normalization (the agent-write path) keeps the info word.
   await send({ type: "render", kind: "markdown", version: 2, seq: 2, content: FIXTURE, normalizeText: FIXTURE });
