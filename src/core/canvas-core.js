@@ -27,6 +27,7 @@
     dirty: (m) => typeof m.dirty === "boolean",
     // Esc in the editor (Brett, 2026-10-11): asks the host to leave edit mode, like 結束編輯.
     escape: (m) => typeof m.dirty === "boolean",
+    printKey: () => true,             // Ctrl/⌘+P in the frame: the host prints as from 🖨 PDF (canvas-themes §2.2)
     // The editor's undo stack (§3.5, Brett 2026-10-11): enables the edit-mode ↶ 復原 / ↷ 重做 buttons.
     undoState: (m) => typeof m.canUndo === "boolean" && typeof m.canRedo === "boolean",
     // canvas_goto: the slide now shown (1-based) and the deck's length.
@@ -559,6 +560,46 @@
   // get no class); the frame renders exactly those, and loads the 2.7 MB engine only if there is one.
   // A `mermaid` canvas is shown as one such fence.
   const MERMAID_SEL = "pre > code.language-mermaid";
+
+  // Theme-aware diagram classes (ADR canvas-themes §2.5): `class X ks-blue` / `ks-blue-strong` in a
+  // flowchart. (State and class diagrams have classes too, but both engines' grammars reject a "-" in
+  // a class name there, so they get nothing and draw uncoloured.) When a source uses one, the frame appends the classDef lines
+  // below before drawing (the stored source is not changed). Neither engine parses var() in a
+  // classDef, so the lines carry SENTINEL colours — #0c01<hue index><role> — and the frame turns them
+  // into var(--ks-<hue>-tint / -mid / …) in the drawn SVG (ksSentinelToVar). The colours are therefore
+  // the CSS tokens of canvas-frame.css, the only source: a theme switch or print needs no redraw.
+  const KS_HUES = ["blue", "orange", "purple", "green", "yellow", "pink", "teal", "sand", "slate", "red"];
+  const KS_ROLES = ["-tint", "-mid", ""];             // sentinel role 1 fill, 2 stroke, 3 text
+  const ksSentinel = (hue, role) => `#0c01${KS_HUES.indexOf(hue)}${role}`;
+  const KS_CLASS_DEFS = KS_HUES.flatMap((h) => {
+    const base = `fill:${ksSentinel(h, 1)},stroke:${ksSentinel(h, 2)},color:${ksSentinel(h, 3)}`;
+    return [`classDef ks-${h} ${base}`, `classDef ks-${h}-strong ${base},stroke-width:3px`];
+  });
+  const KS_SENTINEL = /#0c01([0-9])([1-3])(?![0-9a-f])/gi;
+  /** Text (a style attribute, a <style> sheet, an attribute value) with every sentinel as its var(). */
+  const ksSentinelToVar = (text) => String(text).replace(KS_SENTINEL, (_, i, r) => `var(--ks-${KS_HUES[Number(i)]}${KS_ROLES[Number(r) - 1]})`);
+  const hasKsSentinel = (text) => { KS_SENTINEL.lastIndex = 0; return KS_SENTINEL.test(String(text)); };
+  const KS_CLASS_TYPES = /^(flowchart|graph)\b/;
+  const KS_CLASS_USE = new RegExp(`\\bks-(${KS_HUES.join("|")})(-strong)?\\b`);
+  /** The diagram's type keyword: the first line that is not blank, a %% comment or a front-matter block. */
+  function diagramType(source) {
+    const lines = String(source).split("\n");
+    let i = 0;
+    if (/^---\s*$/.test(lines[0] || "")) { i = 1; while (i < lines.length && !/^---\s*$/.test(lines[i])) i++; i++; }
+    for (; i < lines.length; i++) {
+      const t = lines[i].trim();
+      if (t && !t.startsWith("%%")) return t;
+    }
+    return "";
+  }
+  /** Does this flowchart use a ks-* class (outside %% comments)? */
+  const usesKsClasses = (source) => KS_CLASS_TYPES.test(diagramType(source))
+    && KS_CLASS_USE.test(String(source).split("\n").filter((l) => !l.trim().startsWith("%%")).join("\n"));
+  /** source + the ks-* classDef lines (sentinel colours) when it uses one; else source as is. */
+  function withKsClasses(source) {
+    if (!usesKsClasses(source)) return source;
+    return `${String(source).replace(/\s+$/, "")}\n${KS_CLASS_DEFS.join("\n")}\n`;
+  }
   /** Does this rendered view need mermaid? `root` = the rendered element (querySelector). */
   function wantsMermaid(kind, root) {
     if (kind === "mermaid") return true;
@@ -843,6 +884,51 @@
     return on
       ? { label: "↔ 全寬", title: "目前是窄欄閱讀寬度（置中欄位）— 按一下改回全寬。所有畫布分頁一起切換；不影響列印" }
       : { label: "↔ 窄欄", title: "改成窄欄閱讀寬度（置中、約 46rem）— 所有畫布分頁一起切換；不影響列印" };
+  }
+  // Canvas theme (ADR canvas-themes §2.2): 深色 / 淺色 / 跟隨系統 (default), one setting for every canvas
+  // tab, the gallery and Settings (chrome.storage.local). Each surface resolves it itself; the
+  // sandboxed frame only gets the resolved "dark" | "light". Slides stay dark in v1.
+  const THEME_KEY = "canvas:theme";
+  // localStorage mirror of the setting, read synchronously by src/canvas/theme-boot.js before the first paint.
+  const THEME_BOOT_KEY = "katashiro.canvasTheme";
+  const THEMES = ["system", "dark", "light"];
+  const THEME_LABEL = { system: "跟隨系統", dark: "深色", light: "淺色" };
+  const themeSetting = (v) => (THEMES.includes(v) ? v : "system");
+  /** The theme a surface shows: the setting, "system" through prefers-color-scheme; a deck is dark. */
+  function resolveTheme(setting, prefersDark, kind) {
+    if (kind === "slides") return "dark";
+    const s = themeSetting(setting);
+    return s === "system" ? (prefersDark ? "dark" : "light") : s;
+  }
+  /**
+   * The canvas theme setting for a page that shows it (the canvas tab, the gallery; ADR canvas-themes
+   * §2.2), in one place: reads chrome.storage.local, follows storage.onChanged and the OS appearance,
+   * mirrors the setting into localStorage for theme-boot.js, and calls apply(setting, osDark) on each
+   * change. set(v) stores a new setting (other pages follow). → { setting(), osDark(), set(v) }
+   */
+  function themeWatcher({ chromeApi, win, apply }) {
+    let setting = "system";
+    const media = win.matchMedia("(prefers-color-scheme: dark)");
+    const take = (v) => {
+      setting = themeSetting(v);
+      try { win.localStorage.setItem(THEME_BOOT_KEY, setting); } catch (_) { /* boot falls back to the OS */ }
+      apply(setting, media.matches);
+    };
+    media.addEventListener("change", () => apply(setting, media.matches));
+    chromeApi.storage.local.get(THEME_KEY).then((got) => take(got[THEME_KEY]), () => {});
+    chromeApi.storage.onChanged.addListener((changes, area) => { if (area === "local" && changes[THEME_KEY]) take(changes[THEME_KEY].newValue); });
+    return {
+      setting: () => setting,
+      osDark: () => media.matches,
+      set: (v) => { take(v); chromeApi.storage.local.set({ [THEME_KEY]: setting }).catch(() => {}); },
+    };
+  }
+  /** The header button cycles 跟隨系統 → 深色 → 淺色 → 跟隨系統. */
+  const nextTheme = (v) => THEMES[(THEMES.indexOf(themeSetting(v)) + 1) % THEMES.length];
+  function themeButton(v) {
+    const s = themeSetting(v);
+    const icon = s === "dark" ? "☾" : s === "light" ? "☀" : "◑";
+    return { icon, label: `${icon} ${THEME_LABEL[s]}`, title: `畫布主題：${THEME_LABEL[s]} — 按一下改成${THEME_LABEL[nextTheme(s)]}。所有畫布分頁一起切換` };
   }
   // Text kinds whose agent writes glow: a mermaid canvas is one block (its diagram).
   const textKind = (k) => k === "markdown" || k === "slides" || k === "mermaid";
@@ -1441,5 +1527,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_CLASS_DEFS, ksSentinelToVar, hasKsSentinel, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, themeWatcher, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

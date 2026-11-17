@@ -256,7 +256,8 @@ async function suite(engine) {
     workers: window.__ksWorkers,
     hasMermaid: typeof window.mermaid === "object",
     elk: !!(window.mermaid && window.mermaid.mermaidAPI && JSON.stringify(window.mermaid.mermaidAPI.getConfig()).includes('"layout":"elk"')),
-    theme: window.mermaid && window.mermaid.mermaidAPI.getConfig().theme,
+    // The Mermaid theme the figures show (not mermaid's last config: the other theme is drawn in the background).
+    theme: (() => { const t = Array.from(document.querySelectorAll('#doc figure.ks-mermaid[data-engine="mermaid"]'), (f) => f.dataset.mermaidTheme); return t.length ? (new Set(t).size === 1 ? t[0] : "mixed") : null; })(),
     nodeFill: (() => { const r = document.querySelector('#doc figure.ks-mermaid[data-engine="mermaid"] .node rect'); return r && getComputedStyle(r).fill; })(),
   }));
   const s1 = await shape();
@@ -345,6 +346,8 @@ async function suite(engine) {
   }
   // The colours as printed, under print media; then back.
   const pv = async () => md.evaluate(() => { const f = document.querySelector('#doc figure.ks-mermaid[data-engine="pele"]'); return f ? getComputedStyle(f).getPropertyValue("--pele-bg").trim() : null; });
+  // The paper is the light theme (canvas-themes §2.2): the frame switches on beforeprint, as a real print does.
+  await md.evaluate(() => window.dispatchEvent(new Event("beforeprint")));
   await page.emulateMediaType("print");
   const printBg = await pv();
   if (engine === "pele") printBg === "#ffffff" ? ok("under print media Pele's figures take the light variables (--pele-bg #ffffff)") : fail(`pele print vars: ${printBg}`);
@@ -362,6 +365,7 @@ async function suite(engine) {
   await (await page.$("#md")).screenshot({ path: PRINT_SHOT });
   await md.evaluate(() => { document.getElementById("doc").innerHTML = window.__screenDoc; });
   await page.emulateMediaType(null);
+  await md.evaluate(() => window.dispatchEvent(new Event("afterprint")));
   if (engine === "pele") (await pv()) === "#0d1117" ? ok("back on screen: dark variables again") : fail("pele vars stayed light after print media");
   ok(`print screenshot ${PRINT_SHOT}`);
 

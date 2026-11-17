@@ -1,11 +1,40 @@
 /* Canvas host page (canvas.html): a slim header and a full-width frame (ADR §3.1). */
-:root {
-  --bg: #0d1117;
-  --bg-header: #161b22;
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #e6edf3;
-  --muted: #8b949e;
-  --warn: #f59e0b;
+/* Colour tokens (ADR canvas-themes §2.1): every colour of the host page and the gallery is a --ks-*
+   property on the root (canvas.html / canvas-gallery.html set data-ks-theme="dark"). Dark values
+   unchanged. --bg / --text / … are the older names, kept as aliases. */
+:root, :root[data-ks-theme="dark"] {
+  --ks-bg: #0d1117; --ks-surface: #161b22; --ks-surface-alt: #30363d;
+  --ks-border-soft: rgba(255, 255, 255, 0.08);
+  --ks-fg: #e6edf3; --ks-muted: #8b949e;
+  --ks-accent: #4493f8; --ks-accent-hover: #79c0ff; --ks-on-accent: #0d1117;
+  --ks-accent-line: rgba(68, 147, 248, 0.35); --ks-accent-tint: rgba(68, 147, 248, 0.1); --ks-accent-ring: rgba(68, 147, 248, 0.5);
+  --ks-fill-faint: rgba(255, 255, 255, 0.04); --ks-fill-soft: rgba(255, 255, 255, 0.06); --ks-fill-hover: rgba(255, 255, 255, 0.1);
+  --ks-fill-neutral: rgba(127, 127, 127, 0.15);
+  --ks-warn: #f59e0b; --ks-warn-bg: rgba(245, 158, 11, 0.12); --ks-warn-line: rgba(245, 158, 11, 0.4);
+  --ks-ok: #34d399; --ks-pressed-bg: rgba(52, 211, 153, 0.16); --ks-pressed-line: rgba(52, 211, 153, 0.7);
+  --ks-scrim: rgba(2, 6, 23, 0.75); --ks-backdrop: rgba(0, 0, 0, 0.5);
+  --ks-shadow: rgba(0, 0, 0, 0.5); --ks-shadow-strong: rgba(0, 0, 0, 0.55);
+  --bg: var(--ks-bg);
+  --bg-header: var(--ks-surface);
+  --border: var(--ks-border-soft);
+  --text: var(--ks-fg);
+  --muted: var(--ks-muted);
+  --warn: var(--ks-warn);
+}
+/* Light (ADR canvas-themes §2.3 neutrals; the hue ramps for the accents and states). */
+:root[data-ks-theme="light"] {
+  color-scheme: light;
+  --ks-bg: #ffffff; --ks-surface: #f3f6fa; --ks-surface-alt: #eef1f4;
+  --ks-border-soft: #d5dde7;
+  --ks-fg: #2b3440; --ks-muted: #56657a;
+  --ks-accent: #2f5d8a; --ks-accent-hover: #24415e; --ks-on-accent: #ffffff;
+  --ks-accent-line: #b5cdeb; --ks-accent-tint: #e6f0fb; --ks-accent-ring: rgba(47, 93, 138, 0.4);
+  --ks-fill-faint: rgba(36, 65, 94, 0.04); --ks-fill-soft: rgba(36, 65, 94, 0.06); --ks-fill-hover: rgba(36, 65, 94, 0.08);
+  --ks-fill-neutral: rgba(36, 65, 94, 0.08);
+  --ks-warn: #9a5630; --ks-warn-bg: #fdeee4; --ks-warn-line: #f0c7ae;
+  --ks-ok: #2f7a55; --ks-pressed-bg: #e8f5ee; --ks-pressed-line: #7dc0a0;
+  --ks-scrim: rgba(43, 52, 64, 0.45); --ks-backdrop: rgba(43, 52, 64, 0.3);
+  --ks-shadow: rgba(0, 0, 0, 0.15); --ks-shadow-strong: rgba(0, 0, 0, 0.2);
 }
 
 html, body {
@@ -73,8 +102,8 @@ body {
 
 .canvas-notice {
   padding: 8px 16px;
-  background: rgba(245, 158, 11, 0.12);
-  border-bottom: 1px solid rgba(245, 158, 11, 0.4);
+  background: var(--ks-warn-bg);
+  border-bottom: 1px solid var(--ks-warn-line);
   color: var(--warn);
   font-size: 13px;
   white-space: pre-wrap;
@@ -87,15 +116,15 @@ body {
    risk is in its tooltip. Amber while they run. */
 .canvas-html-chip {
   padding: 1px 8px;
-  border: 1px solid rgba(68, 147, 248, 0.35);
+  border: 1px solid var(--ks-accent-line);
   border-radius: 999px;
-  background: rgba(68, 147, 248, 0.1);
+  background: var(--ks-accent-tint);
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
   cursor: help;
 }
-.canvas-html-chip.running { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.4); color: var(--warn); }
+.canvas-html-chip.running { background: var(--ks-warn-bg); border-color: var(--ks-warn-line); color: var(--warn); }
 .canvas-html-chip[hidden] { display: none; }
 
 .canvas-main {
@@ -115,7 +144,7 @@ body {
   padding: 2px 10px;
   font-size: 12px;
   color: var(--muted);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--ks-fill-faint);
   border: 1px solid var(--border);
   border-radius: 6px;
   cursor: pointer;
@@ -130,18 +159,18 @@ body {
   .canvas-header .canvas-btn[data-icon] { font-size: 0; }
   .canvas-header .canvas-btn[data-icon]::before { content: attr(data-icon); font-size: 12px; }
 }
-.canvas-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.1); }
+.canvas-btn:hover { color: var(--text); background: var(--ks-fill-hover); }
 .canvas-btn[hidden] { display: none; }
 
-.canvas-btn.primary { color: #0d1117; background: #4493f8; border-color: #4493f8; }
-.canvas-btn.primary:hover { background: #79c0ff; color: #0d1117; }
+.canvas-btn.primary { color: var(--ks-on-accent); background: var(--ks-accent); border-color: var(--ks-accent); }
+.canvas-btn.primary:hover { background: var(--ks-accent-hover); color: var(--ks-on-accent); }
 .canvas-btn:disabled { opacity: 0.4; cursor: default; }
 /* A switch that is on (◐ 顯示變更, §3.10). */
-.canvas-btn[aria-pressed="true"] { color: var(--text); background: rgba(52, 211, 153, 0.16); border-color: rgba(52, 211, 153, 0.7); }
+.canvas-btn[aria-pressed="true"] { color: var(--text); background: var(--ks-pressed-bg); border-color: var(--ks-pressed-line); }
 .canvas-notice button { margin-left: 8px; }
 
 .canvas-conflict {
-  position: fixed; inset: 0; background: rgba(2, 6, 23, 0.75);
+  position: fixed; inset: 0; background: var(--ks-scrim);
   display: flex; align-items: center; justify-content: center; z-index: 10;
 }
 .canvas-conflict[hidden] { display: none; }
@@ -164,17 +193,17 @@ body {
 .ask-pill {
   position: fixed; z-index: 6; width: 30px; height: 26px; padding: 0;
   font-size: 14px; line-height: 24px; text-align: center; cursor: pointer;
-  color: var(--text); background: #161b22; border: 1px solid #4493f8; border-radius: 13px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  color: var(--text); background: var(--ks-surface); border: 1px solid var(--ks-accent); border-radius: 13px;
+  box-shadow: 0 2px 8px var(--ks-shadow);
 }
-.ask-pill:hover, .ask-pill:focus-visible { background: #30363d; outline: none; box-shadow: 0 0 0 2px rgba(68, 147, 248, 0.5); }
+.ask-pill:hover, .ask-pill:focus-visible { background: var(--ks-surface-alt); outline: none; box-shadow: 0 0 0 2px var(--ks-accent-ring); }
 .ask-pill:disabled { opacity: 0.5; cursor: default; }          /* 📨 while its push is in flight */
 .ask-pill[hidden], .ask-pop[hidden] { display: none; }
 .ask-pop {
   position: fixed; z-index: 7; width: min(360px, calc(100vw - 16px)); box-sizing: border-box;
   display: flex; flex-direction: column; gap: 6px; padding: 8px 10px;
   background: var(--bg-header); color: var(--text); font-size: 13px;
-  border: 1px solid #4493f8; border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--ks-accent); border-radius: 8px; box-shadow: 0 6px 20px var(--ks-shadow-strong);
 }
 .ask-pop-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
 /* #125c: the excerpt is isolated from the header around it, and its text (a <bdi dir="auto">)
@@ -194,10 +223,10 @@ body {
   padding: 6px 8px; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
 }
-.ask-note:focus { outline: none; border-color: #4493f8; }
+.ask-note:focus { outline: none; border-color: var(--ks-accent); }
 .ask-pop-foot { display: flex; align-items: center; gap: 8px; }
 .ask-status { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--muted); }
-.ask-status.ok { color: #34d399; }
+.ask-status.ok { color: var(--ks-ok); }
 .ask-status.warn { color: var(--warn); }
 .ask-keys { flex: 0 0 auto; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .ask-status:not(:empty) + .ask-keys { display: none; }
@@ -213,17 +242,17 @@ body {
   border-radius: 8px;
 }
 .conv-picker[open] { display: flex; flex-direction: column; gap: 8px; }
-.conv-picker::backdrop { background: rgba(0, 0, 0, 0.5); }
+.conv-picker::backdrop { background: var(--ks-backdrop); }
 .conv-picker-heading { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .conv-picker-hint { margin: 0; color: var(--muted); font-size: 12px; }
-.conv-picker-search { padding: 4px 8px; font: inherit; font-size: 13px; color: var(--text); background: rgba(255, 255, 255, 0.04); border: 1px solid var(--border); border-radius: 6px; }
+.conv-picker-search { padding: 4px 8px; font: inherit; font-size: 13px; color: var(--text); background: var(--ks-fill-faint); border: 1px solid var(--border); border-radius: 6px; }
 .conv-picker-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1 1 auto; min-height: 0; }
 .conv-picker-row {
   display: flex; width: 100%; gap: 10px; align-items: baseline; justify-content: space-between;
   padding: 6px 8px; font: inherit; font-size: 13px; text-align: left; color: var(--text);
   background: transparent; border: 0; border-bottom: 1px solid var(--border); cursor: pointer;
 }
-.conv-picker-row:hover, .conv-picker-row:focus-visible { background: rgba(255, 255, 255, 0.06); outline: none; }
+.conv-picker-row:hover, .conv-picker-row:focus-visible { background: var(--ks-fill-soft); outline: none; }
 .conv-picker-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .conv-picker-meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
 .conv-picker-empty { margin: 4px 0; color: var(--muted); font-size: 12px; }
@@ -232,7 +261,7 @@ body {
 
 /* Rename (Brett 2026-11-01): the title is clickable; the inline input takes its place. */
 .canvas-title.renamable { cursor: text; border-radius: 4px; }
-.canvas-title.renamable:hover { background: rgba(127, 127, 127, 0.15); }
+.canvas-title.renamable:hover { background: var(--ks-fill-neutral); }
 .canvas-title-input {
   font: inherit;
   font-size: 14px;

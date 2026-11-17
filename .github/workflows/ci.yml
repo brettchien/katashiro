@@ -72,6 +72,97 @@ jobs:
       - name: Smoke
         run: npm run smoke
 
+  # Canvas screenshots (scripts/theme-shots.mjs) of this commit vs main, same runner and same pinned
+  # Chrome: a CSS refactor must leave them byte-identical (ADR docs/adr/canvas-themes.md). Both sets
+  # are uploaded as the "theme-shots" artifact, on success too, so a visual change can be looked at.
+  theme-shots:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Chrome version
+        id: chrome
+        run: echo "version=$(node -p "require('./package.json').config.chromeVersion")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache headless Chrome
+        uses: actions/cache@v4
+        with:
+          path: .cache/chrome
+          key: chrome-headless-shell-${{ runner.os }}-${{ steps.chrome.outputs.version }}
+
+      - name: Install headless Chrome
+        run: npm run chrome
+
+      # main's canvas files, shot by this commit's script and browser.
+      - name: Baseline (main)
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/main" origin/main
+          node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/main" "$RUNNER_TEMP/main"
+
+      - name: This commit
+        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/head"
+
+      - name: Compare
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/shots"
+          diff <(cd main && ls) <(cd head && ls)
+          # scripts/theme-shots-changed.txt: "<branch> <shot>" lines — the shots that branch changes on purpose
+          # (reported, not failed). Only this run's own branch counts, so the list never excuses another
+          # branch's change and needs no clean-up after a merge.
+          branch="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          expected=$(awk -v b="$branch" '!/^#/ && $1 == b { print $2 }' "$GITHUB_WORKSPACE/scripts/theme-shots-changed.txt" 2>/dev/null || true)
+          bad=0
+          stale=""
+          for f in main/*.png; do
+            n=$(basename "$f")
+            if cmp -s "$f" "head/$n"; then
+              echo "same    $n"
+              if grep -qxF "$n" <<<"$expected"; then stale="$stale $n"; fi
+            elif grep -qxF "$n" <<<"$expected"; then echo "changed $n (expected for $branch)"
+            else echo "DIFFERS $n"; bad=1; fi
+          done
+          if [ -n "$stale" ]; then
+            echo "::warning file=scripts/theme-shots-changed.txt::listed for $branch but identical to main:$stale — remove them"
+          fi
+          exit $bad
+
+      # Review shots (review/, this commit only): the same fixtures with a CJK font, so the Chinese in the
+      # header, gallery and Settings reads in the shots posted for review. Not compared — with Noto CJK
+      # the page shots are not byte-stable from one Chrome launch to the next (±1 at button corners),
+      # so the main/head compare above runs without it.
+      - name: CJK font
+        if: always()
+        continue-on-error: true           # review shots only: an apt hiccup must not fail the compare
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-cjk
+          fc-cache -f
+
+      - name: Review shots
+        if: always()
+        continue-on-error: true
+        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/review"
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: theme-shots
+          path: ${{ runner.temp }}/shots
+          if-no-files-found: ignore
+
   # T2 E2E (e2e/): the REAL extension loaded in full Chrome for Testing (new headless), its real
   # side panel, tab groups, runtime messaging and notifications, against a fake ACP gateway
   # (e2e/fake-gateway.mjs). Same pinned Chrome version as the smokes, but the full build.

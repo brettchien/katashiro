@@ -24,7 +24,9 @@
 (function () {
   "use strict";
 
-  const nonce = location.hash.slice(1);
+  // "#<nonce>" or "#<nonce>.light": the host says the starting theme (canvas-themes §2.2), no dark flash.
+  const [nonce, bootTheme] = location.hash.slice(1).split(".");
+  if (bootTheme === "light") document.documentElement.dataset.ksTheme = "light";
   const doc = document.getElementById("doc");
   const deck = document.getElementById("deck");
   const pic = document.getElementById("pic");
@@ -282,10 +284,11 @@
     }
     return engineLoads[engine];
   }
-  // Dark like the canvas; a printed document re-renders its Mermaid diagrams with the light theme
-  // (Pele's switch through CSS variables, no re-render). A deck prints on its own dark slides
-  // (reveal's print-pdf layout), so it stays dark.
-  const PRINT_THEME = "default", SCREEN_THEME = "dark";
+  // Mermaid draws in one of its own themes: "default" (light) under the light canvas theme and on
+  // paper, "dark" otherwise (canvas-themes §2.2) — a switch or a print draws its diagrams again. Pele's
+  // follow the --pele-* / --ks-* variables with no redraw. A deck stays dark (on paper too).
+  const MERMAID_LIGHT = "default", MERMAID_DARK = "dark";
+  const viewTheme = () => (document.documentElement.dataset.ksTheme === "light" ? MERMAID_LIGHT : MERMAID_DARK);
   // Mermaid scopes this under the diagram's id, after its own rules: SVG-text labels (rect) and
   // HTML ones (a directive can turn htmlLabels on) alike.
   const PRINT_EDGE_LABEL_CSS = ".edgeLabel rect, .edgeLabel .label rect { opacity: 1; fill: #ffffff; } " +
@@ -307,7 +310,7 @@
           fontFamily: canvasFont(),
           // Paper: edge labels on solid white. Mermaid draws their background at half opacity, so on
           // the light theme the edge line runs visibly through the text (reads as struck through).
-          ...(theme === PRINT_THEME ? { themeVariables: { edgeLabelBackground: "#ffffff" }, themeCSS: PRINT_EDGE_LABEL_CSS } : {}),
+          ...(theme === MERMAID_LIGHT ? { themeVariables: { edgeLabelBackground: "#ffffff" }, themeCSS: PRINT_EDGE_LABEL_CSS } : {}),
         });
         mermaidTheme = theme;
       }
@@ -327,6 +330,7 @@
   /** One diagram with one engine → its SVG text (throws as the engine does, or when it did not load). */
   async function renderDiagram(engine, source, theme) {
     const E = await loadEngine(engine);
+    source = CanvasCore.withKsClasses(source);   // canvas-themes §2.5: ks-* classDefs, sentinel colours
     return engine === "pele" ? renderWithPele(E, source) : renderWithMermaid(E, source, theme);
   }
   // The engine for this canvas, from the host's render{engine} (anything else: Pele, the default).
@@ -345,14 +349,30 @@
   // foreignObject gets its scheme check. It matches nodeName "A" only, and an SVG <a> is "a": that
   // one relies on DOMPurify's own URI filter, and on the host's safeLinkUrl + confirm on openLink.
   const diagramSource = new WeakMap();    // <figure class="ks-mermaid"> → its mermaid source
+  // The ks-* classDef sentinel colours (CanvasCore.withKsClasses) → var(--ks-*) in the drawn SVG, in
+  // its <style> sheets, style attributes and fill / stroke / color attributes (an attribute cannot hold
+  // var(), so that one moves into the element's style). After DOMPurify: only colours change.
+  function ksSentinelsToVars(root) {
+    for (const st of root.querySelectorAll("style")) if (CanvasCore.hasKsSentinel(st.textContent)) st.textContent = CanvasCore.ksSentinelToVar(st.textContent);
+    for (const el of root.querySelectorAll("[style], [fill], [stroke], [color]")) {
+      const st = el.getAttribute("style");
+      if (st && CanvasCore.hasKsSentinel(st)) el.setAttribute("style", CanvasCore.ksSentinelToVar(st));
+      for (const a of ["fill", "stroke", "color"]) {
+        const v = el.getAttribute(a);
+        if (v && CanvasCore.hasKsSentinel(v)) { el.removeAttribute(a); el.style.setProperty(a, CanvasCore.ksSentinelToVar(v)); }
+      }
+    }
+  }
   function setDiagramSvg(fig, svg, engine) {
     let box = fig.querySelector(":scope > .ks-mermaid-svg");
     if (!box) { box = document.createElement("div"); box.className = "ks-mermaid-svg"; fig.prepend(box); }
     // The sanitized nodes themselves, not a string parsed again: svg / html / foreignObject nesting
     // is where a re-parse could differ from what DOMPurify checked (mXSS). Replaces the old SVG and
     // its <style>.
-    box.replaceChildren(DOMPurify.sanitize(svg, SVG_DP));
-    fig.dataset.engine = engine;          // which engine drew it: print re-themes Mermaid's only
+    const clean = DOMPurify.sanitize(svg, SVG_DP);
+    ksSentinelsToVars(clean);
+    box.replaceChildren(clean);
+    fig.dataset.engine = engine;          // which engine drew it: a theme switch / print redraws Mermaid's only
   }
   function diagramFigure(source, svg, engine, fallbackNote) {
     const fig = document.createElement("figure");
@@ -415,6 +435,7 @@
       if (svg !== undefined) {
         const why = err1 !== undefined ? CanvasCore.diagramErrorText(err1, i + 1, first) : "";
         const fig = diagramFigure(source, svg, engine, why ? CanvasCore.diagramFallbackNote(engine, why) : "");
+        if (engine === "mermaid") keepMermaidSvg(fig, theme, svg);
         for (const a of ["data-line-start", "data-line-end"]) if (pre.hasAttribute(a)) fig.setAttribute(a, pre.getAttribute(a));
         pre.replaceWith(fig);
         if (why) fallbacks.push(`${why} → drawn by ${CanvasCore.ENGINE_LABEL[engine]}`);
@@ -431,12 +452,46 @@
   }
   // Print (§3.8): the Mermaid diagrams again with another theme, in place (same figures, so glow
   // and highlight state stay). Pele's follow the print CSS variables. Failures keep the old SVG.
+  // Mermaid's diagrams in both of its themes (canvas-themes §2.2). Each figure keeps the SVG text it was
+  // drawn with per theme; after a document's diagrams are drawn, the other theme's are drawn in the
+  // background (precacheOtherTheme). A theme switch — and beforeprint, which cannot wait — then puts
+  // the kept SVG in place synchronously; only a figure with none for that theme is drawn again, in
+  // place (same figure, so glow and highlight state stay). Pele's — ks-* classes included — follow
+  // the variables. Failures keep the old SVG.
   const mermaidFigures = (root) => Array.from(root.querySelectorAll('figure.ks-mermaid[data-engine="mermaid"]'));
+  const mermaidSvgs = new WeakMap();      // figure → { [mermaid theme]: svg text }
+  function keepMermaidSvg(fig, theme, svg) {
+    const kept = mermaidSvgs.get(fig) || {};
+    kept[theme] = svg;
+    mermaidSvgs.set(fig, kept);
+    fig.dataset.mermaidTheme = theme;     // the one shown
+  }
+  /** Put the kept SVGs for theme in place now; → the figures that have none (to be drawn). */
+  function showKeptMermaid(root, theme) {
+    const missing = [];
+    for (const fig of mermaidFigures(root)) {
+      const svg = (mermaidSvgs.get(fig) || {})[theme];
+      if (svg === undefined) { missing.push(fig); continue; }
+      if (fig.dataset.mermaidTheme !== theme) { setDiagramSvg(fig, svg, "mermaid"); fig.dataset.mermaidTheme = theme; }
+    }
+    return missing;
+  }
   async function rethemeDiagrams(root, theme) {
-    const figs = mermaidFigures(root);
-    if (!figs.length) return;
-    for (const fig of figs) {
-      try { setDiagramSvg(fig, await renderDiagram("mermaid", diagramSource.get(fig) || "", theme), "mermaid"); } catch (_) { /* keeps the old one */ }
+    for (const fig of showKeptMermaid(root, theme)) {   // synchronous up to here (beforeprint relies on it)
+      try {
+        const svg = await renderDiagram("mermaid", diagramSource.get(fig) || "", theme);
+        setDiagramSvg(fig, svg, "mermaid");
+        keepMermaidSvg(fig, theme, svg);
+      } catch (_) { /* keeps the old one */ }
+    }
+  }
+  /** The other Mermaid theme's SVGs for root's figures, drawn in the background; nothing is shown. */
+  async function precacheOtherTheme(root, gen) {
+    const other = viewTheme() === MERMAID_LIGHT ? MERMAID_DARK : MERMAID_LIGHT;
+    for (const fig of mermaidFigures(root)) {
+      if (gen !== renderGen || !fig.isConnected) return;
+      if ((mermaidSvgs.get(fig) || {})[other] !== undefined) continue;
+      try { const svg = await renderDiagram("mermaid", diagramSource.get(fig) || "", other); (mermaidSvgs.get(fig) || {})[other] = svg; } catch (_) { /* drawn when needed */ }
     }
   }
 
@@ -452,7 +507,20 @@
     const clean = CanvasCore.cleanEditorMarkdownMap(content);
     shownSource = { stored: content, map: clean.lines };
     renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true });
-    return renderDiagrams(doc, "markdown", gen, seq, SCREEN_THEME);
+    return renderThemed("markdown", gen, seq);
+  }
+
+  // The document's diagrams in the current theme; a theme switch while they were being drawn redraws
+  // them once they are done (rethemeDiagrams only reaches the figures already there).
+  let drawing = 0;                        // renders whose diagrams are still being drawn
+  function renderThemed(kind, gen, seq) {
+    const theme = viewTheme();
+    drawing++;
+    return renderDiagrams(doc, kind, gen, seq, theme).finally(() => { drawing--; }).then((r) => {
+      if (gen === renderGen && viewTheme() !== theme) rethemeDiagrams(doc, viewTheme()).catch(() => {});
+      if (gen === renderGen) setTimeout(() => { precacheOtherTheme(doc, gen).catch(() => {}); }, 0);
+      return r;
+    });
   }
 
   // mermaid: the whole canvas is one diagram, shown like a lone ```mermaid fence (so a syntax error
@@ -467,7 +535,7 @@
     code.textContent = content;
     pre.appendChild(code);
     doc.replaceChildren(pre);
-    return renderDiagrams(doc, "mermaid", gen, seq, SCREEN_THEME);
+    return renderThemed("mermaid", gen, seq);
   }
 
   // slides (ADR §3.3): split on "---" ourselves and render each slide through the chat's sanitized
@@ -487,7 +555,7 @@
     });
     container.replaceChildren(...sections);
     // Diagrams before reveal lays the deck out (it sizes slides by their content).
-    await renderDiagrams(container, "slides", gen, seq, SCREEN_THEME);
+    await renderDiagrams(container, "slides", gen, seq, MERMAID_DARK);
     if (gen !== renderGen) return undefined;
     if (!revealReady) {
       revealReady = Reveal.initialize({
@@ -1029,6 +1097,28 @@
   // mouse press here is reported (armedKey{}); the host decides what it means. Enter / Esc are kept
   // from the page while armed. Capture phase, on window: ahead of everything in the frame.
   let armedKeys = false;
+  let wantedTheme = bootTheme === "light" ? "light" : "dark";   // from the host ({type:"theme"}); slides stay dark
+  let printing = false;                   // the paper is light whatever the screen shows (§2.2)
+  function applyFrameTheme() {
+    const t = shownKind === "slides" ? "dark" : printing ? "light" : wantedTheme;
+    if (document.documentElement.dataset.ksTheme === t) return;
+    document.documentElement.dataset.ksTheme = t;
+    // Pele follows the tokens; Mermaid's diagrams are drawn again in the matching theme — unless they
+    // are still being drawn: renderThemed redraws them once, when it is done.
+    if ((shownKind === "markdown" || shownKind === "mermaid") && !drawing) rethemeDiagrams(doc, viewTheme()).catch(() => {});
+  }
+  // Native print (Ctrl/⌘+P on the tab) as well as the PDF button: a document goes light for the paper.
+  window.addEventListener("beforeprint", () => { if (deck.hidden) { printing = true; applyFrameTheme(); } });
+  window.addEventListener("afterprint", () => { if (printing) { printing = false; applyFrameTheme(); } });
+  // Ctrl/⌘+P with the focus in the frame: the host prints as from 🖨 PDF (Mermaid's diagrams are
+  // redrawn for the paper first, which native print cannot wait for). Only while the host says its
+  // 🖨 is available ({type:"printKey", on}); otherwise the browser prints.
+  let printKeyOn = false;
+  document.addEventListener("keydown", (e) => {
+    if (!printKeyOn || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "p" || editing) return;
+    e.preventDefault();
+    post({ type: "printKey" });
+  });
   function reportArmed(e, key) {
     if (!armedKeys || !e.isTrusted) return;     // as the host: only the user's own key or press
     if (key !== "mousedown" && CanvasCore.toInputArmKey(e) === "ignore") return;   // a lone modifier
@@ -1049,6 +1139,9 @@
     if (!m || m.nonce !== nonce) return;
     // Reading width (§3.1): only a boolean; a constant class on the root, applied by the CSS.
     if (m.type === "narrow") { document.documentElement.classList.toggle("ks-narrow", m.on === true); return; }
+    // Canvas theme (canvas-themes §2.2): only the resolved constant; a deck stays dark whatever it says.
+    if (m.type === "theme") { wantedTheme = m.value === "light" ? "light" : "dark"; applyFrameTheme(); return; }
+    if (m.type === "printKey") { printKeyOn = m.on === true; return; }
     if (m.type === "armKeys") { armedKeys = m.on === true && !editing; return; }
     if (m.type === "copied") {
       const done = pendingCopies.get(m.reqId);
@@ -1077,12 +1170,15 @@
       // PDF export (§3.8): print this frame's document (needs allow-modals). Slides arrive here in
       // reveal's print-pdf layout; give it a moment to lay the pages out. A document's diagrams go
       // light for the paper first, and dark again after the (blocking) print dialog.
-      const light = deck.hidden && mermaidFigures(doc).length > 0;
-      (light ? rethemeDiagrams(doc, PRINT_THEME) : Promise.resolve()).catch(() => {}).then(() => {
+      // The document goes light first (canvas-themes §2.2), its Mermaid diagrams with it.
+      const paper = deck.hidden && document.documentElement.dataset.ksTheme !== "light";
+      if (deck.hidden) printing = true;
+      (paper ? (document.documentElement.dataset.ksTheme = "light", rethemeDiagrams(doc, MERMAID_LIGHT)) : Promise.resolve()).catch(() => {}).then(() => {
         setTimeout(() => {
           try { window.print(); } finally {
             post({ type: "printed" });
-            if (light) rethemeDiagrams(doc, SCREEN_THEME).catch(() => {});
+            printing = false;
+            applyFrameTheme();
           }
         }, deck.hidden ? 50 : 800);
       });
@@ -1114,6 +1210,7 @@
     if (m.type !== "render") return;
     if (editing) stopEdit();                // the host only re-renders a clean editor
     shownKind = m.kind;
+    applyFrameTheme();
     shownSource = null;
     lastSelection = "";
     const gen = ++renderGen;

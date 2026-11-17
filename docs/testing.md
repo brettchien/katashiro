@@ -14,6 +14,12 @@ npm ci && npm run chrome && npm run smoke  # the puppeteer smokes in a pinned he
 npm run chrome:full && npm run e2e         # T2 E2E: the real extension + side panel against a fake gateway
 ```
 
+CI also runs **theme-shots**: `scripts/theme-shots.mjs` screenshots fixed canvas fixtures (dark and
+light, print, the header, the gallery) of `main` and of the PR in the same runner and Chrome and
+fails on any byte difference, except the shots listed for the PR's own branch in
+`scripts/theme-shots-changed.txt` (`<branch> <shot>` lines; another branch never inherits them).
+Both sets, and a `review/` set with a CJK font, are in the run's `theme-shots` artifact.
+
 Details, and the `CHROME` / `PUPPETEER_CORE` overrides: [CONTRIBUTING → Running the tests](../CONTRIBUTING.md#running-the-tests).
 The E2E cases, how they work and their limits: [e2e/README.md](../e2e/README.md). Manual items below
 marked **(E2E: …)** are covered there in real Chrome against a fake gateway; with a real agent they
@@ -551,6 +557,17 @@ adapt to; and **`click` / `type` / `navigate` are refused until you turn act mod
   - `click A "https://example.com"`: clicking node A asks before opening the link in a new tab,
     and the canvas frame does not navigate. `click A callback` does nothing (`securityLevel: 'strict'`).
   - The canvas frame's console shows no CSP errors.
+- **Canvas themes (ADR canvas-themes §2.2):** Settings → **畫布主題** shows 跟隨系統. With the OS in
+  dark mode a canvas, its header and 🗂️ are dark; switch the OS to light: all three turn light
+  without a reload. The header's ◑ button cycles ☾ 深色 → ☀ 淺色 → ◑ 跟隨系統, every open canvas tab
+  and 🗂️ follow, and Settings shows the choice. In light: callouts are tinted panels, headings
+  navy, code light; a Mermaid diagram is redrawn light and a Pele one recolours. A slides canvas
+  stays dark in either theme (the header follows). Reopen a canvas with ☀ 淺色 chosen: no dark
+  flash before it turns light. 🖨 PDF — or Ctrl/⌘+P, with the focus in the header or the
+  document, or the browser's File → Print — prints a document light from either theme, Mermaid
+  diagrams included, and the screen is back afterwards; a deck prints dark. An `html` canvas's own page does not
+  change. A flowchart with `class A ks-blue-strong` shows a blue node with a thick outline in both
+  themes and on paper.
 - **Canvas header in a narrow tab:** open a canvas you edited (v2（你的修改）) in a Split View half
   (or drag the window to ~600px). No button label breaks over lines: whole buttons move to a
   second row, and below ~720px 🗂️ ↺ ⇆ ◐ ✕ 📤 💬 📨 show only their icon (hover gives the title; a

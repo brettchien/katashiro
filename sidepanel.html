@@ -168,6 +168,17 @@
             <span class="mode-hint">用哪一個畫畫布裡的 Mermaid 圖。Pele（預設）比較小，也畫得出 mindmap 和 architecture；Mermaid 是原本的引擎。其中一個畫不出來時，會自動改用另一個，並在圖下面註明。畫布上方的「圖表」按鈕可以只切換那個分頁（不會存起來）。</span>
           </div>
 
+          <!-- Canvas theme (ADR canvas-themes §2.2): 跟隨系統 by default; canvas:theme in chrome.storage.local -->
+          <div class="input-group">
+            <label>畫布主題</label>
+            <div class="mode-toggle">
+              <button id="canvas-theme-dark" class="mode-btn" type="button">深色</button>
+              <button id="canvas-theme-light" class="mode-btn" type="button">淺色</button>
+              <button id="canvas-theme-system" class="mode-btn on" type="button">跟隨系統</button>
+            </div>
+            <span class="mode-hint">畫布分頁和畫布總覽用深色還是淺色。跟隨系統（預設）照作業系統的外觀。簡報一律深色。畫布上方的主題按鈕也能切換，所有畫布分頁一起改。</span>
+          </div>
+
           <!-- Canvas folder mirror (ADR docs/adr/canvas.md §3.6): File System Access, handle in IndexedDB -->
           <div class="input-group">
             <label>畫布存到資料夾（選填）</label>
