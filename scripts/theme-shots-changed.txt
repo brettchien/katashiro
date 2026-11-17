@@ -5,3 +5,8 @@
 # Briefing blocks (canvas-themes §2.4): main renders them as plain cards / text.
 feat/canvas-briefing-blocks blocks.png
 feat/canvas-briefing-blocks blocks-light.png
+# Numbered sections (canvas-themes §2.4 c): the light theme and print number the fixture's ##.
+feat/canvas-briefing-blocks markdown-pele-light.png
+feat/canvas-briefing-blocks markdown-mermaid-light.png
+feat/canvas-briefing-blocks page-canvas-light.png
+feat/canvas-briefing-blocks markdown-print.png
