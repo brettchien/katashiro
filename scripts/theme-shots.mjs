@@ -243,6 +243,16 @@ const server = http.createServer((req, res) => {
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const origin = `http://127.0.0.1:${server.address().port}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A full repaint before a shot: the viewport one pixel wider and back makes Chrome lay out and raster
+// the whole page again. Without it the bytes depended on timing — a page whose last paint was partial
+// (only the header, say) anti-aliases a few edge pixels ±1 differently from a full paint, and that
+// alone made the same commit differ from itself (page-canvas-light on main, bb89b2f).
+async function fullRepaint(page) {
+  const vp = page.viewport();
+  await page.setViewport({ ...vp, width: vp.width + 1 });
+  await page.setViewport(vp);
+  await sleep(200);
+}
 
 const browser = await launch();
 let failed = 0;
@@ -279,6 +289,7 @@ try {
       await page.evaluate((x) => { document.getElementById("f").style.height = x + "px"; }, h);
     }
     await sleep(300);
+    await fullRepaint(page);
     const file = path.join(OUT, `${fx.name}.png`);
     await (await page.$("#f")).screenshot({ path: file });
     console.log(`shot ${file}`);
@@ -294,6 +305,7 @@ try {
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await sleep(1500);                     // the canvas frame renders after the page's load
+    await fullRepaint(page);
     // Settled: two shots in a row the same (a late repaint must not decide the bytes).
     const file = path.join(OUT, `${pg.name}.png`);
     let prev = await page.screenshot();
