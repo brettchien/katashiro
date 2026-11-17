@@ -33,14 +33,12 @@
     return '<pre class="hljs"><code>' + md.utils.escapeHtml(str) + "</code></pre>\n";
   }
 
-  // The ::: containers buildMd registers (see there): name → extra constant classes from the info
-  // words, or null. Exported as CONTAINER_NAMES for the test against CanvasCore.CONTAINER_NAMES.
-  const CONTAINERS = {
-    cards: (words) => (words.includes("accent") ? ["cards-accent"] : []),
-    stats: null,
-    matrix: null,
-    bars: null,
-  };
+  // The ::: containers buildMd registers (see there). Exported for the test against
+  // CanvasCore.CONTAINER_NAMES (the normalizer's list).
+  const CONTAINER_NAMES = ["cards", "stats", "matrix", "bars"];
+  // canvas_patch's range marks (CanvasCore.MARK_OPEN / MARK_CLOSE / MARK_POINT; a unit test checks the
+  // two agree): a detached copy carries them in its text, so a cell is read without them.
+  const RANGE_MARKS = /[᨞᨟᪨]/g;
 
   // html:false ⇒ any raw HTML in the message is ESCAPED to text before it ever reaches the
   // sanitizer (double defense); linkify auto-links bare URLs. GFM-style pipe tables are on in
@@ -79,13 +77,13 @@
     // stays true whatever the plugin does. CanvasCore.CONTAINER_NAMES (the normalizer's marker padding,
     // canvas §3.5) must list the same names — a unit test checks it.
     if (global.markdownitContainer) {
-      for (const [name, extra] of Object.entries(CONTAINERS)) {
+      for (const name of CONTAINER_NAMES) {
         md.use(global.markdownitContainer, name, {
           validate: (params) => params.trim().split(/\s+/, 1)[0] === name,
           render: (tokens, idx, options, env, slf) => {
             if (tokens[idx].nesting === 1) {
               tokens[idx].attrJoin("class", name);
-              for (const c of extra ? extra(tokens[idx].info.trim().split(/\s+/).slice(1)) : []) tokens[idx].attrJoin("class", c);
+              if (tokens[idx].meta && tokens[idx].meta.accent) tokens[idx].attrJoin("class", "cards-accent");   // set by the cards rule
             }
             return slf.renderToken(tokens, idx, options);
           },
@@ -100,49 +98,36 @@
     // `::: stats` (§2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold run the number, the
     // rest the label (canvas-frame.css). Right after the document's first `# Title`, the two are wrapped in
     // a constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
-    md.core.ruler.after("block", "stats_title_row", (state) => {
-      const t = state.tokens;
-      const h = t.findIndex((x) => x.type === "heading_open" && x.tag === "h1" && x.level === 0);
-      if (h < 0 || !t[h + 3] || t[h + 3].type !== "container_stats_open") return;
-      let end = h + 3, depth = 0;
-      for (; end < t.length; end++) {
-        if (t[end].type === "container_stats_open") depth++;
-        else if (t[end].type === "container_stats_close" && --depth === 0) break;
-      }
-      if (end >= t.length) return;
-      const open = new state.Token("title_row_open", "div", 1);
-      open.block = true;
-      open.attrSet("class", "ks-title-row");
-      const close = new state.Token("title_row_close", "div", -1);
-      close.block = true;
-      t.splice(end + 1, 0, close);
-      t.splice(h, 0, open);
-    });
+    // (the title-row rule itself runs after the cards rule, below: it shifts token levels.)
 
     // Numbered sections (§2.4 c) are CSS on the light theme. A document that numbers its own top-level
-    // `##` (`## 1. …`, `## 2) …`, `## 3、…`) would show both numbers: then every top-level h2 gets the
-    // constant class ks-own-number, which the CSS leaves unnumbered.
-    const OWN_NUMBER = /^\s*\d+\s*[.)、．:]\s*/;
+    // `##` would show both numbers: when at least two of them, and at least half, start with a number
+    // (`1.` `2)` `3、` `1 Intro` `01 —` `１．` `一、` `第一章` `IV.`, bold or not), every top-level h2 gets the
+    // constant class ks-own-number, which the CSS leaves unnumbered. One `## 2024: review` does not.
+    const OWN_NUMBER = /^\s*(\*\*)?\s*(\d+|[０-９]+|[一二三四五六七八九十百]+|第[一二三四五六七八九十百\d０-９]+[章節节部篇]|[IVXLC]+(?=[.)\s]))(\*\*)?\s*([.)、．:：—–-]|\s|$)/;
     md.core.ruler.after("inline", "own_section_numbers", (state) => {
       const t = state.tokens;
       const h2 = [];
       for (let i = 0; i < t.length; i++) if (t[i].type === "heading_open" && t[i].tag === "h2" && t[i].level === 0) h2.push(i);
-      if (!h2.some((i) => t[i + 1] && OWN_NUMBER.test(t[i + 1].content))) return;
+      const own = h2.filter((i) => t[i + 1] && OWN_NUMBER.test(t[i + 1].content.replace(RANGE_MARKS, ""))).length;
+      if (own < 2 || own * 2 < h2.length) return;
       for (const i of h2) t[i].attrJoin("class", "ks-own-number");
     });
 
     // `::: matrix` and `::: bars` (§2.4 d, e) around a table: constant classes and two token kinds only.
     const DOTS = { "●": "ks-dot-full", "○": "ks-dot-ring", "◐": "ks-dot-half" };
-    const BAR = /^(\d{1,4})\/(\d{1,4})$/;
+    const BAR = /^(\d{1,4})\s*\/\s*(\d{1,4})$/;
     const BAR_HEAD = /\/\s*(\d{1,4})\s*$/;          // the column header states N: `提及場次 / 18`
-    const TOTAL_NUM = /^(\d+)(?:\s*(\(.+\)))?$/;
+    const TOTAL_NUM = /^(?:\*\*)?(\d+)(?:\*\*)?(?:\s*([(（].+[)）]))?$/;   // 5, **5**, 5 (4●), 5（4●）
+    // A <meter> (a measurement, n of N — not a task's progress), named for screen readers; the cell's
+    // own text says n. Integers only, checked when the token was made.
     md.renderer.rules.ks_bar = (tokens, idx) => {
-      const { n, N } = tokens[idx].meta;          // integers, checked when the token was made
-      return `<progress class="ks-bar-track" value="${n}" max="${N}">${n}/${N}</progress> `;
+      const { n, N } = tokens[idx].meta;
+      return `<meter class="ks-bar-track" min="0" max="${N}" value="${n}" aria-label="${n} / ${N}"></meter> `;
     };
     md.renderer.rules.ks_sub_open = () => '<span class="ks-sub">';
     md.renderer.rules.ks_sub_close = () => "</span>";
-    const cellText = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.trim() : "");
+    const cellText = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.replace(RANGE_MARKS, "").trim() : "");
     // markdown-it puts an empty text token before a leading **: the first child that carries something.
     const ledByBold = (c) => {
       const lead = c && (c.inline.children || []).find((ch) => !(ch.type === "text" && ch.content === ""));
@@ -167,6 +152,7 @@
       const lead = (r) => r.cells.find((c) => cellText(c) !== "");
       const last = body[body.length - 1];
       if (!last || body.length < 2 || !ledByBold(lead(last))) return null;
+      if (last.cells.some((c) => DOTS[cellText(c)])) return null;   // an emphasised data row, not a total
       return body.slice(0, -1).some((r) => ledByBold(lead(r))) ? null : last;
     }
     /** matrix: mark columns (body cells only dots or empty, at least one dot; a number or nothing in the
@@ -189,17 +175,22 @@
         }
       }
     }
-    /** matrix totals row: `5 (4●)` → 5 and the bracket as .ks-sub. */
+    /** matrix totals row: `5 (4●)` → 5 and the bracket as .ks-sub — the text split where the bracket
+     *  starts, so its spacing and any range marks stay as written. */
     function totalsSubs(state, total) {
       for (const x of total.cells) {
         const m = TOTAL_NUM.exec(cellText(x));
         const ch = x.inline && x.inline.children;
-        if (!m || !m[2] || !ch || ch.length !== 1 || ch[0].type !== "text") continue;
-        const a = new state.Token("text", "", 0); a.content = `${m[1]} `;
+        if (!m || !m[2] || !ch) continue;
+        // The bracket is in the last text child (after a **bold** number, too).
+        const k = ch.length - 1;
+        const at = k >= 0 && ch[k].type === "text" ? ch[k].content.search(/[(（]/) : -1;
+        if (at < 0) continue;
+        const a = new state.Token("text", "", 0); a.content = ch[k].content.slice(0, at);
         const o = new state.Token("ks_sub_open", "span", 1);
-        const b = new state.Token("text", "", 0); b.content = m[2];
+        const b = new state.Token("text", "", 0); b.content = ch[k].content.slice(at);
         const cl = new state.Token("ks_sub_close", "span", -1);
-        x.inline.children = [a, o, b, cl];
+        x.inline.children = [...ch.slice(0, k), a, o, b, cl];
       }
     }
     /** matrix and bars: a BAR column — its header ends in `/ N` and every filled body cell is `n/N` with
@@ -222,9 +213,12 @@
           const x = r.cells[c];
           const m = BAR.exec(cellText(x));
           if (!m) continue;
-          const bar = new state.Token("ks_bar", "progress", 0);
+          const bar = new state.Token("ks_bar", "meter", 0);
           bar.meta = { n: Number(m[1]), N: Number(m[2]) };
-          const num = new state.Token("text", "", 0); num.content = m[1].replace(/^0+(?=\d)/, "");
+          // n as written, range marks included (the part before "/"), so a patch's exact range survives.
+          const ch = x.inline.children;
+          const own = ch && ch.length === 1 && ch[0].type === "text" ? ch[0].content.split("/")[0].trim() : m[1];
+          const num = new state.Token("text", "", 0); num.content = own;
           x.inline.children = [bar, num];
           x.open.attrJoin("class", "ks-bar");
           any = true;
@@ -267,7 +261,8 @@
     // `:::` closes it). The card tokens are plain `div`s with a constant class
     // (rendered by markdown-it's renderToken, no rule needed); their source lines run from their
     // first block to the next card (or the closing `:::`), so the canvas's Ask agent can name them. In a
-    // `::: cards accent` block each card also takes the next hue class (the order restarts per block).
+    // `::: cards accent` block each ### card also takes the next hue class (the order restarts per block;
+    // a preamble card before the first ### takes none, so the first ### is always the first hue).
     md.core.ruler.after("block", "cards", (state) => {
       if (!state.tokens.some((t) => t.type === "container_cards_open")) return;
       const out = [];
@@ -299,7 +294,7 @@
             c.block = true;
             c.level = top.open.level + 1;
             c.attrSet("class", "card");
-            if (top.accent) c.attrJoin("class", hueClass(top.n++));
+            if (top.accent && h3) c.attrJoin("class", hueClass(top.n++));   // a preamble card takes no hue
             if (t.map) c.map = [t.map[0], t.map[1]];
             out.push(c);
             top.card = c;
@@ -307,10 +302,37 @@
         }
         t.level = orig + stack.length;    // everything inside a container now sits inside a card
         out.push(t);
-        if (t.type === "container_cards_open") stack.push({ open: t, level: orig, card: null, accent: t.info.trim().split(/\s+/).slice(1).includes("accent"), n: 0 });
+        if (t.type === "container_cards_open") {
+          const accent = t.info.trim().split(/\s+/).slice(1).includes("accent");   // `::: cards accent`
+          if (accent) t.meta = { ...(t.meta || {}), accent: true };
+          stack.push({ open: t, level: orig, card: null, accent, n: 0 });
+        }
       }
       state.tokens = out;
     });
+    // `::: stats` right after the first `# Title`: the title row (see above). After the cards rule, which
+    // reads token levels.
+    md.core.ruler.after("cards", "stats_title_row", (state) => {
+      const t = state.tokens;
+      const h = t.findIndex((x) => x.type === "heading_open" && x.tag === "h1" && x.level === 0);
+      if (h < 0 || !t[h + 3] || t[h + 3].type !== "container_stats_open") return;
+      let end = h + 3, depth = 0;
+      for (; end < t.length; end++) {
+        if (t[end].type === "container_stats_open") depth++;
+        else if (t[end].type === "container_stats_close" && --depth === 0) break;
+      }
+      if (end >= t.length) return;
+      for (let k = h; k <= end; k++) t[k].level++;   // they now sit inside the row
+      const open = new state.Token("title_row_open", "div", 1);
+      open.block = true;
+      open.attrSet("class", "ks-title-row");
+      if (t[h].map && t[h + 3].map) open.map = [t[h].map[0], t[h + 3].map[1]];
+      const close = new state.Token("title_row_close", "div", -1);
+      close.block = true;
+      t.splice(end + 1, 0, close);
+      t.splice(h, 0, open);
+    });
+
 
     // Callouts (ADR canvas §3.3): GitHub alerts `> [!NOTE]` / TIP / IMPORTANT / WARNING / CAUTION
     // (markdown-it-github-alerts, vendored with markdown-it). Its rule also accepts the escaped
@@ -528,6 +550,6 @@
   global.renderMarkdownInto = renderMarkdownInto;
   // node (test) — jsdom supplies window for DOMPurify.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG, CONTAINER_NAMES: Object.keys(CONTAINERS) };
+    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG, CONTAINER_NAMES, RANGE_MARKS };
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

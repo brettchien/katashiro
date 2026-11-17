@@ -88,8 +88,10 @@ has a header ending in `/ N` and `n/N` (that N) in every filled cell: each draws
 - The dots are drawn with an outline, so they never rely on colour alone; still say in a footnote
   what ● / ○ / ◐ mean.
 - Write `n/N` in full in every cell — the header's `/ N` says which columns are bars, the cells give
-  the values. Any other `12/18` (a date, a fraction, outside the wrappers) stays text. Write the
-  totals yourself.
+  the values (`5/18` or `5 / 18`). Any other `12/18` (a date, a fraction, outside the wrappers)
+  stays text. Write the totals yourself: a number, bold or not, with an optional `(4●)` / `（4●）`; a
+  row with dots in it is never the totals row.
+- On slides the blocks work too, at slide scale; keep a matrix to a few columns there.
 
 Callout with a title:
 
@@ -104,7 +106,9 @@ Callout with a title:
 2. `# Title`, then a two- or three-sentence lede with one `==highlight==` on the key phrase.
 3. A diagram early if there is a system or a flow.
 4. `##` sections, each starting with one sentence that says what the section answers. **Never number
-   `##` by hand** (`## 1. …`): the light theme and print number them; a hand number shows twice.
+   `##` by hand** (`## 1. …`): in the light theme and on paper the canvas numbers them (dark shows
+   no numbers). A document that numbers most of its `##` itself is left unnumbered, but not every
+   numbering style is recognised.
 5. Comparisons as cards, rules as callouts, specs as tables.
 6. End with open questions (numbered, each with a **bold question** and one line of context) or next
    steps, then footnotes.

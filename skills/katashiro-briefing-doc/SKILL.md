@@ -19,7 +19,8 @@ the reader's theme. Otherwise use markdown: it is editable, themable and diffabl
 
 ## The shape
 
-Write the sections in this order, all as `##` — **unnumbered**: the light theme and print number them.
+Write the sections in this order, all as `##` — **unnumbered**: the light theme and paper number them
+(dark shows none).
 
 1. **Eyebrow, title, numbers.** One bold eyebrow line (place · dates · organiser), `# Title`, then
    `::: stats` with 2–5 headline numbers right after it (`- **3** 天`), then a two-sentence lede with

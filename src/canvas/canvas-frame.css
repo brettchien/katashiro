@@ -184,29 +184,38 @@ body {
 .ks-hue-teal { --ks-hue: var(--ks-teal); --ks-hue-mid: var(--ks-teal-mid); --ks-hue-line: var(--ks-teal-line); --ks-hue-tint: var(--ks-teal-tint); }
 .ks-hue-sand { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
 .ks-hue-slate { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
-.doc th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left !important;   /* over markdown-it's inline `:-:` centring */
+:is(.doc, .reveal) th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left !important;   /* over markdown-it's inline `:-:` centring */
   vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
 /* Mark columns stay narrow (as in the reference); the text columns take the width. */
-.doc th.ks-mark, .doc td.ks-mark { width: 2.4em; }
-.doc td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
-.doc td.ks-dot { position: relative; color: transparent; }
-.doc td.ks-dot::before {
+:is(.doc, .reveal) th.ks-mark, :is(.doc, .reveal) td.ks-mark { width: 2.4em; }
+:is(.doc, .reveal) td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
+:is(.doc, .reveal) td.ks-dot { position: relative; color: transparent; }
+:is(.doc, .reveal) td.ks-dot::before {
   content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
   box-sizing: border-box; border-radius: 50%; border: 1.5px solid var(--ks-hue);
 }
-.doc td.ks-dot-full::before { background: var(--ks-hue-mid); }
-.doc td.ks-dot-ring::before { border-width: 2px; }
-.doc td.ks-dot-half::before { background: linear-gradient(90deg, var(--ks-hue-mid) 50%, transparent 50%); }
-.doc tr.ks-total td { border-top: 2px solid var(--ks-border-strong); font-weight: 700; color: var(--ks-heading); }
-.doc .ks-sub { font-size: 0.8em; font-weight: 400; color: var(--ks-muted); }
-.doc td.ks-bar { white-space: nowrap; font-variant-numeric: tabular-nums; }
-progress.ks-bar-track {
+:is(.doc, .reveal) td.ks-dot-full::before { background: var(--ks-hue-mid); }
+:is(.doc, .reveal) td.ks-dot-ring::before { border-width: 2px; }
+:is(.doc, .reveal) td.ks-dot-half::before { background: linear-gradient(90deg, var(--ks-hue-mid) 50%, transparent 50%); }
+:is(.doc, .reveal) tr.ks-total td { border-top: 2px solid var(--ks-border-strong); font-weight: 700; color: var(--ks-heading); }
+:is(.doc, .reveal) .ks-sub { font-size: 0.8em; font-weight: 400; color: var(--ks-muted); }
+:is(.doc, .reveal) td.ks-bar { white-space: nowrap; font-variant-numeric: tabular-nums; }
+meter.ks-bar-track {
   appearance: none; -webkit-appearance: none; width: 72px; height: 6px; margin: 0 6px 0 0; vertical-align: middle;
   border: 0; border-radius: 3px; background: var(--ks-surface-alt); overflow: hidden;
 }
-progress.ks-bar-track::-webkit-progress-bar { background: var(--ks-surface-alt); border-radius: 3px; }
-progress.ks-bar-track::-webkit-progress-value { background: var(--ks-hue-mid, var(--ks-accent)); border-radius: 3px; }
-@media print { .doc td.ks-mark, .doc th.ks-mark, .doc td.ks-dot::before, progress.ks-bar-track { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+meter.ks-bar-track::-webkit-meter-bar { height: 6px; border: 0; border-radius: 3px; background: var(--ks-surface-alt); }
+meter.ks-bar-track::-webkit-meter-optimum-value, meter.ks-bar-track::-webkit-meter-suboptimum-value,
+meter.ks-bar-track::-webkit-meter-even-less-good-value { background: var(--ks-hue-mid, var(--ks-accent)); border-radius: 3px; }
+/* High contrast (forced colours) drops backgrounds: show the dot characters themselves, and keep the
+   bars as a system-coloured fill. */
+@media (forced-colors: active) {
+  :is(.doc, .reveal) td.ks-dot { color: CanvasText; }
+  :is(.doc, .reveal) td.ks-dot::before { content: none; }
+  meter.ks-bar-track::-webkit-meter-optimum-value, meter.ks-bar-track::-webkit-meter-suboptimum-value,
+  meter.ks-bar-track::-webkit-meter-even-less-good-value { background: Highlight; forced-color-adjust: none; }
+}
+@media print { :is(.doc, .reveal) td.ks-mark, :is(.doc, .reveal) th.ks-mark, :is(.doc, .reveal) td.ks-dot::before, meter.ks-bar-track { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
 
 /* Numbered sections (ADR canvas-themes §2.4 c): in the light theme only (and so on paper), each
    top-level ## of a document gets its number in a blue-ramp circle. No syntax: CSS on the theme. */

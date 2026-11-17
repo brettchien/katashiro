@@ -392,22 +392,22 @@ test("matrix: mark columns, dots, totals row; bars in matrix and ::: bars; n/N s
   assert.match(h, /class="ks-mark ks-hue-blue ks-dot ks-dot-ring">○</);
   assert.match(h, /class="ks-mark ks-hue-orange ks-dot ks-dot-half">◐</);
   assert.match(h, /<tr class="ks-total">\n<td><strong>合計<\/strong><\/td>\n<td style="text-align:center" class="ks-mark ks-hue-orange">5 <span class="ks-sub">\(4●\)<\/span><\/td>/);
-  assert.match(h, /<tr class="ks-hue-orange">\n<td>D1<\/td>[\s\S]*<td class="ks-bar"><progress class="ks-bar-track" value="5" max="18">5\/18<\/progress> 5<\/td>/);
+  assert.match(h, /<tr class="ks-hue-orange">\n<td>D1<\/td>[\s\S]*<td class="ks-bar"><meter class="ks-bar-track" min="0" max="18" value="5" aria-label="5 \/ 18"><\/meter> 5<\/td>/);
   assert.match(h, /<tr class="ks-hue-blue">\n<td>D2<\/td>/);
   // A column with text in it is not a mark column; out-of-range n/N stays text.
   const t = md.render("::: matrix\n| a | b |\n|---|---|\n| ● | x |\n| ○ | ● |\n:::\n");
   assert.match(t, /<th class="ks-mark ks-hue-orange">a<\/th>\n<th>b<\/th>/);
   // Bars: only a column whose header states N (`/ 4`) and whose cells are all n/4; else plain text.
   const b = md.render("::: bars\n| x | n / 4 | when |\n|---|---|---|\n| a | 3/4 | 11/12 |\n| b | 0/4 | 11/13 |\n:::\n");
-  assert.equal((b.match(/<progress /g) || []).length, 2);
-  assert.match(b, /<tr class="ks-hue-orange">\n<td>a<\/td>\n<td class="ks-bar"><progress class="ks-bar-track" value="3" max="4">3\/4<\/progress> 3<\/td>\n<td>11\/12<\/td>/);
+  assert.equal((b.match(/<meter /g) || []).length, 2);
+  assert.match(b, /<tr class="ks-hue-orange">\n<td>a<\/td>\n<td class="ks-bar"><meter class="ks-bar-track" min="0" max="4" value="3" aria-label="3 \/ 4"><\/meter> 3<\/td>\n<td>11\/12<\/td>/);
   for (const bad of ["| a | 3/4 |\n| b | 5/4 |", "| a | 3/4 |\n| b | 3/5 |", "| a | 3/4 |\n| b | x |"]) {
-    assert.doesNotMatch(md.render(`::: bars\n| x | n / 4 |\n|---|---|\n${bad}\n:::\n`), /progress/, bad);
+    assert.doesNotMatch(md.render(`::: bars\n| x | n / 4 |\n|---|---|\n${bad}\n:::\n`), /meter/, bad);
   }
-  assert.doesNotMatch(md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n:::\n"), /progress/, "no N in the header");
+  assert.doesNotMatch(md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n:::\n"), /meter/, "no N in the header");
   // Outside the wrappers: plain text, no classes.
   const o = md.render("| out | 12/18 |\n|---|---|\n| a | ● |\n");
-  assert.doesNotMatch(o, /progress|ks-/);
+  assert.doesNotMatch(o, /meter|ks-/);
   assert.doesNotMatch(md.render("::: matrix onclick=x\n| a |\n|---|\n| ● |\n:::\n"), /onclick/);
 });
 
@@ -429,10 +429,16 @@ test("cards accent: each card carries its hue class in the accent order, restart
   assert.deepEqual(h.match(/<div class="card(?: [^"]*)?">/g), ["<div class=\"card ks-hue-orange\">", "<div class=\"card ks-hue-blue\">", "<div class=\"card ks-hue-orange\">", "<div class=\"card\">"]);
 });
 
-test("own section numbers: if a document numbers its own ##, every top-level h2 is .ks-own-number", () => {
-  assert.equal((md.render("## 1. A\n\n## B\n").match(/<h2 class="ks-own-number">/g) || []).length, 2);
-  for (const n of ["## 1) A", "## 3、A", "## 2: A"]) assert.match(md.render(n), /ks-own-number/, n);
-  assert.doesNotMatch(md.render("## A\n\n## 2026 plans\n\n### 1. sub\n"), /ks-own-number/);
+test("own section numbers: when at least two, and at least half, of the top-level ## carry a number", () => {
+  const own = (src) => (md.render(src).match(/<h2 class="ks-own-number">/g) || []).length;
+  assert.equal(own("## 1. A\n\n## 2. B\n\n## C\n"), 3);
+  for (const pair of [["1) A", "2) B"], ["一、背景", "二、方法"], ["第一章 A", "第二章 B"], ["IV. A", "V. B"], ["１．A", "２．B"], ["**1.** A", "**2.** B"], ["01 — A", "02 — B"], ["1 Intro", "2 Body"]]) {
+    assert.equal(own(`## ${pair[0]}\n\n## ${pair[1]}\n`), 2, pair.join(" / "));
+  }
+  assert.equal(own("## Intro\n\n## 2024: review\n\n## Plan\n"), 0, "one number among plain headings");
+  assert.equal(own("## 1. A\n\n## B\n\n## C\n\n## D\n"), 0, "one of four");
+  assert.equal(own("## ᨞1᨟. A\n\n## 2. B\n"), 2, "range marks do not hide a number");
+  assert.equal(own("## A\n\n### 1. sub\n\n### 2. sub\n"), 0, "### do not count");
 });
 
 test("CONTAINER_NAMES: markdown.js registers exactly the containers the normalizer pads", () => {
@@ -443,4 +449,39 @@ test("CONTAINER_NAMES: markdown.js registers exactly the containers the normaliz
     assert.equal(C.padContainerMarkers(`| a |\n|---|\n| 1 |\n:::\n::: ${name} x\ntext`), `| a |\n|---|\n| 1 |\n\n:::\n\n::: ${name} x\n\ntext`, name);
   }
   assert.equal(C.padContainerMarkers("text\n::: foo\nmore"), "text\n::: foo\nmore");
+});
+
+test("matrix totals: an emphasised data row is not a total; bold and full-width totals; spacing kept", () => {
+  const e = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ○ |\n| Bob | ◐ | ● |\n| **Carol (lead)** | ● | ● |\n:::\n");
+  assert.doesNotMatch(e, /ks-total/);
+  assert.equal((e.match(/ks-dot /g) || []).length, 6);
+  const t = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ● |\n| **合計** | **2**（1●） | 1(1●) |\n:::\n");
+  assert.match(t, /class="ks-mark ks-hue-orange"><strong>2<\/strong><span class="ks-sub">（1●）<\/span><\/td>/);
+  assert.match(t, /class="ks-mark ks-hue-blue">1<span class="ks-sub">\(1●\)<\/span><\/td>/, "no space added");
+});
+
+test("bars: n / N with spaces; range marks kept in the shown n", () => {
+  const b = md.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 3 / 4 |\n| b | ᨞1᨟/4 |\n:::\n");
+  assert.equal((b.match(/<meter /g) || []).length, 2);
+  assert.match(b, /aria-label="1 \/ 4"><\/meter> ᨞1᨟<\/td>/);
+});
+
+test("cards accent: a preamble card takes no hue, so the first ### is always the first hue", () => {
+  const h = md.render("::: cards accent\nIntro\n### A\nx\n### B\ny\n:::\n");
+  assert.deepEqual(h.match(/<div class="card(?: [^"]*)?">/g), ["<div class=\"card\">", "<div class=\"card ks-hue-orange\">", "<div class=\"card ks-hue-blue\">"]);
+});
+
+test("title row: the wrapped h1 and stats sit one level down and the row carries their source lines", () => {
+  const toks = md.parse("# T\n\n::: stats\n- **3** 天\n:::\n\ntext\n", {});
+  const row = toks.find((t) => t.type === "title_row_open");
+  assert.deepEqual(row.map, [0, 4]);   // as the container: up to its closing marker line
+  assert.equal(row.level, 0);
+  assert.equal(toks.find((t) => t.type === "heading_open").level, 1);
+  assert.equal(toks.find((t) => t.type === "container_stats_open").level, 1);
+});
+
+test("RANGE_MARKS: markdown.js strips exactly CanvasCore's range marks", () => {
+  const C = require("../src/core/canvas-core.js");
+  const { RANGE_MARKS } = require("../src/core/markdown.js");
+  assert.equal(`a${C.MARK_OPEN}b${C.MARK_CLOSE}c${C.MARK_POINT}d`.replace(RANGE_MARKS, ""), "abcd");
 });

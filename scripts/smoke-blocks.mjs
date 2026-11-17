@@ -9,8 +9,9 @@
 //   - `::: stats` after # Title: three tiles, the number in the accent colour, beside the title on a
 //     wide frame and below it on a narrow one;
 //   - `::: matrix` / `::: bars`: vertical mark headers in their hue, dots drawn in the column's mark
-//     colour with a text-colour edge (the character hidden), the totals row, <progress> bars that
+//     colour with a text-colour edge (the character hidden), the totals row, <meter> bars that
 //     keep value/max through DOMPurify; in both themes;
+//   - forced colours show the dot characters; a matrix on a slide keeps its marks;
 //   - numbered sections: the ## get a number in the light theme and on paper, not in dark;
 //   - the round trip: normalized text and the editor's saved text keep `::: cards accent` and the
 //     stats block, and render the same.
@@ -146,7 +147,7 @@ try {
     const th = document.querySelector("#doc .matrix th.ks-mark");
     const dot = document.querySelector("#doc .matrix td.ks-dot-full");
     const ring = document.querySelector("#doc .matrix td.ks-dot-ring");
-    const bars = Array.from(document.querySelectorAll("#doc progress.ks-bar-track"), (p) => [p.value, p.max, getComputedStyle(p.closest("tr")).getPropertyValue("--ks-hue-mid").trim()]);
+    const bars = Array.from(document.querySelectorAll("#doc meter.ks-bar-track"), (p) => [p.value, p.max, getComputedStyle(p.closest("tr")).getPropertyValue("--ks-hue-mid").trim()]);
     const b = dot && getComputedStyle(dot, "::before");
     return { marks: document.querySelectorAll("#doc .matrix th.ks-mark").length, wm: th && getComputedStyle(th).writingMode,
       dotFill: b && b.backgroundColor, dotEdge: b && b.borderTopColor, dotText: dot && getComputedStyle(dot).color,
@@ -227,6 +228,24 @@ try {
   await hues("dark", "after an editor load + save");
   await statsOk("after an editor load + save");
   await matrixOk("after an editor load + save");
+  // High contrast: backgrounds are dropped, so the dot characters show themselves (no drawn dot).
+  await page.emulateMediaFeatures([{ name: "forced-colors", value: "active" }]);
+  const fc = await frame.evaluate(() => {
+    const d = document.querySelector("#doc .matrix td.ks-dot-full");
+    return { color: getComputedStyle(d).color, before: getComputedStyle(d, "::before").content };
+  });
+  check(fc.color !== "rgba(0, 0, 0, 0)" && (fc.before === "none" || fc.before === "normal"), "forced colours: the dot characters show, no drawn dot", fc);
+  await page.emulateMediaFeatures([{ name: "forced-colors", value: "none" }]);
+
+  // On a slide (always dark): the matrix and bars keep their marks at slide scale.
+  await send({ type: "render", kind: "slides", version: 5, seq: 5, content: "# Deck\n\n---\n\n## Matrix\n\n::: matrix\n| Who | A | n / 4 |\n|---|:-:|---|\n| Ann | ● | 3/4 |\n:::\n" });
+  await waitFor((m) => m.type === "rendered" && m.seq === 5, "render slides");
+  const sl = await frame.evaluate(() => {
+    const th = document.querySelector(".reveal .matrix th.ks-mark");
+    const dot = document.querySelector(".reveal .matrix td.ks-dot-full");
+    return { wm: th && getComputedStyle(th).writingMode, dotFill: dot && getComputedStyle(dot, "::before").backgroundColor, meters: document.querySelectorAll(".reveal meter.ks-bar-track").length };
+  });
+  check(sl.wm === "vertical-rl" && sl.dotFill && sl.dotFill !== "rgba(0, 0, 0, 0)" && sl.meters === 1, "a matrix on a slide: vertical mark header, drawn dot, a bar", sl);
   const v = await frame.evaluate(() => window.__ksViolations || []);
   check(v.length === 0, "no CSP violation", v);
 } catch (e) {

@@ -48,3 +48,10 @@ body.mode-slides { background: var(--r-background-color); }
 .reveal .card { font-size: 0.55em; padding: 0.6em 0.9em; }
 .reveal .card h3 { font-size: 1.3em; margin: 0.4em 0 0.3em; }
 .reveal .markdown-alert { font-size: 0.6em; }
+/* Briefing blocks on a slide (canvas-frame.css styles them; ADR canvas-themes §2.4): slide-scale stats tiles,
+   matrix and bars. A deck is always dark. */
+.reveal .stats li { font-size: 0.45em; min-width: 4em; }
+.reveal .matrix table, .reveal .bars table { font-size: 0.55em; }
+.reveal :is(th, td).ks-mark { width: 1.6em; }
+.reveal meter.ks-bar-track { width: 4em; height: 0.35em; }
+.reveal meter.ks-bar-track::-webkit-meter-bar { height: 0.35em; }
