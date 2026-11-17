@@ -117,7 +117,7 @@ jobs:
       # The same commit again, to a scratch dir: a shot that differs from itself is unstable — reported
       # as such, so it is never mistaken for a change (or a regression) in the compare below.
       - name: This commit, again
-        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/again"
+        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/again"
 
       - name: Compare
         run: |
@@ -125,7 +125,7 @@ jobs:
           unstable=0
           for f in "$RUNNER_TEMP"/shots/head/*.png; do
             n=$(basename "$f")
-            cmp -s "$f" "$RUNNER_TEMP/again/$n" || { echo "UNSTABLE $n (this commit shot twice differs)"; unstable=1; }
+            cmp -s "$f" "$RUNNER_TEMP/shots/again/$n" || { echo "UNSTABLE $n (this commit shot twice differs): $(node "$GITHUB_WORKSPACE/scripts/shot-diff.mjs" "$f" "$RUNNER_TEMP/shots/again/$n")"; unstable=1; }
           done
           [ "$unstable" = 0 ] || { echo "::error::theme-shots: unstable screenshots — fix the shot, not the code"; exit 1; }
           cd "$RUNNER_TEMP/shots"
@@ -143,7 +143,7 @@ jobs:
               echo "same    $n"
               if grep -qxF "$n" <<<"$expected"; then stale="$stale $n"; fi
             elif grep -qxF "$n" <<<"$expected"; then echo "changed $n (expected for $branch)"
-            else echo "DIFFERS $n"; bad=1; fi
+            else echo "DIFFERS $n: $(node "$GITHUB_WORKSPACE/scripts/shot-diff.mjs" "$f" "head/$n")"; bad=1; fi
           done
           if [ -n "$stale" ]; then
             echo "::warning file=scripts/theme-shots-changed.txt::listed for $branch but identical to main:$stale — remove them"
