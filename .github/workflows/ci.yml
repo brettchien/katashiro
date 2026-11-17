@@ -114,9 +114,20 @@ jobs:
       - name: This commit
         run: node scripts/theme-shots.mjs "$RUNNER_TEMP/shots/head"
 
+      # The same commit again, to a scratch dir: a shot that differs from itself is unstable — reported
+      # as such, so it is never mistaken for a change (or a regression) in the compare below.
+      - name: This commit, again
+        run: node scripts/theme-shots.mjs "$RUNNER_TEMP/again"
+
       - name: Compare
         run: |
           set -euo pipefail
+          unstable=0
+          for f in "$RUNNER_TEMP"/shots/head/*.png; do
+            n=$(basename "$f")
+            cmp -s "$f" "$RUNNER_TEMP/again/$n" || { echo "UNSTABLE $n (this commit shot twice differs)"; unstable=1; }
+          done
+          [ "$unstable" = 0 ] || { echo "::error::theme-shots: unstable screenshots — fix the shot, not the code"; exit 1; }
           cd "$RUNNER_TEMP/shots"
           diff <(cd main && ls) <(cd head && ls)
           # scripts/theme-shots-changed.txt: "<branch> <shot>" lines — the shots that branch changes on purpose
