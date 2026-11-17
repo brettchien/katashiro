@@ -254,7 +254,15 @@ async function fullRepaint(page) {
   await sleep(200);
 }
 
-const browser = await launch();
+// Deterministic raster: the same page must give the same bytes on every launch. Without these the
+// header buttons' rounded corners came out ±1–2 differently now and then (1 run in 3 on CI): software
+// raster on one thread, no partial raster, every compositor stage before a frame, a fixed colour
+// profile, grayscale text without hinting.
+const DETERMINISTIC = [
+  "--disable-gpu", "--num-raster-threads=1", "--disable-partial-raster", "--run-all-compositor-stages-before-draw",
+  "--force-color-profile=srgb", "--disable-skia-runtime-opts", "--disable-lcd-text", "--font-render-hinting=none",
+];
+const browser = await launch(DETERMINISTIC);
 let failed = 0;
 try {
   for (const fx of FIXTURES) {

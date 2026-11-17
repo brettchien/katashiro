@@ -64,5 +64,5 @@ async function chromePath() {
 export const puppeteer = await loadPuppeteer();
 export const CHROME = await chromePath();
 
-// Every smoke launches the same way.
-export const launch = () => puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox"] });
+// Every smoke launches the same way; extraArgs only for scripts that need more (theme-shots).
+export const launch = (extraArgs = []) => puppeteer.launch({ executablePath: CHROME, headless: "shell", args: ["--no-sandbox", ...extraArgs] });
