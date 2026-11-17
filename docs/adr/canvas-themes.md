@@ -272,10 +272,10 @@ ramp: tint fill, border line, text-colour digit — as in the preview).
   (strong top rule, bold, heading colour). The writer computes the totals; a cell may be `5 (4●)` —
   the part in parentheses shows smaller and muted.
 
-> **As implemented (PR C):** the totals row is the bold-led last row only when no row above it is
-> bold-led and it holds no dot or bar value (bold labels on every row, or an emphasised data row,
-> are not a total); its cells may be anything else (`**5**`, `5（4●）`, `—`). A header cell is never
-> a dot. In forced-colours mode the dot characters show instead of the drawn dots.
+> **As implemented (PR C):** the totals row is the bold-led last row unless it holds a dot or a bar
+> value — then it is an emphasised data row (bold names on every row, a bold Keynote row); bold rows
+> above it do not matter. Its cells may be anything else (`**5**`, `5（4●）`, `—`). A header cell is
+> never a dot. In forced-colours mode the dot characters show instead of the drawn dots.
 
 **e. Bars in tables** — inside `::: matrix` or a new `::: bars` wrapper, a cell whose whole text is
 `n/N` (integers, 0 ≤ n ≤ N ≤ 1000, N > 0) renders a thin bar (n/N of the bar track) followed by

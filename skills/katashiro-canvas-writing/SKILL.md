@@ -71,8 +71,8 @@ Headline numbers, right after the title (they sit beside it on a wide tab):
 
 A matrix — a mark column is one whose cells are only `●` (central) / `◐` (discussed) / `○`
 (mentioned) or empty; it gets a vertical header and its own hue. Text columns stay as they are. The
-last row is the totals row when its first filled cell is bold and no row above starts bold (bold
-labels on every row are just labels); `5 (4●)` shows the part in brackets small. A **bar column**
+last row is the totals row when its first filled cell is bold and it has no dot or `n/N` in it (a
+bold row with dots is just an emphasised row); `5 (4●)` shows the part in brackets small. A **bar column**
 has a header ending in `/ N` and `n/N` (that N) in every filled cell: each draws a bar and n.
 
 ```markdown
