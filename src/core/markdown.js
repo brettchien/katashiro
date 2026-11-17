@@ -158,15 +158,14 @@
       }
       return { head, body };
     }
-    /** matrix: the totals row — the last body row led by bold text (`**合計**`), when no row above it is:
-     *  bold row labels everywhere are labels, not a total. */
+    /** matrix: the totals row — the last body row led by bold text (`**合計**`) with no dot and no bar value
+     *  in it (those make it an emphasised data row: bold names on every row, a bold Keynote row). Bold
+     *  rows above it do not matter. */
     function totalsRow(body) {
       const lead = (r) => r.cells.find((c) => cellText(c) !== "");
       const last = body[body.length - 1];
       if (!last || body.length < 2 || !ledByBold(lead(last))) return null;
-      // An emphasised data row (dots or a bar value in it) is not a total.
-      if (last.cells.some((c) => DOTS[cellText(c)] || BAR.test(unbold(cellText(c))))) return null;
-      return body.slice(0, -1).some((r) => ledByBold(lead(r))) ? null : last;
+      return last.cells.some((c) => DOTS[cellText(c)] || BAR.test(unbold(cellText(c)))) ? null : last;
     }
     /** matrix: mark columns (body cells only dots or empty, at least one dot; a number or nothing in the
      *  totals row) get .ks-mark + a hue, their dot cells .ks-dot-*; a header cell never becomes a dot. */
@@ -229,13 +228,22 @@
           const bar = new state.Token("ks_bar", "meter", 0);
           bar.meta = { n: Number(m[1]), N: Number(m[2]) };
           // n as written, range marks included (the part before "/"), so a patch's exact range survives.
-          const ch = x.inline.children;
-          const raw = ch && ch.length === 1 && ch[0].type === "text" ? ch[0].content : m[1];
+          // n as written — its range marks, and its **bold**, kept — plus any range mark that stood after N
+          // (a patch of the whole `n/N`). The value is the one text child, bare or inside one strong.
+          let ch = (x.inline.children || []).filter((k) => !(k.type === "text" && k.content === ""));
+          // Range marks just outside a **bold** value (`᨞**3/18**᨟`) travel with it.
+          const marksOnly = (k) => k && k.type === "text" && k.content.replace(RANGE_MARKS, "") === "";
+          const before = marksOnly(ch[0]) && ch.length > 1 ? ch.shift().content : "";
+          const after = marksOnly(ch[ch.length - 1]) && ch.length > 1 ? ch.pop().content : "";
+          const bold = ch.length === 3 && ch[0].type === "strong_open" && ch[1].type === "text" && ch[2].type === "strong_close";
+          const textTok = bold ? ch[1] : ch.length === 1 && ch[0].type === "text" ? ch[0] : null;
+          const raw = textTok ? textTok.content : m[1];
           const slash = raw.indexOf("/");
-          // n as written plus any range mark that stood after N (a patch of the whole `n/N`).
           const own = slash < 0 ? raw : raw.slice(0, slash).trim() + (raw.slice(slash).match(RANGE_MARKS) || []).join("");
           const num = new state.Token("text", "", 0); num.content = own;
-          x.inline.children = [bar, num];
+          const shown = bold ? [ch[0], num, ch[2]] : [num];
+          const mark = (t) => { const k = new state.Token("text", "", 0); k.content = t; return k; };
+          x.inline.children = [bar, ...(before ? [mark(before)] : []), ...shown, ...(after ? [mark(after)] : [])];
           x.open.attrJoin("class", "ks-bar");
           any = true;
         }

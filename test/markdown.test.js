@@ -517,3 +517,22 @@ test("own section numbers: false positives stay numbered", () => {
   for (const p of [["CLI usage", "CI pipeline"], ["2024 review", "2025 plan"], ["3 大趨勢", "5 個關鍵字"], ["3-day plan", "5-step guide"], ["C language", "XL sizes"]]) assert.equal(own(...p), 0, p.join(" / "));
   for (const p of [["（一）背景", "（二）方法"], ["(1) A", "(2) B"], ["壹、背景", "貳、方法"], ["① A", "② B"], ["A. Intro", "B. Body"], ["Step 1: x", "Step 2: y"], ["§1 A", "§2 B"], ["[1. Intro](#a)", "[2. Body](#b)"], ["ii. a", "iii. b"]]) assert.equal(own(...p), 2, p.join(" / "));
 });
+
+test("matrix totals: a bold data row above the total does not cancel it (Orca's review)", () => {
+  const h = mdCanvas.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| **Ann** | ● | ○ |\n| Bob | ◐ | ● |\n| **合計** | 2 (1●) | 2 (1●) |\n:::\n");
+  assert.match(h, /<tr class="ks-total">/);
+  assert.equal((h.match(/<th[^>]*class="ks-mark/g) || []).length, 2);
+  assert.equal((h.match(/ks-dot /g) || []).length, 4);
+});
+
+test("bars: a **bold** value stays bold, range marks around it stay", () => {
+  const b = mdCanvas.render("::: bars\n| x | n / 18 |\n|---|---|\n| a | **12/18** |\n| b | ᨞**3/18**᨟ |\n:::\n");
+  assert.match(b, /aria-label="12 \/ 18"><\/meter> <strong>12<\/strong><\/td>/);
+  assert.match(b, /aria-label="3 \/ 18"><\/meter> ᨞<strong>3<\/strong>᨟<\/td>/);
+});
+
+test("padContainerMarkers: a full-width space after the name still makes a container line (as markdown-it reads it)", () => {
+  const C = require("../src/core/canvas-core.js");
+  assert.equal(C.padContainerMarkers("| a |\n|---|\n| 1 |\n::: cards　accent\n### A\nx\n:::"), "| a |\n|---|\n| 1 |\n\n::: cards　accent\n\n### A\nx\n\n:::");
+  assert.match(mdCanvas.render("::: cards　accent\n### A\nx\n:::\n"), /^<div class="cards cards-accent">/);
+});

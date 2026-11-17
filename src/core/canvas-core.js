@@ -526,8 +526,9 @@
    */
   // The containers markdown.js registers (its CONTAINERS; a unit test keeps the two lists equal).
   const CONTAINER_NAMES = ["cards", "stats", "matrix", "bars"];
-  // The name is the first word, as markdown.js validates it: `::: stats-2026` is not a container.
-  const CONTAINER_LINE = new RegExp(`^ {0,3}:{3,}[ \\t]*((${CONTAINER_NAMES.join("|")})(?:[ \\t].*)?)?$`);
+  // The name is the first word, as markdown.js validates it (split on \s, which takes a full-width
+  // space too): `::: stats-2026` is not a container, `::: cards　accent` is.
+  const CONTAINER_LINE = new RegExp(`^ {0,3}:{3,}[ \\t]*((${CONTAINER_NAMES.join("|")})(?=\\s|$).*)?$`);
   function padContainerMarkers(text) {
     const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
     const out = [];

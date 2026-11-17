@@ -29,11 +29,12 @@ Write the sections in this order, all as `##` — **unnumbered**: the light them
    and a last line `→ source` (session, speaker).
 3. **Timeline** — `::: cards`, one card per day (`### Day 1 · 11/10`), 3–5 bullets each.
 4. **Keywords** — a table `| 關鍵字 | 是什麼 | 為何重要 | 提及場次 / N |` inside `::: bars`, the last
-   column `n/N` in every cell — the header states N (`/ 18`), each cell still writes `5/18` in full.
-   Sorted by n, highest first.
+   column `n/N` in every cell — the header states N, the number of sessions (`/ 42` when the stats say
+   42 場), and each cell still writes `12/42` in full. Sorted by n, highest first.
 5. **Analysis** — `::: cards accent`, 2–4 cards: what it means for the reader's organisation.
 6. **Full matrix** — `::: matrix` around a table of every session × keyword: text columns first
-   (Day, Session · Speaker · Company, Summary), then one mark column per keyword with `●` (central),
+   (Day, Session · Speaker · Company, Summary), then one mark column per keyword — **in the same order
+   as the keyword table**, so each keyword keeps its colour in both — with `●` (central),
    `◐` (discussed), `○` (mentioned) or empty, and a `**合計**` last row (`5 (4●)`: 5 sessions, 4 of
    them central). Explain the marks in a footnote.
 7. **Sources** — footnotes.
@@ -68,10 +69,10 @@ Write the sections in this order, all as `##` — **unnumbered**: the light them
 ## 關鍵字
 
 ::: bars
-| 關鍵字 | 是什麼 | 為何重要 | 提及場次 / 18 |
+| 關鍵字 | 是什麼 | 為何重要 | 提及場次 / 42 |
 |---|---|---|---|
-| Memory | 跨對話的長期記憶 | …… | 12/18 |
-| Harness | 模型外的執行框架 | …… | 9/18 |
+| Memory | 跨對話的長期記憶 | …… | 12/42 |
+| Harness | 模型外的執行框架 | …… | 9/42 |
 :::
 
 ## 全場次矩陣
@@ -81,16 +82,20 @@ Write the sections in this order, all as `##` — **unnumbered**: the light them
 |---|---|:-:|:-:|
 | D1 | Keynote · A · X | ● | ◐ |
 | D2 | Panel · B · Y | ○ | ● |
-| **合計** | | 2 (1●) | 2 (1●) |
+| … | （其餘 40 場） |  |  |
+| **合計** | | 12 (5●) | 9 (4●) |
 :::
 ```
 
 ## Rules
 
 - **Numbers are yours to get right.** Count the totals and the `n/N` from the matrix before writing
-  them; the canvas draws what you write.
-- **One hue per role.** Accent cards take hues by order; keep the same trend in the same position
-  everywhere (trend 1 is always the first card).
+  them — the bars' N is the session count in the stats, a keyword's n is its matrix total — the canvas
+  draws what you write.
+- **One hue per role.** Hues go by order: accent cards by card, keyword bars by row, matrix mark
+  columns by column. Keep the same trend in the same position everywhere (trend 1 is always the
+  first card), and the matrix's keyword columns in the keyword table's order — then a keyword has
+  one colour in both.
 - **No hand colours, no hand numbers.** No `## 1.`, no colour names in text, no inline HTML.
 - **Long session lists go in the matrix, not in prose.** The first page must fit on one screen.
 - After writing, take a `canvas_view` screenshot in the light theme (or ask the user to switch) and

@@ -248,8 +248,8 @@ ramp: tint fill, border line, text-colour digit — as in the preview).
 
 - Applies to `markdown` canvases only (slides are pinned dark; mermaid / image have no `##`).
 - Print is light (§2.2), so a printed document is numbered too.
-- A document that numbers its own headings (`## 1. …`) shows both; the skill tells writers not to
-  number `##` by hand.
+- A document that numbers its own headings (`## 1. …`) would show both: the skill tells writers not
+  to number `##` by hand, and the canvas leaves such a document unnumbered (as-implemented note below).
 - Nothing changes in `canvas_open` / `canvas_patch`, `meta` or canvas §3.4.
 
 > **As implemented (PR C):** a document that numbers its own `##` is detected (at least two, and at
