@@ -19,6 +19,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import zlib from "node:zlib";
 import { launch } from "./lib/smoke-env.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -68,6 +69,29 @@ const RAMP = {
   dark: { orange: ["#f0883e", "#f0883e"], blue: ["#58a6ff", "#58a6ff"], purple: ["#bc8cff", "#bc8cff"] },
   light: { orange: ["#e8a983", "#9a5630"], blue: ["#86addb", "#2f5d8a"], purple: ["#a898d8", "#6a55b0"] },
 };
+// A screenshot PNG (8-bit RGB / RGBA, as Chrome writes it) → { w, h, px(x, y) → [r, g, b] }.
+function decodePng(buf) {
+  let i = 8, w = 0, h = 0, ch = 4;
+  const idat = [];
+  while (i < buf.length) {
+    const len = buf.readUInt32BE(i), type = buf.toString("ascii", i + 4, i + 8), d = buf.subarray(i + 8, i + 8 + len);
+    if (type === "IHDR") { w = d.readUInt32BE(0); h = d.readUInt32BE(4); ch = d[9] === 6 ? 4 : 3; }
+    if (type === "IDAT") idat.push(d);
+    i += 12 + len;
+  }
+  const raw = zlib.inflateSync(Buffer.concat(idat)), stride = w * ch, out = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)];
+    for (let x = 0; x < stride; x++) {
+      const a = x >= ch ? out[y * stride + x - ch] : 0, b = y ? out[(y - 1) * stride + x] : 0, c = x >= ch && y ? out[(y - 1) * stride + x - ch] : 0;
+      let v = raw[y * (stride + 1) + 1 + x];
+      if (f === 1) v += a; else if (f === 2) v += b; else if (f === 3) v += (a + b) >> 1;
+      else if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+      out[y * stride + x] = v & 255;
+    }
+  }
+  return { w, h, px: (x, y) => [...out.subarray((y * w + x) * ch, (y * w + x) * ch + 3)] };
+}
 const rgb = (hex) => `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})`;
 
 const sandboxCsp = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8")).content_security_policy.sandbox;
@@ -156,6 +180,15 @@ try {
       orangeMid: getComputedStyle(document.documentElement).getPropertyValue("--ks-orange-mid").trim(),
       orange: getComputedStyle(document.documentElement).getPropertyValue("--ks-orange").trim() };
   });
+  // The bars as drawn: the first bar (5/18, orange row) has its fill in the row's mark colour.
+  const meterFill = async (theme) => {
+    const el = await frame.$("#doc meter.ks-bar-track");
+    const png = decodePng(Buffer.from(await el.screenshot()));
+    const want = theme === "light" ? [0xe8, 0xa9, 0x83] : [0xf0, 0x88, 0x3e];
+    const y = Math.floor(png.h / 2);
+    const near = (p) => p.every((v, k) => Math.abs(v - want[k]) <= 6);
+    return { w: png.w, h: png.h, left: png.px(2, y), right: png.px(png.w - 3, y), filled: near(png.px(2, y)), trackNot: !near(png.px(png.w - 3, y)) };
+  };
   const matrixOk = async (what) => {
     const m = await matrix();
     check(m.marks === 2 && m.wm === "vertical-rl" && m.total, `${what}: ::: matrix — 2 vertical mark headers, a totals row`, m);
@@ -182,6 +215,8 @@ try {
   await sleep(200);
   await hues("dark", "as written");
   await matrixOk("dark");
+  const mfD = await meterFill("dark");
+  check(mfD.filled && mfD.trackNot && mfD.w >= 60, "dark: a bar is drawn — fill in the row's mark colour, track after it", mfD);
   const nd = await numbered();
   check(nd.length === 2 && nd.every((c) => c === "none" || c === "normal"), "dark: ## not numbered", nd);
   await send({ type: "theme", value: "light" });
@@ -189,6 +224,8 @@ try {
   await hues("light", "as written");
   await statsOk("light");
   await matrixOk("light");
+  const mfL = await meterFill("light");
+  check(mfL.filled && mfL.trackNot, "light: the bar fill takes the light mark colour", mfL);
   const nl = await numbered();
   check(nl.length === 2 && nl.every((c) => /counter\(ks-sec\)/.test(c)), "light: each ## numbered", nl);
   await send({ type: "theme", value: "dark" });
@@ -232,20 +269,22 @@ try {
   await page.emulateMediaFeatures([{ name: "forced-colors", value: "active" }]);
   const fc = await frame.evaluate(() => {
     const d = document.querySelector("#doc .matrix td.ks-dot-full");
-    return { color: getComputedStyle(d).color, before: getComputedStyle(d, "::before").content };
+    return { before: getComputedStyle(d, "::before").content };
   });
-  check(fc.color !== "rgba(0, 0, 0, 0)" && (fc.before === "none" || fc.before === "normal"), "forced colours: the dot characters show, no drawn dot", fc);
+  // (Chrome forces the text colour itself in this mode; what the fallback must do is drop the drawn dot.)
+  check(fc.before === "none" || fc.before === "normal", "forced colours: no drawn dot over the character", fc);
   await page.emulateMediaFeatures([{ name: "forced-colors", value: "none" }]);
 
   // On a slide (always dark): the matrix and bars keep their marks at slide scale.
-  await send({ type: "render", kind: "slides", version: 5, seq: 5, content: "# Deck\n\n---\n\n## Matrix\n\n::: matrix\n| Who | A | n / 4 |\n|---|:-:|---|\n| Ann | ● | 3/4 |\n:::\n" });
+  await send({ type: "render", kind: "slides", version: 5, seq: 5, content: "# Deck\n\n::: stats\n- **3** 天\n- **42** 場\n:::\n\n---\n\n## Matrix\n\n::: matrix\n| Who | A | n / 4 |\n|---|:-:|---|\n| Ann | ● | 3/4 |\n:::\n" });
   await waitFor((m) => m.type === "rendered" && m.seq === 5, "render slides");
   const sl = await frame.evaluate(() => {
     const th = document.querySelector(".reveal .matrix th.ks-mark");
     const dot = document.querySelector(".reveal .matrix td.ks-dot-full");
-    return { wm: th && getComputedStyle(th).writingMode, dotFill: dot && getComputedStyle(dot, "::before").backgroundColor, meters: document.querySelectorAll(".reveal meter.ks-bar-track").length };
+    const ul = document.querySelector(".reveal .stats ul");
+    return { statsDisplay: ul && getComputedStyle(ul).display, statsBullets: ul && getComputedStyle(ul.querySelector("li")).listStyleType, wm: th && getComputedStyle(th).writingMode, dotFill: dot && getComputedStyle(dot, "::before").backgroundColor, meters: document.querySelectorAll(".reveal meter.ks-bar-track").length };
   });
-  check(sl.wm === "vertical-rl" && sl.dotFill && sl.dotFill !== "rgba(0, 0, 0, 0)" && sl.meters === 1, "a matrix on a slide: vertical mark header, drawn dot, a bar", sl);
+  check(sl.statsDisplay === "flex" && sl.statsBullets === "none" && sl.wm === "vertical-rl" && sl.dotFill && sl.dotFill !== "rgba(0, 0, 0, 0)" && sl.meters === 1, "on a slide: stats as a row of tiles, a matrix with a vertical mark header, a drawn dot, a bar", sl);
   const v = await frame.evaluate(() => window.__ksViolations || []);
   check(v.length === 0, "no CSP violation", v);
 } catch (e) {

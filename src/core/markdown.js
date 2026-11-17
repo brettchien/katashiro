@@ -44,7 +44,10 @@
   // sanitizer (double defense); linkify auto-links bare URLs. GFM-style pipe tables are on in
   // markdown-it's default preset — the readability fix this ADR is motivated by (§1.1).
   // `extra` only ever adds `breaks` (the user's own messages, below); every rule is the same.
-  function buildMd(extra) {
+  // briefing: the canvas's own transforms of the briefing blocks (ADR canvas-themes §2.4: accent hues,
+  // the title row, own-number detection, matrix / bars). The chat parsers recognise the containers
+  // but leave their content plain — the side panel has no styles for them (canvas-themes Q5).
+  function buildMd(extra, { briefing = false } = {}) {
     const md = global.markdownit(Object.assign({ html: false, linkify: true, highlight: highlightFence }, extra));
 
     // GFM task lists: a list item starting "[ ] " or "[x] " gets a read-only checkbox. A small core
@@ -95,17 +98,25 @@
     const ACCENT = ["orange", "blue", "purple", "green", "yellow", "pink", "teal", "sand", "slate"];
     const hueClass = (i) => `ks-hue-${ACCENT[i % ACCENT.length]}`;
 
-    // `::: stats` (§2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold run the number, the
-    // rest the label (canvas-frame.css). Right after the document's first `# Title`, the two are wrapped in
-    // a constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
-    // (the title-row rule itself runs after the cards rule, below: it shifts token levels.)
-
     // Numbered sections (§2.4 c) are CSS on the light theme. A document that numbers its own top-level
-    // `##` would show both numbers: when at least two of them, and at least half, start with a number
-    // (`1.` `2)` `3、` `1 Intro` `01 —` `１．` `一、` `第一章` `IV.`, bold or not), every top-level h2 gets the
-    // constant class ks-own-number, which the CSS leaves unnumbered. One `## 2024: review` does not.
-    const OWN_NUMBER = /^\s*(\*\*)?\s*(\d+|[０-９]+|[一二三四五六七八九十百]+|第[一二三四五六七八九十百\d０-９]+[章節节部篇]|[IVXLC]+(?=[.)\s]))(\*\*)?\s*([.)、．:：—–-]|\s|$)/;
-    md.core.ruler.after("inline", "own_section_numbers", (state) => {
+    // `##` would show both numbers: when at least two of them, and at least half, start with a section
+    // number, every top-level h2 gets the constant class ks-own-number, which the CSS leaves unnumbered.
+    // A section number is followed by a separator, never just a space, so `2024 review`, `3 大趨勢`,
+    // `3-day plan` and `CLI usage` are not one:
+    //   1. 2) 3、 4： 5 — (also full-width digits) · (1) （一） · ① · 一、 壹、 · 第一章 · IV. ii) A. ·
+    //   Step 1 / Part 2 / Chapter 3 / Section 4 · §1 — bold, or as a link's text, too.
+    const OWN_NUMBER = new RegExp("^\\s*(?:\\*\\*|\\[)?\\s*(?:" + [
+      "[0-9０-９]+\\s*(?:[.)、．:：]|\\s[—–])",
+      "[(（](?:[0-9０-９]+|[一二三四五六七八九十]+)[)）]",
+      "[\\u2460-\\u2473]",
+      "[一二三四五六七八九十百]+[、．.]",
+      "[壹貳參叁肆伍陸柒捌玖拾]+[、．.]",
+      "第[一二三四五六七八九十百0-9０-９]+[章節节部篇]",
+      "[IVX]+[.)]", "[ivx]+[.)]", "[A-Z][.)]\\s",
+      "(?:Step|Part|Chapter|Section)\\s+[0-9]+",
+      "§\\s*[0-9]+",
+    ].join("|") + ")");
+    if (briefing) md.core.ruler.after("inline", "own_section_numbers", (state) => {
       const t = state.tokens;
       const h2 = [];
       for (let i = 0; i < t.length; i++) if (t[i].type === "heading_open" && t[i].tag === "h2" && t[i].level === 0) h2.push(i);
@@ -128,6 +139,7 @@
     md.renderer.rules.ks_sub_open = () => '<span class="ks-sub">';
     md.renderer.rules.ks_sub_close = () => "</span>";
     const cellText = (c) => (c && c.inline && c.inline.type === "inline" ? c.inline.content.replace(RANGE_MARKS, "").trim() : "");
+    const unbold = (x) => x.replace(/^\*\*(.*)\*\*$/, "$1").trim();   // `**12/18**` is still a bar value
     // markdown-it puts an empty text token before a leading **: the first child that carries something.
     const ledByBold = (c) => {
       const lead = c && (c.inline.children || []).find((ch) => !(ch.type === "text" && ch.content === ""));
@@ -152,7 +164,8 @@
       const lead = (r) => r.cells.find((c) => cellText(c) !== "");
       const last = body[body.length - 1];
       if (!last || body.length < 2 || !ledByBold(lead(last))) return null;
-      if (last.cells.some((c) => DOTS[cellText(c)])) return null;   // an emphasised data row, not a total
+      // An emphasised data row (dots or a bar value in it) is not a total.
+      if (last.cells.some((c) => DOTS[cellText(c)] || BAR.test(unbold(cellText(c))))) return null;
       return body.slice(0, -1).some((r) => ledByBold(lead(r))) ? null : last;
     }
     /** matrix: mark columns (body cells only dots or empty, at least one dot; a number or nothing in the
@@ -163,7 +176,7 @@
       for (let c = 0; c < cols; c++) {
         const cells = data.map((r) => r.cells[c]);
         const isMark = cells.length > 0 && cells.every((x) => cellText(x) === "" || DOTS[cellText(x)]) && cells.some((x) => DOTS[cellText(x)])
-          && (!total || cellText(total.cells[c]) === "" || TOTAL_NUM.test(cellText(total.cells[c])));
+          && (!total || !DOTS[cellText(total.cells[c])]);   // the total cell: anything (5, 5 (4●), —, 4.5)
         if (!isMark) continue;
         const hue = hueClass(marks++);
         for (const r of head) if (r.cells[c]) r.cells[c].open.attrJoin("class", `ks-mark ${hue}`);
@@ -194,7 +207,7 @@
       }
     }
     /** matrix and bars: a BAR column — its header ends in `/ N` and every filled body cell is `n/N` with
-     *  that N (0 ≤ n ≤ N ≤ 1000) — gets a <progress> and n per cell; the rows with a bar take a hue. A
+     *  that N (0 ≤ n ≤ N ≤ 1000; spaces and **bold** allowed) — gets a <meter> and n per cell; the rows with a bar take a hue. A
      *  date `11/12` in another column stays text. */
     function barColumns(state, head, data) {
       const cols = Math.max(0, ...head.map((r) => r.cells.length));
@@ -204,20 +217,23 @@
         const N = hm ? Number(hm[1]) : 0;
         if (!(N > 0 && N <= 1000)) continue;
         const filled = data.map((r) => cellText(r.cells[c])).filter((x) => x !== "");
-        if (filled.length && filled.every((x) => { const m = BAR.exec(x); return m && Number(m[2]) === N && Number(m[1]) <= N; })) barCols.push(c);
+        if (filled.length && filled.every((x) => { const m = BAR.exec(unbold(x)); return m && Number(m[2]) === N && Number(m[1]) <= N; })) barCols.push(c);
       }
       let barRows = 0;
       for (const r of data) {
         let any = false;
         for (const c of barCols) {
           const x = r.cells[c];
-          const m = BAR.exec(cellText(x));
+          const m = BAR.exec(unbold(cellText(x)));
           if (!m) continue;
           const bar = new state.Token("ks_bar", "meter", 0);
           bar.meta = { n: Number(m[1]), N: Number(m[2]) };
           // n as written, range marks included (the part before "/"), so a patch's exact range survives.
           const ch = x.inline.children;
-          const own = ch && ch.length === 1 && ch[0].type === "text" ? ch[0].content.split("/")[0].trim() : m[1];
+          const raw = ch && ch.length === 1 && ch[0].type === "text" ? ch[0].content : m[1];
+          const slash = raw.indexOf("/");
+          // n as written plus any range mark that stood after N (a patch of the whole `n/N`).
+          const own = slash < 0 ? raw : raw.slice(0, slash).trim() + (raw.slice(slash).match(RANGE_MARKS) || []).join("");
           const num = new state.Token("text", "", 0); num.content = own;
           x.inline.children = [bar, num];
           x.open.attrJoin("class", "ks-bar");
@@ -237,7 +253,7 @@
       if (kind === "matrix") markColumns(head, data, total);
       barColumns(state, head, data);
     }
-    md.core.ruler.after("inline", "matrix_bars", (state) => {
+    if (briefing) md.core.ruler.after("inline", "matrix_bars", (state) => {
       const t = state.tokens;
       if (!t.some((x) => x.type === "container_matrix_open" || x.type === "container_bars_open")) return;
       const stack = [];
@@ -294,7 +310,7 @@
             c.block = true;
             c.level = top.open.level + 1;
             c.attrSet("class", "card");
-            if (top.accent && h3) c.attrJoin("class", hueClass(top.n++));   // a preamble card takes no hue
+            if (briefing && top.accent && h3) c.attrJoin("class", hueClass(top.n++));   // a preamble card takes no hue
             if (t.map) c.map = [t.map[0], t.map[1]];
             out.push(c);
             top.card = c;
@@ -304,15 +320,17 @@
         out.push(t);
         if (t.type === "container_cards_open") {
           const accent = t.info.trim().split(/\s+/).slice(1).includes("accent");   // `::: cards accent`
-          if (accent) t.meta = { ...(t.meta || {}), accent: true };
+          if (accent && briefing) t.meta = { ...(t.meta || {}), accent: true };
           stack.push({ open: t, level: orig, card: null, accent, n: 0 });
         }
       }
       state.tokens = out;
     });
-    // `::: stats` right after the first `# Title`: the title row (see above). After the cards rule, which
-    // reads token levels.
-    md.core.ruler.after("cards", "stats_title_row", (state) => {
+    // `::: stats` (§2.4 b): a row of KPI tiles — each list item `- **3** 天`, the bold run the number, the
+    // rest the label (canvas-frame.css). Right after the document's first `# Title`, the two are wrapped in
+    // a constant .ks-title-row so the tiles sit right of the title on a wide tab (below on a narrow one).
+    // Runs after the cards rule, which reads token levels: this one shifts them.
+    if (briefing) md.core.ruler.after("cards", "stats_title_row", (state) => {
       const t = state.tokens;
       const h = t.findIndex((x) => x.type === "heading_open" && x.tag === "h1" && x.level === 0);
       if (h < 0 || !t[h + 3] || t[h + 3].type !== "container_stats_open") return;
@@ -439,9 +457,11 @@
     return md;
   }
 
-  // Agent replies (and the canvas): a single newline is a soft break, rendered as a space — the
-  // CommonMark default, left as is on purpose (agent text is wrapped markdown).
+  // Agent replies: a single newline is a soft break, rendered as a space — the CommonMark default,
+  // left as is on purpose (agent text is wrapped markdown).
   const md = buildMd({});
+  // The canvas (renderMarkdown{canvas:true}): the same, plus the briefing blocks' transforms.
+  const mdCanvas = buildMd({}, { briefing: true });
   // The user's own messages: what they typed with Shift+Enter keeps its line breaks (soft break →
   // <br>). Block structure is unaffected by `breaks`: only a soft break inside inline text
   // (a paragraph, list item or quote) becomes <br>; fenced/indented code is untouched.
@@ -499,7 +519,7 @@
   // opts.userText: the user's own message — single newlines stay line breaks (mdUser).
   function renderMarkdown(text, opts) {
     const env = opts && opts.sourceLines === true ? { sourceLines: true } : {};
-    const parser = opts && opts.userText === true ? mdUser : md;
+    const parser = opts && opts.userText === true ? mdUser : opts && opts.canvas === true ? mdCanvas : md;
     const html = parser.render(text == null ? "" : String(text), env);
     return global.DOMPurify.sanitize(html, DP_CONFIG);
   }
@@ -550,6 +570,6 @@
   global.renderMarkdownInto = renderMarkdownInto;
   // node (test) — jsdom supplies window for DOMPurify.
   if (typeof module !== "undefined" && module.exports) {
-    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, DP_CONFIG, CONTAINER_NAMES, RANGE_MARKS };
+    module.exports = { renderMarkdown, renderMarkdownInto, md, mdUser, mdCanvas, DP_CONFIG, CONTAINER_NAMES, RANGE_MARKS };
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

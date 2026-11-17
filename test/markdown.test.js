@@ -14,7 +14,7 @@ const path = require("node:path");
 for (const f of ["../vendor/markdown-it.iife.js", "../vendor/highlight.iife.js"]) {
   new Function(fs.readFileSync(path.join(__dirname, f), "utf8")).call(globalThis);
 }
-const { md, DP_CONFIG } = require("../src/core/markdown.js");
+const { md, mdCanvas, DP_CONFIG } = require("../src/core/markdown.js");
 
 test("markdown-it renders GFM tables and inline formatting", () => {
   assert.match(md.render("**b**"), /<strong>b<\/strong>/);
@@ -268,12 +268,12 @@ test("cards: source lines on the container, each card (first block → next card
 
 test("alerts: GitHub [!NOTE] … [!CAUTION] become constant-class callouts with a title row, no svg", () => {
   for (const [marker, type, title] of [["NOTE", "note", "Note"], ["TIP", "tip", "Tip"], ["IMPORTANT", "important", "Important"], ["WARNING", "warning", "Warning"], ["caution", "caution", "Caution"]]) {
-    const h = md.render(`> [!${marker}]\n> Body *here*.`);
+    const h = mdCanvas.render(`> [!${marker}]\n> Body *here*.`);
     assert.equal(h, `<div class="markdown-alert markdown-alert-${type}"><p class="markdown-alert-title">${title}</p>\n<p>Body <em>here</em>.</p>\n</div>\n`);
   }
-  assert.doesNotMatch(md.render("> [!WARNING]\n> x"), /<svg/i);
-  assert.match(md.render("> [!UNKNOWN]\n> x"), /^<blockquote>\n<p>\[!UNKNOWN\]/);   // not one of the five
-  assert.match(md.render("> plain quote"), /^<blockquote>\n<p>plain quote<\/p>/);
+  assert.doesNotMatch(mdCanvas.render("> [!WARNING]\n> x"), /<svg/i);
+  assert.match(mdCanvas.render("> [!UNKNOWN]\n> x"), /^<blockquote>\n<p>\[!UNKNOWN\]/);   // not one of the five
+  assert.match(mdCanvas.render("> plain quote"), /^<blockquote>\n<p>plain quote<\/p>/);
 });
 
 test("alerts: the escaped `> \\[!NOTE]` Milkdown normalization writes is still an alert (ADR canvas §3.5)", () => {
@@ -360,30 +360,30 @@ test("plugins: `==` inside words stays text (x==1 or y==2), CJK and spaced highl
 });
 
 test("cards accent: `::: cards accent` adds the constant class cards-accent; other words are ignored", () => {
-  const h = md.render("::: cards accent\n### A\nx\n### B\ny\n:::\n");
+  const h = mdCanvas.render("::: cards accent\n### A\nx\n### B\ny\n:::\n");
   assert.match(h, /^<div class="cards cards-accent">\n<div class="card ks-hue-orange">\n<h3>A<\/h3>/);
   assert.equal((h.match(/<div class="card ks-hue-/g) || []).length, 2);
-  assert.match(md.render("::: cards accent wide\n### A\nx\n:::\n"), /^<div class="cards cards-accent">/);
-  assert.match(md.render("::: cards\n### A\nx\n:::\n"), /^<div class="cards">/);
-  assert.match(md.render("::: cards <b>accent</b>\n### A\nx\n:::\n"), /^<div class="cards">/);
-  assert.doesNotMatch(md.render("::: cards accent onclick=x\n### A\nx\n:::\n"), /onclick/);
+  assert.match(mdCanvas.render("::: cards accent wide\n### A\nx\n:::\n"), /^<div class="cards cards-accent">/);
+  assert.match(mdCanvas.render("::: cards\n### A\nx\n:::\n"), /^<div class="cards">/);
+  assert.match(mdCanvas.render("::: cards <b>accent</b>\n### A\nx\n:::\n"), /^<div class="cards">/);
+  assert.doesNotMatch(mdCanvas.render("::: cards accent onclick=x\n### A\nx\n:::\n"), /onclick/);
 });
 
 test("stats: `::: stats` is a constant .stats around its list; after the first # Title the two share a .ks-title-row", () => {
-  const h = md.render("# Brief\n\n::: stats\n- **3** 天\n- **42** 場\n:::\n\nText.\n");
+  const h = mdCanvas.render("# Brief\n\n::: stats\n- **3** 天\n- **42** 場\n:::\n\nText.\n");
   assert.match(h, /^<div class="ks-title-row">\n<h1>Brief<\/h1>\n<div class="stats">\n<ul>\n<li><strong>3<\/strong> 天<\/li>\n<li><strong>42<\/strong> 場<\/li>\n<\/ul>\n<\/div>\n<\/div>\n<p>Text\.<\/p>/);
   // Not right after the title: no row.
-  const h2 = md.render("# Brief\n\nIntro.\n\n::: stats\n- **3** 天\n:::\n");
+  const h2 = mdCanvas.render("# Brief\n\nIntro.\n\n::: stats\n- **3** 天\n:::\n");
   assert.doesNotMatch(h2, /ks-title-row/);
   assert.match(h2, /<div class="stats">/);
   // The info string is never copied; `::: statsx` is not a container.
-  assert.match(md.render("::: stats big onclick=x\n- **1** a\n:::\n"), /^<div class="stats">/);
-  assert.doesNotMatch(md.render("::: stats onclick=x\n- **1** a\n:::\n"), /onclick/);
-  assert.doesNotMatch(md.render("::: statsx\n- **1** a\n:::\n"), /class="stats"/);
+  assert.match(mdCanvas.render("::: stats big onclick=x\n- **1** a\n:::\n"), /^<div class="stats">/);
+  assert.doesNotMatch(mdCanvas.render("::: stats onclick=x\n- **1** a\n:::\n"), /onclick/);
+  assert.doesNotMatch(mdCanvas.render("::: statsx\n- **1** a\n:::\n"), /class="stats"/);
 });
 
 test("matrix: mark columns, dots, totals row; bars in matrix and ::: bars; n/N stays text elsewhere", () => {
-  const h = md.render("::: matrix\n| Day | 信任 | 工廠 | 提及 / 18 |\n|---|:-:|:-:|---|\n| D1 | ● | ○ | 5/18 |\n| D2 | ◐ |  | 12/18 |\n| **合計** | 5 (4●) | 1 | |\n:::\n");
+  const h = mdCanvas.render("::: matrix\n| Day | 信任 | 工廠 | 提及 / 18 |\n|---|:-:|:-:|---|\n| D1 | ● | ○ | 5/18 |\n| D2 | ◐ |  | 12/18 |\n| **合計** | 5 (4●) | 1 | |\n:::\n");
   assert.match(h, /^<div class="matrix">/);
   assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-orange">信任<\/th>/);
   assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-blue">工廠<\/th>/);
@@ -395,44 +395,44 @@ test("matrix: mark columns, dots, totals row; bars in matrix and ::: bars; n/N s
   assert.match(h, /<tr class="ks-hue-orange">\n<td>D1<\/td>[\s\S]*<td class="ks-bar"><meter class="ks-bar-track" min="0" max="18" value="5" aria-label="5 \/ 18"><\/meter> 5<\/td>/);
   assert.match(h, /<tr class="ks-hue-blue">\n<td>D2<\/td>/);
   // A column with text in it is not a mark column; out-of-range n/N stays text.
-  const t = md.render("::: matrix\n| a | b |\n|---|---|\n| ● | x |\n| ○ | ● |\n:::\n");
+  const t = mdCanvas.render("::: matrix\n| a | b |\n|---|---|\n| ● | x |\n| ○ | ● |\n:::\n");
   assert.match(t, /<th class="ks-mark ks-hue-orange">a<\/th>\n<th>b<\/th>/);
   // Bars: only a column whose header states N (`/ 4`) and whose cells are all n/4; else plain text.
-  const b = md.render("::: bars\n| x | n / 4 | when |\n|---|---|---|\n| a | 3/4 | 11/12 |\n| b | 0/4 | 11/13 |\n:::\n");
+  const b = mdCanvas.render("::: bars\n| x | n / 4 | when |\n|---|---|---|\n| a | 3/4 | 11/12 |\n| b | 0/4 | 11/13 |\n:::\n");
   assert.equal((b.match(/<meter /g) || []).length, 2);
   assert.match(b, /<tr class="ks-hue-orange">\n<td>a<\/td>\n<td class="ks-bar"><meter class="ks-bar-track" min="0" max="4" value="3" aria-label="3 \/ 4"><\/meter> 3<\/td>\n<td>11\/12<\/td>/);
   for (const bad of ["| a | 3/4 |\n| b | 5/4 |", "| a | 3/4 |\n| b | 3/5 |", "| a | 3/4 |\n| b | x |"]) {
-    assert.doesNotMatch(md.render(`::: bars\n| x | n / 4 |\n|---|---|\n${bad}\n:::\n`), /meter/, bad);
+    assert.doesNotMatch(mdCanvas.render(`::: bars\n| x | n / 4 |\n|---|---|\n${bad}\n:::\n`), /meter/, bad);
   }
-  assert.doesNotMatch(md.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n:::\n"), /meter/, "no N in the header");
+  assert.doesNotMatch(mdCanvas.render("::: bars\n| x | n |\n|---|---|\n| a | 3/4 |\n:::\n"), /meter/, "no N in the header");
   // Outside the wrappers: plain text, no classes.
-  const o = md.render("| out | 12/18 |\n|---|---|\n| a | ● |\n");
+  const o = mdCanvas.render("| out | 12/18 |\n|---|---|\n| a | ● |\n");
   assert.doesNotMatch(o, /meter|ks-/);
-  assert.doesNotMatch(md.render("::: matrix onclick=x\n| a |\n|---|\n| ● |\n:::\n"), /onclick/);
+  assert.doesNotMatch(mdCanvas.render("::: matrix onclick=x\n| a |\n|---|\n| ● |\n:::\n"), /onclick/);
 });
 
 test("matrix: bold row labels are labels, not a totals row; a header cell never becomes a dot", () => {
-  const h = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| **Ann** | ● | ○ |\n| **Bob** | ◐ | ● |\n:::\n");
+  const h = mdCanvas.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| **Ann** | ● | ○ |\n| **Bob** | ◐ | ● |\n:::\n");
   assert.doesNotMatch(h, /ks-total/);
   assert.equal((h.match(/ks-dot /g) || []).length, 4);
   assert.match(h, /<th style="text-align:center" class="ks-mark ks-hue-blue">B<\/th>/);
-  const t = md.render("::: matrix\n| Who | A |\n|---|---|\n| Ann | ● |\n| Bob | ○ |\n| **Total** | 2 |\n:::\n");
+  const t = mdCanvas.render("::: matrix\n| Who | A |\n|---|---|\n| Ann | ● |\n| Bob | ○ |\n| **Total** | 2 |\n:::\n");
   assert.match(t, /<tr class="ks-total">/);
-  const d = md.render("::: matrix\n| x | ● |\n|---|---|\n| a | ● |\n:::\n");
+  const d = mdCanvas.render("::: matrix\n| x | ● |\n|---|---|\n| a | ● |\n:::\n");
   assert.match(d, /<th class="ks-mark ks-hue-orange">●<\/th>/);
   // ::: bars has no totals row.
-  assert.doesNotMatch(md.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 1/4 |\n| **T** | 2/4 |\n:::\n"), /ks-total/);
+  assert.doesNotMatch(mdCanvas.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 1/4 |\n| **T** | 2/4 |\n:::\n"), /ks-total/);
 });
 
 test("cards accent: each card carries its hue class in the accent order, restarting per block", () => {
-  const h = md.render("::: cards accent\n### A\nx\n### B\ny\n:::\n\n::: cards accent\n### C\nz\n:::\n\n::: cards\n### D\nw\n:::\n");
+  const h = mdCanvas.render("::: cards accent\n### A\nx\n### B\ny\n:::\n\n::: cards accent\n### C\nz\n:::\n\n::: cards\n### D\nw\n:::\n");
   assert.deepEqual(h.match(/<div class="card(?: [^"]*)?">/g), ["<div class=\"card ks-hue-orange\">", "<div class=\"card ks-hue-blue\">", "<div class=\"card ks-hue-orange\">", "<div class=\"card\">"]);
 });
 
 test("own section numbers: when at least two, and at least half, of the top-level ## carry a number", () => {
-  const own = (src) => (md.render(src).match(/<h2 class="ks-own-number">/g) || []).length;
+  const own = (src) => (mdCanvas.render(src).match(/<h2 class="ks-own-number">/g) || []).length;
   assert.equal(own("## 1. A\n\n## 2. B\n\n## C\n"), 3);
-  for (const pair of [["1) A", "2) B"], ["一、背景", "二、方法"], ["第一章 A", "第二章 B"], ["IV. A", "V. B"], ["１．A", "２．B"], ["**1.** A", "**2.** B"], ["01 — A", "02 — B"], ["1 Intro", "2 Body"]]) {
+  for (const pair of [["1) A", "2) B"], ["一、背景", "二、方法"], ["第一章 A", "第二章 B"], ["IV. A", "V. B"], ["１．A", "２．B"], ["**1.** A", "**2.** B"], ["01 — A", "02 — B"]]) {
     assert.equal(own(`## ${pair[0]}\n\n## ${pair[1]}\n`), 2, pair.join(" / "));
   }
   assert.equal(own("## Intro\n\n## 2024: review\n\n## Plan\n"), 0, "one number among plain headings");
@@ -449,30 +449,31 @@ test("CONTAINER_NAMES: markdown.js registers exactly the containers the normaliz
     assert.equal(C.padContainerMarkers(`| a |\n|---|\n| 1 |\n:::\n::: ${name} x\ntext`), `| a |\n|---|\n| 1 |\n\n:::\n\n::: ${name} x\n\ntext`, name);
   }
   assert.equal(C.padContainerMarkers("text\n::: foo\nmore"), "text\n::: foo\nmore");
+  for (const t of ["text\n::: stats-2026\nmore", "text\n::: bars.\nmore", "x\n::: matrix(old)\ny"]) assert.equal(C.padContainerMarkers(t), t, "not a container name: " + t);
 });
 
 test("matrix totals: an emphasised data row is not a total; bold and full-width totals; spacing kept", () => {
-  const e = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ○ |\n| Bob | ◐ | ● |\n| **Carol (lead)** | ● | ● |\n:::\n");
+  const e = mdCanvas.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ○ |\n| Bob | ◐ | ● |\n| **Carol (lead)** | ● | ● |\n:::\n");
   assert.doesNotMatch(e, /ks-total/);
   assert.equal((e.match(/ks-dot /g) || []).length, 6);
-  const t = md.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ● |\n| **合計** | **2**（1●） | 1(1●) |\n:::\n");
+  const t = mdCanvas.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ● |\n| **合計** | **2**（1●） | 1(1●) |\n:::\n");
   assert.match(t, /class="ks-mark ks-hue-orange"><strong>2<\/strong><span class="ks-sub">（1●）<\/span><\/td>/);
   assert.match(t, /class="ks-mark ks-hue-blue">1<span class="ks-sub">\(1●\)<\/span><\/td>/, "no space added");
 });
 
 test("bars: n / N with spaces; range marks kept in the shown n", () => {
-  const b = md.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 3 / 4 |\n| b | ᨞1᨟/4 |\n:::\n");
+  const b = mdCanvas.render("::: bars\n| x | n / 4 |\n|---|---|\n| a | 3 / 4 |\n| b | ᨞1᨟/4 |\n:::\n");
   assert.equal((b.match(/<meter /g) || []).length, 2);
   assert.match(b, /aria-label="1 \/ 4"><\/meter> ᨞1᨟<\/td>/);
 });
 
 test("cards accent: a preamble card takes no hue, so the first ### is always the first hue", () => {
-  const h = md.render("::: cards accent\nIntro\n### A\nx\n### B\ny\n:::\n");
+  const h = mdCanvas.render("::: cards accent\nIntro\n### A\nx\n### B\ny\n:::\n");
   assert.deepEqual(h.match(/<div class="card(?: [^"]*)?">/g), ["<div class=\"card\">", "<div class=\"card ks-hue-orange\">", "<div class=\"card ks-hue-blue\">"]);
 });
 
 test("title row: the wrapped h1 and stats sit one level down and the row carries their source lines", () => {
-  const toks = md.parse("# T\n\n::: stats\n- **3** 天\n:::\n\ntext\n", {});
+  const toks = mdCanvas.parse("# T\n\n::: stats\n- **3** 天\n:::\n\ntext\n", {});
   const row = toks.find((t) => t.type === "title_row_open");
   assert.deepEqual(row.map, [0, 4]);   // as the container: up to its closing marker line
   assert.equal(row.level, 0);
@@ -484,4 +485,35 @@ test("RANGE_MARKS: markdown.js strips exactly CanvasCore's range marks", () => {
   const C = require("../src/core/canvas-core.js");
   const { RANGE_MARKS } = require("../src/core/markdown.js");
   assert.equal(`a${C.MARK_OPEN}b${C.MARK_CLOSE}c${C.MARK_POINT}d`.replace(RANGE_MARKS, ""), "abcd");
+});
+
+test("chat parsers: the containers are recognised, their content stays plain (no briefing transforms)", () => {
+  const { mdUser } = require("../src/core/markdown.js");
+  const src = "# T\n\n::: stats\n- **3** 天\n:::\n\n::: cards accent\n### A\nx\n:::\n\n::: matrix\n| a | n / 4 |\n|---|---|\n| ● | 3/4 |\n:::\n\n## 1. A\n\n## 2. B\n";
+  for (const p of [md, mdUser]) {
+    const h = p.render(src);
+    assert.match(h, /<div class="stats">/);
+    assert.match(h, /<div class="cards">/);
+    assert.match(h, /<div class="matrix">/);
+    assert.doesNotMatch(h, /ks-|cards-accent|<meter/);
+    assert.match(h, /<td>3\/4<\/td>/);
+  }
+  assert.match(mdCanvas.render(src), /ks-title-row[\s\S]*cards-accent[\s\S]*ks-dot[\s\S]*<meter[\s\S]*ks-own-number/);
+});
+
+test("bars: a range over the whole n/N keeps its closing mark; **bold** values and odd totals still count", () => {
+  const b = mdCanvas.render("::: bars\n| x | n / 4 | y |\n|---|---|---|\n| a | ᨞4/4᨟ | hello |\n| b | **2/4** | z |\n:::\n");
+  assert.match(b, /aria-label="4 \/ 4"><\/meter> ᨞4᨟<\/td>\n<td>hello<\/td>/);
+  assert.equal((b.match(/<meter /g) || []).length, 2);
+  const m = mdCanvas.render("::: matrix\n| Who | A | B |\n|---|:-:|:-:|\n| Ann | ● | ○ |\n| **合計** | 1 | — |\n:::\n");
+  assert.equal((m.match(/<th[^>]*class="ks-mark/g) || []).length, 2, "a — total keeps the column");
+  const e = mdCanvas.render("::: matrix\n| Who | A | n / 18 |\n|---|:-:|---|\n| Ann | ● | 5/18 |\n| **Carol (lead)** |  | 3/18 |\n:::\n");
+  assert.doesNotMatch(e, /ks-total/);
+  assert.equal((e.match(/<meter /g) || []).length, 2);
+});
+
+test("own section numbers: false positives stay numbered", () => {
+  const own = (a, b) => (mdCanvas.render(`## ${a}\n\n## ${b}\n`).match(/ks-own-number/g) || []).length;
+  for (const p of [["CLI usage", "CI pipeline"], ["2024 review", "2025 plan"], ["3 大趨勢", "5 個關鍵字"], ["3-day plan", "5-step guide"], ["C language", "XL sizes"]]) assert.equal(own(...p), 0, p.join(" / "));
+  for (const p of [["（一）背景", "（二）方法"], ["(1) A", "(2) B"], ["壹、背景", "貳、方法"], ["① A", "② B"], ["A. Intro", "B. Body"], ["Step 1: x", "Step 2: y"], ["§1 A", "§2 B"], ["[1. Intro](#a)", "[2. Body](#b)"], ["ii. a", "iii. b"]]) assert.equal(own(...p), 2, p.join(" / "));
 });

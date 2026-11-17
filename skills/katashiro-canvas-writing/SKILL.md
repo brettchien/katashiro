@@ -107,8 +107,8 @@ Callout with a title:
 3. A diagram early if there is a system or a flow.
 4. `##` sections, each starting with one sentence that says what the section answers. **Never number
    `##` by hand** (`## 1. …`): in the light theme and on paper the canvas numbers them (dark shows
-   no numbers). A document that numbers most of its `##` itself is left unnumbered, but not every
-   numbering style is recognised.
+   no numbers). A document whose `##` mostly carry their own numbers (at least two, at least
+   half) is left unnumbered, but not every numbering style is recognised.
 5. Comparisons as cards, rules as callouts, specs as tables.
 6. End with open questions (numbered, each with a **bold question** and one line of context) or next
    steps, then footnotes.
