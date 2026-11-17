@@ -248,9 +248,14 @@ ramp: tint fill, border line, text-colour digit — as in the preview).
 
 - Applies to `markdown` canvases only (slides are pinned dark; mermaid / image have no `##`).
 - Print is light (§2.2), so a printed document is numbered too.
-- A document that numbers its own headings (`## 1. …`) shows both; the skill tells writers not to
-  number `##` by hand.
+- A document that numbers its own headings (`## 1. …`) would show both: the skill tells writers not
+  to number `##` by hand, and the canvas leaves such a document unnumbered (as-implemented note below).
 - Nothing changes in `canvas_open` / `canvas_patch`, `meta` or canvas §3.4.
+
+> **As implemented (PR C):** a document that numbers its own `##` is detected (at least two, and at
+> least half, of its top-level `##` start with a section number — `1.` `2)` `一、` `（一）` `第一章` `IV.`
+> `①` `Step 1` … followed by a separator, so `2024 review` or `3 大趨勢` is not one): its `##` get the
+> constant class `ks-own-number` and no theme number, instead of showing both.
 
 **d. `::: matrix`** wrapping a table:
 
@@ -267,12 +272,23 @@ ramp: tint fill, border line, text-colour digit — as in the preview).
   (strong top rule, bold, heading colour). The writer computes the totals; a cell may be `5 (4●)` —
   the part in parentheses shows smaller and muted.
 
+> **As implemented (PR C):** the totals row is the bold-led last row unless it holds a dot or a bar
+> value — then it is an emphasised data row (bold names on every row, a bold Keynote row); bold rows
+> above it do not matter. Its cells may be anything else (`**5**`, `5（4●）`, `—`). A header cell is
+> never a dot. In forced-colours mode the dot characters show instead of the drawn dots.
+
 **e. Bars in tables** — inside `::: matrix` or a new `::: bars` wrapper, a cell whose whole text is
 `n/N` (integers, 0 ≤ n ≤ N ≤ 1000, N > 0) renders a thin bar (n/N of the bar track) followed by
 **n only**; N is the writer's job to state once in the column header (the reference: `提及場次 / 18`).
 The bar's hue is the row's accent hue. The stored markdown keeps `5/18`, so the canvas reads right
 even where the plugin does not run (export, other viewers). Outside these wrappers `12/18` stays
 text, so dates and fractions elsewhere are untouched.
+
+> **As implemented (PR C):** a bar column is one whose header ends in `/ N` and whose filled cells
+> are all `n/N` of that N (spaces and `**bold**` allowed) — a Day column of `11/12` dates stays text.
+> The bar is a `<meter>` (a measurement, with an `aria-label` `n / N`), not a `<progress>`. The blocks
+> render on slides too (slide-scale CSS) and only in canvases: the chat parsers recognise the
+> containers but leave their content plain (no side-panel styles, Q5).
 
 **f. Tag pills** — deferred. Every inline syntax tried so far (subscript, abbreviations) was
 mangled by the editor; `[補充]` would collide with links. Revisit with a measured round-trip (Q6).
@@ -393,7 +409,8 @@ round-trip tests.
 - **D1 Default theme** — `跟隨系統` (§2.2).
 - **D2 Light hues** — exact, read from the original PDF Brett supplied; three text colours darkened for AA (§2.3).
 - **D3 Per-card colour** — order-based only (§2.4 a).
-- **D4 Numbered sections** (was Q4) — always on in the light theme, off in dark; CSS only (§2.4 c).
+- **D4 Numbered sections** (was Q4) — always on in the light theme, off in dark; CSS only (§2.4 c). A
+  document that numbers its own `##` is left unnumbered (as-implemented note there).
 - **D5 PRs** — three (A ADR, B themes, C blocks); PRs may be opened by the implementing agent, Brett
   merges (§5).
 

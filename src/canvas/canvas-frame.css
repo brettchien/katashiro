@@ -170,6 +170,79 @@ body {
 
 [hidden] { display: none !important; }
 
+/* `::: matrix` / `::: bars` (ADR canvas-themes §2.4 d, e; markdown.js sets the classes). A hue class sets
+   the --ks-hue* variables for a mark column (its cells) or a bar row. Mark columns: a tinted band
+   (header in the tint, body ~45 %), vertical headers, centred dots. Dots never rely on colour alone
+   (§2.3): ● = mark fill + a 1.5 px edge in the hue's text colour, ○ = a 2 px ring, ◐ = half fill +
+   edge; the character stays in the cell for copy and screen readers, hidden. */
+.ks-hue-orange { --ks-hue: var(--ks-orange); --ks-hue-mid: var(--ks-orange-mid); --ks-hue-line: var(--ks-orange-line); --ks-hue-tint: var(--ks-orange-tint); }
+.ks-hue-blue { --ks-hue: var(--ks-blue); --ks-hue-mid: var(--ks-blue-mid); --ks-hue-line: var(--ks-blue-line); --ks-hue-tint: var(--ks-blue-tint); }
+.ks-hue-purple { --ks-hue: var(--ks-purple); --ks-hue-mid: var(--ks-purple-mid); --ks-hue-line: var(--ks-purple-line); --ks-hue-tint: var(--ks-purple-tint); }
+.ks-hue-green { --ks-hue: var(--ks-green); --ks-hue-mid: var(--ks-green-mid); --ks-hue-line: var(--ks-green-line); --ks-hue-tint: var(--ks-green-tint); }
+.ks-hue-yellow { --ks-hue: var(--ks-yellow); --ks-hue-mid: var(--ks-yellow-mid); --ks-hue-line: var(--ks-yellow-line); --ks-hue-tint: var(--ks-yellow-tint); }
+.ks-hue-pink { --ks-hue: var(--ks-pink); --ks-hue-mid: var(--ks-pink-mid); --ks-hue-line: var(--ks-pink-line); --ks-hue-tint: var(--ks-pink-tint); }
+.ks-hue-teal { --ks-hue: var(--ks-teal); --ks-hue-mid: var(--ks-teal-mid); --ks-hue-line: var(--ks-teal-line); --ks-hue-tint: var(--ks-teal-tint); }
+.ks-hue-sand { --ks-hue: var(--ks-sand); --ks-hue-mid: var(--ks-sand-mid); --ks-hue-line: var(--ks-sand-line); --ks-hue-tint: var(--ks-sand-tint); }
+.ks-hue-slate { --ks-hue: var(--ks-slate); --ks-hue-mid: var(--ks-slate-mid); --ks-hue-line: var(--ks-slate-line); --ks-hue-tint: var(--ks-slate-tint); }
+:is(.doc, .reveal) th.ks-mark { writing-mode: vertical-rl; text-orientation: mixed; text-align: left !important;   /* over markdown-it's inline `:-:` centring */
+  vertical-align: bottom; white-space: nowrap; padding: 0.6em 0.45em; background: var(--ks-hue-tint); color: var(--ks-hue); letter-spacing: 0.04em; }
+/* Mark columns stay narrow (as in the reference); the text columns take the width. */
+:is(.doc, .reveal) th.ks-mark, :is(.doc, .reveal) td.ks-mark { width: 2.4em; }
+:is(.doc, .reveal) td.ks-mark { text-align: center; padding-left: 0.45em; padding-right: 0.45em; background: color-mix(in srgb, var(--ks-hue-tint) 45%, transparent); }
+:is(.doc, .reveal) td.ks-dot { position: relative; color: transparent; }
+:is(.doc, .reveal) td.ks-dot::before {
+  content: ""; position: absolute; left: 50%; top: 50%; width: 12px; height: 12px; margin: -6px 0 0 -6px;
+  box-sizing: border-box; border-radius: 50%; border: 1.5px solid var(--ks-hue);
+}
+:is(.doc, .reveal) td.ks-dot-full::before { background: var(--ks-hue-mid); }
+:is(.doc, .reveal) td.ks-dot-ring::before { border-width: 2px; }
+:is(.doc, .reveal) td.ks-dot-half::before { background: linear-gradient(90deg, var(--ks-hue-mid) 50%, transparent 50%); }
+:is(.doc, .reveal) tr.ks-total td { border-top: 2px solid var(--ks-border-strong); font-weight: 700; color: var(--ks-heading); }
+:is(.doc, .reveal) .ks-sub { font-size: 0.8em; font-weight: 400; color: var(--ks-muted); }
+:is(.doc, .reveal) td.ks-bar { white-space: nowrap; font-variant-numeric: tabular-nums; }
+meter.ks-bar-track {
+  appearance: none; -webkit-appearance: none; width: 72px; height: 6px; margin: 0 6px 0 0; vertical-align: middle;
+  border: 0; border-radius: 3px; background: var(--ks-surface-alt); overflow: hidden;
+}
+meter.ks-bar-track::-webkit-meter-bar { height: 6px; border: 0; border-radius: 3px; background: var(--ks-surface-alt); }
+meter.ks-bar-track::-webkit-meter-optimum-value, meter.ks-bar-track::-webkit-meter-suboptimum-value,
+meter.ks-bar-track::-webkit-meter-even-less-good-value { background: var(--ks-hue-mid, var(--ks-accent)); border-radius: 3px; }
+/* High contrast (forced colours) drops backgrounds: show the dot characters themselves, and keep the
+   bars as a system-coloured fill. */
+@media (forced-colors: active) {
+  :is(.doc, .reveal) td.ks-dot { color: CanvasText; }
+  :is(.doc, .reveal) td.ks-dot::before { content: none; }
+  meter.ks-bar-track::-webkit-meter-optimum-value, meter.ks-bar-track::-webkit-meter-suboptimum-value,
+  meter.ks-bar-track::-webkit-meter-even-less-good-value { background: Highlight; forced-color-adjust: none; }
+}
+@media print { :is(.doc, .reveal) td.ks-mark, :is(.doc, .reveal) th.ks-mark, :is(.doc, .reveal) td.ks-dot::before, meter.ks-bar-track { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+
+/* Numbered sections (ADR canvas-themes §2.4 c): in the light theme only (and so on paper), each
+   top-level ## of a document gets its number in a blue-ramp circle. No syntax: CSS on the theme. */
+:root[data-ks-theme="light"] .doc { counter-reset: ks-sec; }
+:root[data-ks-theme="light"] .doc > h2 { counter-increment: ks-sec; }
+/* A document that numbers its own ## (markdown.js .ks-own-number): no second number. */
+:root[data-ks-theme="light"] .doc > h2.ks-own-number::before { content: none; }
+:root[data-ks-theme="light"] .doc > h2::before {
+  content: counter(ks-sec); display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6em; height: 1.6em; margin-right: 0.5em; vertical-align: 0.1em; box-sizing: border-box;
+  border-radius: 50%; border: 1px solid var(--ks-blue-line); background: var(--ks-blue-tint);
+  color: var(--ks-blue); font-size: 0.72em; font-weight: 700;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+
+/* `::: stats` (ADR canvas-themes §2.4 b): KPI tiles — the bold run large in the accent, the rest
+   muted below it. After the first # Title (.ks-title-row, markdown.js) they sit right of the title on
+   a wide tab and wrap below it on a narrow one; the row carries the title's rule. */
+.stats ul { display: flex; flex-wrap: wrap; gap: 10px; margin: 0.8em 0; padding: 0; list-style: none; }
+.stats li { min-width: 88px; padding: 8px 14px; border: 1px solid var(--ks-border); border-radius: 10px; background: var(--ks-surface); color: var(--ks-muted); font-size: 0.85em; line-height: 1.35; }
+.stats li > strong:first-child, .stats li > p > strong:first-child { display: block; color: var(--ks-accent); font-size: 1.7em; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stats li > p { margin: 0; }
+.doc .ks-title-row { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 4px 24px; border-bottom: 1px solid var(--ks-rule-h1); margin-bottom: 0.5em; }
+.doc .ks-title-row > h1 { border-bottom: 0; margin-bottom: 0.3em; }
+.doc .ks-title-row > .stats ul { margin: 0 0 0.6em; }
+.doc > .ks-title-row:first-child > h1 { margin-top: 0; }
+
 /* Cards and callouts (markdown.js; ADR canvas §3.3 "Cards and callouts"). Unscoped on purpose: the
    same markup shows in the document (.doc) and on slides (.reveal, sized in canvas-slides.css).
    A `::: cards` block is a grid that puts 2–4 cards side by side and wraps them on a narrow tab;
@@ -180,6 +253,12 @@ body {
   background: var(--ks-surface);
 }
 .card > :first-child, .doc .card > h3:first-child { margin-top: 0; }
+/* `::: cards accent` (ADR canvas-themes §2.4 a): each card takes a hue in the accent order (§2.3:
+   orange, blue, purple, green, yellow, pink, teal, sand, slate, then again), restarting per block —
+   markdown.js gives it the .ks-hue-* class (below, with the matrix) —
+   tint fill, hue border, a 3 px top edge in the mark colour, the card's ### in the hue's text colour. */
+.cards-accent > .card { background: var(--ks-hue-tint); border-color: var(--ks-hue-line); border-top: 3px solid var(--ks-hue-mid); }
+.cards-accent > .card > h3 { color: var(--ks-hue); }
 .card > :last-child { margin-bottom: 0; }
 /* Callouts: GitHub alerts (a title row) and emoji quotes (no title; the emoji leads the text). Each
    kind sets one colour, --ks-alert; the box is a tinted panel with that colour on its left edge. The

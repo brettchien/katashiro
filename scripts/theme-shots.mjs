@@ -97,6 +97,42 @@ flowchart LR
 [^1]: The footnote text.
 `;
 
+// The briefing blocks (canvas-themes §2.4), one section each as they land.
+const BLOCKS = `# Briefing blocks
+
+::: stats
+- **3** 天
+- **42** 場
+- **9** 家公司
+:::
+
+## Accent cards
+
+::: cards accent
+### Card 1\nOrange.\n### Card 2\nBlue.\n### Card 3\nPurple.\n### Card 4\nGreen.\n### Card 5\nYellow.\n### Card 6\nPink.\n### Card 7\nTeal.\n### Card 8\nSand.\n### Card 9\nSlate.
+:::
+
+A new block restarts the order:
+
+::: cards accent
+### Card 1
+Orange.
+### Card 2
+Blue.
+:::
+
+## Matrix
+
+::: matrix
+| Day | 場次 | 信任 | 工廠 | 記憶 | 提及 / 18 |
+|---|---|:-:|:-:|:-:|---|
+| D1 | Keynote | ● | ○ |  | 5/18 |
+| D1 | Panel | ◐ | ● | ● | 12/18 |
+| D2 | Workshop |  | ● | ○ | 3/18 |
+| **合計** | | 2 (1●) | 3 (2●) | 2 (1●) | |
+:::
+`;
+
 const MERMAID = `sequenceDiagram
   participant U as User
   participant K as Katashiro
@@ -142,6 +178,7 @@ const FIXTURES = [
   { name: "slides", kind: "slides", content: SLIDES },
   { name: "slides-2", kind: "slides", content: SLIDES, slide: 1 },
   { name: "image", kind: "image", content: { dataUrl: IMAGE, caption: "A caption" } },
+  { name: "blocks", kind: "markdown", engine: "pele", content: BLOCKS },
 ];
 // The same under the light theme (canvas-themes §2.2: the host sends {type:"theme"}; a deck stays dark).
 for (const fx of FIXTURES.filter((x) => !x.media && x.kind !== "slides")) FIXTURES.push({ ...fx, name: `${fx.name}-light`, theme: "light" });
@@ -253,9 +290,7 @@ try {
     await page.emulateMediaFeatures([{ name: "prefers-color-scheme", value: pg.scheme }]);
     page.on("pageerror", (e) => { console.log(`FAIL ${pg.name}: page error: ${e.message}`); failed++; });
     await page.goto(`${origin}${pg.path}`, { waitUntil: "networkidle0" });
-    // #canvas-theme: the header's theme button (canvas-themes §2.2) is new in PR B and absent from the
-    // main baseline; hidden so the header compares like for like. Drop this once PR B is on main.
-    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important} #canvas-theme{display:none!important}" });
+    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
     await page.evaluate(() => document.fonts.ready);
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await sleep(1500);                     // the canvas frame renders after the page's load

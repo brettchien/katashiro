@@ -503,12 +503,13 @@
   }
 
   /**
-   * Cards (§3.3 "Cards and callouts") before Milkdown (§3.5): a `:::` container marker line must be a
+   * Containers (`::: cards`, §3.3; `::: stats` / `matrix` / `bars`, canvas-themes §2.4) before Milkdown
+   * (§3.5): a `:::` container marker line must be a
    * paragraph of its own, or the parser folds it into the block next to it and the serializer writes
    * it back as part of that block (crepe 7.22.3: a closing `:::` right after a table becomes a row
    * `| ::: |`, after a quote or alert `> :::`, after a list `  :::`). So every marker line
-   * (0–3 spaces in: an opening `::: cards …`, or a bare closing `:::`; any other `::: foo` is plain
-   * text, never registered, and stays as written) gets a blank line before
+   * (0–3 spaces in: an opening `::: <name> …` for a name in CONTAINER_NAMES, or a bare closing `:::`;
+   * any other `::: foo` is plain text, never registered, and stays as written) gets a blank line before
    * and after it unless that neighbour is already blank (or there is none). Lines inside fenced code
    * (``` / ~~~) are left alone: a fence closes only on a line of its own character, at least as
    * long, and nothing else; a backtick fence whose info string holds a backtick is not a fence
@@ -523,7 +524,11 @@
    * back unchanged apart from line ends. markdown-it reads the padded text the same (blank lines inside a container are
    * just blank lines).
    */
-  const CONTAINER_LINE = /^ {0,3}:{3,}[ \t]*(cards\b.*)?$/;
+  // The containers markdown.js registers (its CONTAINERS; a unit test keeps the two lists equal).
+  const CONTAINER_NAMES = ["cards", "stats", "matrix", "bars"];
+  // The name is the first word, as markdown.js validates it (split on \s, which takes a full-width
+  // space too): `::: stats-2026` is not a container, `::: cards　accent` is.
+  const CONTAINER_LINE = new RegExp(`^ {0,3}:{3,}[ \\t]*((${CONTAINER_NAMES.join("|")})(?=\\s|$).*)?$`);
   function padContainerMarkers(text) {
     const lines = String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n");
     const out = [];
@@ -1527,5 +1532,5 @@
   }
   const htmlAutoRunNotice = (version) => `v${version} 已自動執行（這個畫布已授權；⏹ 可撤回）`;
 
-  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_CLASS_DEFS, ksSentinelToVar, hasKsSentinel, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, themeWatcher, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
+  return { htmlFramePost, CSS_SHEETS_MAX, CSS_SHEET_MAX, htmlBlocks, HTML_BLOCK_TAGS, POINT_CSS, composePageSelection, selectableKind, padContainerMarkers, CONTAINER_NAMES, TO_INPUT_ARM_MS, toInputAfter, toInputArmKey, submitInputRefusal, toInputSubmitText, askWhere, askWhereAtSend, askHeadingPath, askSourceLines, splitSlidesAt, cleanEditorMarkdownMap, askRect, askPlace, askBeside, askKey, askExcerpt, askReduce, askView, ASK_IDLE, imeKey, posAtTextOffset, savedTextOffset, onlyTrailingSpace, fromOlderRender, renderNoticeStale, renderErrorHeader, patchGlowRanges, markRanges, takeMarks, MARK_OPEN, MARK_CLOSE, MARK_POINT, MERMAID_SEL, KS_HUES, KS_CLASS_DEFS, ksSentinelToVar, hasKsSentinel, usesKsClasses, withKsClasses, wantsMermaid, mermaidKey, diagramErrorText, ENGINES, ENGINE_LABEL, isEngine, otherEngine, effectiveEngine, engineAfterSwitch, engineSwitchLabel, failsEngineWait, diagramsReport, diagramsSummary, diagramFallbackNote, textKind, SELECTION_MAX, SHOW_CHANGES_KEY, NARROW_KEY, narrowKind, narrowButton, THEME_KEY, THEME_BOOT_KEY, THEMES, themeWatcher, THEME_LABEL, themeSetting, resolveTheme, nextTheme, themeButton, heldChanges, showChangesTitle, compareBlocker, EDIT_CMDS, isEditCmd, editUndoButtons, composeAskAgent, inputWithSelection, diffBlocks, matchBlock, normText, FIND_MAX, HIGHLIGHT_TEXT_MAX, composeCanvasPush, fenceFor, safeFileName, PUSH_DATA_MAX, PUSH_TEXT_MAX, cleanEditorMarkdown, countImages, losesImages, splitSlides, isImageDataUrl, acceptFrameMessage, HTML_STATIC_DP, IMAGE_SRC_OK, cssForShadow, HTML_READ_HEAD, htmlReadView, modeAfterFrameMessage, safeLinkUrl, clipError, createLoadGate, newNonce, ERROR_MAX, HTML_RUN_RISK, htmlRunView, htmlAutoRun, htmlAutoRunNotice };
 });

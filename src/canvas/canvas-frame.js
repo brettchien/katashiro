@@ -506,7 +506,7 @@
     // drops or trims lines, so its map takes a block's rendered lines back to the stored ones.
     const clean = CanvasCore.cleanEditorMarkdownMap(content);
     shownSource = { stored: content, map: clean.lines };
-    renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true });
+    renderMarkdownInto(doc, clean.text, { copyText: copyViaHost, sourceLines: true, canvas: true });
     return renderThemed("markdown", gen, seq);
   }
 
@@ -550,7 +550,7 @@
     shownSource = { stored: content, slideLines: slides.map((s) => s.line) };
     const sections = slides.map(({ text }) => {
       const sec = document.createElement("section");
-      renderMarkdownInto(sec, text, { copyText: copyViaHost, sourceLines: true });
+      renderMarkdownInto(sec, text, { copyText: copyViaHost, sourceLines: true, canvas: true });
       return sec;
     });
     container.replaceChildren(...sections);
@@ -680,12 +680,12 @@
     if (kind === "slides") {
       return CanvasCore.splitSlides(text).map((t) => {
         const sec = document.createElement("section");
-        renderMarkdownInto(sec, t, { copyText: copyViaHost });
+        renderMarkdownInto(sec, t, { copyText: copyViaHost, canvas: true });
         return sectionUnit(sec);
       });
     }
     const art = document.createElement("article");
-    renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(text), { copyText: copyViaHost });
+    renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(text), { copyText: copyViaHost, canvas: true });
     return blocksOf(art);
   }
 
@@ -736,12 +736,12 @@
     if (kind === "slides") {
       copy = CanvasCore.splitSlides(marked).flatMap((t) => {
         const sec = document.createElement("section");
-        renderMarkdownInto(sec, t, { copyText: copyViaHost });
+        renderMarkdownInto(sec, t, { copyText: copyViaHost, canvas: true });
         return blocksOf(sec);
       });
     } else {
       const art = document.createElement("article");
-      renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(marked), { copyText: copyViaHost });
+      renderMarkdownInto(art, CanvasCore.cleanEditorMarkdown(marked), { copyText: copyViaHost, canvas: true });
       copy = blocksOf(art);
     }
     if (copy.length !== blocks.length) return null;
