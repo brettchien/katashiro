@@ -2,26 +2,6 @@
 # CI's compare step reports them as "changed" for that branch's runs only; every other shot, and every
 # other branch, must stay byte-identical. Entries for a merged branch are inert (remove them at will).
 #
-# Light theme (canvas-themes §2.3): main has no light theme, so its "light" shots are dark.
-feat/canvas-themes markdown-pele-light.png
-feat/canvas-themes markdown-mermaid-light.png
-feat/canvas-themes diagram-pele-light.png
-feat/canvas-themes diagram-mermaid-light.png
-feat/canvas-themes image-light.png
-feat/canvas-themes page-canvas-light.png
-feat/canvas-themes page-gallery-light.png
-# Print is the light theme now (canvas-themes §2.2), instead of the hand-kept Primer Light colours.
-feat/canvas-themes markdown-print.png
-#
-# PR C stacks on PR B: until #229 merges, main lacks the light theme here too.
-feat/canvas-briefing-blocks markdown-pele-light.png
-feat/canvas-briefing-blocks markdown-mermaid-light.png
-feat/canvas-briefing-blocks diagram-pele-light.png
-feat/canvas-briefing-blocks diagram-mermaid-light.png
-feat/canvas-briefing-blocks image-light.png
-feat/canvas-briefing-blocks page-canvas-light.png
-feat/canvas-briefing-blocks page-gallery-light.png
-feat/canvas-briefing-blocks markdown-print.png
 # Briefing blocks (canvas-themes §2.4): main renders them as plain cards / text.
 feat/canvas-briefing-blocks blocks.png
 feat/canvas-briefing-blocks blocks-light.png
